@@ -76,7 +76,7 @@ SYSTEM = platform.system()
 # measured scenarios (tabs, resize, split-drag, occlusion, agents-steady, idle, fs-churn, input)
 # stay unavailable here: WebKitGTK has no occlusion signal, no layer-tree mirror and no native
 # input hook (ticket 32).
-LINUX_SCENARIOS = ("workflow", "resource", "stress", "startup")
+LINUX_SCENARIOS = ("workflow", "preview", "resource", "stress", "startup")
 SCENARIOS = list(dict.fromkeys([*app_report.SCENARIOS, *LINUX_SCENARIOS]))
 IDENTIFIER = linux_profile.disposable_identifier("app-lab", "stable")
 PRODUCT_NAME = "Terax App Lab"
@@ -328,6 +328,50 @@ def descendants(root: int, table: dict[int, tuple[int, str]]) -> list[int]:
 # Orchestration
 # ---------------------------------------------------------------------------------------------
 
+PREVIEW_FIXTURE = """<!doctype html>
+<html><head><meta charset="utf-8"><title>preview fixture</title></head>
+<body><h1>preview fixture</h1><p id="state"></p>
+<script>
+const instance = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+const native = {
+  tauri: typeof window.__TAURI__ !== "undefined",
+  internals: typeof window.__TAURI_INTERNALS__ !== "undefined",
+  invoke: typeof (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke),
+};
+// A sandboxed frame without allow-top-navigation* must not be able to move the app window.
+const topNav = { attempted: false, error: null };
+try { topNav.attempted = true; window.top.location.href = "http://127.0.0.1:1/preview-escape"; }
+catch (error) { topNav.error = String(error); }
+// A popup must not become a window outside the application's control: the app installs no
+// new-window handler, so WebKit has to refuse the request rather than hand the page one.
+const popup = (() => {
+  try {
+    const opened = window.open("about:blank", "terax-preview-popup", "width=200,height=120");
+    if (opened) { try { opened.close(); } catch (error) {} }
+    return { requested: true, opened: Boolean(opened), error: null };
+  } catch (error) {
+    return { requested: true, opened: false, error: String(error) };
+  }
+})();
+let seq = 0;
+function payload(kind) {
+  return {
+    source: "terax-preview-fixture", kind, instance, href: location.href, seq: seq++,
+    redirected: location.pathname === "/preview-redirected", visibility: document.visibilityState,
+    native, topNav, popup,
+  };
+}
+function post(kind) { try { window.parent.postMessage(payload(kind), "*"); } catch (error) {} }
+setInterval(function () { post("beat"); }, 200);
+post("beat");
+addEventListener("pagehide", function () { post("pagehide"); });
+document.getElementById("state").textContent = instance + " " + location.pathname;
+if (location.search.indexOf("redirect=1") !== -1) {
+  setTimeout(function () { location.href = "/preview-redirected?from=fixture"; }, 600);
+}
+</script></body></html>
+"""
+
 
 class ReportServer:
     """Receives phase events. A handler thread blocks until the main thread has sampled."""
@@ -335,6 +379,9 @@ class ReportServer:
     def __init__(self):
         self.events: queue.Queue = queue.Queue()
         self.log: list[str] = []
+        self.fixture_loads = 0
+        self.redirect_hits = 0
+        self.pings = 0
         outer = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -345,10 +392,39 @@ class ReportServer:
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Access-Control-Allow-Headers", "*")
 
+            def _send(self, status: int, body: bytes, content_type: str) -> None:
+                self.send_response(status)
+                self._cors()
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
             def do_OPTIONS(self):
                 self.send_response(204)
                 self._cors()
                 self.end_headers()
+
+            def do_GET(self):
+                path = self.path.split("?")[0]
+                if path == "/preview-ping":
+                    outer.pings += 1
+                    body = json.dumps({
+                        "pong": True,
+                        "hits": outer.pings,
+                        "fixtureLoads": outer.fixture_loads,
+                        "redirectHits": outer.redirect_hits,
+                    }).encode()
+                    self._send(200, body, "application/json")
+                elif path in ("/preview-fixture", "/preview-redirected"):
+                    # Fixture loads are served for as long as this server lives: frame teardown
+                    # must never stop it.
+                    outer.fixture_loads += 1
+                    if path == "/preview-redirected":
+                        outer.redirect_hits += 1
+                    self._send(200, PREVIEW_FIXTURE.encode(), "text/html")
+                else:
+                    self._send(404, b"not found", "text/plain")
 
             def do_POST(self):
                 body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
@@ -796,8 +872,14 @@ def run(args, app: Path, source: Path, output: Path) -> int:
     return 0
 
 
-def scenario_json_linux(args, file: Path | None, first_line: str | None, workspace: Path, fixtures: dict | None) -> dict:
-    """The scenario as the driver receives it (Linux)."""
+def scenario_json_linux(
+    args,
+    file: Path | None,
+    first_line: str | None,
+    workspace: Path,
+    fixtures: dict | None,
+) -> dict:
+    """The scenario as the driver receives it (Linux; no synthetic agent)."""
     local: dict[str, str | None] = {}
     for entry in args.local_storage:
         key, _, value = entry.partition("=")
@@ -809,6 +891,8 @@ def scenario_json_linux(args, file: Path | None, first_line: str | None, workspa
     # fetches api.github.com and can raise a dialog over the window. Preseed the throttle.
     local.setdefault("terax:updater:last-check", str(int(time.time() * 1000)))
     width, height = (float(value) for value in args.window.lower().split("x"))
+    # The preview driver builds its fixture URL from TERAX_BENCH_REPORT_URL, which the
+    # run's own server serves; it needs no extra scenario fields.
     scenario = {
         "name": args.scenario,
         "window": {"width": width, "height": height},
@@ -1116,6 +1200,29 @@ def describe_workload(args, fixtures: dict) -> str:
     )
 
 
+def open_focus_stealer() -> dict:
+    """Opens a separate application window so the app loses focus while staying visible.
+
+    Wayland offers no way to take focus from a process, but a newly mapped toplevel usually
+    takes it; the scenario driver records whether a blur was actually observed, so a desktop
+    that refuses to hand focus over is reported instead of assumed.
+    """
+    for tool in ("zenity", "yad"):
+        binary = shutil.which(tool)
+        if not binary:
+            continue
+        try:
+            process = subprocess.Popen(
+                [binary, "--info", "--text=Terax preview focus probe", "--timeout=6"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as error:
+            return {"tool": None, "reason": f"{tool}: {error}"}
+        return {"tool": tool, "pid": process.pid}
+    return {"tool": None, "reason": "no zenity or yad on this host"}
+
+
 def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     """Launch the real WebKitGTK app in a disposable profile and measure it from /proc.
 
@@ -1259,7 +1366,22 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                 if phase == "done":
                     manifest["samples"].append({"phase": "done", "tMonoNs": time.monotonic_ns(), "event": app_report.slim_event(event)})
                     workflow = event.get("workflow") or {}
+                    if event.get("preview") is not None:
+                        # Scenario-specific evidence that is not a pass/fail step: how many
+                        # frame instances were loaded, whether the blur was exercised, and what
+                        # the desktop reported for minimize.
+                        manifest["preview"] = event["preview"]
                     break
+                if phase == "preview-blur":
+                    # The window must lose OS focus while staying visible, so a separate
+                    # application window is opened. The driver records whether a blur was
+                    # actually observed instead of assuming it.
+                    focus_stealer = open_focus_stealer()
+                    manifest["focusStealer"] = focus_stealer
+                    if not focus_stealer.get("tool"):
+                        manifest["qualification"]["advisories"].append(
+                            "visible blur could not be exercised: no zenity/yad on this host"
+                        )
                 reasons = app_report.qualify(args.scenario, phase, event)
                 elapsed = time.monotonic() - started
                 sample = take_sample(phase, event, elapsed)
@@ -1303,6 +1425,13 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         if server.log:
             (output / "page.log").write_text("\n".join(server.log))
         manifest["workflow"] = workflow
+        # The fixture server is the independent process previews are served by; these counters
+        # show it kept answering across every frame teardown.
+        manifest["previewServer"] = {
+            "fixtureLoads": server.fixture_loads,
+            "redirectHits": server.redirect_hits,
+            "pings": server.pings,
+        }
         # Coexistence evidence: the hashes of the upstream installation's files, taken before
         # the launch, must still match now that the application has run and exited.
         if manifest.get("appIdentifierInForkNamespace") is False:

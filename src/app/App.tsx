@@ -1412,6 +1412,10 @@ export default function App() {
                         tabs={tabs}
                         activeId={activeId}
                         activeTab={activeTab}
+                        activeSpaceId={activeSpaceId ?? DEFAULT_SPACE_ID}
+                        subscribeWindowPresentation={
+                          subscribeWindowPresentation
+                        }
                         registerTerminalHandle={registerTerminalHandle}
                         onSearchReady={handleSearchReady}
                         onCwd={handleTerminalCwd}

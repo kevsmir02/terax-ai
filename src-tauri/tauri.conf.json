@@ -36,7 +36,7 @@
   "bundle": {
     "active": true,
     "externalBin": [
-      "binaries/terax-cli"
+      "binaries/terax-workspace-cli"
     ],
     "resources": {
       "../packages/ghostty-core/LICENSE": "licenses/terminal/ghostty-web.txt",
@@ -44,8 +44,11 @@
       "../packages/ghostty-core/adapted/LICENSE.restty": "licenses/terminal/restty.txt",
       "../src/modules/terminal/ghostty/webgl/LICENSE.xterm-js": "licenses/terminal/xterm-js.txt"
     },
-    "targets": "all",
-    "createUpdaterArtifacts": true,
+    "targets": [
+      "rpm",
+      "deb"
+    ],
+    "createUpdaterArtifacts": false,
     "copyright": "Copyright 2026 Crynta",
     "license": "Apache-2.0",
     "publisher": "Crynta",
@@ -62,11 +65,7 @@
     },
     "linux": {
       "deb": {
-        "section": "utils",
-        "depends": [
-          "libwebkit2gtk-4.1-0",
-          "libgtk-3-0"
-        ]
+        "section": "utils"
       },
       "rpm": {
         "depends": [

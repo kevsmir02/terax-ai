@@ -13,6 +13,10 @@ import { Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { vim } from "@replit/codemirror-vim";
 import { useAssetGrant } from "@/lib/useAssetGrant";
+import {
+  TEXT_OVERRIDE_LIMIT_BYTES,
+  TEXT_SYNTAX_LIMIT_BYTES,
+} from "@/modules/preview/lib/limits";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import {
   forwardRef,
@@ -46,7 +50,7 @@ import {
 } from "./lib/externalFormat";
 import { detectIndentUnit } from "./lib/indent";
 import { type LanguageResult, resolveLanguage } from "./lib/languageResolver";
-import { FORCE_READ_LIMIT, useDocument } from "./lib/useDocument";
+import { useDocument } from "./lib/useDocument";
 import { useEditorThemeExt } from "./lib/useEditorThemeExt";
 import { initVimGlobals, vimHandlersExtension } from "./lib/vim";
 import { mediaPreviewKind } from "./lib/mediaPreview";
@@ -95,10 +99,6 @@ type Props = {
   visible?: boolean;
   mediaActive?: boolean;
 };
-
-// Above this, syntax highlighting is disabled: a multi-MB lezer parse tree
-// costs far more than it gives.
-const SYNTAX_MAX_BYTES = 4 * 1024 * 1024;
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -391,7 +391,7 @@ export const EditorPane = memo(
         overrideLanguage || (path.split(".").pop()?.toLowerCase() ?? null);
       languageRef.current = ext;
       if (doc.status !== "ready") return;
-      if (doc.size > SYNTAX_MAX_BYTES) {
+      if (doc.size > TEXT_SYNTAX_LIMIT_BYTES) {
         const view = cmRef.current?.view;
         view?.dispatch({ effects: languageCompartment.reconfigure([]) });
         return;
@@ -579,7 +579,7 @@ export const EditorPane = memo(
       }
 
       const canForce =
-        doc.status === "toolarge" && doc.size <= FORCE_READ_LIMIT;
+        doc.status === "toolarge" && doc.size <= TEXT_OVERRIDE_LIMIT_BYTES;
       return (
         <div className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center">
           <div className="text-sm text-foreground">
