@@ -278,9 +278,15 @@ describe("built startup graph", () => {
     expect([...sources]).toHaveLength(1);
   });
 
+  const productIdentifier = (
+    JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8")) as {
+      identifier: string;
+    }
+  ).identifier;
+
   it.each([
     ["missing", "", "TERAX_BENCH_IDENTIFIER"],
-    ["product", "app.crynta.terax", "not the product identifier"],
+    ["product", productIdentifier, "not the product identifier"],
   ])(
     "refuses an app-lab build with the %s identifier",
     (label, identifier, expected) => {

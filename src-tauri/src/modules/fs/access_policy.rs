@@ -23,8 +23,17 @@ struct PathPolicy {
 }
 
 pub(super) fn readable(path: &Path) -> Result<(), String> {
-    if let Some(cache) = dirs::cache_dir() {
-        deny_runtime_directory(path, &cache.join("terax"))?;
+    // This fork's control directory holds a live credential, and so does the upstream
+    // application's: both are refused, which keeps the denylist in sync with whatever
+    // name the identity table gives the fork (see `modules::identity`).
+    for directory in [
+        crate::modules::identity::cache_dir(),
+        crate::modules::identity::upstream_cache_dir(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        deny_runtime_directory(path, &directory)?;
     }
     static POLICY: OnceLock<(regex::RegexSet, Vec<String>)> = OnceLock::new();
     let (patterns, directories) = POLICY.get_or_init(|| {
