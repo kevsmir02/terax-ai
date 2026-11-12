@@ -14,7 +14,7 @@
   <p>
     <img src="https://img.shields.io/github/v/release/crynta/terax-ai?label=version&color=blue" alt="version" />
     <img src="https://img.shields.io/github/downloads/crynta/terax-ai/total?label=downloads&color=blue" alt="downloads" />
-    <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="platform" />
+    <img src="https://img.shields.io/badge/platform-Linux%20x86_64-lightgrey" alt="platform" />
     <a href="https://discord.gg/tyveTUyEp7"><img src="https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
     <a href="https://www.youtube.com/@crynta"><img src="https://img.shields.io/badge/Youtube-FF0000?logo=youtube&logoColor=white" alt="YouTube" /></a>
   </p>
@@ -67,11 +67,10 @@ Terax is a lightweight open-source terminal-first development workspace built on
 
 - xterm.js with WebGL renderer, multi-tab with background streaming
 - GPU-accelerated block-based terminal with editor-like command input
-- Native PTY backend via `portable-pty` (zsh, bash, pwsh, fish, cmd)
+- Native PTY backend via `portable-pty` (zsh, bash, fish)
 - Split panels (horizontal and vertical)
 - Inline search, link detection, true-color
 - Drag files from the explorer or desktop into a terminal as shell-safe quoted paths
-- Per-tab workspace environments on Windows (Local, or any installed WSL distro)
 - Spaces restore tabs, working directories, and split layouts across launches
 
 ### Code editor
@@ -117,25 +116,44 @@ Terax is a lightweight open-source terminal-first development workspace built on
 
 ## Install
 
-Latest installers are on the [Releases](https://github.com/crynta/terax-ai/releases/latest) page (the upstream project's page until this fork publishes its own release channel). The app checks for a stable update in the background and never downloads, installs or restarts itself: updates are installed with your package tool (pacman/AUR on Arch, apt/dnf for the DEB/RPM packages).
-
-### Windows notes
-
-- Default shell detection: `pwsh.exe` (PowerShell 7+) -> `powershell.exe` (Windows PowerShell 5.1) -> `cmd.exe`.
-- WSL is a first-class workspace environment, not a wrapped subprocess.
+This fork builds and distributes **Linux x86-64 only**: one RPM and one DEB per release, plus an
+authored (not yet built) Arch recipe in `packaging/arch`. Download the package from the
+[Releases](https://github.com/crynta/terax-ai/releases/latest) page (the upstream project's page
+until this fork publishes its own release channel) and install it with your distribution's package
+tool. The app checks for a stable update in the background and never downloads, installs or restarts
+itself: updates are installed with your package tool (pacman/AUR on Arch, apt/dnf for the DEB/RPM
+packages).
 
 ### Linux notes
 
-- **Arch / AUR:** `yay -S terax-bin` (or `paru`, etc.). Tracks the latest release.
-- **NixOS / Nix**: use the official flake - `nix profile install github:crynta/terax-ai` (non-NixOS), or import the flake and add `inputs.terax.packages.${pkgs.system}.terax` to `environment.systemPackages` (NixOS). The `nixosModules.terax` output is also available for a simpler setup.
-- **AppImage:** needs FUSE. Without it: `./Terax_*.AppImage --appimage-extract-and-run`. On Wayland with rendering glitches, try `WEBKIT_DISABLE_DMABUF_RENDERER=1`. Otherwise the `.deb` / `.rpm` packages link against the system GTK stack and tend to be smoother.
+- **Fedora (primary target):** `sudo dnf install ./terax-workspace-*.x86_64.rpm`. Fedora 44 KDE
+  Plasma on Wayland is the primary validation target for the application; the *packaged*
+  install/upgrade path is not validated yet (ticket #43).
+- **Debian:** `sudo apt install ./terax-workspace_*_amd64.deb`. Debian 13 still needs an actual
+  graphical WebKitGTK session before support is claimed (ticket #43).
+- **Arch / AUR:** `packaging/arch/PKGBUILD` builds the same source and version. It is **authored,
+  not built**: no `makepkg` run is recorded yet, so Arch support is a dated clean-environment
+  validation still to be done, not a claim.
+- On Wayland with rendering glitches, try `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
+
+### Platform support
+
+Upstream Terax also ships macOS, Windows/WSL and Nix builds. **This fork does not**: those build and
+distribution workflows were removed (ticket #34), and no non-x86-64 artifact is produced. The
+Windows, macOS and WSL code paths that upstream shares with Linux are retained in the source as inert
+seams, because deleting them would make every upstream import a merge conflict — they are not
+supported configurations here. See
+[docs/architecture/linux-packages.md](docs/architecture/linux-packages.md) for what a package
+candidate does and does not prove.
 
 ## Build from source
 
 **Prerequisites**
+- Linux x86-64 (the only supported build host)
 - Rust (stable), https://rustup.rs
 - Node 22+ and [pnpm](https://pnpm.io)
-- Tauri prerequisites for your platform, https://tauri.app/start/prerequisites/
+- The Tauri Linux prerequisites: WebKitGTK 4.1, GTK3, librsvg and libssl development packages,
+  https://tauri.app/start/prerequisites/
 
 **Run**
 ```bash
@@ -160,14 +178,6 @@ Tauri 2, Rust, `portable-pty`, React 19, TypeScript, Vite, libghostty (WebGPU/We
 ## Contributing
 
 Issues and PRs are welcome! Feel free to open issues, suggest features, or submit pull requests. See [CONTRIBUTING.md](CONTRIBUTING.md) and the [architecture docs](docs/README.md) for more details.
-
-## Code signing
-
-<a href="https://signpath.org"><img src="https://avatars.githubusercontent.com/u/34448643?s=200&v=4" width="80" alt="SignPath" align="left" /></a>
-
-Windows builds are signed with a free code signing certificate provided by [SignPath.io](https://signpath.io), certificate by the [SignPath Foundation](https://signpath.org).
-
-<br clear="left" />
 
 ## License
 
