@@ -42,8 +42,9 @@ The runner (`scripts/package-candidate/run.py`) refuses to start when any of the
 - the working tree is dirty (artifacts must correspond to a recorded commit);
 - the identity is an upstream name, the product name does not derive the declared package name,
   the bundle targets are not exactly `rpm`+`deb` (no AppImage/NSIS/MSI/DMG),
-  `createUpdaterArtifacts` is not `false`, or the overlay does not strip the upstream updater
-  endpoint/pubkey;
+  `createUpdaterArtifacts` is not `false`, or the effective updater endpoint/pubkey does not
+  follow the fork-owned release contract (`src/modules/updater/releaseContract.json`) or points
+  at upstream's feed;
 - the deb/rpm dependency lists lack WebKitGTK or GTK3;
 - the Arch recipe's `pkgver`/`pkgname`/`arch`/`_commit`/`depends` do not line up;
 - the output directory already holds a completed candidate (outputs are immutable).
@@ -102,10 +103,10 @@ environment that records package versions. The packaging runner writes a revisio
 
 ## Known gaps
 
-- The frontend Linux update check still queries upstream's GitHub release feed in this revision;
-  fork-owned discovery is issue #37. Candidate builds strip the updater plugin's endpoint and
-  pubkey and use `createUpdaterArtifacts=false`, so a candidate can neither fetch upstream's
-  release feed nor verify/install an artifact with the upstream key.
+- Update discovery is issue #37: a candidate inherits the fork-owned release contract — a
+  non-live `.invalid` endpoint and no provisioned trust root — so it cannot query or install an
+  upstream release. Candidates are built with `createUpdaterArtifacts=false`. Until #39/#40
+  provision the real endpoint and key, no update can be verified and nothing may be published.
 - The deb `Maintainer` field is derived by the bundler from the Cargo authors (upstream credit),
   not from the candidate vendor; final maintainer identity belongs to #39/#40.
 

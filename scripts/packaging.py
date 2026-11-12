@@ -37,6 +37,7 @@ IDENTITY_FILE = REPO_ROOT / "src/modules/identity/namespace.json"
 TAURI_CONFIG = REPO_ROOT / "src-tauri/tauri.conf.json"
 CARGO_MANIFEST = REPO_ROOT / "src-tauri/Cargo.toml"
 PACKAGE_JSON = REPO_ROOT / "package.json"
+RELEASE_CONTRACT = REPO_ROOT / "src/modules/updater/releaseContract.json"
 PKGBUILD = REPO_ROOT / "packaging/arch/PKGBUILD"
 OUTPUT_ROOT = REPO_ROOT / "dist-packages"
 
@@ -127,10 +128,10 @@ NOT_VALIDATED = (
 )
 
 KNOWN_GAPS = (
-    "The frontend Linux update check still queries upstream's GitHub release feed in this "
-    "revision; fork-owned discovery is issue #37. Candidate packages strip the updater plugin's "
-    "endpoint/pubkey and are built with createUpdaterArtifacts=false, so nothing is signed with "
-    "or verified against the upstream key, and candidates must not be published.",
+    "Update discovery is issue #37: this candidate inherits the fork-owned release contract "
+    "(non-live `.invalid` endpoint, no provisioned trust root), so it cannot query or install "
+    "an upstream release. Until #39/#40 provision the real endpoint and key, no update can be "
+    "verified, and candidates must not be published.",
     "The deb Maintainer field is derived by Tauri from the Cargo authors (upstream credit), "
     "not from the candidate vendor. Final maintainer/branding identity is tickets #39/#40.",
     "The CLI launcher command exposed inside terminal sessions is still `terax` (documented "
@@ -290,11 +291,43 @@ def candidate_config() -> dict:
             "shortDescription": c.short_description,
             "longDescription": c.long_description,
         },
-        # A candidate must not be able to check upstream's release feed or trust upstream's
-        # signing key. The plugin is left installed (issue #37 replaces the discovery flow),
-        # but with no endpoint and no upstream pubkey, `check()` cannot contact upstream.
-        "plugins": {"updater": {"endpoints": [], "pubkey": ""}},
+        # A candidate inherits the fork-owned release contract (see
+        # `src/modules/updater/releaseContract.json`): a non-live `.invalid` endpoint and no
+        # trust root until #39/#40. It must never carry upstream's feed or key, which is what
+        # `updater_problems()` checks. Issue #37 owns discovery behaviour.
     }
+
+
+def updater_settings(base: dict | None = None, overlay: dict | None = None) -> dict:
+    """The effective updater plugin settings after config merge."""
+    overlay = overlay if overlay is not None else candidate_config()
+    base = base if base is not None else _load_json(TAURI_CONFIG)
+    settings = dict(((base.get("plugins") or {}).get("updater") or {}))
+    settings.update(((overlay.get("plugins") or {}).get("updater") or {}))
+    return settings
+
+
+def updater_problems(base: dict | None = None, overlay: dict | None = None) -> list[str]:
+    """Why a candidate would not follow the fork-owned, non-upstream release contract."""
+    contract = _load_json(RELEASE_CONTRACT)
+    settings = updater_settings(base, overlay)
+    endpoints = list(settings.get("endpoints") or [])
+    upstream_endpoints = set(contract["upstream"]["endpoints"])
+    found: list[str] = []
+    if endpoints != contract["endpoints"]:
+        found.append(
+            f"updater endpoints {endpoints!r} do not match the fork release contract "
+            f"{contract['endpoints']!r}"
+        )
+    for endpoint in endpoints:
+        if endpoint in upstream_endpoints or "crynta/terax-ai" in endpoint:
+            found.append(f"updater endpoint {endpoint!r} is upstream's release feed")
+    if settings.get("pubkey", "") != contract["trust"]["publicKey"]:
+        found.append(
+            "updater pubkey does not match the release contract's trust entry "
+            "(a candidate may not embed an unprovisioned or upstream key)"
+        )
+    return found
 
 
 def merged_bundle_config(base: dict | None = None, overlay: dict | None = None) -> dict:
@@ -377,13 +410,8 @@ def config_problems(base: dict | None = None, overlay: dict | None = None) -> li
             "runtime dependency list"
         )
 
-    # A candidate may not keep upstream's update endpoint or trust key.
-    updater = (overlay.get("plugins") or {}).get("updater") or {}
-    if updater.get("endpoints") != [] or updater.get("pubkey") != "":
-        found.append(
-            "the candidate overlay must strip the upstream updater endpoint and pubkey "
-            "(issue #37 owns fork-owned discovery)"
-        )
+    # A candidate follows the fork-owned release contract and never upstream's feed/key.
+    found.extend(updater_problems(base, overlay))
 
     configured_deb = list(bundle.get("linux", {}).get("deb", {}).get("depends") or [])
     for dependency in configured_deb:

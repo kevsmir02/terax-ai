@@ -186,16 +186,23 @@ class TargetTest(unittest.TestCase):
 
 
 class DependencyTest(unittest.TestCase):
-    def test_the_candidate_strips_the_upstream_updater_identity(self) -> None:
-        overlay = packaging.candidate_config()
-        self.assertEqual(overlay["plugins"]["updater"]["endpoints"], [])
-        self.assertEqual(overlay["plugins"]["updater"]["pubkey"], "")
-        overlay["plugins"]["updater"] = {
-            "endpoints": ["https://github.com/crynta/terax-ai/releases/latest/download/latest.json"],
-            "pubkey": "upstream-key",
-        }
-        problems = packaging.config_problems(overlay=overlay)
-        self.assertTrue(any("updater" in problem for problem in problems), problems)
+    def test_the_candidate_follows_the_fork_release_contract(self) -> None:
+        contract = json.loads(packaging.RELEASE_CONTRACT.read_text())
+        settings = packaging.updater_settings()
+        self.assertEqual(settings["endpoints"], contract["endpoints"])
+        self.assertEqual(settings["pubkey"], contract["trust"]["publicKey"])
+        self.assertEqual(packaging.updater_problems(), [])
+        for endpoint in contract["endpoints"]:
+            self.assertIn(".invalid", endpoint)
+
+    def test_an_upstream_endpoint_or_key_is_refused(self) -> None:
+        base = json.loads(packaging.TAURI_CONFIG.read_text())
+        contract = json.loads(packaging.RELEASE_CONTRACT.read_text())
+        base["plugins"]["updater"]["endpoints"] = contract["upstream"]["endpoints"]
+        base["plugins"]["updater"]["pubkey"] = "upstream-minisign-key"
+        problems = packaging.updater_problems(base=base)
+        self.assertTrue(any("upstream" in problem for problem in problems), problems)
+        self.assertTrue(any("pubkey" in problem for problem in problems), problems)
 
     def test_deb_and_rpm_require_the_webkit_and_gtk_runtime(self) -> None:
         deb = packaging.deb_depends()
