@@ -52,15 +52,31 @@ export function useAssetGrant(
       assetScopes.close(scope);
     };
   }, [path, workspace, key, tabId]);
-  const urlFor = useMemo(
-    () => (asset: string) =>
+  const tokenFor = useMemo(
+    () => () =>
       grant?.key === key &&
       grant.token &&
       grant.scope &&
       assetScopes.isLive(grant.scope)
-        ? `${convertFileSrc(asset)}?token=${grant.token}`
+        ? grant.token
         : undefined,
     [grant, key],
   );
-  return { urlFor, error: grant?.key === key ? grant.error : undefined, retry };
+  const urlFor = useMemo(
+    () => (asset: string) => {
+      const token = tokenFor();
+      return token ? `${convertFileSrc(asset)}?token=${token}` : undefined;
+    },
+    [tokenFor],
+  );
+  return {
+    urlFor,
+    /**
+     * The grant's capability, for a surface that reads the bytes through IPC
+     * instead of an element (the PDF reader). Same scope liveness as `urlFor`.
+     */
+    tokenFor,
+    error: grant?.key === key ? grant.error : undefined,
+    retry,
+  };
 }

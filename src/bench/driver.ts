@@ -1,8 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { assetScopes } from "@/lib/assetScopes";
 import { setWindowVibrancy } from "@/modules/settings/store";
-import { ASSET_DELIVERY } from "@/modules/preview/lib/assetDelivery";
-import { PDF_PAGE_LIMIT_BYTES, pdfPageDecision } from "@/modules/preview/lib/limits";
+import {
+  PDF_PAGE_LIMIT_BYTES,
+  pdfPageDecision,
+} from "@/modules/preview/lib/limits";
+import { pdfRenderBytes } from "@/modules/preview/lib/pdfPage";
 import { useViewerAdmissionStore } from "@/modules/preview/lib/viewerAdmission";
 import { whenSessionReady, writeToSession } from "@/modules/terminal";
 import type { Tab } from "@/modules/tabs";
@@ -13,7 +16,12 @@ import {
 import { collectDiagnostics } from "./diagnostics";
 import { nativeWindow, reportError, reportPhase } from "./report";
 import { installSmoothProbe, type SmoothSummary } from "./smoothProbe";
-import type { BenchAppApi, BenchConfig, BenchScenario, PdfFixtures } from "./types";
+import type {
+  BenchAppApi,
+  BenchConfig,
+  BenchScenario,
+  PdfFixtures,
+} from "./types";
 
 const pause = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -1192,7 +1200,8 @@ async function resourceScenario(
   // Back to Space A with the one active preview (the app's own preview pane).
   app().setActiveSpace(spaceA);
   await pause(900);
-  if (!scenario.previewUrl) throw new Error("the resource scenario needs `previewUrl`");
+  if (!scenario.previewUrl)
+    throw new Error("the resource scenario needs `previewUrl`");
   const previewTab = app().openPreview(scenario.previewUrl);
   await pause(1500);
   if (app().activeId !== previewTab)
@@ -1225,10 +1234,7 @@ async function resourceScenario(
   );
   if (streamCommand) {
     for (const leafId of streamLeaves)
-      writeToSession(
-        leafId,
-        `${streamCommand} --seconds ${streamSeconds}\r`,
-      );
+      writeToSession(leafId, `${streamCommand} --seconds ${streamSeconds}\r`);
   }
   await step("stream-start", { ...layout, streamLeaves });
   await pause(streamSeconds * 1000);
@@ -1245,14 +1251,17 @@ async function resourceScenario(
         15_000,
       );
       await pause(600);
-      await step(`close-cycle-${cycle}-open`, { cycle, tabId, file: closeFile });
+      await step(`close-cycle-${cycle}-open`, {
+        cycle,
+        tabId,
+        file: closeFile,
+      });
       app().closeTab(tabId);
       await pause(800);
       await step(`close-cycle-${cycle}-closed`, { cycle, tabId });
     }
     // Leave the preview active again, like the baseline.
-    if (app().tabs.some((tab) => tab.id === previewTab))
-      run.select(previewTab);
+    if (app().tabs.some((tab) => tab.id === previewTab)) run.select(previewTab);
     else app().openPreview(scenario.previewUrl);
     await pause(600);
   }
@@ -1988,57 +1997,66 @@ function memorySummary(report: Record<string, unknown>): MemorySummary {
     appPss: Number((report.app as { pss?: number } | undefined)?.pss ?? 0),
     webContentPss: pss("web_content"),
     hostPss: pss("host"),
-    processes: Number((report.total as { processes?: number } | undefined)?.processes ?? 0),
+    processes: Number(
+      (report.total as { processes?: number } | undefined)?.processes ?? 0,
+    ),
   };
 }
 
-/** A grant token is a capability: never put it in a report or a log line. */
-function redactGrant(url: string): string {
-  return url.replace(/token=[0-9a-f]+/i, "token=<grant>");
-}
-
-/** One PDF document the phase opened, and where the app's own surface put it. */
+/** One PDF document the phase opened, and where the app's own reader put it. */
 type PdfTab = {
   key: keyof PdfFixtures["files"];
   name: string;
   path: string;
   tabId: number;
-  frame: () => HTMLIFrameElement | null;
 };
 
-type OpenedPdf = PdfTab & {
-  /**
-   * Whether a `load` event was seen after the driver first saw the frame. Recorded, never asserted:
-   * a commit that happened before this listener was attached cannot be distinguished from one that
-   * never happened, so the report does not claim the event is absent.
-   */
-  loaded: Promise<boolean>;
+/** What the reader reports about itself, read from its own DOM. */
+type PdfSnapshot = {
+  state: string;
+  page: number;
+  pages: number;
+  scale: number;
+  scaleLabel: string;
+  renderBytes: number | null;
+  decodedBytes: number | null;
+  cacheBytes: number;
+  cachePages: number;
+  outputScale: number;
+  pane: string;
+  renderStatus: string;
+  renderFallback: string | null;
+  renderError: string | null;
+  searchTotal: number;
+  searchLabel: string;
+  searchTruncated: boolean;
+  textSpans: number;
+  pageText: string;
+  notice: string | null;
+  hasToolbar: boolean;
 };
 
 /**
- * PDF documents in the real app (issue #30). The app opens a PDF through its own file planner: the
- * editor pane classifies the file as an asset, takes a tab-scoped media grant for it and renders
- * `AssetPreview`, whose delivery gate (`assetDeliveryDecision`) bounds the whole-file read before
- * an iframe with the app's `asset:` URL exists. WebKitGTK then hands the PDF to a document of its
- * own (the built-in PDF.js viewer at `webkit-pdfjs-viewer://`), so what this scenario asserts is:
+ * PDF reader functions in the real app (issue #31).
  *
- * - the app's own gate: a PDF above the approved whole-file read ceiling is not handed to the
- *   viewer until the explicit "Load anyway" choice, and the refusal names the limit and the
- *   external-viewer alternative (the delivery contract, on the surface that owns it);
- * - the transport: the asset server answers `application/pdf` with ranges advertised, observes the
- *   explicit override, and never serves more than the file in one body — recorded natively,
- *   because the PDF document is cross-origin and the app's CSP keeps scripted reads out of
- *   `asset:`;
- * - the frame commits a document the app page cannot read (a separate origin), which is exactly
- *   why no reader function can be asserted from here;
- * - the lifecycle: the tab opens and the app keeps answering, and closing it drops the grant and
- *   the frame;
- * - the error paths: a corrupt PDF and a `.pdf`-named text file.
+ * Issue #30 measured the retained iframe path and rejected it: the document
+ * was cross-origin, so the application could not observe a page count, a scale,
+ * a match count, a selection or an error. The reader is now the app's own DOM,
+ * which is exactly what makes this phase possible:
  *
- * Navigation, zoom, search and text selection happen *inside* that separate document. WebKitGTK
- * gives this repository no native input injection (ticket 32) and the viewer's document is
- * cross-origin, so those checks are named, recorded manual checks in
- * `docs/architecture/pdf-reader.md` rather than automated passes here.
+ * - navigation, zoom, search, selection and every failure are read back from
+ *   the reader's own `data-pdf-*` attributes and text layer;
+ * - the 32 MiB per-page decision runs before a canvas exists, so a refusal is a
+ *   state with a reason and the zoom that fits — asserted at the fixture's own
+ *   manifest numbers;
+ * - bytes still arrive through the tab-scoped grant and the native delivery
+ *   limits, which the native asset probe records;
+ * - a hidden tab unmounts the reader, and closing it drops the grant.
+ *
+ * The only part not automated is OS-level input into the webview (ticket #32):
+ * keys are dispatched to the reader's own window listener and selection is made
+ * through `Selection`, but a physical drag and the clipboard round-trip stay
+ * named manual checks (`docs/architecture/pdf-reader.md`).
  */
 async function pdfDocuments(
   run: ScenarioRun,
@@ -2080,13 +2098,13 @@ async function pdfDocuments(
       };
     }
   };
-  const mib = (bytes: number) =>
-    Math.round((bytes / (1024 * 1024)) * 10) / 10;
+  const mib = (bytes: number) => Math.round((bytes / (1024 * 1024)) * 10) / 10;
   const notes: string[] = [];
+  const steps: Record<string, unknown> = {};
 
-  // The fixture geometry must map onto the approved per-page ceiling exactly as the generator
-  // claims: it parsed the number out of the TypeScript owner, so this catches drift between the
-  // two files before any PDF behaviour is attributed to the app.
+  // The fixture geometry must map onto the approved per-page ceiling exactly as
+  // the generator claims: it parsed the number out of the TypeScript owner, so
+  // this catches drift between the two before any reader behaviour is judged.
   const decisions = {
     zoomed: (facts.renders["zoomed-a4"] ?? []).map(({ zoom, bytes }) => ({
       zoom,
@@ -2118,26 +2136,288 @@ async function pdfDocuments(
 
   const nameOf = (key: keyof PdfFixtures["files"]) =>
     facts.files[key].split("/").pop() ?? key;
-  const frameFor = (name: string) =>
-    document.querySelector<HTMLIFrameElement>(`iframe[title="${name}"]`);
 
-  /** Watches an iframe element for a `load`; a timeout is recorded, not thrown (see `OpenedPdf`). */
-  const watchLoad = (element: HTMLIFrameElement): Promise<boolean> =>
+  const readerRoot = (): HTMLElement | null => {
+    const readers = Array.from(
+      document.querySelectorAll<HTMLElement>("[data-pdf-reader]"),
+    );
+    return (
+      readers.find(
+        (node) => node.getAttribute("data-pdf-state") !== "hidden",
+      ) ??
+      readers[0] ??
+      null
+    );
+  };
+  const numberAttribute = (node: Element, name: string): number => {
+    const value = Number(node.getAttribute(name) ?? "0");
+    return Number.isFinite(value) ? value : 0;
+  };
+  const snapshot = (): PdfSnapshot | null => {
+    const root = readerRoot();
+    if (!root) return null;
+    const pageBox = root.querySelector<HTMLElement>("[data-pdf-page-box]");
+    const textLayer = root.querySelector<HTMLElement>("[data-pdf-text-layer]");
+    const notice = root.querySelector<HTMLElement>("[data-pdf-notice]");
+    const searchCount = root.querySelector<HTMLElement>(
+      "[data-pdf-search-count]",
+    );
+    const container =
+      root.closest<HTMLElement>("[data-pdf-cache-bytes]") ?? root;
+    return {
+      state: root.getAttribute("data-pdf-state") ?? "",
+      page: numberAttribute(root, "data-pdf-page"),
+      pages: numberAttribute(root, "data-pdf-pages"),
+      scale: numberAttribute(root, "data-pdf-scale"),
+      scaleLabel: root.getAttribute("data-pdf-scale-label") ?? "",
+      renderBytes: pageBox
+        ? numberAttribute(pageBox, "data-pdf-render-bytes")
+        : null,
+      decodedBytes: pageBox
+        ? numberAttribute(pageBox, "data-pdf-decoded-bytes")
+        : null,
+      cacheBytes: numberAttribute(container, "data-pdf-cache-bytes"),
+      cachePages: numberAttribute(container, "data-pdf-cache-pages"),
+      outputScale: numberAttribute(container, "data-pdf-output-scale"),
+      pane: container.getAttribute("data-pdf-pane") ?? "",
+      renderStatus: container.getAttribute("data-pdf-render-status") ?? "",
+      renderFallback: container.getAttribute("data-pdf-render-fallback"),
+      renderError: container.getAttribute("data-pdf-render-error"),
+      searchTotal: searchCount
+        ? numberAttribute(searchCount, "data-pdf-search-total")
+        : 0,
+      searchLabel: searchCount?.textContent?.trim() ?? "",
+      searchTruncated:
+        searchCount?.getAttribute("data-pdf-search-truncated") === "1",
+      textSpans: textLayer
+        ? numberAttribute(textLayer, "data-pdf-text-spans")
+        : 0,
+      pageText: textLayer?.getAttribute("data-pdf-page-text") ?? "",
+      notice: notice?.getAttribute("data-pdf-notice") ?? null,
+      hasToolbar: Boolean(root.querySelector("[data-pdf-toolbar]")),
+    };
+  };
+  const waitState = async (
+    state: string,
+    what: string,
+    timeoutMs = 60_000,
+  ): Promise<PdfSnapshot> => {
+    try {
+      await run.waitFor(() => snapshot()?.state === state, what, timeoutMs);
+    } catch (error) {
+      throw new Error(
+        await failed(
+          `pdf ${what}`,
+          `${String(error)} state=${JSON.stringify(snapshot())}`,
+        ),
+      );
+    }
+    return snapshot() as PdfSnapshot;
+  };
+  const waitFor = async (
+    predicate: () => boolean,
+    what: string,
+    timeoutMs = 60_000,
+  ): Promise<void> => {
+    try {
+      await run.waitFor(predicate, what, timeoutMs);
+    } catch (error) {
+      throw new Error(
+        await failed(
+          `pdf ${what}`,
+          `${String(error)} state=${JSON.stringify(snapshot())}`,
+        ),
+      );
+    }
+  };
+  const button = (label: string): HTMLButtonElement | null => {
+    const root = readerRoot();
+    if (!root) return null;
+    return (
+      Array.from(root.querySelectorAll<HTMLButtonElement>("button")).find(
+        (element) =>
+          (
+            element.getAttribute("aria-label") ??
+            element.textContent ??
+            ""
+          ).trim() === label,
+      ) ?? null
+    );
+  };
+  const click = async (label: string, what = label) => {
+    const element = button(label);
+    if (!element)
+      throw new Error(await failed(`pdf control ${what}`, "button not found"));
+    element.click();
+    await pause(150);
+  };
+  const nativeValue = (element: HTMLInputElement, value: string) => {
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    setter?.call(element, value);
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  const input = (selector: string): HTMLInputElement | null =>
+    readerRoot()?.querySelector<HTMLInputElement>(selector) ?? null;
+  const setZoom = async (percent: number) => {
+    const field = input("[data-pdf-zoom-input]");
+    if (!field)
+      throw new Error(await failed("pdf zoom input", "no zoom field"));
+    nativeValue(field, String(percent));
+    field.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
+    await pause(250);
+  };
+  const setSearch = async (value: string) => {
+    const field = input("[data-pdf-search-input]");
+    if (!field)
+      throw new Error(await failed("pdf search input", "no search field"));
+    nativeValue(field, value);
+    await pause(150);
+  };
+  /**
+   * What the page canvas actually contains: its real backing-store size and a
+   * sampled count of non-white pixels. The reader reports what it *planned*;
+   * this is the independent check that the vector re-render painted something.
+   */
+  const canvasEvidence = (): {
+    present: boolean;
+    width: number;
+    height: number;
+    sampled: number;
+    nonWhite: number;
+    error: string | null;
+  } => {
+    const canvas = document.querySelector<HTMLCanvasElement>(
+      "[data-pdf-canvas-host] canvas",
+    );
+    if (!canvas) {
+      return {
+        present: false,
+        width: 0,
+        height: 0,
+        sampled: 0,
+        nonWhite: 0,
+        error: "no canvas",
+      };
+    }
+    let nonWhite = 0;
+    let sampled = 0;
+    let error: string | null = null;
+    try {
+      const context = canvas.getContext("2d");
+      const pixels = context?.getImageData(
+        0,
+        0,
+        canvas.width,
+        canvas.height,
+      ).data;
+      if (!pixels) error = "no 2d context";
+      else {
+        // Every 97th pixel: prime stride, so a stripe cannot align with a row.
+        for (let index = 0; index < pixels.length; index += 4 * 97) {
+          sampled += 1;
+          if (
+            pixels[index] < 250 ||
+            pixels[index + 1] < 250 ||
+            pixels[index + 2] < 250
+          ) {
+            nonWhite += 1;
+          }
+        }
+      }
+    } catch (readError) {
+      error = String(readError);
+    }
+    return {
+      present: true,
+      width: canvas.width,
+      height: canvas.height,
+      sampled,
+      nonWhite,
+      error,
+    };
+  };
+  const renderError = () => snapshot()?.renderError ?? null;
+  /**
+   * Whether this page is allowed to paint right now. PDF.js schedules display
+   * renders on animation frames, and WebKit stops those for a hidden/occluded
+   * page (the same signal the web-preview phase records). An occluded window is
+   * therefore not a reader failure, but evidence has to say which it was.
+   */
+  const rafAlive = (timeoutMs = 1000) =>
     new Promise<boolean>((resolve) => {
       let settled = false;
-      const finish = (value: boolean) => {
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        resolve(false);
+      }, timeoutMs);
+      requestAnimationFrame(() => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve(value);
-      };
-      const timer = setTimeout(() => finish(false), 30_000);
-      element.addEventListener("load", () => finish(true), { once: true });
+        resolve(true);
+      });
     });
+  const waitPaintable = async (): Promise<{
+    visibility: string;
+    raf: boolean;
+    refronted: number;
+  }> => {
+    let refronted = 0;
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      if (document.visibilityState === "visible" && (await rafAlive())) {
+        return { visibility: document.visibilityState, raf: true, refronted };
+      }
+      refronted += 1;
+      await run.ensureFront();
+      await pause(250);
+    }
+    return {
+      visibility: document.visibilityState,
+      raf: await rafAlive(500),
+      refronted,
+    };
+  };
 
-  const openTab = async (
-    key: keyof PdfFixtures["files"],
-  ): Promise<PdfTab> => {
+  /**
+   * Waits until the page on screen is really painted: the reader's own status
+   * plus a mounted canvas. `cacheBytes > 0` is not that signal — the cache can
+   * still hold the previous page while the new one renders.
+   */
+  const waitPainted = async (
+    what: string,
+    timeoutMs = 90_000,
+  ): Promise<PdfSnapshot> => {
+    await waitPaintable();
+    await waitFor(
+      () => {
+        const state = snapshot();
+        return (
+          state?.state === "ready" &&
+          (state.renderStatus === "painted" ||
+            state.renderStatus === "cached") &&
+          canvasEvidence().present
+        );
+      },
+      what,
+      timeoutMs,
+    );
+    return snapshot() as PdfSnapshot;
+  };
+
+  const pressKey = async (key: string) => {
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }),
+    );
+    await pause(200);
+  };
+
+  const openTab = async (key: keyof PdfFixtures["files"]): Promise<PdfTab> => {
     const path = facts.files[key];
     const name = nameOf(key);
     await run.log(`[preview] pdf: requesting a tab for ${name} (${path})`);
@@ -2148,42 +2428,18 @@ async function pdfDocuments(
       `the ${name} tab`,
       30_000,
     );
-    await run.log(`[preview] pdf: tab ${tabId} for ${name} is active`);
-    return { key, name, path, tabId, frame: () => frameFor(name) };
+    return { key, name, path, tabId };
   };
-
-  /** Waits for the app's own surface to mount the frame, then watches its load. */
-  const waitFrame = async (opened: PdfTab): Promise<OpenedPdf> => {
-    try {
-      await run.waitFor(
-        () => Boolean(opened.frame()),
-        `the ${opened.name} frame`,
-        30_000,
-      );
-    } catch (error) {
-      throw new Error(await failed(`pdf ${opened.name} frame`, String(error)));
-    }
-    await run.log(`[preview] pdf: the ${opened.name} frame exists`);
-    return { ...opened, loaded: watchLoad(opened.frame() as HTMLIFrameElement) };
-  };
-
   const closeTab = async (opened: PdfTab) => {
     app().closeTab(opened.tabId);
-    try {
-      await run.waitFor(
-        () =>
-          !opened.frame() && !app().tabs.some((tab) => tab.id === opened.tabId),
-        `closing ${opened.name}`,
-        20_000,
-      );
-    } catch (error) {
-      throw new Error(await failed(`pdf ${opened.name} close`, String(error)));
-    }
+    await waitFor(
+      () => !app().tabs.some((tab) => tab.id === opened.tabId),
+      `closing ${opened.name}`,
+      20_000,
+    );
   };
-
   const servedFor = (entries: AssetEntry[], name: string) =>
     entries.filter((entry) => entry.file === name);
-  /** How the webview actually read the document: whole file in one body, or byte ranges. */
   const readPath = (entries: AssetEntry[], fileBytes: number) => ({
     fileBytes,
     wholeFileResponses: entries.filter(
@@ -2191,457 +2447,502 @@ async function pdfDocuments(
     ).length,
     rangeResponses: entries.filter((entry) => entry.status === 206).length,
     refusals: entries.filter((entry) => (entry.status ?? 0) >= 400).length,
+    overrides: entries.filter((entry) => entry.explicit).length,
     bytesServed: entries.reduce((sum, entry) => sum + entry.bytes, 0),
   });
-  /** Waits for the app's asset server to have answered a request for this file. */
-  const waitForServed = async (name: string, timeoutMs = 30_000) => {
-    const startedAt = performance.now();
-    for (;;) {
-      const entries = servedFor((await assetLog()).entries, name);
-      if (entries.length > 0) return entries;
-      if (performance.now() - startedAt > timeoutMs) return entries;
-      await pause(200);
-    }
-  };
-  /**
-   * What the app can and cannot see about the document it just handed to WebKit.
-   *
-   * `contentDocument === null` means the frame committed a document from another origin: the
-   * application page cannot read its DOM, its page number, its scale or its error state. Reading
-   * `contentWindow.location` is then refused as well, which is the second, independent signal.
-   * Both are recorded as evidence rather than assumed.
-   */
-  const documentEvidence = async (opened: OpenedPdf) => {
-    const entries = await waitForServed(opened.name);
-    let separate = false;
-    try {
-      await run.waitFor(
-        () => opened.frame()?.contentDocument === null,
-        `the ${opened.name} document`,
-        30_000,
-      );
-      separate = true;
-    } catch {
-      separate = false;
-    }
-    let location = "";
-    try {
-      const view = opened.frame() as
-        | (HTMLIFrameElement & { contentWindow?: { location?: { href?: string } } })
-        | null;
-      location = String(view?.contentWindow?.location?.href ?? "");
-    } catch (error) {
-      location = `refused (${String(error).slice(0, 80)})`;
-    }
-    const src = opened.frame()?.getAttribute("src") ?? "";
-    let scheme = "";
-    try {
-      scheme = new URL(src).protocol;
-    } catch {
-      scheme = "unparseable";
-    }
-    return {
-      committed: separate && entries.length > 0,
-      separate,
-      document: location,
-      scheme,
-      served: entries.length,
-      load: await opened.loaded,
-      src: redactGrant(src),
-    };
-  };
-
-  const start = await assetLog();
-  await run.log(
-    `[preview] pdf phase: ${Object.keys(facts.files).length} fixtures, ` +
-      `grants before=${start.activeGrants}, asset log entries=${start.entries.length}`,
-  );
-  const baselineMemory = await memory();
-  await run.log(
-    `[preview] pdf phase: baseline ${mib(baselineMemory.totalPss)} MiB PSS ` +
-      `(${mib(baselineMemory.webContentPss)} MiB WebContent)`,
-  );
-  const served: Record<string, AssetEntry[]> = {};
-  const frames: Record<string, Record<string, unknown>> = {};
-  const memories: Record<string, MemorySummary> = { baseline: baselineMemory };
-  const closeGrant = async (name: string) => {
-    const after = await assetLog();
-    return {
-      file: name,
-      activeGrants: after.activeGrants,
-      baselineGrants: start.activeGrants,
-    };
-  };
-
-  // 1. The representative multi-page document: what the app does with a PDF it can preview.
-  const textOpened = await openTab("text");
-  const text = await waitFrame(textOpened);
-  const textEvidence = await documentEvidence(text);
-  const textSrc = text.frame()?.getAttribute("src") ?? "";
-  await check(
-    "pdf text frame uses an app asset grant",
-    textSrc.includes("token=") &&
-      decodeURIComponent(textSrc).includes(facts.files.text),
-    `src ${redactGrant(textSrc).slice(0, 96)} scheme=${textEvidence.scheme}`,
-  );
-  await check(
-    "pdf text frame commits a separate document",
-    textEvidence.committed === true,
-    `committed=${String(textEvidence.committed)} separate=${String(textEvidence.separate)} ` +
-      `served=${String(textEvidence.served)} load=${String(textEvidence.load)} ` +
-      `document=${textEvidence.document}`,
-  );
-  // Evidence, not a check: the app's CSP has no `asset:` in connect-src, so the application page
-  // cannot read the document it is showing. Recorded so the report says why the checks above are
-  // native observations rather than page reads.
-  const scriptedRead = await fetch(textSrc)
-    .then((response) => `resolved status=${response.status}`)
-    .catch((error: unknown) => `refused (${String(error).slice(0, 120)})`);
-  notes.push(`scripted fetch of the granted PDF from the app page: ${scriptedRead}`);
-  served.text = servedFor((await assetLog()).entries, text.name);
-  memories.text = await memory();
-  frames.text = textEvidence;
-  await run.sync("pdf-text", {
-    pdf: { file: text.name, ...textEvidence, memory: memories.text },
-  });
-
-  const textServed = served.text;
-  await check(
-    "pdf served as application/pdf, at most the file's bytes",
-    textServed.length > 0 &&
-      textServed.every(
-        (entry) =>
-          entry.mime === "application/pdf" &&
-          (entry.status === 200 || entry.status === 206) &&
-          entry.bytes > 0 &&
-          entry.bytes <= facts.sizes.text &&
-          entry.acceptRanges,
-      ),
-    textServed
-      .map(
-        (entry) =>
-          `${entry.method} ${entry.file} ${entry.status} ${entry.mime} ${entry.bytes}B` +
-          ` range=${entry.range ?? "-"} content-range=${entry.contentRange ?? "-"}`,
-      )
-      .join("; ") || "no request reached the app's asset server",
-  );
-  // The resource-contract question the decision turns on: does the webview pull the document in
-  // one whole-file response, or does it ask for bounded ranges? Recorded either way.
-  notes.push(
-    `representative PDF (${facts.sizes.text} bytes): ${JSON.stringify(readPath(textServed, facts.sizes.text))}`,
-  );
-
-  // A hold, not a delay: with `--pdf-hold-ms` the document stays on screen so the named manual
-  // reader checks can be run against this exact window. The orchestrator is waiting for the next
-  // phase, so nothing else touches the app while it is held.
-  const holdMs = facts.holdMs ?? 0;
-  if (holdMs > 0) {
-    await run.log(
-      `[preview] pdf hold: keeping ${text.name} on screen for ${Math.round(holdMs / 1000)} s`,
-    );
-    const until = performance.now() + holdMs;
-    while (performance.now() < until) await pause(1000);
-    await run.log("[preview] pdf hold: finished");
-  }
-
-  // 2. A hidden PDF tab. The web preview unloads its frame the moment the tab is hidden, so the
-  // same question applies to a document: does presentation pause and does the decoded content go
-  // away? The app page cannot read the state of a cross-origin document, so this records what is
-  // observable from the outside — the frame element, the native request log and the process
-  // memory. The result is a finding for the decision, not a pass condition of the current path.
-  const beforeHidden = await assetLog();
-  const shellTab = app().newTab();
-  try {
-    await run.waitFor(
-      () => app().activeId === shellTab,
-      "a terminal tab in front of the PDF",
-      30_000,
-    );
-    await pause(3000);
-  } catch (error) {
-    throw new Error(await failed("pdf hidden tab", String(error)));
-  }
-  const whileHidden = await assetLog();
-  const hiddenMemory = await memory();
-  const tabReturnRequests = whileHidden.entries.length;
-  const hidden = {
-    frame: Boolean(text.frame()),
-    activeTab: app().activeId,
-    pdfTab: text.tabId,
-    newRequests: whileHidden.entries.length - beforeHidden.entries.length,
-    memory: hiddenMemory,
-  };
-  await run.sync("pdf-tab-hidden", {
-    pdf: { file: text.name, ...hidden, memory: hiddenMemory },
-  });
-  app().setActiveId(text.tabId);
-  await run.waitFor(
-    () => app().activeId === text.tabId,
-    "the PDF tab again",
-    30_000,
-  );
-  await pause(1500);
-  const afterReturn = await assetLog();
-  const returned = {
-    frame: Boolean(text.frame()),
-    newRequests: afterReturn.entries.length - tabReturnRequests,
-    reloaded: afterReturn.entries.length > tabReturnRequests,
-  };
-  await run.sync("pdf-tab-returned", { pdf: { file: text.name, ...returned } });
-  notes.push(
-    `hidden PDF tab: frame ${hidden.frame ? "stayed mounted" : "unmounted"}, ` +
-      `${hidden.newRequests} new asset request(s) while hidden, WebContent ` +
-      `${mib(hiddenMemory.webContentPss)} MiB; on return ` +
-      `${returned.reloaded ? "the document was reloaded" : "the same document was still loaded"}` +
-      ` (${returned.newRequests} new request(s))`,
-  );
-  app().closeTab(shellTab);
-  await run.waitFor(
-    () => !app().tabs.some((tab) => tab.id === shellTab),
-    "closing the terminal tab",
-    20_000,
-  );
-
-  await closeTab(text);
-  await run.sync("pdf-text-closed", {
-    pdf: await closeGrant(text.name),
-  });
-
-  // 2. A page whose 100 % render is far above the approved per-page ceiling, at a file size the
-  // delivery gate still lets through. The ceiling itself is a *reader* contract (issue #31): the
-  // iframe path has no way to compute or enforce it, which is recorded rather than asserted.
-  const largeOpened = await openTab("large-page");
-  const large = await waitFrame(largeOpened);
-  const largeEvidence = await documentEvidence(large);
-  served["large-page"] = servedFor((await assetLog()).entries, large.name);
-  memories.large = await memory();
-  frames["large-page"] = largeEvidence;
-  await check(
-    "large-page PDF opens without destabilising the app",
-    largeEvidence.committed === true &&
-      app().tabs.some((tab) => tab.id === large.tabId) &&
-      memories.large.totalPss > 0,
-    `committed=${String(largeEvidence.committed)} totalPss=${mib(memories.large.totalPss)} MiB ` +
-      `(baseline ${mib(baselineMemory.totalPss)} MiB), served ${
-        served["large-page"]
-          .map((entry) => `${entry.status} ${entry.bytes}B`)
-          .join("; ") || "-"
-      }`,
-  );
-  await run.sync("pdf-large", {
-    pdf: {
-      file: large.name,
-      ...largeEvidence,
-      memory: memories.large,
-      renders: facts.renders["large-page"],
-    },
-  });
-  await closeTab(large);
-
-  // 3. A PDF above the approved whole-file read ceiling: the app's delivery gate answers first.
-  // Nothing reaches the viewer until the explicit choice, and the refusal has to explain itself.
-  const oversized = await openTab("oversized");
-  const gate = () =>
-    Array.from(
-      document.querySelectorAll<HTMLElement>('[role="alert"]'),
-    ).find((node) =>
-      (node.textContent ?? "").includes("Large file needs an explicit choice"),
-    ) ?? null;
-  try {
-    await run.waitFor(
-      () => Boolean(gate()),
-      "the oversized PDF delivery notice",
-      30_000,
-    );
-  } catch (error) {
-    throw new Error(
-      await failed("pdf above the read ceiling needs an explicit choice", String(error)),
-    );
-  }
-  const notice = gate() as HTMLElement;
-  const noticeText = notice.textContent ?? "";
-  const noticeButton = (label: string) =>
-    Array.from(notice.querySelectorAll<HTMLButtonElement>("button")).find(
-      (button) => (button.textContent ?? "").trim() === label,
-    );
-  const loadAnyway = noticeButton("Load anyway");
-  // The refusal must name the limit it applied and offer a safe alternative, in the approved
-  // numbers (never a copy declared here).
-  const readCeiling = `${mib(ASSET_DELIVERY.readBytes)} MiB`;
-  const overrideCeiling = `${mib(ASSET_DELIVERY.overrideBytes)} MiB`;
-  await check(
-    "pdf above the read ceiling needs an explicit choice",
-    !oversized.frame() &&
-      noticeText.includes(readCeiling) &&
-      noticeText.includes(overrideCeiling) &&
-      Boolean(noticeButton("Open externally")) &&
-      Boolean(loadAnyway),
-    `frame=${Boolean(oversized.frame())} ceiling=${readCeiling}/${overrideCeiling} ` +
-      `notice=${JSON.stringify(noticeText.slice(0, 200))}`,
-  );
-  notes.push(
-    `${oversized.name} (${facts.sizes.oversized} bytes) is above the approved whole-file read ` +
-      "ceiling: the app shows the explicit-choice notice and mounts no frame until it is used.",
-  );
-  loadAnyway?.click();
-  const oversizedFrame = await waitFrame(oversized);
-  const oversizedEvidence = await documentEvidence(oversizedFrame);
-  served.oversized = servedFor((await assetLog()).entries, oversized.name);
-  const oversizedRead = readPath(served.oversized, facts.sizes.oversized ?? 0);
-  memories.oversized = await memory();
-  frames.oversized = oversizedEvidence;
-  await check(
-    "explicit load delivers the whole PDF in one response",
-    oversizedEvidence.committed === true &&
-      oversizedRead.wholeFileResponses === 1 &&
-      served.oversized.some(
-        (entry) =>
-          entry.status === 200 &&
-          entry.explicit &&
-          entry.bytes === (facts.sizes.oversized ?? 0),
-      ),
-    `committed=${String(oversizedEvidence.committed)} read=${JSON.stringify(oversizedRead)} ` +
-      `entries=${served.oversized
-        .map(
-          (entry) =>
-            `${entry.status}${entry.explicit ? "+override" : ""} ${entry.bytes}B` +
-            ` range=${entry.range ?? "-"}`,
-        )
-        .join("; ")}`,
-  );
-  notes.push(
-    `${oversized.name}: ${JSON.stringify(oversizedRead)} — one whole-file response carries the ` +
-      `entire ${mib(facts.sizes.oversized ?? 0)} MiB document after the explicit choice, and the ` +
-      "per-page render ceiling is still not computable by this path.",
-  );
-  await run.sync("pdf-oversized", {
-    pdf: {
-      file: oversized.name,
-      ...oversizedEvidence,
-      readPath: oversizedRead,
-      memory: memories.oversized,
-    },
-  });
-  await closeTab(oversized);
-
-  // 4. The error paths. The app classifies a file by its *content*, not its extension, so the two
-  // error fixtures exercise different paths:
-  //  - corrupt.pdf is binary, so it reaches the PDF viewer, which cannot parse it. The viewer's
-  //    own error text lives inside the separate document (manual check M5); what is asserted here
-  //    is that the app itself survives and the tab stays open.
-  //  - not-a-pdf.pdf is valid UTF-8 text, so it opens in the text editor: a misnamed file never
-  //    reaches a PDF renderer at all.
-  const errors: Record<string, Record<string, unknown>> = {};
-
-  const corruptOpened = await openTab("corrupt");
-  const corrupt = await waitFrame(corruptOpened);
-  const corruptEvidence = await documentEvidence(corrupt);
-  served.corrupt = servedFor((await assetLog()).entries, corrupt.name);
-  errors.corrupt = {
-    file: corrupt.name,
-    ...corruptEvidence,
-    served: served.corrupt.map((entry) => ({
-      status: entry.status,
-      mime: entry.mime,
-      bytes: entry.bytes,
-      error: entry.error,
-    })),
-    tabs: app().tabs.length,
-  };
-  await run.sync("pdf-corrupt", { pdf: errors.corrupt });
-  const corruptSnapshot = await run.native({ cmd: "snapshot" });
-  await check(
-    "corrupt pdf does not destabilise the app",
-    app().tabs.some((tab) => tab.id === corrupt.tabId) &&
-      corruptSnapshot.windowVisible !== false,
-    `tabs=${app().tabs.length} committed=${String(corruptEvidence.committed)} ` +
-      `served=${JSON.stringify(errors.corrupt.served)} visible=${String(corruptSnapshot.windowVisible)}`,
-  );
-  notes.push(
-    `${corrupt.name}: served=${JSON.stringify(errors.corrupt.served)}; the viewer's error state ` +
-      "is inside the separate PDF document and cannot be read from the app page (manual check M5)",
-  );
-  await closeTab(corrupt);
-
-  const misnamed = await openTab("not-a-pdf");
-  const editorText = () =>
-    document.querySelector<HTMLElement>(".cm-content")?.textContent ?? "";
-  try {
-    await run.waitFor(
-      () => editorText().includes("This file is named .pdf"),
-      "the misnamed file's text",
-      30_000,
-    );
-  } catch (error) {
-    throw new Error(await failed("pdf-named text opens as text", String(error)));
-  }
-  const misnamedFrame = frameFor(misnamed.name);
-  errors["not-a-pdf"] = {
-    file: misnamed.name,
-    openedAs: "text",
-    frame: Boolean(misnamedFrame),
-  };
-  await check(
-    "a .pdf name with text content opens as text, not as a document",
-    !misnamedFrame && editorText().includes("This file is named .pdf"),
-    `frame=${Boolean(misnamedFrame)} text=${JSON.stringify(editorText().slice(0, 80))}`,
-  );
-  await run.sync("pdf-not-a-pdf", { pdf: errors["not-a-pdf"] });
-  app().closeTab(misnamed.tabId);
-  await run.waitFor(
-    () => !app().tabs.some((tab) => tab.id === misnamed.tabId),
-    "closing the misnamed .pdf tab",
-    20_000,
-  );
-
-  // 5. Closing a PDF tab releases its grant: the spec's "release tab-owned resources and grants on
-  // close" is observable natively, through the same probe that recorded the requests.
-  const afterAll = await assetLog();
-  await check(
-    "pdf close releases the media grant",
-    afterAll.activeGrants === start.activeGrants,
-    `grants ${start.activeGrants} -> ${afterAll.activeGrants}`,
-  );
-  await run.sync("pdf-closed", {
-    pdf: { activeGrants: afterAll.activeGrants, baselineGrants: start.activeGrants },
-  });
-
-  const servedSummary: Record<string, unknown> = {};
-  for (const [key, entries] of Object.entries(served)) {
-    servedSummary[key] = entries.map((entry) => ({
+  const servedSummary = (entries: AssetEntry[]) =>
+    entries.map((entry) => ({
       method: entry.method,
       status: entry.status,
       mime: entry.mime,
       bytes: entry.bytes,
       range: entry.range,
-      contentRange: entry.contentRange,
       explicit: entry.explicit,
       error: entry.error,
     }));
+
+  const start = await assetLog();
+  const baselineMemory = await memory();
+  await run.log(
+    `[preview] pdf phase: ${Object.keys(facts.files).length} fixtures, ` +
+      `grants before=${start.activeGrants}, asset log entries=${start.entries.length}, ` +
+      `baseline ${mib(baselineMemory.totalPss)} MiB PSS`,
+  );
+  const memories: Record<string, MemorySummary> = { baseline: baselineMemory };
+
+  // 1. The representative document: the app's own reader, its own toolbar and
+  // its own text layer. This is what the rejected iframe could never report.
+  const text = await openTab("text");
+  const first = await waitState("ready", "the text.pdf reader");
+  const outputScale = first.outputScale || 1;
+  await run.sync("pdf-text", {
+    pdf: { file: text.name, ...first, memory: await memory() },
+  });
+  memories.text = await memory();
+  await check(
+    "pdf reader reports the fixture's page count and first page",
+    first.pages === facts.textPages &&
+      first.page === 1 &&
+      first.pageText.includes("[[ page 1 of "),
+    `pages=${first.pages} page=${first.page} state=${first.state} ` +
+      `text=${JSON.stringify(first.pageText.slice(0, 80))}`,
+  );
+  await check(
+    "pdf reader exposes an app-owned toolbar and selectable text",
+    first.hasToolbar &&
+      first.textSpans > 0 &&
+      first.pageText.includes("deterministic body line for page 1"),
+    `toolbar=${String(first.hasToolbar)} spans=${first.textSpans} ` +
+      `chars=${first.pageText.length} outputScale=${outputScale}`,
+  );
+  const textServed = servedFor((await assetLog()).entries, text.name);
+  steps.textServed = servedSummary(textServed);
+  const textRead = readPath(textServed, facts.sizes.text ?? 0);
+  await check(
+    "the reader reads the document through its grant, whole, inside the limits",
+    textRead.wholeFileResponses >= 1 &&
+      textRead.rangeResponses === 0 &&
+      textServed.every(
+        (entry) =>
+          entry.mime === "application/pdf" &&
+          entry.bytes > 0 &&
+          entry.bytes <= (facts.sizes.text ?? 0),
+      ),
+    JSON.stringify(textRead),
+  );
+  notes.push(
+    `${text.name}: reader path ${JSON.stringify(textRead)} — the app's own DOM, ` +
+      `one whole-file read through the tab grant (the delivery gate's unit).`,
+  );
+
+  // 2. Navigation: toolbar buttons and the reader's own key handling.
+  await click("Next page");
+  await waitFor(() => snapshot()?.page === 2, "page 2");
+  const pageTwo = snapshot() as PdfSnapshot;
+  await click("Previous page");
+  await waitFor(() => snapshot()?.page === 1, "page 1 again");
+  await pressKey("End");
+  const lastPage = await waitState("ready", "the last page");
+  await pressKey("Home");
+  const homePage = await waitState("ready", "page 1 after Home");
+  await check(
+    "page navigation moves the document and never shows a blank page",
+    pageTwo.page === 2 &&
+      pageTwo.pageText.includes("deterministic body line for page 2") &&
+      lastPage.page === facts.textPages &&
+      lastPage.pageText.includes(
+        `[[ page ${facts.textPages} of ${facts.textPages} ]]`,
+      ) &&
+      homePage.page === 1 &&
+      homePage.pageText.includes("[[ page 1 of"),
+    `page2=${pageTwo.page} last=${lastPage.page}/${lastPage.pages} home=${homePage.page} ` +
+      `lastText=${JSON.stringify(lastPage.pageText.slice(-40))}`,
+  );
+  steps.navigation = { pageTwo, lastPage, homePage };
+
+  // 3. Zoom with a genuine re-render: the raster changes size, and the cache
+  // stays inside the per-page ceiling.
+  // PDF.js paints on animation frames (`intent: "display"`), so an occluded
+  // window does not render. Every render-dependent step asks for the front
+  // first and records what the window reported, rather than assuming it.
+  const paintable = await waitPaintable();
+  await setZoom(200);
+  const zoomed200 = await waitPainted("the painted 200% page");
+  // This host suspends animation frames even while the page reports itself
+  // visible (other benchmark windows were active during the run). That is the
+  // condition the reader's print-intent fallback exists for: the raster must
+  // still be produced, and which path produced it is recorded, not assumed.
+  await check(
+    "the reader paints even when animation-frame scheduling is unavailable",
+    paintable.visibility === "visible" &&
+      (paintable.raf || zoomed200.renderFallback === "print"),
+    `visibility=${paintable.visibility} raf=${String(paintable.raf)} ` +
+      `refronted=${paintable.refronted} render=${JSON.stringify(snapshot()?.renderStatus)} ` +
+      `fallback=${JSON.stringify(zoomed200.renderFallback)}`,
+  );
+  const painted200 = canvasEvidence();
+  const expected200 = pdfRenderBytes(
+    { widthPt: 595.276, heightPt: 841.89 },
+    2,
+    outputScale,
+  );
+  await check(
+    "zoom re-renders the page at the requested raster size and paints it",
+    Math.abs(zoomed200.scale - 2) < 0.001 &&
+      expected200 !== null &&
+      painted200.width * painted200.height * 4 === expected200 &&
+      painted200.nonWhite > 0 &&
+      !renderError() &&
+      zoomed200.pageText.includes("deterministic body line for page 1"),
+    `scale=${zoomed200.scale} planned=${zoomed200.renderBytes} expected=${expected200} ` +
+      `canvas=${painted200.width}x${painted200.height} nonWhite=${painted200.nonWhite}/${painted200.sampled} ` +
+      `visibility=${document.visibilityState} fallback=${JSON.stringify(zoomed200.renderFallback)} ` +
+      `renderError=${JSON.stringify(renderError())}`,
+  );
+  steps.zoom200 = {
+    ...zoomed200,
+    canvas: painted200,
+    renderError: renderError(),
+  };
+
+  // Evidence, not a claim: the raster the cache holds is the raster the canvas
+  // allocated, and navigation to another page releases the oldest one.
+  await click("Next page");
+  await waitFor(() => snapshot()?.page === 2, "page 2 for the cache sample");
+  const afterNavigation = await waitPainted("page 2's painted raster");
+  await check(
+    "navigating keeps rendered rasters inside the page cache",
+    afterNavigation.cachePages >= 1 &&
+      afterNavigation.cachePages <= 2 &&
+      afterNavigation.cacheBytes <= PDF_PAGE_LIMIT_BYTES &&
+      canvasEvidence().nonWhite > 0,
+    `cachePages=${afterNavigation.cachePages} cacheBytes=${afterNavigation.cacheBytes} ` +
+      `ceiling=${PDF_PAGE_LIMIT_BYTES} canvas=${JSON.stringify(canvasEvidence())}`,
+  );
+  steps.navigationCache = { afterNavigation, canvas: canvasEvidence() };
+  await click("Previous page");
+  await waitPainted("page 1's painted raster after returning");
+
+  // 4. Selection over the text layer (the state a copy acts on), and search.
+  const selected = await selectPageText("deterministic body line");
+  await check(
+    "text layer supports selection of the document's own text",
+    selected.includes("deterministic body line"),
+    `selection=${JSON.stringify(selected.slice(0, 90))}`,
+  );
+  notes.push(
+    `programmatic selection over the text layer: ${JSON.stringify(selected.slice(0, 90))}; ` +
+      "a physical drag and the clipboard round-trip remain manual check M4 (ticket #32 provides " +
+      "native input injection).",
+  );
+
+  await setSearch(facts.uniqueNeedle);
+  await waitFor(
+    () => (snapshot()?.searchTotal ?? 0) > 0,
+    `search for ${facts.uniqueNeedle}`,
+  );
+  const uniqueHit = snapshot() as PdfSnapshot;
+  await waitFor(
+    () => snapshot()?.page === facts.uniquePage,
+    `the search jumping to page ${facts.uniquePage}`,
+  );
+  const uniquePageState = snapshot() as PdfSnapshot;
+  const currentHighlights =
+    readerRoot()?.querySelectorAll('[data-pdf-text-current="1"]').length ?? 0;
+  await check(
+    "search finds the unique needle once and navigates to its page",
+    uniqueHit.searchTotal === 1 &&
+      uniquePageState.page === facts.uniquePage &&
+      uniquePageState.pageText.includes(facts.uniqueNeedle) &&
+      currentHighlights > 0,
+    `total=${uniqueHit.searchTotal} label=${JSON.stringify(uniqueHit.searchLabel)} ` +
+      `page=${uniquePageState.page}/${uniquePageState.pages} highlights=${currentHighlights}`,
+  );
+  const pageNeedle = `${facts.searchPrefix}0${facts.uniquePage - 1}`;
+  await setSearch(pageNeedle);
+  // The previous query already reported one match, so a count alone would let
+  // the check read the old result: wait for this query's text to be on screen.
+  await waitFor(
+    () =>
+      snapshot()?.searchTotal === 1 &&
+      (snapshot()?.pageText ?? "").includes(pageNeedle),
+    `search for ${pageNeedle}`,
+  );
+  await waitFor(
+    () => snapshot()?.page === facts.uniquePage - 1,
+    `the search for ${pageNeedle} landing on its page`,
+  );
+  const pageHit = snapshot() as PdfSnapshot;
+  await check(
+    "search finds a per-page needle on the page it belongs to",
+    pageHit.searchTotal === 1 &&
+      pageHit.pageText.includes(pageNeedle) &&
+      (readerRoot()?.querySelectorAll('[data-pdf-text-match="1"]').length ??
+        0) > 0,
+    `needle=${pageNeedle} total=${pageHit.searchTotal} page=${pageHit.page} ` +
+      `matches=${readerRoot()?.querySelectorAll('[data-pdf-text-match="1"]').length ?? 0}`,
+  );
+  steps.search = { uniqueHit, uniquePageState, pageHit };
+  await setSearch("");
+  await closeTab(text);
+
+  // 5. The approved per-page ceiling, at the fixture's own numbers.
+  const zoomedTab = await openTab("zoomed-a4");
+  const zoomedFit = await waitState("ready", "the zoomed-a4 reader");
+  const pagePt = facts.pagePt["zoomed-a4"];
+  await setZoom(400);
+  const allowed = await waitPainted("the painted 400% page");
+  const expected400 = pagePt ? pdfRenderBytes(pagePt, 4, outputScale) : null;
+  await setZoom(800);
+  const refused = await waitState("page-too-large", "the 800% refusal");
+  const noticeText =
+    readerRoot()?.querySelector("[data-pdf-notice]")?.textContent ?? "";
+  const suggested = readerRoot()?.querySelector<HTMLButtonElement>(
+    "[data-pdf-fit-suggested]",
+  );
+  const expected800 = pagePt ? pdfRenderBytes(pagePt, 8, outputScale) : null;
+  await check(
+    "a page inside the ceiling renders and a page above it refuses with the zoom that fits",
+    allowed.state === "ready" &&
+      Math.abs(allowed.scale - 4) < 0.001 &&
+      expected400 !== null &&
+      allowed.renderBytes === expected400 &&
+      expected400 !== null &&
+      (outputScale !== 1 || pdfPageDecision(expected400).kind === "allow") &&
+      refused.state === "page-too-large" &&
+      noticeText.includes(`${mib(PDF_PAGE_LIMIT_BYTES)} MiB`) &&
+      /largest zoom that fits is \d+%/i.test(noticeText) &&
+      Boolean(suggested),
+    `fit=${zoomedFit.state} 400%=${allowed.renderBytes}/${expected400} ` +
+      `800=${refused.state} expected800=${expected800} ` +
+      `notice=${JSON.stringify(noticeText.slice(0, 180))} ` +
+      `suggested=${suggested?.textContent ?? "-"}`,
+  );
+  steps.pageCeiling = { zoomedFit, allowed, refused, noticeText };
+  // Taking the offered zoom must really fit: the reader never suggests a zoom
+  // its own decision would refuse.
+  suggested?.click();
+  const withRaster = await waitPainted("the painted suggested zoom");
+  const suggestedCanvas = canvasEvidence();
+  await check(
+    "the suggested zoom really fits the approved ceiling",
+    withRaster.renderBytes !== null &&
+      withRaster.renderBytes <= PDF_PAGE_LIMIT_BYTES &&
+      withRaster.state === "ready" &&
+      suggestedCanvas.nonWhite > 0,
+    `scale=${withRaster.scale} renderBytes=${withRaster.renderBytes} ` +
+      `cacheBytes=${withRaster.cacheBytes} cachePages=${withRaster.cachePages} ` +
+      `canvas=${JSON.stringify(suggestedCanvas)} renderError=${JSON.stringify(renderError())}`,
+  );
+  await check(
+    "rendered page rasters are bounded by the per-page ceiling and the cache",
+    (withRaster.renderBytes ?? 0) <= PDF_PAGE_LIMIT_BYTES &&
+      withRaster.cacheBytes <= PDF_PAGE_LIMIT_BYTES &&
+      withRaster.cachePages >= 1 &&
+      withRaster.cachePages <= 2,
+    `renderBytes=${withRaster.renderBytes} cacheBytes=${withRaster.cacheBytes} ` +
+      `cachePages=${withRaster.cachePages} ceiling=${PDF_PAGE_LIMIT_BYTES}`,
+  );
+  steps.zoomedServed = servedSummary(
+    servedFor((await assetLog()).entries, zoomedTab.name),
+  );
+  await closeTab(zoomedTab);
+
+  // 6. A 72-inch page: fit is small, 100 % is above the ceiling.
+  const large = await openTab("large-page");
+  const largeFit = await waitState("ready", "the large-page reader at fit");
+  await setZoom(100);
+  const largeRefused = await waitState(
+    "page-too-large",
+    "the large-page refusal",
+  );
+  const largeNotice =
+    readerRoot()?.querySelector("[data-pdf-notice]")?.textContent ?? "";
+  await check(
+    "a 72-inch page refuses 100% and names the zoom that fits",
+    largeFit.state === "ready" &&
+      largeRefused.state === "page-too-large" &&
+      largeNotice.includes(`${mib(PDF_PAGE_LIMIT_BYTES)} MiB`) &&
+      /largest zoom that fits is \d+%/i.test(largeNotice),
+    `fit=${largeFit.state} at100=${largeRefused.state} ` +
+      `notice=${JSON.stringify(largeNotice.slice(0, 180))}`,
+  );
+  steps.large = { largeFit, largeRefused, largeNotice };
+  await closeTab(large);
+
+  // 7. The whole-file delivery gate: the explicit choice is required above the
+  // read ceiling, and the reader reads the file only after it.
+  const oversized = await openTab("oversized");
+  const gateNotice = await waitState("gated-confirm", "the oversized gate");
+  await check(
+    "a PDF above the read ceiling needs the explicit choice before any read",
+    gateNotice.state === "gated-confirm" &&
+      (readerRoot()?.textContent ?? "").includes("Load anyway") &&
+      servedFor((await assetLog()).entries, oversized.name).length === 0,
+    `state=${gateNotice.state} served=${servedFor((await assetLog()).entries, oversized.name).length} ` +
+      `notice=${JSON.stringify((readerRoot()?.textContent ?? "").slice(0, 120))}`,
+  );
+  await click("Load anyway");
+  const oversizedReady = await waitState(
+    "ready",
+    "the oversized reader after the choice",
+  );
+  const oversizedServed = servedFor((await assetLog()).entries, oversized.name);
+  const oversizedRead = readPath(oversizedServed, facts.sizes.oversized ?? 0);
+  await check(
+    "the explicit choice reads the whole file under the override ceiling",
+    oversizedReady.state === "ready" &&
+      oversizedRead.wholeFileResponses === 1 &&
+      oversizedRead.overrides >= 1 &&
+      oversizedServed.every(
+        (entry) => entry.bytes <= (facts.sizes.oversized ?? 0),
+      ),
+    `${JSON.stringify(oversizedRead)} entries=${JSON.stringify(servedSummary(oversizedServed))}`,
+  );
+  steps.oversized = { oversizedReady, oversizedRead };
+  await closeTab(oversized);
+
+  // 8. Failure states are visible, explanatory and recoverable.
+  const corrupt = await openTab("corrupt");
+  const corruptState = await waitState("corrupt", "the corrupt-document state");
+  const corruptNotice =
+    readerRoot()?.querySelector("[data-pdf-notice]")?.textContent ?? "";
+  await check(
+    "a corrupt PDF shows an explanatory state with a safe alternative",
+    corruptState.state === "corrupt" &&
+      corruptNotice.includes("could not") &&
+      corruptNotice.includes("Open externally") &&
+      corruptNotice.includes("Retry"),
+    `state=${corruptState.state} notice=${JSON.stringify(corruptNotice.slice(0, 200))}`,
+  );
+  steps.corrupt = { corruptState, corruptNotice };
+  await closeTab(corrupt);
+
+  const unsupported = await openTab("not-a-pdf");
+  await waitFor(
+    () =>
+      (
+        document.querySelector<HTMLElement>(".cm-content")?.textContent ?? ""
+      ).includes("This file is named .pdf"),
+    "the misnamed .pdf text",
+  );
+  const misnamedState = snapshot();
+  await check(
+    "a .pdf name with text content never reaches the reader",
+    !misnamedState &&
+      (
+        document.querySelector<HTMLElement>(".cm-content")?.textContent ?? ""
+      ).includes("This file is named .pdf"),
+    `reader=${JSON.stringify(misnamedState)}`,
+  );
+  steps.misnamed = { reader: misnamedState, openedAs: "text" };
+  await closeTab(unsupported);
+
+  // 9. Hidden and repeated hidden/open/close cycles. The iframe path kept the
+  // frame and its grant through a hidden tab; the reader must unload.
+  const cycleTab = await openTab("text");
+  const cycleStart = await waitState("ready", "text.pdf for the cycle");
+  const hiddenEvidence: Record<string, unknown>[] = [];
+  for (let cycle = 1; cycle <= 3; cycle += 1) {
+    const shell = app().newTab();
+    await run.waitFor(
+      () => app().activeId === shell,
+      `a tab in front (${cycle})`,
+      30_000,
+    );
+    await pause(800);
+    const visibleReader = document.querySelector(
+      '[data-pdf-reader]:not([data-pdf-state="hidden"])',
+    );
+    const canvas = document.querySelector("[data-pdf-canvas-host]");
+    hiddenEvidence.push({
+      cycle,
+      reader: visibleReader ? snapshot() : null,
+      canvas: Boolean(canvas),
+    });
+    await check(
+      `cycle ${cycle}: a hidden PDF tab releases its document and rasters`,
+      !visibleReader && !canvas,
+      `visibleReader=${JSON.stringify(snapshot())} canvas=${Boolean(canvas)}`,
+    );
+    app().setActiveId(cycleTab.tabId);
+    const returned = await waitState("ready", `text.pdf on return (${cycle})`);
+    hiddenEvidence[hiddenEvidence.length - 1] = {
+      ...hiddenEvidence[hiddenEvidence.length - 1],
+      returned: {
+        state: returned.state,
+        page: returned.page,
+        pages: returned.pages,
+        cachePages: returned.cachePages,
+      },
+    };
+    await check(
+      `cycle ${cycle}: returning reloads the document and keeps the page count`,
+      returned.pages === facts.textPages && returned.cachePages <= 2,
+      `pages=${returned.pages} page=${returned.page} cachePages=${returned.cachePages} ` +
+        `cacheBytes=${returned.cacheBytes}`,
+    );
+    app().closeTab(shell);
+    await run.waitFor(
+      () => !app().tabs.some((tab) => tab.id === shell),
+      `closing the temporary tab (${cycle})`,
+      20_000,
+    );
   }
+  steps.cycles = { start: cycleStart, hidden: hiddenEvidence };
+  memories.cycles = await memory();
+
+  // 10. Close releases the grant and leaves no reader behind.
+  await closeTab(cycleTab);
+  await waitFor(
+    () => !document.querySelector("[data-pdf-reader]"),
+    "the reader unmounting on close",
+  );
+  const afterAll = await assetLog();
+  await check(
+    "closing the PDF tab releases its grant",
+    afterAll.activeGrants === start.activeGrants,
+    `grants ${start.activeGrants} -> ${afterAll.activeGrants}`,
+  );
+  memories.closed = await memory();
+  await run.sync("pdf-closed", {
+    pdf: {
+      activeGrants: afterAll.activeGrants,
+      baselineGrants: start.activeGrants,
+    },
+  });
+
+  const holdMs = facts.holdMs ?? 0;
+  if (holdMs > 0) {
+    await run.log(
+      `[preview] pdf hold: keeping the reader on screen for ${Math.round(holdMs / 1000)} s`,
+    );
+    const held = await openTab("text");
+    await waitState("ready", "the held reader");
+    const until = performance.now() + holdMs;
+    while (performance.now() < until) await pause(1000);
+    await closeTab(held);
+    await run.log("[preview] pdf hold: finished");
+  }
+
   return {
+    outputScale,
     textPages: facts.textPages,
     memoryMiB: {
       baseline: mib(baselineMemory.totalPss),
-      text: mib(memories.text.totalPss),
-      large: mib(memories.large.totalPss),
-      oversized: mib(memories.oversized.totalPss),
+      text: mib(memories.text?.totalPss ?? 0),
+      cycles: mib(memories.cycles?.totalPss ?? 0),
+      closed: mib(memories.closed?.totalPss ?? 0),
       webContentBaseline: mib(baselineMemory.webContentPss),
-      webContentText: mib(memories.text.webContentPss),
-      webContentLarge: mib(memories.large.webContentPss),
-      webContentOversized: mib(memories.oversized.webContentPss),
+      webContentText: mib(memories.text?.webContentPss ?? 0),
     },
     decisions,
-    readPaths: {
-      text: readPath(served.text, facts.sizes.text ?? 0),
-      oversized: readPath(served.oversized, facts.sizes.oversized ?? 0),
-    },
-    served: servedSummary,
-    frames,
-    errors,
-    oversized,
+    steps,
     notes,
   };
+}
+
+/**
+ * Selects the first text-layer span that contains `needle`, through the DOM
+ * Selection API. This is the selection state a copy acts on; a physical drag
+ * needs native input injection (ticket #32) and is a named manual check.
+ */
+async function selectPageText(needle: string): Promise<string> {
+  const layer = document.querySelector<HTMLElement>("[data-pdf-text-layer]");
+  if (!layer) return "";
+  const spans = Array.from(
+    layer.querySelectorAll<HTMLElement>("[data-pdf-text-item]"),
+  );
+  const target = spans.find((span) =>
+    (span.textContent ?? "").includes(needle),
+  );
+  if (!target) return "";
+  const range = document.createRange();
+  range.selectNodeContents(target);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+  return selection?.toString() ?? "";
 }
 
 /**
@@ -2676,7 +2977,7 @@ async function spacesScenario(run: ScenarioRun): Promise<unknown> {
       path,
       workspace: { kind: "local" },
       force: false,
-    }).then((result) => (result.kind === "text" ? result.content ?? "" : ""));
+    }).then((result) => (result.kind === "text" ? (result.content ?? "") : ""));
   const statOk = (path: string) =>
     invoke("fs_stat", { path, workspace: { kind: "local" } }).then(
       () => true,
@@ -2705,7 +3006,10 @@ async function spacesScenario(run: ScenarioRun): Promise<unknown> {
   await check(
     "shared checkout indication",
     badge !== null && badgeRoot === workspace.replace(/\/+$/, ""),
-    `badge ${badge ? badgeRoot : "missing"}; spaces ${run.app().spaces.map((s) => s.id).join(",")}`,
+    `badge ${badge ? badgeRoot : "missing"}; spaces ${run
+      .app()
+      .spaces.map((s) => s.id)
+      .join(",")}`,
   );
   await run.sync("spaces-shared", { spaceA, spaceB, shared: badge !== null });
 
@@ -2726,8 +3030,9 @@ async function spacesScenario(run: ScenarioRun): Promise<unknown> {
   await run.switchSpace(spaceA);
   run.select(first.tabId);
   await pause(700);
-  const seen = (buffer(first.leafId).match(new RegExp(`${marker}-[0-9]`, "g")) ?? [])
-    .length;
+  const seen = (
+    buffer(first.leafId).match(new RegExp(`${marker}-[0-9]`, "g")) ?? []
+  ).length;
   await check(
     "switch keeps hidden output flowing",
     seen >= 5 && presentationHidden,
@@ -2752,7 +3057,9 @@ async function spacesScenario(run: ScenarioRun): Promise<unknown> {
       10_000,
     );
   } catch (error) {
-    throw new Error(await failed("tab close with a running process", String(error)));
+    throw new Error(
+      await failed("tab close with a running process", String(error)),
+    );
   }
   const terminalPrompt = pageText();
   await check(
@@ -2763,7 +3070,10 @@ async function spacesScenario(run: ScenarioRun): Promise<unknown> {
     `dialog: ${terminalPrompt.includes("Close Terminal?")}`,
   );
   run.app().cancelPendingClose();
-  await run.waitFor(() => guards().terminalTabId === null, "the canceled guard");
+  await run.waitFor(
+    () => guards().terminalTabId === null,
+    "the canceled guard",
+  );
   await check(
     "cancel keeps the running terminal",
     run.app().tabs.some((tab) => tab.id === busyTab.tabId),
@@ -2805,7 +3115,10 @@ async function spacesScenario(run: ScenarioRun): Promise<unknown> {
     `dialog: ${dirtyPrompt.includes("Save & Close")}`,
   );
   run.app().cancelPendingClose();
-  await run.waitFor(() => guards().closeTabId === null, "the canceled close guard");
+  await run.waitFor(
+    () => guards().closeTabId === null,
+    "the canceled close guard",
+  );
   await check(
     "cancel keeps the dirty buffer",
     dirty(),
@@ -2894,7 +3207,15 @@ async function spacesScenario(run: ScenarioRun): Promise<unknown> {
   await check(
     "cancel keeps the Space, its tabs and its dirty buffer",
     run.app().spaces.some((space) => space.id === spaceC) &&
-      run.app().tabs.some((tab) => tab.spaceId === spaceC && tab.id === deletedDirtyTab && tab.kind === "editor" && tab.dirty),
+      run
+        .app()
+        .tabs.some(
+          (tab) =>
+            tab.spaceId === spaceC &&
+            tab.id === deletedDirtyTab &&
+            tab.kind === "editor" &&
+            tab.dirty,
+        ),
     `spaces ${run.app().spaces.length}, tabs ${run.app().tabs.length}`,
   );
   await run.sync("spaces-delete-canceled", { spaceC });
@@ -3003,7 +3324,15 @@ async function imagesScenario(
       return tabId;
     };
 
-    for (const name of ["png", "jpeg", "gif", "webp", "bmp", "ico", "avif"] as const) {
+    for (const name of [
+      "png",
+      "jpeg",
+      "gif",
+      "webp",
+      "bmp",
+      "ico",
+      "avif",
+    ] as const) {
       const tabId = await open(fixtures[name]);
       try {
         await waitForState("ready", `the ${name} image surface`);
@@ -3029,7 +3358,8 @@ async function imagesScenario(
       });
       run.app().closeTab(tabId);
       await run.waitFor(
-        () => viewers().every((viewer) => !viewer.id.startsWith(`image:${tabId}:`)),
+        () =>
+          viewers().every((viewer) => !viewer.id.startsWith(`image:${tabId}:`)),
         `the ${name} viewer slot to be released`,
         8000,
       );
@@ -3054,7 +3384,8 @@ async function imagesScenario(
       const tab = run.app().tabs.find((entry) => entry.id === tabId);
       await check(
         "svg stays an editable text tab",
-        tab?.kind === "editor" && !document.querySelector("[data-image-viewer]"),
+        tab?.kind === "editor" &&
+          !document.querySelector("[data-image-viewer]"),
         `tab ${tabId} kind ${tab?.kind}`,
       );
       run.app().closeTab(tabId);
@@ -3171,7 +3502,9 @@ async function imagesScenario(
       try {
         await waitForDecoded(`cycle ${cycle + 1}'s raster`);
       } catch (error) {
-        throw new Error(await failed(`cycle ${cycle + 1} opens`, String(error)));
+        throw new Error(
+          await failed(`cycle ${cycle + 1} opens`, String(error)),
+        );
       }
       run.app().closeTab(tabId);
       try {

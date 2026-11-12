@@ -290,6 +290,7 @@ pub fn run() {
             fs::tree::fs_read_dir,
             fs::file::fs_read_file,
             fs::assets::asset_grant,
+            fs::assets::asset_read_bytes,
             fs::assets::asset_revoke,
             fs::assets::asset_revoke_scope,
             fs::file::fs_write_file,

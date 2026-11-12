@@ -1,9 +1,10 @@
 # PDF reader path
 
-**Status: decision recorded (issue #30), implementation not shipped.** This record answers one
-question with evidence: can the app's current embedded/iframe PDF path satisfy the accepted PDF
-contract on Fedora, or is a dedicated on-demand reader required? Ticket **#31** implements the
-reader; nothing here claims any PDF reader function is shipped or validated as a product feature.
+**Status: implemented (issue #31), verified in the real Fedora application.** Issue #30 answered
+one question with evidence — can the app's embedded/iframe PDF path satisfy the accepted PDF
+contract? — and answered it no. Issue #31 implements the dedicated reader that decision requires.
+The implementation section below states what was built, why that approach was chosen, and which
+parts are validated here versus still a named manual or release-only check.
 
 Approved ceilings referenced below live in `docs/architecture/resource-limits.md` and
 `src/modules/preview/lib/limits.ts` (**32 MiB per rendered PDF page**, 4 concurrent decoded
@@ -317,6 +318,81 @@ The reader is our document, in our pane, with the approved policy applied by cod
   revocation stays with the tab scope.
 - **Document content stays inert.** No scripting from the document, no remote resources, no
   application command surface; keep the existing CSP and the native path checks.
+
+## Implementation (issue #31)
+
+The reader is the app's own DOM in the preview surface, replacing the iframe. The order below is
+the contract, and each step is a pure function with its own test before a canvas or a byte is
+allocated:
+
+1. **Delivery gate** (`assetDeliveryDecision`, unchanged) — whole file ≤ 10 MiB loads; 10-50 MiB
+   needs the explicit "Load anyway"; above 50 MiB is refused with the external viewer. The reader
+   owns this decision now, so the refusal is its own notice rather than a second surface's.
+2. **Bytes through the existing grant and limits** — `asset_read_bytes` is a native command that
+   runs the *same* `deliver` the `asset:` protocol handler runs: the same tab-scoped token, the
+   same canonicalization and descriptor re-checks, the same `DeliveryLimits`, and the same bench
+   probe record. It reads the whole file as its unit (that is the unit the approved gate bounds)
+   and returns it to the page as an `ArrayBuffer`; there is no new read path and no range bypass.
+3. **Document load** (`pdfjs-dist`) — one lazy chunk, imported only when a *visible* PDF tab passes
+   the gate. Corrupt, encrypted, unsupported and unreadable documents are distinct outcomes
+   (`classifyPdfError`, `pdfLoad.ts`), each with a reason and the external viewer.
+4. **Per-page decision before painting** (`pdfPage.ts` → `pdfPageDecision`) — the raster is
+   computed as `ceil(widthPt × zoom × dpr) × ceil(heightPt × zoom × dpr) × 4` and the approved
+   32 MiB ceiling is applied before a canvas exists. A refusal names the ceiling and the largest
+   whole-percent zoom that fits, verified against the same arithmetic; the suggested zoom is
+   offered as a button, so the reader can never offer a zoom it would itself refuse.
+5. **Decoded-viewer admission** (`pdfViewer.ts` → `useDecodedViewer`) — the reader registers the
+   rasters it really holds (bounded cache + the page on screen, capped at the 32 MiB page ceiling)
+   with the existing 4-viewer / 192 MiB table. Hidden viewers stay evictable; a refusal names the
+   blocking previews.
+6. **Bounded raster cache** (`pdfCache.ts`) — capacity is the per-page ceiling, so four viewers can
+   hold at most 4 × 32 MiB = 128 MiB, inside the approved 192 MiB. A new zoom clears the cache (a
+   raster at the old scale is not the raster the bound describes); navigation re-renders what was
+   released. Release zeroes the canvas backing store immediately.
+7. **App-owned functions** — page number/count, previous/next, page input, keyboard
+   PageUp/PageDown/Home/End, fit-width/fit-page, zoom in/out and a percent input with a genuine
+   vector re-render, search over extracted text with match count/navigation/truncation, and a text
+   layer of absolutely positioned spans (pdf.js text-item transforms) that supports native
+   selection and copy.
+   PDF.js schedules a display render on animation frames, which WebKit suspends for an occluded
+   window. A page on screen must not stay blank because of that, so a render that makes no
+   progress for four seconds is cancelled and redone with the print intent (microtask scheduling)
+   and the fallback is reported on the reader (`data-pdf-render-fallback="print"`); a second
+   stall is an explicit failure with the external viewer. The real-app run records how many
+   renders needed the fallback.
+8. **Lifecycle** — a hidden tab unmounts the reader and destroys the pdf.js document (worker, page
+   proxies, transferred bytes); closing the tab also releases the grant through the existing tab
+   scope. Re-showing a tab reloads the document, which is disclosed (there is no attempt to keep a
+   hidden document alive).
+9. **Inert document content** — the document is data: pdf.js never executes PDF JavaScript, XFA is
+   disabled, the reader passes no remote URL, and every runtime file (standard fonts, CMaps, wasm
+   decoders, ICC profile, worker) is emitted from the installed package into the app's own `dist`
+   by `scripts/vite-pdfjs-assets.mjs`. A document cannot call an app command or fetch anything.
+
+### Why pdfjs-dist, and the tradeoff
+
+The alternatives considered:
+
+- **Keep WebKit's built-in viewer** — rejected by the evidence above; it is cross-origin and
+  reports nothing.
+- **Native render path (poppler)** — the host has `libpoppler` and `poppler-utils`, but no
+  development headers, so a Rust binding would add a system build dependency, and a CLI render
+  would write temporary rasters and depend on a runtime package the app does not ship. It also
+  moves text extraction and layout out of the app's own DOM, which is exactly what must be
+  observable.
+- **`pdfjs-dist`** — pure JavaScript, no native codec, no system package, one package and one
+  lockfile entry, and it exposes page count, viewport/scale, text items, typed parse/password
+  errors and a worker. It is the same engine WebKit's own viewer is built on, so the rendering
+  behaviour matches what Fedora users already see.
+
+The cost, recorded rather than hidden: the lazy reader chunk is **140.75 kB gzipped** and the
+on-demand worker **378.97 kB gzipped**, both now explicit `size-limit` entries
+(`dist/assets/PdfReader-*.js`, `dist/pdfjs/pdf.worker.min.mjs`). Total client JS grew from about
+1.15 MiB to **1.32 MiB gzipped**, inside the unchanged 1.5 MiB budget: no PDF code is in a startup
+chunk (`src/app/dist-budget.test.ts` stays green). The PDF.js runtime data (standard fonts, CMaps,
+wasm decoders, ICC profile, licences) is 5.1 MiB of static assets shipped offline, not JavaScript.
+Continuous-scroll reading is deliberately not implemented: the reader is paged, which is what keeps
+one page raster (not a whole document's rasters) inside the decoded budget.
 
 ## What would change this decision
 

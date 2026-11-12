@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { defineConfig, type PluginOption, type UserConfig } from "vite";
 import Inspect from "vite-plugin-inspect";
+import { pdfjsAssets } from "./scripts/vite-pdfjs-assets.mjs";
 
 const host = process.env.TAURI_DEV_HOST;
 const rootDir = import.meta.dirname;
@@ -120,6 +121,10 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => ({
     }),
     react(),
     tailwindcss(),
+    // PDF.js runtime data (standard fonts, CMaps, wasm decoders, worker) is
+    // emitted from the installed package so the reader never fetches a remote
+    // resource. Lazy reader chunk; no PDF code reaches startup.
+    pdfjsAssets() as PluginOption,
     // Module-graph inspector at /__inspect (who-imports-what, per-plugin
     // transforms). Opt-in via `pnpm dev:inspect`, never in a production build.
     ...(mode === "development" && inspectGraph
