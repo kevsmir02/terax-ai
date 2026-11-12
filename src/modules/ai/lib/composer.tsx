@@ -6,7 +6,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { useWhisperRecording } from "../hooks/useWhisperRecording";
 import { expandSnippetTokens, type Snippet } from "../lib/snippets";
 import { tryRunSlashCommand, type SlashCommandMeta } from "./slashCommands";
 import { getChat, useChatStore } from "../store/chatStore";
@@ -33,8 +32,6 @@ const MAX_TEXT_INLINE = 200_000;
 export const ACCEPTED_FILES =
   "image/*,.txt,.md,.json,.yaml,.yml,.toml,.sh,.zsh,.bash,.py,.js,.jsx,.ts,.tsx,.rs,.go,.java,.c,.cpp,.h,.hpp,.html,.css,.csv,.log,.env,.config,.conf,.ini,Dockerfile,.dockerfile";
 
-type Voice = ReturnType<typeof useWhisperRecording>;
-
 type ComposerCtx = {
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
   value: string;
@@ -53,7 +50,6 @@ type ComposerCtx = {
   isBusy: boolean;
   submit: () => void;
   stop: () => void;
-  voice: Voice;
   canSend: boolean;
 };
 
@@ -144,13 +140,6 @@ export function AiComposerProvider({ children }: ProviderProps) {
       return next.length ? [...prev, ...next] : prev;
     });
   }, [pendingSelections, consumeSelections]);
-
-  const voice = useWhisperRecording({
-    onResult: (transcript: string) => {
-      setValue((v) => (v ? `${v} ${transcript}` : transcript));
-      requestAnimationFrame(() => textareaRef.current?.focus());
-    },
-  });
 
   const addFiles = async (list: FileList | null) => {
     if (!list) return;
@@ -351,7 +340,6 @@ export function AiComposerProvider({ children }: ProviderProps) {
     isBusy,
     submit,
     stop,
-    voice,
     canSend,
   };
 
