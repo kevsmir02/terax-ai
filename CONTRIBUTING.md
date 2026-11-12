@@ -192,19 +192,16 @@ src-tauri/                  Rust backend
       git/                  Source control commands
       history/              Shell history integration
       mod.rs                Module exports
-      net.rs                AI HTTP proxy with SSRF guard
       proc.rs               Process utilities
       pty/                  Terminal sessions, shell integration, DA filter
-      secrets.rs            OS keychain access
-      shell/                Oneshot/session/background shell commands
+      shell/                One-shot command execution (external formatter)
       workspace.rs          WSL bridge, workspace env, authorization registry
 
 src/                        React frontend
   App.tsx                   Top-level coordinator
-  components/               shadcn/ui + AI Elements
+  components/               shadcn/ui primitives and shared UI
   modules/
     agents/                 Agent notifications and management
-    ai/                     Agents, sessions, tools, providers, composer
     command-palette/        Modal command palette and actions
     editor/                 CodeMirror stack, editor themes, formatting
     explorer/               File tree

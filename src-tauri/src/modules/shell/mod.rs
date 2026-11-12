@@ -1,12 +1,4 @@
-pub mod background;
-pub mod ringbuffer;
-pub mod session;
-
-use std::collections::HashMap;
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -16,9 +8,6 @@ use crate::modules::proc::capture::{self, Limits};
 #[cfg(windows)]
 use crate::modules::workspace::validate_wsl_distro_name;
 use crate::modules::workspace::{authorize_spawn_cwd, WorkspaceEnv, WorkspaceRegistry};
-
-use background::{BackgroundLogResponse, BackgroundProc, BackgroundProcInfo};
-use session::{SessionRunOutput, ShellSession};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 const MAX_TIMEOUT_SECS: u64 = 300;
@@ -35,14 +24,13 @@ pub struct CommandOutput {
 
 /// Runs a one-shot command via the user's login shell. Output is capped and
 /// the process is force-killed on timeout. We deliberately do NOT pipe into
-/// the user's interactive PTY — that would fight their input. AI tool calls
-/// are presented in chat as their own structured result.
+/// the user's interactive PTY — that would fight their input.
 ///
 /// `cwd` is authorized through `workspace::authorize_spawn_cwd`, which is
 /// strict: only the launch dir, the user's home and directories the user
 /// authorized (spaces, terminal cwds) are accepted, and symlinks are resolved
-/// before the check. Known limitation for retained consumers: the external
-/// formatter (`src/modules/editor/lib/externalFormat.ts`) passes
+/// before the check. Known limitation: the external formatter
+/// (`src/modules/editor/lib/externalFormat.ts`) passes
 /// `cwd = dirname(edited file)`, so formatting a file that lives outside every
 /// authorized root is refused even though that file can be edited. That is
 /// deliberate for now — do not widen this to a path-only check without an
@@ -90,15 +78,6 @@ fn clamp_timeout(timeout_secs: Option<u64>) -> Duration {
     )
 }
 
-pub(crate) fn run_blocking_inner(
-    command: String,
-    cwd: Option<String>,
-    workspace: WorkspaceEnv,
-    dur: Duration,
-) -> Result<CommandOutput, String> {
-    run_blocking(command, cwd, workspace, dur)
-}
-
 fn run_blocking(
     command: String,
     cwd: Option<String>,
@@ -135,168 +114,6 @@ fn run_blocking(
         timed_out: captured.timed_out,
         truncated: captured.stdout_truncated || captured.stderr_truncated,
     })
-}
-
-// ──────────────────────────────────────────────────────────────────────────
-// Persistent agent shell state + background process state.
-// ──────────────────────────────────────────────────────────────────────────
-
-pub struct ShellState {
-    sessions: RwLock<HashMap<u32, Arc<ShellSession>>>,
-    bg: RwLock<HashMap<u32, Arc<BackgroundProc>>>,
-    next_session_id: AtomicU32,
-    next_bg_id: AtomicU32,
-}
-
-impl Default for ShellState {
-    fn default() -> Self {
-        Self {
-            sessions: RwLock::new(HashMap::new()),
-            bg: RwLock::new(HashMap::new()),
-            next_session_id: AtomicU32::new(1),
-            next_bg_id: AtomicU32::new(1),
-        }
-    }
-}
-
-#[tauri::command]
-pub async fn shell_session_open(
-    app: tauri::AppHandle,
-    cwd: Option<String>,
-    workspace: Option<WorkspaceEnv>,
-) -> Result<u32, String> {
-    let workspace = WorkspaceEnv::from_option(workspace);
-    // wsl_home spawns wsl.exe on Windows and authorization hits the disk.
-    let registry_app = app.clone();
-    let (initial, workspace) = tauri::async_runtime::spawn_blocking(move || {
-        authorize_spawn_cwd(
-            &registry_app.state::<WorkspaceRegistry>(),
-            cwd.as_deref(),
-            &workspace,
-        )?;
-        let initial = match cwd.as_deref().filter(|s| !s.is_empty()) {
-            Some(c) => c.to_string(),
-            None => {
-                if let WorkspaceEnv::Wsl { distro } = &workspace {
-                    crate::modules::workspace::wsl_home(distro.clone())?
-                } else {
-                    crate::modules::fs::to_canon(
-                        dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")),
-                    )
-                }
-            }
-        };
-        Ok::<_, String>((initial, workspace))
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-    Ok(register_session(&app, initial, workspace))
-}
-
-fn register_session(app: &tauri::AppHandle, initial: String, workspace: WorkspaceEnv) -> u32 {
-    let state = app.state::<ShellState>();
-    let session = Arc::new(ShellSession::new(initial, workspace));
-    let id = state.next_session_id.fetch_add(1, Ordering::Relaxed);
-    state.sessions.write().unwrap().insert(id, session);
-    id
-}
-
-#[tauri::command]
-pub async fn shell_session_run(
-    app: tauri::AppHandle,
-    id: u32,
-    command: String,
-    cwd: Option<String>,
-    timeout_secs: Option<u64>,
-    workspace: Option<WorkspaceEnv>,
-) -> Result<SessionRunOutput, String> {
-    let session = app
-        .state::<ShellState>()
-        .sessions
-        .read()
-        .unwrap()
-        .get(&id)
-        .cloned()
-        .ok_or_else(|| "no shell session".to_string())?;
-    let dur = clamp_timeout(timeout_secs);
-    tauri::async_runtime::spawn_blocking(move || {
-        let effective_workspace = workspace
-            .clone()
-            .unwrap_or_else(|| session.workspace.clone());
-        authorize_spawn_cwd(
-            &app.state::<WorkspaceRegistry>(),
-            cwd.as_deref(),
-            &effective_workspace,
-        )?;
-        session.run(command, cwd, workspace, dur)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-pub fn shell_session_close(state: tauri::State<ShellState>, id: u32) -> Result<(), String> {
-    state.sessions.write().unwrap().remove(&id);
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn shell_bg_spawn(
-    app: tauri::AppHandle,
-    command: String,
-    cwd: Option<String>,
-    workspace: Option<WorkspaceEnv>,
-) -> Result<u32, String> {
-    let workspace = WorkspaceEnv::from_option(workspace);
-    tauri::async_runtime::spawn_blocking(move || {
-        authorize_spawn_cwd(
-            &app.state::<WorkspaceRegistry>(),
-            cwd.as_deref(),
-            &workspace,
-        )?;
-        let proc = background::spawn(command, cwd, workspace)?;
-        let state = app.state::<ShellState>();
-        let id = state.next_bg_id.fetch_add(1, Ordering::Relaxed);
-        state.bg.write().unwrap().insert(id, proc);
-        Ok(id)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-pub fn shell_bg_logs(
-    state: tauri::State<ShellState>,
-    handle: u32,
-    since_offset: Option<u64>,
-) -> Result<BackgroundLogResponse, String> {
-    let proc = state
-        .bg
-        .read()
-        .unwrap()
-        .get(&handle)
-        .cloned()
-        .ok_or_else(|| "no background handle".to_string())?;
-    Ok(proc.read_logs(since_offset.unwrap_or(0)))
-}
-
-#[tauri::command]
-pub fn shell_bg_kill(state: tauri::State<ShellState>, handle: u32) -> Result<(), String> {
-    if let Some(proc) = state.bg.read().unwrap().get(&handle).cloned() {
-        proc.kill();
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub fn shell_bg_list(state: tauri::State<ShellState>) -> Result<Vec<BackgroundProcInfo>, String> {
-    let map = state.bg.read().unwrap();
-    let mut out = Vec::with_capacity(map.len());
-    for (id, p) in map.iter() {
-        out.push(p.info(*id));
-    }
-    out.sort_by_key(|i| i.handle);
-    Ok(out)
 }
 
 pub(crate) fn build_oneshot_command(
@@ -354,7 +171,7 @@ mod tests {
     use super::*;
 
     fn run(cmd: &str, timeout_secs: u64) -> CommandOutput {
-        run_blocking_inner(
+        run_blocking(
             cmd.into(),
             None,
             WorkspaceEnv::Local,

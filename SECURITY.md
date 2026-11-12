@@ -33,9 +33,9 @@ Until `1.0.0`, only the latest minor gets security fixes. See the current versio
 
 ## What we do to keep things safe
 
-- **API keys** live in the OS keychain via `keyring` - not on disk, not in `localStorage`, not in logs.
-- **No telemetry.** Terax only talks to the network when you ask it to (AI requests, update checks, web preview).
-- **AI tool approval.** File writes and shell commands from the agent need your OK before they run.
+- **No application AI credentials.** Built-in AI, provider keys and their keychain storage were removed; external agents keep their own credentials and configuration.
+- **No telemetry.** Terax only talks to the network when you ask it to (update checks, web preview).
+- **External agents keep their own approvals.** They run in your terminal and use their own permission prompts; Terax does not proxy, auto-approve or review their actions.
 - **No Node in the renderer.** The frontend only reaches the host through the allow-listed Tauri commands.
 - **Signed releases.** Updates are verified before they're applied.
 
