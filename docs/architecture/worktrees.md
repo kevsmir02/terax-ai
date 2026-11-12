@@ -82,8 +82,10 @@ Space deletion continues to leave project and worktree directories on disk (tick
   process; see `docs/security-model.md`.
 - Path/rev syntax checked in the form is a fast pre-check. `git check-ref-format`, `rev-parse`
   and the native path checks decide the final answer.
-- Worktree removal with checkpoints or restore-safety refs remains blocked by the checkpoint
-  work (ticket #23); this ticket only creates.
+- This ticket only creates. Removal controls and the refusal of removal while checkpoints or
+  restore-safety refs remain are a separate concern; #19's destructive-action guard already
+  models `worktreeRemove` and the native removal report already lists dirty, unmerged, ignored
+  and locked blockers. No removal button was added here.
 
 ## Test seams
 
