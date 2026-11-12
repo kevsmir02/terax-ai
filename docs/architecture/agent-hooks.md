@@ -167,3 +167,10 @@ seam (the app-lab runner is macOS-only today). Those remain release-validation
 work. The revision check also cannot exclude an external writer that edits the
 file between that check and the rename; it guarantees refusal of everything
 observed before the check, not atomic exclusion of independent processes.
+
+## See also
+
+- [Agent capabilities](agent-capabilities.md) — launch, process status, structured
+  events, notifications and control per agent, including the agents with no hook
+  adapter (OpenCode, Grok, Antigravity CLI) and the distinction between
+  process-derived status and a completed turn.

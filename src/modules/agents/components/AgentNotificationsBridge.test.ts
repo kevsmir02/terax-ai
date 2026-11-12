@@ -14,7 +14,11 @@ const seams = vi.hoisted(() => ({
 // The bridge reaches the terminal module only for the pty->leaf mapping and the
 // tab lookup, so the fake keeps pty ids equal to leaf ids and walks the tree.
 vi.mock("@/modules/terminal", () => {
-  const ids = (node: { kind: string; id: number; children?: unknown[] }): number[] =>
+  const ids = (node: {
+    kind: string;
+    id: number;
+    children?: unknown[];
+  }): number[] =>
     node.kind === "leaf"
       ? [node.id]
       : ((node.children ?? []) as (typeof node)[]).flatMap(ids);
@@ -45,13 +49,15 @@ const { handleAgentSignal } = await import("./AgentNotificationsBridge");
 
 const TAB_ID = 3;
 const LEAF_ID = 7;
+const SPACE_ID = "sp-api";
 
 function tab(leafId = LEAF_ID): Tab {
   return {
-    id: TAB_ID,
+    id: leafId + 100,
     kind: "terminal",
-    title: "claude · ship the release",
-    spaceId: "default",
+    // A terminal title can echo the cwd or a prompt; notifications must not.
+    title: "/home/me/work/api · claude · ship the release",
+    spaceId: SPACE_ID,
     paneTree: { kind: "leaf", id: leafId } as PaneNode,
   } as Tab;
 }
@@ -61,7 +67,23 @@ const ctx = {
   activeId: TAB_ID,
   focused: false,
   onActivate: vi.fn(),
+  spaceNames: { [SPACE_ID]: "api workspace" },
 };
+
+/** A separate pane so the delivery gate's cooldown does not hide the payload. */
+function ctxFor(
+  leafId: number,
+  spaceNames: Record<string, string> = ctx.spaceNames,
+) {
+  const own = tab(leafId);
+  return {
+    tabs: [own],
+    activeId: own.id,
+    focused: false,
+    onActivate: vi.fn(),
+    spaceNames,
+  };
+}
 
 function signal(kind: AgentSignal["kind"], id = LEAF_ID): AgentSignal {
   return { id, kind, agent: "claude" };
@@ -73,17 +95,23 @@ beforeEach(() => {
 });
 
 describe("agent signal notifications", () => {
-  it("routes a finished agent to the bell and the OS", () => {
+  it("routes a finished turn to the bell and the OS", () => {
     handleAgentSignal(signal("started"), ctx);
     handleAgentSignal(signal("finished"), ctx);
 
+    // The process is still attached to the pane after the turn ends.
     expect(useAgentStore.getState().sessions[LEAF_ID]).toMatchObject({
-      tabId: TAB_ID,
+      tabId: LEAF_ID + 100,
       agent: "claude",
-      status: "waiting",
+      status: "running",
     });
     expect(useAgentStore.getState().notifications).toMatchObject([
-      { source: "terminal", agent: "claude", kind: "finished", tabId: TAB_ID },
+      {
+        source: "terminal",
+        agent: "claude",
+        kind: "turn-finished",
+        tabId: LEAF_ID + 100,
+      },
     ]);
     expect(seams.osNotify).toHaveBeenCalledOnce();
   });
@@ -92,7 +120,9 @@ describe("agent signal notifications", () => {
     handleAgentSignal(signal("started"), ctx);
     handleAgentSignal(signal("attention"), ctx);
 
-    expect(useAgentStore.getState().sessions[LEAF_ID]?.status).toBe("waiting");
+    expect(useAgentStore.getState().sessions[LEAF_ID]?.status).toBe(
+      "attention",
+    );
     expect(useAgentStore.getState().notifications).toMatchObject([
       { source: "terminal", agent: "claude", kind: "attention" },
     ]);
@@ -106,12 +136,52 @@ describe("agent signal notifications", () => {
     expect(useAgentStore.getState().sessions[LEAF_ID]).toBeUndefined();
   });
 
+  it("never reports a completed turn for a process that just exited", () => {
+    handleAgentSignal(signal("started"), ctx);
+    handleAgentSignal(signal("exited"), ctx);
+
+    expect(useAgentStore.getState().notifications).toEqual([]);
+    expect(seams.osNotify).not.toHaveBeenCalled();
+  });
+
   it("ignores signals for panes that are no longer terminal leaves", () => {
     handleAgentSignal(signal("finished", 99), ctx);
 
     expect(useAgentStore.getState().sessions).toEqual({});
     expect(useAgentStore.getState().notifications).toEqual([]);
     expect(seams.osNotify).not.toHaveBeenCalled();
+  });
+});
+
+describe("notification payload", () => {
+  it("carries the agent, the Space name and the event type only", async () => {
+    const own = ctxFor(8);
+    handleAgentSignal(signal("started", 8), own);
+    handleAgentSignal(signal("attention", 8), own);
+
+    await vi.waitFor(() => expect(seams.osNotify).toHaveBeenCalledOnce());
+
+    expect(seams.osNotify).toHaveBeenCalledWith(
+      "Claude Code needs attention",
+      "Space: api workspace",
+    );
+    const payload = JSON.stringify(seams.osNotify.mock.calls[0]);
+    for (const leak of ["/home/me/work/api", "ship the release", "claude ·"]) {
+      expect(payload).not.toContain(leak);
+    }
+  });
+
+  it("falls back to a generic Workspace body when the Space is unknown", async () => {
+    const own = ctxFor(9, {});
+    handleAgentSignal(signal("started", 9), own);
+    handleAgentSignal(signal("finished", 9), own);
+
+    await vi.waitFor(() => expect(seams.osNotify).toHaveBeenCalledOnce());
+
+    expect(seams.osNotify).toHaveBeenCalledWith(
+      "Claude Code turn finished",
+      "Workspace",
+    );
   });
 });
 

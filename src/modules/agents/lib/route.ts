@@ -2,6 +2,7 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import { showAgentToast } from "../components/AgentToast";
 import { useAgentStore } from "../store/agentStore";
 import { resolveAgentNotificationDelivery } from "./delivery";
+import { agentNotificationContent } from "./notificationContent";
 import { createAgentNotificationGate } from "./notificationGate";
 import { osNotify } from "./notify";
 import { playAgentNotificationSound } from "./sound";
@@ -13,8 +14,8 @@ type RouteArgs = {
   source: AgentSource;
   agent: string;
   kind: NotificationKind;
-  title: string;
-  body?: string;
+  /** The Space's own name; the only project identity a notification carries. */
+  spaceName?: string | null;
   focused: boolean;
   /** True when the user is currently looking at this agent. */
   visible: boolean;
@@ -25,12 +26,16 @@ type RouteArgs = {
   onActivate: () => void;
 };
 
+/**
+ * Single delivery point for agent attention and completion. The payload is
+ * built here from the allowlisted fields (agent, kind, Space name) so no caller
+ * can put prompt, transcript or file text into a notification.
+ */
 export function routeAgentNotification({
   source,
   agent,
   kind,
-  title,
-  body,
+  spaceName,
   focused,
   visible,
   allowToast,
@@ -48,10 +53,14 @@ export function routeAgentNotification({
   if (delivery === "none") return;
   if (!shouldDeliver({ source, agent, kind, tabId, leafId })) return;
 
-  useAgentStore.getState().pushNotification({ source, agent, kind, tabId, leafId });
+  const content = agentNotificationContent({ agent, kind, spaceName });
+
+  useAgentStore
+    .getState()
+    .pushNotification({ source, agent, kind, tabId, leafId });
 
   if (delivery === "native") {
-    void osNotify(title, body ?? agent).then((result) => {
+    void osNotify(content.title, content.body).then((result) => {
       if (
         result === "requested" &&
         usePreferencesStore.getState().agentNotificationSound
@@ -63,6 +72,6 @@ export function routeAgentNotification({
   }
   if (delivery === "toast") {
     if (preferences.agentNotificationSound) playAgentNotificationSound();
-    showAgentToast({ agent, title, body, onActivate });
+    showAgentToast({ agent, ...content, onActivate });
   }
 }

@@ -5,7 +5,9 @@ import {
   AGENT_LAUNCHERS,
   createAgentPanePlan,
   DEFAULT_AGENT_LAUNCH_COMMANDS,
+  findAgentLauncher,
   normalizeAgentLaunchCommands,
+  resolveAgentLaunchCommand,
   validateAgentLaunchCommand,
   type AgentInstanceCount,
 } from "./launcher";
@@ -57,6 +59,60 @@ describe("agent launch commands", () => {
       pi: "pi --provider local",
       opencode: "opencode",
       grok: "grok",
+      antigravity: "antigravity",
+    });
+  });
+});
+
+describe("Antigravity CLI versus its desktop app", () => {
+  it("offers the terminal CLI, not the GUI, as the launcher", () => {
+    const launcher = findAgentLauncher("antigravity");
+
+    expect(launcher).toMatchObject({
+      id: "antigravity",
+      label: "Antigravity CLI",
+      defaultCommand: "antigravity",
+      supportsHooks: false,
+    });
+  });
+
+  it("launches the terminal CLI, with aliases and flags", () => {
+    expect(resolveAgentLaunchCommand("antigravity", " ag --model x ")).toEqual({
+      ok: true,
+      command: "ag --model x",
+    });
+  });
+
+  it("refuses desktop-app commands instead of pretending to control the GUI", () => {
+    for (const gui of [
+      "antigravity-desktop",
+      "antigravity-gui --new-window",
+      "open -a Antigravity",
+      "open -n -a Antigravity /workspace",
+      "xdg-open /usr/share/applications/antigravity.desktop",
+      "/Applications/Antigravity.app/Contents/MacOS/Antigravity",
+      "gio open antigravity.desktop",
+    ]) {
+      const result = resolveAgentLaunchCommand("antigravity", gui);
+
+      expect(result).toMatchObject({ ok: false });
+      if (!result.ok) expect(result.error).toMatch(/terminal CLI/);
+    }
+  });
+
+  it("keeps every other agent's command untouched", () => {
+    expect(resolveAgentLaunchCommand("claude", "open -a Claude")).toEqual({
+      ok: true,
+      command: "open -a Claude",
+    });
+  });
+
+  it("keeps blank and multiline commands refused", () => {
+    expect(resolveAgentLaunchCommand("antigravity", "  ")).toMatchObject({
+      ok: false,
+    });
+    expect(resolveAgentLaunchCommand("antigravity", "a\nb")).toMatchObject({
+      ok: false,
     });
   });
 });

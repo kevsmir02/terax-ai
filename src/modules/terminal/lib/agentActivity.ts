@@ -3,6 +3,19 @@ import { create } from "zustand";
 
 export type AgentPhase = "working" | "attention" | "finished" | "idle";
 
+/**
+ * Phases are evidence-specific, and the names are load-bearing:
+ *
+ * - `working` is armed by the shell's command boundary. It means the agent's
+ *   process is attached to the pane, not that the agent is doing work.
+ * - `attention` and `finished` come only from the agent (an opt-in hook or the
+ *   terminal notification it sent). `finished` is the end of a turn: the
+ *   process is still there, so it is never rendered as a completed agent.
+ * - `idle` is a finished turn that has aged out, or an acknowledged attention.
+ *
+ * A process exit is not a phase: it removes the entry.
+ */
+
 type AgentSignal = {
   id: number;
   kind: string;

@@ -41,7 +41,6 @@ describe("routeAgentNotification sound preference", () => {
       source: "terminal",
       agent: "codex",
       kind: "attention",
-      title: "Codex needs your input",
       focused: false,
       visible: false,
       allowToast: true,
@@ -49,7 +48,9 @@ describe("routeAgentNotification sound preference", () => {
       leafId: 201,
       onActivate: vi.fn(),
     });
-    await vi.waitFor(() => expect(notifications.osNotify).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(notifications.osNotify).toHaveBeenCalledOnce(),
+    );
 
     expect(notifications.playSound).toHaveBeenCalledOnce();
   });
@@ -62,7 +63,6 @@ describe("routeAgentNotification sound preference", () => {
       source: "terminal",
       agent: "codex",
       kind: "attention",
-      title: "Codex needs your input",
       focused: false,
       visible: false,
       allowToast: true,
@@ -70,7 +70,9 @@ describe("routeAgentNotification sound preference", () => {
       leafId: 202,
       onActivate: vi.fn(),
     });
-    await vi.waitFor(() => expect(notifications.osNotify).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(notifications.osNotify).toHaveBeenCalledOnce(),
+    );
 
     expect(notifications.pushNotification).toHaveBeenCalledOnce();
     expect(notifications.playSound).not.toHaveBeenCalled();
@@ -84,7 +86,6 @@ describe("routeAgentNotification sound preference", () => {
       source: "terminal",
       agent: "gemini",
       kind: "attention",
-      title: "Gemini needs your input",
       focused: true,
       visible: false,
       allowToast: true,
@@ -95,5 +96,62 @@ describe("routeAgentNotification sound preference", () => {
 
     expect(notifications.showToast).toHaveBeenCalledOnce();
     expect(notifications.playSound).not.toHaveBeenCalled();
+  });
+});
+
+describe("routeAgentNotification payload", () => {
+  it("builds the payload from the agent, kind and Space name only", async () => {
+    const { routeAgentNotification } = await import("./route");
+
+    routeAgentNotification({
+      source: "terminal",
+      agent: "claude",
+      kind: "turn-finished",
+      spaceName: "api",
+      focused: false,
+      visible: false,
+      allowToast: false,
+      tabId: 104,
+      leafId: 204,
+      onActivate: vi.fn(),
+    });
+    await vi.waitFor(() =>
+      expect(notifications.osNotify).toHaveBeenCalledOnce(),
+    );
+
+    expect(notifications.osNotify).toHaveBeenCalledWith(
+      "Claude Code turn finished",
+      "Space: api",
+    );
+    expect(notifications.pushNotification).toHaveBeenCalledWith({
+      source: "terminal",
+      agent: "claude",
+      kind: "turn-finished",
+      tabId: 104,
+      leafId: 204,
+    });
+  });
+
+  it("suppresses a repeated notification inside the cooldown", async () => {
+    const { routeAgentNotification } = await import("./route");
+    const args = {
+      source: "terminal" as const,
+      agent: "pi",
+      kind: "attention" as const,
+      focused: false,
+      visible: false,
+      allowToast: false,
+      tabId: 105,
+      leafId: 205,
+      onActivate: vi.fn(),
+    };
+
+    routeAgentNotification(args);
+    routeAgentNotification(args);
+    await vi.waitFor(() =>
+      expect(notifications.osNotify).toHaveBeenCalledOnce(),
+    );
+
+    expect(notifications.pushNotification).toHaveBeenCalledOnce();
   });
 });
