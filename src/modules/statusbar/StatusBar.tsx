@@ -1,4 +1,3 @@
-import { LspStatusPill } from "@/modules/lsp";
 import type { WorkspaceEnv } from "@/modules/workspace";
 import { CwdBreadcrumb } from "./CwdBreadcrumb";
 import { DiagnosticsBadge } from "./DiagnosticsBadge";
@@ -24,7 +23,6 @@ export function StatusBar({
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <WorkspaceEnvSelector onSelect={onWorkspaceChange} />
         <CwdBreadcrumb cwd={cwd} filePath={filePath} home={home} onCd={onCd} />
-        <LspStatusPill filePath={filePath ?? null} />
         <DiagnosticsBadge filePath={filePath ?? null} />
       </div>
     </footer>

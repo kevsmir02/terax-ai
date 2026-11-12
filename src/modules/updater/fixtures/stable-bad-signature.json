@@ -1,0 +1,13 @@
+{
+  "version": "0.10.0",
+  "channel": "stable",
+  "notes": "Fixture with a malformed signature envelope: the check must fail closed.",
+  "pub_date": "2026-10-01T12:00:00Z",
+  "platforms": {
+    "linux-x86_64": {
+      "url": "http://127.0.0.1:8787/Terax_0.10.0_amd64.deb",
+      "signature": "not-a-minisign-signature",
+      "size": 1234
+    }
+  }
+}

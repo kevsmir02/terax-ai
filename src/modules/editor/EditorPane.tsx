@@ -1,4 +1,3 @@
-import { lspFormatDocument, useLspExtension } from "@/modules/lsp";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { acceptCompletion, startCompletion } from "@codemirror/autocomplete";
 import { redo, undo } from "@codemirror/commands";
@@ -24,7 +23,6 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
-  useState,
 } from "react";
 import { toast } from "sonner";
 import { diagnosticsReporter } from "./lib/diagnosticsReporter";
@@ -35,7 +33,6 @@ import {
   indentCompartment,
   indentExtension,
   languageCompartment,
-  lspCompartment,
   vimCompartment,
   wordWrapExtension,
   wrapCompartment,
@@ -88,8 +85,8 @@ type Props = {
   mediaActive?: boolean;
 };
 
-// Above this, syntax highlighting and LSP are disabled: a multi-MB lezer
-// parse tree and a didOpen of that size cost far more than they give.
+// Above this, syntax highlighting is disabled: a multi-MB lezer parse tree
+// costs far more than it gives.
 const SYNTAX_MAX_BYTES = 4 * 1024 * 1024;
 
 function formatBytes(n: number): string {
@@ -128,7 +125,6 @@ export const EditorPane = memo(
       s.editorWordWrap ? s.editorWordWrapColumn : null,
     );
     const languageRef = useRef<string | null>(null);
-    const [langId, setLangId] = useState<string | null>(null);
 
     // Stabilize save + onSaved via refs so the extensions array never changes
     // identity — a new identity makes @uiw/react-codemirror reconfigure the
@@ -139,45 +135,17 @@ export const EditorPane = memo(
     onSavedRef.current = onSaved;
     const onCloseRef = useRef(onClose);
     onCloseRef.current = onClose;
-    const lspActiveRef = useRef(false);
-    const warnedNoLspRef = useRef(false);
-    const warnedNoFormatRef = useRef(false);
-
     const performSave = useCallback(async () => {
       const view = cmRef.current?.view;
       const prefs = usePreferencesStore.getState();
+      // Null when no configured formatter applies to this language.
       const formatter = resolveFormatter(languageRef.current, prefs);
-      if (prefs.editorFormatOnSave && formatter === "lsp" && view) {
-        if (lspActiveRef.current) {
-          let res: "done" | "unsupported" = "done";
-          try {
-            res = await lspFormatDocument(view);
-          } catch (e) {
-            toast.error("Language server format failed", {
-              description: String(e),
-            });
-          }
-          if (res === "unsupported" && !warnedNoFormatRef.current) {
-            warnedNoFormatRef.current = true;
-            toast.warning("Format on save skipped", {
-              description:
-                "The active language server has no formatter. Pick an external one in Settings (Ruff for Python, Prettier, rustfmt, ...).",
-            });
-          }
-        } else if (!warnedNoLspRef.current) {
-          warnedNoLspRef.current = true;
-          toast.warning("Format on save skipped", {
-            description:
-              "No active language server for this file. Enable one in the statusbar, or pick an external formatter in Settings.",
-          });
-        }
-      }
       // Snapshot before save: edits typed during the formatter round-trip
       // must not be clobbered by the disk read-back.
       const docAtSave = view?.state.doc;
       const saved = await saveRef.current();
       if (!saved) return;
-      if (prefs.editorFormatOnSave && formatter !== "lsp") {
+      if (prefs.editorFormatOnSave && formatter) {
         const error = await runExternalFormatter(
           formatter,
           pathRef.current,
@@ -290,7 +258,6 @@ export const EditorPane = memo(
         ...buildSharedExtensions(),
         indentCompartment.of(DEFAULT_INDENT),
         languageCompartment.of([]),
-        lspCompartment.of([]),
         diagnosticsReporter(() => pathRef.current),
         // Let an open completion popup claim Tab.
         Prec.highest(keymap.of([{ key: "Tab", run: acceptCompletion }])),
@@ -336,16 +303,6 @@ export const EditorPane = memo(
       });
     }, [doc]);
 
-    const lspExt = useLspExtension(path, langId, doc.status === "ready");
-    useEffect(() => {
-      lspActiveRef.current = lspExt !== null;
-      const view = cmRef.current?.view;
-      if (!view) return;
-      view.dispatch({
-        effects: lspCompartment.reconfigure(lspExt ?? []),
-      });
-    }, [lspExt]);
-
     useEffect(
       () => () => useDiagnosticsStore.getState().report(pathRef.current, null),
       [],
@@ -364,7 +321,6 @@ export const EditorPane = memo(
       languageRef.current = ext;
       if (doc.status !== "ready") return;
       if (doc.size > SYNTAX_MAX_BYTES) {
-        setLangId(null);
         const view = cmRef.current?.view;
         view?.dispatch({ effects: languageCompartment.reconfigure([]) });
         return;
@@ -381,7 +337,6 @@ export const EditorPane = memo(
       void resolve().then((result) => {
         if (cancelled) return;
         if (result.id) languageRef.current = result.id;
-        setLangId(result.id || ext);
         const view = cmRef.current?.view;
         if (!view) return;
         view.dispatch({

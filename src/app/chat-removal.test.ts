@@ -175,11 +175,12 @@ describe("removed built-in chat entry points", () => {
     expect(ids).not.toContain("composer.open");
   });
 
-  it("routes settings deep links away from the removed sections", () => {
+  it("routes settings deep links away from the removed AI sections", () => {
     expect(SETTINGS_TABS).not.toContain("models");
-    expect(SETTINGS_TABS).not.toContain("agents");
-    for (const legacy of ["ai", "connections", "models", "agents"])
+    for (const legacy of ["ai", "connections", "models"])
       expect(normalizeSettingsTab(legacy)).toBe("general");
+    // Retained external-agent hook configuration keeps its tab.
+    expect(normalizeSettingsTab("agents")).toBe("agents");
     expect(normalizeSettingsTab("editor")).toBe("editor");
     expect(normalizeSettingsTab("nonsense")).toBeNull();
   });

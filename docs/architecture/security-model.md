@@ -2,7 +2,7 @@
 
 This guide elaborates on `TERAX.md`. If anything here conflicts with `TERAX.md`, `TERAX.md` wins.
 
-Terax runs shells, reads and writes files, and sends data to AI providers. The security model is defense-in-depth: no single guard is enough, so every boundary validates input before acting on it.
+Terax runs shells, reads and writes files, and can spawn coding agents. The security model is defense-in-depth: no single guard is enough, so every boundary validates input before acting on it.
 
 ## Boundaries
 
@@ -10,8 +10,8 @@ The main trust boundaries are:
 
 1. **IPC boundary** - commands registered in `src-tauri/src/lib.rs`, gated by `src-tauri/capabilities/default.json`.
 2. **File-system boundary** - automatic consumers (agent reads, Markdown/media preview) go through the shared secret-path policy in `src/modules/workspace/policy.ts` and its native mirror; structural mutations and PTY spawn go through the workspace authorization registry. Explicit user editing is deliberately not policy-gated (see "File access tiers").
-3. **Network boundary** - AI HTTP proxy in `src-tauri/src/modules/net.rs` with SSRF and DNS-rebinding defenses.
-4. **Secret-storage boundary** - keys live in the OS keychain, never on disk or in `localStorage`.
+3. **Network boundary** - the HTTP proxy in `src-tauri/src/modules/net.rs` with SSRF and DNS-rebinding defenses (inert native compatibility until ticket #14; the client has no AI provider requests).
+4. **Secret-storage boundary** - provider keys live in the OS keychain, never on disk or in `localStorage`; the client no longer reads or writes them (inert native compatibility until ticket #14).
 5. **Terminal escape-sequence boundary** - OSC sequences are parsed and acted on, but never blindly trusted to mutate state.
 
 ## Secret-path deny-list
@@ -28,7 +28,7 @@ The comparison surface normalizes paths: backslashes to forward slashes, strips 
 
 `checkReadableCanonical` and `checkWritableCanonical` also canonicalize the path and re-check the resolved form so a symlink at an innocent path pointing into `~/.ssh` is caught.
 
-The legacy `src/modules/ai/lib/security.ts` entry point still exists and re-exports these guards for the agent code that has not migrated; the only part it still owns is `checkShellCommand` (the approval-UI heuristic).
+The legacy AI-owned wrapper that re-exported these guards and owned `checkShellCommand` was removed with the built-in AI client (ticket #12); the shared policy modules above are the only owners.
 
 ## File access tiers
 
@@ -41,18 +41,17 @@ Four tiers exist and must stay distinct:
 
 Known limitation (RS-3, ticket #5): the external formatter runs `shell_run_command` with `cwd = dirname(edited file)` and that cwd is authorized through tier 2, so formatting a file outside every authorized root is refused even though the file can be edited. Widening it needs an explicit user grant for the formatter cwd; until then do not replace the registry check with a path-only check.
 
-## Legacy AI-owned consumers of shared contracts
+## Inert AI-owned native consumers of shared contracts
 
-Retained code no longer imports either legacy entry point. These AI-owned files still do, so deleting them with the agent (ticket #11/#13) must not remove `src/modules/workspace/{native,policy}.ts`, `src/modules/workspace/pathPolicy.json`, `src-tauri/src/modules/fs/{access,access_policy}.rs`:
+The built-in AI client was removed (ticket #12), so nothing in `src/` calls these commands. The native side remains until ticket #14, and it must not take the shared guards with it: `src/modules/workspace/{native,policy}.ts`, `src/modules/workspace/pathPolicy.json` and `src-tauri/src/modules/fs/{access,access_policy}.rs` are owned by retained file/preview features.
 
-- `src/modules/ai/lib/native.ts` (barrel kept for the agent) — `readProjectMemory`, `readDir`/`grep`/`glob` (`ai_*`), `shellSession*`, `shellBg*`, and a `readFile` override pinned to the policy-guarded `ai_read_file`.
-- Importers of that barrel: `ai/lib/transport.ts`, `ai/store/planStore.ts`, `ai/tools/{edit,fs,search,shell}.ts`, `ai/components/AgentRunBridge.tsx`.
-- Importers of `src/modules/ai/lib/security.ts`: `ai/components/AgentRunBridge.tsx`, `ai/lib/transport.ts`, `ai/tools/{edit,fs,search,shell,terminal}.ts`.
-- Rust: `src/modules/fs/ai.rs` (reader/walk commands) and `src/modules/fs/project_memory.rs` use `fs::access` + `fs::access_policy`; `fs::assets` (retained) uses `fs::access_policy` and `fs::access::opened_path`.
+- `src/modules/fs/ai.rs` (reader/walk commands) and `src/modules/fs/project_memory.rs` still use `fs::access` + `fs::access_policy`; `fs::assets` (retained) uses `fs::access_policy` and `fs::access::opened_path`.
+- `shell_*` one-shot/session commands and `ai_*` readers have no client consumer; do not add one.
+- If a command is removed, remove its own tests with it, not the shared guard tests.
 
 ## Workspace authorization registry
 
-`WorkspaceRegistry` (`src-tauri/src/modules/workspace.rs:20`) tracks directories that PTY spawn, git commands, and AI tools are allowed to operate in.
+`WorkspaceRegistry` (`src-tauri/src/modules/workspace.rs:20`) tracks directories that PTY spawn, git commands, formatters and the inert AI commands are allowed to operate in.
 
 - `workspace_authorize` adds a directory.
 - `authorize_spawn_cwd` rejects a spawn cwd outside an authorized root.
@@ -62,36 +61,30 @@ Retained code no longer imports either legacy entry point. These AI-owned files 
 
 This is the allow side of the file-system boundary. Any new feature that spawns a shell or mutates files outside the current workspace must interact with this registry.
 
-## AI tool approval flow
+## Removed AI tool approval flow
 
-In `src/modules/ai/tools/tools.ts`:
-
-- Read-only tools (`read_file`, `list_directory`, `grep`, `glob`) auto-execute after passing the deny-list.
-- Mutating tools (`write_file`, `edit`, `multi_edit`, `create_directory`, `run_command`, `shell_session_run`, `shell_bg_spawn`) set `needsApproval: true`. The AI SDK pauses and surfaces a `tool-approval-request` part rendered as a confirmation card.
-- `edit` / `multi_edit` enforce a read-before-edit invariant: the model must have read the file earlier in the session.
-
-Auto-send after approval uses `lastAssistantMessageIsCompleteWithApprovalResponses`.
+The client-side tool approval cards went with the built-in AI (ticket #12): there is no in-app tool execution or approval surface. External coding agents ask for permission in their own terminal, and the hook permission fallback in `modules/control/agents.ts` is retained for agent-owned approval prompts. No new approval UI is introduced.
 
 ## SSRF and DNS rebinding defense
 
-`src-tauri/src/modules/net.rs` proxies AI provider requests and local-model pings. Before connecting:
+`src-tauri/src/modules/net.rs` proxies the inert AI-provider requests and local-model pings. Before connecting:
 
 1. Resolve the hostname once (`resolve_and_classify`).
 2. Classify every resolved IP as public, private, loopback, or blocked metadata (`net/ip.rs`). An IPv6 address that carries an IPv4 destination (`::ffff:a.b.c.d`, `::a.b.c.d`, NAT64 `64:ff9b::/96`, 6to4 `2002::/16`, Teredo) takes the class of the embedded IPv4, and anything outside global unicast `2000::/3` (unique-local, site-local, link-local, multicast, documentation) is never public. Redirect targets are classified the same way.
 3. Block cloud metadata endpoints (`169.254.169.254`, `metadata.google.internal`, AWS IPv6 metadata, etc.).
 4. Pin reqwest to the resolved IPs so a second DNS lookup cannot return a different address (DNS rebinding).
 
-Local LLM endpoints are explicitly allowed because the user opted in by pointing Terax at them, but they are still classified and logged.
+Local LLM endpoints were explicitly allowed because the user opted in by pointing Terax at them, but they are still classified and logged. Nothing in the client calls this proxy today.
 
 ## Secret storage
 
-API keys are stored via `secrets_*` commands (`src-tauri/src/modules/secrets.rs`):
+Provider API keys were stored via `secrets_*` commands (`src-tauri/src/modules/secrets.rs`); the client no longer calls them, and the fork must never read or delete an upstream entry:
 
 - macOS: Keychain via `keyring`
 - Windows: Credential Manager via `keyring`
 - Linux: a JSON file in the app's local data dir with mode `0600` (atomic write to `.tmp` then rename)
 
-Service constant: `terax-ai`. Keys never touch disk outside the keychain/Linux secrets file, never go in `localStorage`, and never appear in logs.
+Keys never touched disk outside the keychain/Linux secrets file, never went in `localStorage`, and never appeared in logs. The retained layer stays inert until ticket #14.
 
 ## OSC trust gating
 

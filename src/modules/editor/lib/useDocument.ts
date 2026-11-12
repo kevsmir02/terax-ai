@@ -1,4 +1,3 @@
-import { notifyDocumentSaved } from "@/modules/lsp";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { currentWorkspaceEnv } from "@/modules/workspace";
 import { invoke } from "@tauri-apps/api/core";
@@ -70,7 +69,6 @@ export function useDocument({ path, onDirtyChange }: Options) {
     savedRef.current = content;
     // Edits typed while the write was in flight must stay dirty.
     setDirty(bufferRef.current !== content);
-    notifyDocumentSaved(path);
   }, [path]);
 
   // False when the write was withheld because the file changed on disk
