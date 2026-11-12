@@ -163,6 +163,21 @@ pub async fn git_worktree_remove(
     .await
 }
 
+/// What `git_worktree_remove` would refuse or lose, without mutating anything.
+#[tauri::command]
+pub async fn git_worktree_remove_preflight(
+    repo_root: String,
+    path: String,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<WorktreeRemoveReport, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    blocking(app, move |r| {
+        worktree::preflight_removal(r, &repo_root, &path, &workspace).map_err(Into::into)
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn git_worktree_prune(
     repo_root: String,
@@ -286,6 +301,39 @@ pub async fn git_checkpoint_cleanup(
     let workspace = WorkspaceEnv::from_option(workspace);
     blocking(app, move |r| {
         checkpoint::cleanup(r, &worktree, &refs, &workspace).map_err(Into::into)
+    })
+    .await
+}
+
+/// Recovery points of a worktree registration, by path: the same groups as
+/// `git_checkpoint_groups`, still answered when the directory is already gone.
+#[tauri::command]
+pub async fn git_checkpoint_groups_at(
+    repo_root: String,
+    worktree: String,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<CheckpointList, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    blocking(app, move |r| {
+        checkpoint::list_at(r, &repo_root, &worktree, &workspace).map_err(Into::into)
+    })
+    .await
+}
+
+/// Explicit cleanup of a worktree registration's recovery refs, resolved by
+/// path so it still works after the worktree directory is gone.
+#[tauri::command]
+pub async fn git_checkpoint_cleanup_at(
+    repo_root: String,
+    worktree: String,
+    refs: Vec<String>,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<CleanupReport, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    blocking(app, move |r| {
+        checkpoint::cleanup_at(r, &repo_root, &worktree, &refs, &workspace).map_err(Into::into)
     })
     .await
 }

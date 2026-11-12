@@ -58,6 +58,7 @@ import {
   FolderAddIcon,
   FolderCloudIcon,
   FolderGitTwoIcon,
+  FolderRemoveIcon,
   GitBranchIcon,
   Refresh01Icon,
   RemoveSquareIcon,
@@ -86,6 +87,10 @@ import {
 import { CheckpointPanel } from "./CheckpointPanel";
 import { registerDestructiveGitBridge } from "./destructiveGitBridge";
 import { WorktreeCreateDialog } from "@/modules/worktrees/WorktreeCreateDialog";
+import {
+  WorktreeRemoveDialog,
+  type WorktreeRemovalTarget,
+} from "@/modules/worktrees/WorktreeRemoveDialog";
 import type { SourceControlSummary } from "./useSourceControl";
 import {
   useSourceControlPanel,
@@ -113,6 +118,9 @@ type Props = {
   worktreeDialogOpen: boolean;
   onWorktreeDialogOpenChange: (open: boolean) => void;
   onOpenWorktreeAsSpace: (path: string, branch: string | null) => void;
+  /** The worktree whose removal dialog is open, with the repository that listed it. */
+  worktreeRemoveTarget: WorktreeRemovalTarget | null;
+  onWorktreeRemoveOpenChange: (target: WorktreeRemovalTarget | null) => void;
 };
 
 const SOURCE_CONTROL_TOOLTIP_CLASS =
@@ -185,6 +193,7 @@ function BranchDropdown({
   onRequestCheckout,
   onNewWorktree,
   onOpenWorktreeAsSpace,
+  onRemoveWorktree,
 }: {
   repoRoot: string | null;
   repoLabel: string;
@@ -196,6 +205,7 @@ function BranchDropdown({
   onRequestCheckout: (branch: string, onDone: () => void) => void;
   onNewWorktree: () => void;
   onOpenWorktreeAsSpace: (path: string, branch: string | null) => void;
+  onRemoveWorktree: (repoRoot: string, path: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [branches, setBranches] = useState<GitBranchEntry[]>([]);
@@ -391,6 +401,22 @@ function BranchDropdown({
                         >
                           Open as Space
                         </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onSelect={() => {
+                            if (b.worktreePath && repoRoot)
+                              onRemoveWorktree(repoRoot, b.worktreePath);
+                          }}
+                          className="cursor-pointer text-[12px] text-destructive"
+                        >
+                          <HugeiconsIcon
+                            icon={FolderRemoveIcon}
+                            size={14}
+                            strokeWidth={1.5}
+                            className="shrink-0"
+                          />
+                          Remove worktree…
+                        </DropdownMenuItem>
                       </DropdownMenuSubContent>
                     </DropdownMenuSub>
                   ))}
@@ -439,6 +465,8 @@ export const SourceControlPanel = memo(function SourceControlPanel({
   worktreeDialogOpen,
   onWorktreeDialogOpenChange,
   onOpenWorktreeAsSpace,
+  worktreeRemoveTarget,
+  onWorktreeRemoveOpenChange,
 }: Props) {
   const scm = useSourceControlPanel(
     open,
@@ -788,6 +816,9 @@ export const SourceControlPanel = memo(function SourceControlPanel({
               onRequestCheckout={scm.requestCheckout}
               onNewWorktree={() => onWorktreeDialogOpenChange(true)}
               onOpenWorktreeAsSpace={onOpenWorktreeAsSpace}
+              onRemoveWorktree={(repoRoot, path) =>
+                onWorktreeRemoveOpenChange({ repoRoot, path })
+              }
             />
             {scm.status && (scm.status.ahead > 0 || scm.status.behind > 0) ? (
               <div className="flex shrink-0 items-center gap-0.5 text-[10px] font-semibold tabular-nums leading-none text-muted-foreground">
@@ -1145,6 +1176,20 @@ export const SourceControlPanel = memo(function SourceControlPanel({
         onOpenChange={onWorktreeDialogOpenChange}
         repoRoot={scm.repo?.repoRoot ?? null}
         onOpenAsSpace={onOpenWorktreeAsSpace}
+      />
+
+      <WorktreeRemoveDialog
+        open={worktreeRemoveTarget !== null}
+        path={worktreeRemoveTarget?.path ?? null}
+        repoRoot={worktreeRemoveTarget?.repoRoot ?? null}
+        support={destructive}
+        onOpenChange={(next) => {
+          if (!next) onWorktreeRemoveOpenChange(null);
+        }}
+        onRemoved={() => {
+          // The repository's worktree list and branch list both changed.
+          void scm.refresh();
+        }}
       />
     </TooltipProvider>
   );

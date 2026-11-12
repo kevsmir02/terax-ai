@@ -15,8 +15,8 @@ use serde::Serialize;
 use crate::modules::git::diff::{parse_raw_numstat_z, DiffFileSummary, FileStatus};
 use crate::modules::git::errors::{GitError, Result};
 use crate::modules::git::plumbing::{
-    empty_tree, git_dir, head_commit_opt, lock_for_repo, open_worktree, os_args, run, run_ok,
-    stdout_text, verify_tree,
+    common_dir, empty_tree, forward_slashes, git_dir, head_commit_opt, lock_for_repo, open_worktree,
+    os_args, run, run_ok, stdout_text, verify_tree,
 };
 use crate::modules::git::process::{ensure_success, run_git_with, RunOptions};
 use crate::modules::git::refs;
@@ -1483,6 +1483,145 @@ pub struct CheckpointList {
     pub storage: StoragePressure,
 }
 
+/// What one worktree registration still owns, counted by kind.
+///
+/// Worktree removal refuses while this is non-empty: the refs are stored by the
+/// repository, but the ownership marker that makes them listable, restorable
+/// and cleanable lives in the worktree's administrative directory, which
+/// removal deletes.
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnedRecoveryRefs {
+    pub total: u32,
+    pub manual: u32,
+    pub turns: u32,
+    pub safety: u32,
+    /// The ref names, capped: a refusal names what has to be cleaned up.
+    pub sample: Vec<String>,
+}
+
+const MAX_RECOVERY_SAMPLE: usize = 20;
+
+/// Whether two spellings name the same location, without touching the
+/// filesystem: a worktree whose directory is gone cannot be canonicalized.
+fn same_location(a: &str, b: &Path) -> bool {
+    let normalize = |path: &str| {
+        let path = forward_slashes(path);
+        let path = path.trim_end_matches('/').to_string();
+        if cfg!(windows) {
+            path.to_lowercase()
+        } else {
+            path
+        }
+    };
+    normalize(a) == normalize(&b.to_string_lossy())
+}
+
+/// The worktree's private git directory, found *through the repository*.
+///
+/// An existing directory answers with its own `.git` (a directory for the main
+/// worktree, a `gitdir:` file for a linked one). A directory that is already
+/// gone is matched through the administrative entries under
+/// `<common>/worktrees/<name>/gitdir`, so a missing worktree never loses its
+/// ownership marker before the caller decides what to do with its refs.
+fn admin_dir_at(repo: &ResolvedGitDirectory, path: &str) -> Result<Option<PathBuf>> {
+    let expected = Path::new(path).join(".git");
+    match std::fs::symlink_metadata(&expected) {
+        Ok(meta) if meta.is_dir() => return Ok(Some(expected)),
+        Ok(_) => {
+            if let Ok(text) = std::fs::read_to_string(&expected) {
+                if let Some(target) = text.trim().strip_prefix("gitdir:") {
+                    let target = target.trim();
+                    if !target.is_empty() {
+                        let directory = Path::new(target);
+                        let directory = if directory.is_absolute() {
+                            directory.to_path_buf()
+                        } else {
+                            expected.parent().unwrap_or(Path::new(".")).join(directory)
+                        };
+                        return Ok(Some(directory));
+                    }
+                }
+            }
+        }
+        Err(_) => {}
+    }
+    let common = common_dir(repo)?;
+    let Ok(entries) = std::fs::read_dir(common.join("worktrees")) else {
+        return Ok(None);
+    };
+    for entry in entries.flatten() {
+        let Ok(target) = std::fs::read_to_string(entry.path().join("gitdir")) else {
+            continue;
+        };
+        if same_location(target.trim(), &expected) {
+            return Ok(Some(entry.path()));
+        }
+    }
+    Ok(None)
+}
+
+fn admin_at(repo: &ResolvedGitDirectory, path: &str) -> Result<Option<Admin>> {
+    Ok(admin_dir_at(repo, path)?.map(|dir| Admin {
+        hooks: dir.join(NO_HOOKS_DIR),
+        dir,
+    }))
+}
+
+/// The recovery refs this *worktree registration* owns, by path.
+///
+/// Works from the repository and its administrative directories, so the answer
+/// is the same whether the working directory is present or gone, and a ref
+/// owned by another worktree is never counted.
+pub fn owned_recovery_refs(
+    repo: &ResolvedGitDirectory,
+    worktree: &str,
+) -> Result<OwnedRecoveryRefs> {
+    let Some(admin) = admin_at(repo, worktree)? else {
+        return Ok(OwnedRecoveryRefs::default());
+    };
+    let Some(mine) = admin.existing_worktree_id() else {
+        return Ok(OwnedRecoveryRefs::default());
+    };
+    let manual = list_manual(repo, &mine)?;
+    let turns = list_turns(repo, &mine)?;
+    let safety = list_safety(repo, &mine)?;
+    let mut sample = Vec::new();
+    for name in manual
+        .iter()
+        .map(|checkpoint| checkpoint.ref_name.as_str())
+        .chain(turns.iter().map(|checkpoint| checkpoint.ref_name.as_str()))
+        .chain(safety.iter().map(|snapshot| snapshot.ref_name.as_str()))
+    {
+        if sample.len() < MAX_RECOVERY_SAMPLE {
+            sample.push(name.to_string());
+        }
+    }
+    Ok(OwnedRecoveryRefs {
+        total: (manual.len() + turns.len() + safety.len()) as u32,
+        manual: manual.len() as u32,
+        turns: turns.len() as u32,
+        safety: safety.len() as u32,
+        sample,
+    })
+}
+
+fn no_groups(repo: &ResolvedGitDirectory) -> Result<CheckpointList> {
+    Ok(CheckpointList {
+        manual: Vec::new(),
+        turns: Vec::new(),
+        safety: Vec::new(),
+        storage: storage_pressure(repo, 0)?,
+    })
+}
+
+fn owned_groups(repo: &ResolvedGitDirectory, worktree: &str) -> Result<CheckpointList> {
+    match admin_at(repo, worktree)?.and_then(|admin| admin.existing_worktree_id()) {
+        Some(mine) => groups_for(repo, &mine),
+        None => no_groups(repo),
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckpointInspection {
@@ -2000,16 +2139,19 @@ pub fn list_groups(
     workspace: &WorkspaceEnv,
 ) -> Result<CheckpointList> {
     let repo = open_worktree(registry, worktree, workspace)?;
-    let admin = Admin::new(&repo)?;
-    match admin.existing_worktree_id() {
-        Some(mine) => groups_for(&repo, &mine),
-        None => Ok(CheckpointList {
-            manual: Vec::new(),
-            turns: Vec::new(),
-            safety: Vec::new(),
-            storage: storage_pressure(&repo, 0)?,
-        }),
-    }
+    owned_groups(&repo, worktree)
+}
+
+/// The same groups for a worktree registration named by path, resolved from the
+/// repository instead of from the worktree's own directory.
+pub fn list_at(
+    registry: &WorkspaceRegistry,
+    repo_root: &str,
+    worktree: &str,
+    workspace: &WorkspaceEnv,
+) -> Result<CheckpointList> {
+    let repo = open_worktree(registry, repo_root, workspace)?;
+    owned_groups(&repo, worktree)
 }
 
 /// The metadata and captured paths of one recovery point this worktree owns.
@@ -2122,6 +2264,36 @@ pub fn cleanup(
     let admin = Admin::new(&repo)?;
     let lock = lock_for_repo(&repo);
     let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    cleanup_inner(&repo, &admin, references)
+}
+
+/// The same explicit cleanup for a worktree registration named by path, so the
+/// refs a worktree removal is waiting on can be deleted even after its working
+/// directory is already gone.
+pub fn cleanup_at(
+    registry: &WorkspaceRegistry,
+    repo_root: &str,
+    worktree: &str,
+    references: &[String],
+    workspace: &WorkspaceEnv,
+) -> Result<CleanupReport> {
+    let repo = open_worktree(registry, repo_root, workspace)?;
+    let admin = admin_at(&repo, worktree)?.ok_or_else(|| {
+        GitError::command(
+            "git checkpoint cleanup",
+            "this worktree has no registration to attribute recovery points to",
+        )
+    })?;
+    let lock = lock_for_repo(&repo);
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    cleanup_inner(&repo, &admin, references)
+}
+
+fn cleanup_inner(
+    repo: &ResolvedGitDirectory,
+    admin: &Admin,
+    references: &[String],
+) -> Result<CleanupReport> {
     let mine = admin.existing_worktree_id();
 
     let mut removed = Vec::new();
@@ -2139,7 +2311,7 @@ pub fn cleanup(
             continue;
         };
         let output = run(
-            &repo,
+            repo,
             os_args(["for-each-ref", LIST_FORMAT, reference.as_str()]),
         )?;
         let record = parse_ref_records(&output.stdout)
@@ -2167,7 +2339,7 @@ pub fn cleanup(
         // The expected old value makes a concurrent move of the ref a refusal
         // rather than a deletion of something the caller never saw.
         let deleted = run(
-            &repo,
+            repo,
             admin.plumb(os_args([
                 "update-ref",
                 "-d",
@@ -2191,9 +2363,12 @@ pub fn cleanup(
         }
     }
     if !removed.is_empty() {
-        clear_last_restore(&admin);
+        clear_last_restore(admin);
     }
-    let remaining = list_groups(registry, worktree, workspace)?;
+    let remaining = match mine.as_deref() {
+        Some(mine) => groups_for(repo, mine)?,
+        None => no_groups(repo)?,
+    };
     Ok(CleanupReport {
         removed,
         refused,

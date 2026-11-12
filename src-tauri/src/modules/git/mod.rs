@@ -35,6 +35,8 @@ pub mod types;
 mod untracked;
 pub mod utils;
 pub mod watch;
+#[cfg(test)]
+mod worktree_removal_tests;
 pub mod worktree;
 
 pub mod commands_tasks;

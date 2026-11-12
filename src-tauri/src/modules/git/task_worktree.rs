@@ -605,7 +605,7 @@ pub fn archive(
     task.status = TaskStatus::Archiving;
     Store::open(home)?.put(task.clone())?;
     let attempt = remove_with_shared(&task, &links, || {
-        worktree::remove(registry, &task.root, &task.path, force, workspace)
+        worktree::remove_for_archive(registry, &task.root, &task.path, force, workspace)
     });
     complete_archive(registry, &repo, task, snapshot, attempt, home)
 }
@@ -677,7 +677,13 @@ fn recover_removed(
         .iter()
         .any(|e| !e.is_main && key(&e.path) == key(&task.path))
     {
-        let removal = worktree::remove(registry, &task.root, &task.path, true, &repo.workspace)?;
+        let removal = worktree::remove_for_archive(
+            registry,
+            &task.root,
+            &task.path,
+            true,
+            &repo.workspace,
+        )?;
         if !removal.removed {
             return Err(GitError::command(
                 "task recovery",
