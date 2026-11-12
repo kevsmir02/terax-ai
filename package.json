@@ -39,7 +39,9 @@
     "profile:renderer:agents": "python3 scripts/renderer-profile/run.py --workload agents",
     "profile:renderer:idle": "python3 scripts/renderer-profile/run.py --workload idle",
     "profile:app": "python3 scripts/app-lab/run.py",
-    "profile:app:linux": "python3 scripts/app-lab/run.py --scenario workflow --profile debug"
+    "profile:app:linux": "python3 scripts/app-lab/run.py --scenario workflow --profile debug",
+    "package:candidate": "python3 scripts/package-candidate/run.py",
+    "package:candidate:dry-run": "python3 scripts/package-candidate/run.py --dry-run"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",

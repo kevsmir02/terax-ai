@@ -5,6 +5,14 @@
   "appIdentifier": "dev.terax-workspace.fork",
   "namespace": "terax-workspace",
   "envPrefix": "TERAX_WORKSPACE_FORK",
+  "packaging": {
+    "productName": "Terax Workspace",
+    "vendor": "Terax Workspace Candidate",
+    "packageName": "terax-workspace",
+    "cliBinaryName": "terax-workspace-cli",
+    "shortDescription": "Terax Workspace — personal Linux terminal workspace (unreleased candidate)",
+    "longDescription": "Unofficial Terax Workspace candidate build for Linux x86-64. This is not a release: final product name, release owner, update endpoint and signing keys are undecided (tickets #39/#40), so the packages carry a private working identity and must not be published."
+  },
   "sharedChildEnv": [
     "TERAX_TASK",
     "TERAX_PORT",
@@ -15,6 +23,8 @@
   "upstream": {
     "appIdentifier": "app.crynta.terax",
     "namespace": "terax",
-    "envPrefix": "TERAX"
+    "envPrefix": "TERAX",
+    "productName": "Terax",
+    "publisher": "Crynta"
   }
 }

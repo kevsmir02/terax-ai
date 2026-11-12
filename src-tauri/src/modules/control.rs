@@ -811,14 +811,16 @@ fn remove_own_descriptor(path: &Path, token: &str) {
 }
 
 fn find_bundled_cli() -> Option<PathBuf> {
-    let filename = if cfg!(windows) {
-        "terax-cli.exe"
-    } else {
-        "terax-cli"
-    };
+    // The sidecar installs under the candidate package name (see `identity::packaging`),
+    // not upstream's `terax-cli` path.
+    let filename = format!(
+        "{}{}",
+        crate::modules::identity::cli_binary_name(),
+        std::env::consts::EXE_SUFFIX
+    );
     if let Some(path) = std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|parent| parent.join(filename)))
+        .and_then(|exe| exe.parent().map(|parent| parent.join(&filename)))
         .filter(|path| is_cli_candidate(path))
     {
         return Some(path);
@@ -828,7 +830,8 @@ fn find_bundled_cli() -> Option<PathBuf> {
         let binaries = Path::new(env!("CARGO_MANIFEST_DIR")).join("binaries");
         let target = option_env!("TAURI_ENV_TARGET_TRIPLE")?;
         let candidate = binaries.join(format!(
-            "terax-cli-{target}{}",
+            "{}-{target}{}",
+            crate::modules::identity::cli_binary_name(),
             std::env::consts::EXE_SUFFIX
         ));
         return is_cli_candidate(&candidate).then_some(candidate);
