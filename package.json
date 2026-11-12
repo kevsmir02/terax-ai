@@ -39,6 +39,8 @@
     "profile:renderer:idle": "python3 scripts/renderer-profile/run.py --workload idle",
     "profile:app": "python3 scripts/app-lab/run.py",
     "profile:app:linux": "python3 scripts/app-lab/run.py --scenario workflow --profile debug",
+    "package:candidate": "python3 scripts/package-candidate/run.py",
+    "package:candidate:dry-run": "python3 scripts/package-candidate/run.py --dry-run",
     "test:ipc:macos": "python3 scripts/ipc-profile/run.py"
   },
   "dependencies": {

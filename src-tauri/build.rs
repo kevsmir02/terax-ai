@@ -1,6 +1,17 @@
+const IDENTITY: &str = include_str!("../src/modules/identity/namespace.json");
+
 fn main() {
+    println!("cargo:rerun-if-changed=../src/modules/identity/namespace.json");
     configure_sidecar();
     tauri_build::build()
+}
+
+fn cli_binary_name() -> String {
+    let table: serde_json::Value = serde_json::from_str(IDENTITY).expect("valid identity table");
+    table["packaging"]["cliBinaryName"]
+        .as_str()
+        .expect("packaging.cliBinaryName in the identity table")
+        .to_string()
 }
 
 fn configure_sidecar() {
@@ -12,7 +23,10 @@ fn configure_sidecar() {
     } else {
         ""
     };
-    let path = std::path::PathBuf::from("binaries").join(format!("terax-cli-{target}{extension}"));
+    let path = std::path::PathBuf::from("binaries").join(format!(
+        "{}-{target}{extension}",
+        cli_binary_name()
+    ));
     let valid =
         std::fs::metadata(&path).is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0);
     if valid {

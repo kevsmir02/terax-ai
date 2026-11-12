@@ -25,6 +25,23 @@ pub struct Upstream {
     pub app_identifier: String,
     pub namespace: String,
     pub env_prefix: String,
+    pub product_name: String,
+    pub publisher: String,
+}
+
+/// The package/install identity of the fork's Linux candidate builds. Final branding is
+/// ticket #39/#40; these names are deliberately private working values, and the packaging
+/// script (`scripts/package-candidate/run.py`) generates the bundle configuration from them
+/// instead of repeating literals.
+#[derive(Deserialize, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Packaging {
+    pub product_name: String,
+    pub vendor: String,
+    pub package_name: String,
+    pub cli_binary_name: String,
+    pub short_description: String,
+    pub long_description: String,
 }
 
 #[derive(Deserialize, Debug, PartialEq, Eq)]
@@ -36,6 +53,7 @@ pub struct Table {
     pub app_identifier: String,
     pub namespace: String,
     pub env_prefix: String,
+    pub packaging: Packaging,
     /// Child-process variables this fork keeps at their upstream name on purpose: they
     /// are the contract of `~/.terax/project.toml` scripts shared with upstream projects
     /// (`TERAX_PORT` and friends), not fork-owned state.
@@ -71,6 +89,18 @@ pub fn env(suffix: &str) -> String {
 /// The upstream identity this fork must never silently read, overwrite or delete.
 pub fn upstream() -> &'static Upstream {
     &table().upstream
+}
+
+/// The package/install identity of the Linux candidate builds (private working values).
+pub fn packaging() -> &'static Packaging {
+    &table().packaging
+}
+
+/// The installed name of the bundled CLI sidecar. Upstream ships `terax-cli`; a candidate
+/// package must not install over that path, so the sidecar is renamed with the fork's
+/// package identity while the *launcher* command keeps its documented name (ticket #39).
+pub fn cli_binary_name() -> &'static str {
+    &table().packaging.cli_binary_name
 }
 
 /// An environment variable of the upstream application, e.g. `upstream_env("CLI")` ->
@@ -125,6 +155,28 @@ mod tests {
             .starts_with(&table.upstream.app_identifier));
         assert_ne!(table.namespace, table.upstream.namespace);
         assert_ne!(table.env_prefix, "TERAX");
+    }
+
+    #[test]
+    fn the_candidate_packaging_identity_is_private_and_not_upstream() {
+        let packaging = packaging();
+        let upstream = upstream();
+        for name in [
+            packaging.product_name.as_str(),
+            packaging.vendor.as_str(),
+            packaging.package_name.as_str(),
+        ] {
+            assert!(!name.eq_ignore_ascii_case("terax"), "{name} reuses upstream branding");
+            assert!(!name.contains("Crynta"), "{name} reuses upstream branding");
+            assert!(!name.contains("crynta"), "{name} reuses upstream branding");
+        }
+        // A candidate package installs into its own paths: no `/usr/bin/terax`, no
+        // `/usr/bin/terax-cli`, so it cannot overwrite an installed upstream build.
+        assert_eq!(packaging.package_name, packaging.package_name.to_lowercase());
+        assert!(packaging.package_name.contains(&namespace()));
+        assert_ne!(packaging.package_name, upstream.namespace);
+        assert_ne!(cli_binary_name(), format!("{}-cli", upstream.namespace));
+        assert!(cli_binary_name().contains(&namespace()));
     }
 
     #[test]

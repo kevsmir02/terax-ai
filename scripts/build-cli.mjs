@@ -1,4 +1,4 @@
-import { cpSync, chmodSync, mkdirSync, statSync } from "node:fs";
+import { cpSync, chmodSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,6 +6,18 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const tauriDir = join(root, "src-tauri");
 const release = process.argv.includes("--release");
+
+// The bundled CLI installs under the fork's candidate package name: upstream ships
+// `terax-cli` and a candidate must not overwrite that path. The name lives in the shared
+// identity table, never here.
+const identity = JSON.parse(
+  readFileSync(join(root, "src/modules/identity/namespace.json"), "utf8"),
+);
+const cliName = identity.packaging?.cliBinaryName;
+if (!cliName) {
+  process.stderr.write("src/modules/identity/namespace.json has no packaging.cliBinaryName\n");
+  process.exit(1);
+}
 
 function run(command, args, { capture = false } = {}) {
   const result = spawnSync(command, args, {
@@ -78,7 +90,7 @@ const source = join(
 const destination = join(
   tauriDir,
   "binaries",
-  `terax-cli-${target}${extension}`,
+  `${cliName}-${target}${extension}`,
 );
 requireArtifact(source, "Built CLI artifact");
 mkdirSync(dirname(destination), { recursive: true });

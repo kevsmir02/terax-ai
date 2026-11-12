@@ -18,6 +18,7 @@ If a guide conflicts with `TERAX.md`, `TERAX.md` wins.
 - [Terminal renderer pool](architecture/terminal-renderer-pool.md) - persistent Ghostty models, bounded presentation leases, and renderer recovery.
 - [Ghostty WebGL renderer](architecture/ghostty-webgl-renderer.md) - adapted xterm.js renderer, Ghostty model boundary, renderer pooling, and rollout gates.
 - [CLI control plane](architecture/cli-control.md) - bundled CLI, authenticated local protocol, caller targeting, packaging, and current platform limits.
+- [Linux package candidates](architecture/linux-packages.md) - the x86-64 RPM/DEB candidate build, private packaging identity, manifest evidence, and the authored (unbuilt) Arch recipe.
 - [Rendered Markdown ownership](architecture/markdown-rendering.md) - the retained Markdown/code renderer, its local-image policy, the AI-named compatibility entry points, and what must survive the AI removal.
 
 ## Terminal migration and validation
