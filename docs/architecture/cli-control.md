@@ -87,6 +87,7 @@ These limits are explicit so unsupported paths fail as unavailable instead of si
 ## See also
 
 - [`TERAX.md`](../../TERAX.md) - architecture source of truth
+- [`Agent capabilities`](agent-capabilities.md) - which agents Terax can launch and what their status, events and notifications actually prove
 - [Two-process model](two-process-model.md) - Tauri IPC boundary
 - [PTY shell integration](pty-shell-integration.md) - environment injection and shell startup
 - [Security model](security-model.md) - workspace and secret boundaries

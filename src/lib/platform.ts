@@ -9,7 +9,6 @@ const PLATFORM = (() => {
 })();
 
 export const IS_MAC = PLATFORM === "macos";
-export const IS_LINUX = PLATFORM === "linux";
 export const IS_WINDOWS = PLATFORM === "windows";
 
 /** Custom window controls (min/max/close) are rendered by us only on

@@ -1,6 +1,5 @@
 import { resolveFontFamily } from "@/lib/fonts";
 import { cn } from "@/lib/utils";
-import { useShortcutHint } from "@/modules/shortcuts";
 import { useTheme } from "@/modules/theme";
 import { useEffect, useRef } from "react";
 import { runScopeHandlers } from "@codemirror/view";
@@ -76,7 +75,7 @@ export default function ShellInput({
   const fontFamily = resolveFontFamily(fontFamilyPref);
   const fontRef = useRef({ fontFamily, fontSize, fontWeight });
   fontRef.current = { fontFamily, fontSize, fontWeight };
-  const placeholder = shellPlaceholder(useShortcutHint("terminal.toggleInput"));
+  const placeholder = shellPlaceholder();
   const placeholderRef = useRef(placeholder);
   placeholderRef.current = placeholder;
 

@@ -1,6 +1,5 @@
 // Fenced-code block for rendered Markdown: highlighting, copy and (for shell
-// snippets) a run-in-terminal action. Shared by the Markdown preview and the
-// AI chat panel, so it owns no AI dependency itself.
+// snippets) a run-in-terminal action.
 
 import { TextShimmer } from "@/components/text-shimmer";
 import { Button } from "@/components/ui/button";

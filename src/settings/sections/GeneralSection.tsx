@@ -396,7 +396,7 @@ export function GeneralSection() {
         {(wslDistros.length > 0 || defaultWorkspaceEnv !== "local") && (
           <SettingRow
             title="Workspace environment"
-            description="Where new spaces run, terminal and AI agent alike: Windows or a WSL distro. Existing spaces keep theirs; switch any from the status bar."
+            description="Where new spaces and their terminal agents run: Windows or a WSL distro. Existing spaces keep theirs; switch any from the status bar."
           >
             <Select
               value={defaultWorkspaceEnv}
@@ -563,7 +563,7 @@ export function GeneralSection() {
         <Label>Agents</Label>
         <SettingRow
           title="Coding agent notifications"
-          description="Alert when a coding agent needs your input or finishes. Native notification when Terax is unfocused, in-app otherwise."
+          description="Alert when a coding agent needs attention or a turn finishes. Names the agent and Space only — no prompt, transcript or file text. Native notification when Terax is unfocused, in-app otherwise, and it never takes focus."
         >
           <div className="flex items-center gap-2">
             <Button
@@ -588,7 +588,7 @@ export function GeneralSection() {
         </SettingRow>
         <SettingRow
           title="Notification sound"
-          description="Play a sound with agent notifications and in-app alerts."
+          description="Play a sound with agent notifications and in-app alerts. Off by default."
         >
           <Switch
             checked={agentNotificationSound}

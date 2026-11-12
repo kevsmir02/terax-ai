@@ -7,6 +7,30 @@ export const nativeWindow = <T = NativeSnapshot>(
 ) => invoke<T>("bench_window", { action });
 
 /**
+ * Page-clock startup facts, attached to every event. `timeOrigin` is the wall-clock epoch of
+ * navigation start, so an orchestrator can split process exec -> navigation from navigation ->
+ * boot without trusting its own spawn timestamp (the native snapshot carries the process start).
+ */
+export function startupTiming(): Record<string, unknown> {
+  const paints: Record<string, number> = {};
+  for (const entry of performance.getEntriesByType("paint")) {
+    paints[entry.name] = entry.startTime;
+  }
+  const navigation = performance.getEntriesByType(
+    "navigation",
+  )[0] as PerformanceNavigationTiming | undefined;
+  return {
+    uptimeMs: performance.now(),
+    timeOrigin: performance.timeOrigin,
+    firstPaintMs: paints["first-paint"] ?? null,
+    firstContentfulPaintMs: paints["first-contentful-paint"] ?? null,
+    responseStartMs: navigation?.responseStart ?? null,
+    domContentLoadedMs: navigation?.domContentLoadedEventEnd ?? null,
+    loadEventMs: navigation?.loadEventEnd ?? null,
+  };
+}
+
+/**
  * Posts one phase event to the orchestrator and resolves when it has finished sampling the
  * processes (the same request/response protocol as scripts/pty-smoke). The event carries the
  * native snapshot (exact host, WebContent, GPU and Networking pids; window state) taken
@@ -22,6 +46,7 @@ export async function reportPhase(
     phase,
     tWall: Date.now(),
     uptimeMs: performance.now(),
+    perf: startupTiming(),
     native,
     ...body,
   };
