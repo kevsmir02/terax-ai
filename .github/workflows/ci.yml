@@ -47,7 +47,7 @@ jobs:
       - name: Build frontend
         run: pnpm build
 
-      - name: Startup dependency graph
+      - name: Startup graph and duplicate packages
         run: pnpm check:dist
 
       - name: Size budget
@@ -247,7 +247,8 @@ jobs:
   repo-guards:
     # Proves the repository's own contracts that no compiler checks: exact toolchain pins,
     # --frozen-lockfile/--locked on every install and build, no auto-merge or release publishing
-    # from ordinary CI, and the disposable-profile refusals of the real-app runners.
+    # from ordinary CI, valid workflow YAML, and the disposable-profile refusals of the real-app
+    # runners.
     name: repo-guards
     runs-on: ubuntu-latest
     steps:
@@ -255,5 +256,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Toolchain, lockfile and Linux runner invariants
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install the guard tests' dependency (PyYAML)
+        run: python3 -m pip install --disable-pip-version-check -r scripts/tests/requirements.txt
+
+      - name: Toolchain, lockfile, workflow and Linux runner invariants
         run: python3 -m unittest discover -s scripts/tests -v

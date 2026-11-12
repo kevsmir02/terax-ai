@@ -1,0 +1,4 @@
+# Python dependencies of scripts/tests, installed by the workflows before they run the guard
+# tests. PyYAML is what validates .github/workflows/*.yml; when it is missing the YAML tests fail
+# instead of skipping, so this file must stay in sync with the imports in the test modules.
+PyYAML==6.0.3
