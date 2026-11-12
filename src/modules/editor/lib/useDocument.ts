@@ -12,9 +12,6 @@ type ReadResult =
 
 type FileStat = { size: number; mtime: number; kind: string };
 
-/// Mirrors FORCE_MAX_READ_BYTES in src-tauri fs/file.rs.
-export const FORCE_READ_LIMIT = 50 * 1024 * 1024;
-
 export type DocumentState =
   | { status: "loading" }
   | { status: "ready"; content: string; size: number }
