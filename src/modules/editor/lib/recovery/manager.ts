@@ -24,11 +24,7 @@
  *    resolved draft (or the text shrinks).
  */
 
-import {
-  findRecoverable,
-  isStaleCompletion,
-  planCleanup,
-} from "./cleanup";
+import { findRecoverable, isStaleCompletion } from "./cleanup";
 import {
   isRecordablePath,
   makeRecord,
@@ -654,6 +650,3 @@ export function createRecoveryManager(
     },
   };
 }
-
-/** Exported for the UI: what the quota/cleanup rules decided, without I/O. */
-export { planCleanup };
