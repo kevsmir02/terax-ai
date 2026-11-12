@@ -129,7 +129,18 @@ older record byte-identical.
   typed during a slow write get an immediate follow-up write.
 - Only a completed storage write is reported as `durable`; `pending`, `failed`,
   `paused` and `unavailable` are visible states, and there is no optimistic
-  success.
+  success. A `pending` write that is not scheduled is reported as such with a
+  Retry action rather than as "saving" progress.
+- Quota refusals cross the IPC boundary as `{kind:"quota", reason:"file-limit"
+  |"total-limit"}` and are treated as *pauses* by the manager (a per-file
+  refusal pauses one buffer, a total refusal pauses all of them), never as a
+  generic failure. The reason vocabulary is shared with
+  `quota.ts`, and `wireContract.test.ts` parses the Rust enum so a rename on
+  either side fails a test instead of silently downgrading to "failed".
+- A pause stops scheduling by cancelling coalescers; resuming rebuilds the
+  scheduler for **every** live buffer, not only the ones with pending text, so
+  a buffer that was idle when the total bound was hit still persists its next
+  edit.
 - Every buffer has one operation chain, so a write cannot land after the delete
   that resolved it. A save/discard also retires the revisions it resolved (a
   watermark) and the delete is revision-aware natively, so a late completion
