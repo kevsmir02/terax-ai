@@ -960,6 +960,113 @@ mod tests {
         }
     }
 
+    /// Coexistence: an installed upstream Terax writes its own hook groups into the same
+    /// agent configuration files (`$TERAX_CLI`, `notify;Terax;`, `__terax_notify`). Those
+    /// groups belong to the other application: installing or removing this fork's hooks
+    /// must leave them exactly as they were.
+    #[test]
+    fn upstream_hook_groups_are_foreign_and_never_rewritten_or_removed() {
+        let upstream_group = |event: &str| {
+            format!(
+                r#"{{ "hooks": [ {{ "type": "command", "command": "[ -n \"$TERAX_CLI\" ] && \"$TERAX_CLI\" hook claude {event} || printf '{{}}'", "timeout": 30 }} ] }}"#
+            )
+        };
+        let user_group = r#"{ "hooks": [ { "type": "command", "command": "notify-send done" } ] }"#;
+        let existing = format!(
+            "{{\n  \"hooks\": {{\n    \"Stop\": [\n      {},\n      {user_group}\n    ],\n    \"Notification\": [\n      {}\n    ]\n  }}\n}}\n",
+            upstream_group("Stop"),
+            upstream_group("Notification")
+        );
+        let before: Value = parsed(&existing);
+        let upstream_before = before["hooks"]["Stop"].as_array().unwrap()[0].clone();
+
+        // The upstream command is not ours, so it is never reconciled away.
+        let upstream_command =
+            r#"[ -n "$TERAX_CLI" ] && "$TERAX_CLI" hook claude Stop || printf '{}'"#;
+        assert!(!command_is_ours(upstream_command));
+        assert!(!command_is_ours(
+            r#"[ -n "$TERAX_TERMINAL" ] && printf '\033]777;notify;Terax;claude;Stop\007' || true"#
+        ));
+        assert!(command_is_ours(&hook_command(Dialect::Posix, "claude", "Stop")));
+
+        for agent in ["claude", "codex", "gemini"] {
+            for windows in [false, true] {
+                let installed = install(agent, Some(&existing), windows);
+                let value = parsed(&installed);
+                let upstream_now = value["hooks"]["Stop"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|group| serde_json::to_string(group).unwrap().contains("$TERAX_CLI"))
+                    .unwrap_or_else(|| {
+                        panic!("{agent} windows={windows}: upstream group removed")
+                    });
+                assert_eq!(upstream_now, &upstream_before, "{agent} windows={windows}");
+
+                let removed = json_after(
+                    spec(agent),
+                    Some(&installed),
+                    Action::Uninstall,
+                    windows,
+                    &path(),
+                )
+                .unwrap()
+                .unwrap();
+                let value: Value = parsed(&removed);
+                assert!(
+                    commands(&value, "Stop")
+                        .iter()
+                        .any(|c| c.contains("$TERAX_CLI")),
+                    "{agent} windows={windows}: uninstall removed the upstream hook"
+                );
+                assert!(
+                    commands(&value, "Notification")
+                        .iter()
+                        .any(|c| c.contains("$TERAX_CLI")),
+                    "{agent} windows={windows}: uninstall removed the upstream notification hook"
+                );
+                assert!(
+                    serde_json::to_string(&value)
+                        .unwrap()
+                        .contains("notify-send done"),
+                    "{agent} windows={windows}: uninstall removed the user's own hook"
+                );
+            }
+        }
+    }
+
+    /// Coexistence on disk: our Pi extension is a *different file* next to upstream's, and a
+    /// file with foreign contents at our path is refused instead of overwritten.
+    #[test]
+    fn the_pi_extension_leaves_upstreams_file_alone_and_refuses_foreign_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let extensions = dir.path().join("extensions");
+        std::fs::create_dir_all(&extensions).unwrap();
+        let upstream_body = "// terax-pi-notifications-v2\nexport default 1;\n";
+        let upstream = extensions.join(format!(
+            "{}-notifications.ts",
+            crate::modules::identity::upstream().namespace
+        ));
+        std::fs::write(&upstream, upstream_body).unwrap();
+        let ours = extensions.join(pi_extension_file());
+        assert_ne!(ours, upstream, "our extension must not be upstream's file");
+
+        let plan = plan_at("pi", Action::Install, &ours, None, false).unwrap();
+        apply_plan(&plan).unwrap();
+        assert_eq!(std::fs::read_to_string(&upstream).unwrap(), upstream_body);
+        let installed = std::fs::read_to_string(&ours).unwrap();
+        assert!(installed.contains(&format!("// {}{}", pi_extension_family(), PI_VERSION)));
+        assert!(installed.contains(&identity::env("CLI")));
+
+        // A file that is not ours is refused, never silently replaced.
+        let foreign = plan_at("pi", Action::Install, &ours, Some(upstream_body.into()), false);
+        assert!(foreign.is_err(), "foreign extension content must be refused");
+
+        let uninstall = plan_at("pi", Action::Uninstall, &ours, Some(installed), false).unwrap();
+        assert_eq!(uninstall.after, None);
+        assert_eq!(std::fs::read_to_string(&upstream).unwrap(), upstream_body);
+    }
+
     #[test]
     fn installed_hook_definitions_are_byte_stable_across_versions() {
         let group = |agent: &str, event: &str, windows: bool| {

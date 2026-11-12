@@ -980,6 +980,64 @@ mod tests {
         }
     }
 
+    fn descriptor(pid: u32) -> ControlDescriptor {
+        ControlDescriptor {
+            protocol: PROTOCOL_VERSION,
+            address: "127.0.0.1:4321".into(),
+            token: "t0ken".into(),
+            pid,
+            app_version: "0.0.0".into(),
+        }
+    }
+
+    /// Coexistence: an installed upstream application keeps its descriptor, its per-pid
+    /// launcher directory and its stale-launcher sweep untouched while this fork publishes
+    /// its own.
+    #[test]
+    fn publishing_the_descriptor_leaves_the_upstream_cache_directory_byte_identical() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path();
+
+        // The upstream application's live state: a descriptor and a per-pid launcher.
+        let upstream = cache.join(crate::modules::identity::upstream().namespace.as_str());
+        let upstream_run = upstream.join("run").join("4242").join("bin");
+        std::fs::create_dir_all(&upstream_run).unwrap();
+        let upstream_descriptor = upstream.join("control.json");
+        std::fs::write(
+            &upstream_descriptor,
+            b"{\"protocol\":1,\"address\":\"127.0.0.1:1\",\"token\":\"upstream\",\"pid\":4242,\"app_version\":\"9.9.9\"}\n",
+        )
+        .unwrap();
+        let upstream_launcher = upstream_run.join("terax");
+        std::fs::write(&upstream_launcher, b"upstream cli").unwrap();
+        let before = std::fs::read(&upstream_descriptor).unwrap();
+
+        // The fork publishes its own descriptor and launcher under its own directory.
+        let cli = tmp.path().join("terax-cli");
+        std::fs::write(&cli, b"fork cli").unwrap();
+        let ours = descriptor_path_in(cache).unwrap();
+        assert!(ours.starts_with(cache.join(crate::modules::identity::namespace())));
+        write_descriptor(&ours, &descriptor(std::process::id())).unwrap();
+        sweep_stale_launcher_dirs(&ours);
+        let bin = prepare_cli_launcher(&ours, &cli).unwrap();
+        assert!(bin.starts_with(cache.join(crate::modules::identity::namespace())));
+
+        assert_eq!(std::fs::read(&upstream_descriptor).unwrap(), before);
+        assert_eq!(std::fs::read(&upstream_launcher).unwrap(), b"upstream cli");
+        assert!(upstream_run.is_dir());
+        assert!(ours.is_file());
+        assert!(bin.join("terax").exists());
+        assert_ne!(ours, upstream_descriptor);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = std::fs::metadata(ours.parent().unwrap()).unwrap();
+            assert_eq!(dir.permissions().mode() & 0o777, 0o700);
+            let file = std::fs::metadata(&ours).unwrap();
+            assert_eq!(file.permissions().mode() & 0o777, 0o600);
+        }
+    }
+
     #[test]
     fn request_ids_are_bounded_and_log_safe() {
         assert!(valid_request_id("1234-55_test.ok"));

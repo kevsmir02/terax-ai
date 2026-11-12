@@ -12,6 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import linux_profile  # noqa: E402
 
+LAB = linux_profile.disposable_identifier("app-lab", "stable")
+
 
 class ProblemsTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -28,7 +30,7 @@ class ProblemsTest(unittest.TestCase):
         env = {**self.env, "TERAX_BENCH_ISOLATED": "1"}
         self.assertEqual(
             linux_profile.problems(
-                "app.crynta.terax.app-lab", env, self.root, require_isolated=True
+                LAB, env, self.root, require_isolated=True
             ),
             [],
         )
@@ -36,10 +38,35 @@ class ProblemsTest(unittest.TestCase):
     def test_the_product_identifier_is_refused(self) -> None:
         env = {**self.env, "TERAX_BENCH_ISOLATED": "1"}
         problems = linux_profile.problems(
-            "app.crynta.terax", env, self.root, require_isolated=True
+            linux_profile.PRODUCT_IDENTIFIER, env, self.root, require_isolated=True
         )
         self.assertTrue(problems)
         self.assertTrue(any("product identifier" in p for p in problems))
+
+    def test_an_upstream_identifier_is_refused(self) -> None:
+        # Running this fork's build under an upstream identifier would share the
+        # installed upstream application's profile, data and hook groups.
+        env = {**self.env, "TERAX_BENCH_ISOLATED": "1"}
+        for identifier in (
+            linux_profile.UPSTREAM_IDENTIFIER,
+            f"{linux_profile.UPSTREAM_IDENTIFIER}.app-lab-abc123",
+        ):
+            problems = linux_profile.problems(
+                identifier, env, self.root, require_isolated=True
+            )
+            self.assertTrue(
+                any("upstream" in p for p in problems), f"{identifier}: {problems}"
+            )
+
+    def test_the_identity_is_provisional_and_not_upstream(self) -> None:
+        self.assertTrue(linux_profile.IDENTITY["provisional"])
+        self.assertNotEqual(
+            linux_profile.PRODUCT_IDENTIFIER, linux_profile.UPSTREAM_IDENTIFIER
+        )
+        self.assertNotEqual(linux_profile.NAMESPACE, linux_profile.UPSTREAM_NAMESPACE)
+        # The control descriptor and shell integration live under the fork namespace, never
+        # under the upstream product-name directory.
+        self.assertNotEqual(linux_profile.NAMESPACE, "terax")
 
     def test_an_identifier_outside_the_terax_namespace_is_refused(self) -> None:
         env = {**self.env, "TERAX_BENCH_ISOLATED": "1"}
@@ -52,7 +79,7 @@ class ProblemsTest(unittest.TestCase):
         outside = {**self.env, "HOME": str(Path.home())}
         outside["TERAX_BENCH_ISOLATED"] = "1"
         problems = linux_profile.problems(
-            "app.crynta.terax.app-lab", outside, self.root, require_isolated=True
+            LAB, outside, self.root, require_isolated=True
         )
         self.assertTrue(any("HOME" in p and "output" in p for p in problems))
 
@@ -60,7 +87,7 @@ class ProblemsTest(unittest.TestCase):
         escaped = {**self.env, "XDG_CACHE_HOME": str(Path.home() / ".cache")}
         escaped["TERAX_BENCH_ISOLATED"] = "1"
         problems = linux_profile.problems(
-            "app.crynta.terax.app-lab", escaped, self.root, require_isolated=True
+            LAB, escaped, self.root, require_isolated=True
         )
         self.assertTrue(any("XDG_CACHE_HOME" in p for p in problems))
 
@@ -68,19 +95,19 @@ class ProblemsTest(unittest.TestCase):
         env = {**self.env, "TERAX_BENCH_ISOLATED": "1"}
         env.pop("XDG_CACHE_HOME")
         problems = linux_profile.problems(
-            "app.crynta.terax.app-lab", env, self.root, require_isolated=True
+            LAB, env, self.root, require_isolated=True
         )
         self.assertTrue(any("XDG_CACHE_HOME" in p for p in problems))
 
     def test_a_bench_run_must_declare_isolation(self) -> None:
         problems = linux_profile.problems(
-            "app.crynta.terax.app-lab", self.env, self.root, require_isolated=True
+            LAB, self.env, self.root, require_isolated=True
         )
         self.assertTrue(any("TERAX_BENCH_ISOLATED" in p for p in problems))
         # The transport smoke is not a bench build: it only needs the profile.
         self.assertEqual(
             linux_profile.problems(
-                "app.crynta.terax.pty-smoke-abc",
+                linux_profile.disposable_identifier("pty-smoke", "abc"),
                 self.env,
                 self.root,
                 require_isolated=False,
@@ -94,8 +121,8 @@ class CleanupTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="terax-linux-profile-") as tmp:
             root = Path(tmp) / "run"
             home = root / "home"
-            (home / ".cache/terax").mkdir(parents=True)
-            (home / ".cache/terax/control.json").write_text("{}")
+            (home / ".cache" / linux_profile.NAMESPACE).mkdir(parents=True)
+            (home / ".cache" / linux_profile.NAMESPACE / "control.json").write_text("{}")
             linux_profile.prepare(home, root)
             linux_profile.cleanup(home, root)
             self.assertFalse(home.exists())

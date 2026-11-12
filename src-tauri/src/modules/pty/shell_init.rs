@@ -599,6 +599,64 @@ mod unix {
             }
         }
 
+        /// Coexistence: the upstream application's shell integration (its cache directory
+        /// and its `terax.fish` in fish's shared `conf.d`) is another application's state.
+        /// Preparing this fork's integration must leave every byte of it alone.
+        #[test]
+        fn integration_files_never_touch_the_upstream_ones() {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+
+            let upstream_root = home
+                .join(".cache")
+                .join(crate::modules::identity::upstream().namespace.as_str())
+                .join("shell-integration");
+            let upstream_zsh = upstream_root.join("zsh");
+            let upstream_bash = upstream_root.join("bash");
+            let upstream_fish_dir = home.join(".config").join("fish").join("conf.d");
+            for dir in [&upstream_zsh, &upstream_bash, &upstream_fish_dir] {
+                std::fs::create_dir_all(dir).unwrap();
+            }
+            let sentinels = [
+                (upstream_zsh.join(".zshenv"), "UPSTREAM zshenv\n"),
+                (upstream_zsh.join(".zshrc"), "UPSTREAM zshrc\n"),
+                (upstream_bash.join("bashrc"), "UPSTREAM bashrc\n"),
+                (upstream_fish_dir.join("terax.fish"), "UPSTREAM fish init\n"),
+            ];
+            for (path, body) in &sentinels {
+                std::fs::write(path, body).unwrap();
+            }
+
+            let root = integration_root_in(home).unwrap();
+            let zdotdir = prepare_zdotdir_in(root.clone()).unwrap();
+            let rc = prepare_bash_rcfile_in(root.clone()).unwrap();
+            prepare_fish_conf_d_in(home).unwrap();
+
+            assert!(zdotdir.starts_with(root.join("zsh")));
+            assert!(rc.starts_with(root.join("bash")));
+            assert!(root.starts_with(home.join(".cache").join(identity::namespace())));
+            assert_ne!(root, upstream_root);
+            let fish = upstream_fish_dir.join(format!("{}.fish", identity::namespace()));
+            assert!(fish.is_file());
+            assert_ne!(
+                fish,
+                upstream_fish_dir.join(format!(
+                    "{}.fish",
+                    crate::modules::identity::upstream().namespace
+                )),
+                "our fish file must not shadow upstream's"
+            );
+
+            for (path, body) in &sentinels {
+                assert_eq!(
+                    std::fs::read_to_string(path).unwrap(),
+                    *body,
+                    "{} was modified",
+                    path.display()
+                );
+            }
+        }
+
         #[test]
         fn builds_unix_fish_launch_with_post_config_rewrap() {
             let mut cmd = CommandBuilder::new("/usr/bin/fish");
@@ -1341,5 +1399,51 @@ mod tests {
                 .and_then(|path| std::env::split_paths(path).next()),
             Some(std::path::PathBuf::from("/app/bin"))
         );
+    }
+
+    /// The child shell exposes this fork's variables only. An upstream `TERAX_CLI`/
+    /// `TERAX_CONTROL_ADDR` in a fork shell would let an upstream-installed hook or CLI
+    /// (written into a shared agent config) reach the *other* application's server.
+    #[test]
+    fn a_fork_shell_exposes_only_fork_variables() {
+        let mut command = CommandBuilder::new("shell");
+        let control = ShellControlEnv {
+            address: "127.0.0.1:1234".into(),
+            token: "secret".into(),
+            pane_id: 42,
+            cli_path: Some("/app/terax-cli".into()),
+            cli_bin_dir: Some(std::path::PathBuf::from("/app/bin")),
+        };
+        apply_common(&mut command, None, true, Some(&control));
+
+        for upstream in [
+            "TERAX_TERMINAL",
+            "TERAX_BLOCKS",
+            "TERAX_CLI",
+            "TERAX_CONTROL_ADDR",
+            "TERAX_CONTROL_TOKEN",
+            "TERAX_PANE_ID",
+            "TERAX_USER_ZDOTDIR",
+        ] {
+            assert_eq!(
+                command.get_env(upstream),
+                None,
+                "{upstream} must not describe this fork's shell"
+            );
+        }
+        for ours in [
+            "TERMINAL",
+            "BLOCKS",
+            "CLI",
+            "CONTROL_ADDR",
+            "CONTROL_TOKEN",
+            "PANE_ID",
+        ] {
+            assert!(
+                command.get_env(identity::env(ours)).is_some(),
+                "{} is missing",
+                identity::env(ours)
+            );
+        }
     }
 }

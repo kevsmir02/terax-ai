@@ -1,28 +1,51 @@
 """Disposable Linux profile and preflight checks for the real-app runners.
 
 `scripts/pty-smoke` and `scripts/app-lab` both launch the real Tauri application. On Linux the
-application resolves its identity, storage and the control descriptor from the environment, and
-one of those paths is *not* keyed by the application identifier: the control server writes
-`$XDG_CACHE_HOME/terax/control.json` (and a per-pid launcher under
-`$XDG_CACHE_HOME/terax/run/<pid>`), so a run that inherits the real cache directory would
-overwrite the installed app's live descriptor. The only safe shape is therefore a private
-`HOME` **and** a private `XDG_*` tree under the run's output directory, while the display and
-session bus keep coming from the live session.
+application resolves its identity, storage and the control descriptor from the environment. The
+control descriptor is keyed by the fork's namespace directory, not by the application
+identifier (`$XDG_CACHE_HOME/terax-workspace/control.json`, plus a per-pid launcher under
+`.../run/<pid>/bin/terax`), so a run that inherits the real cache directory would write the
+*installed* application's live descriptor. The only safe shape is therefore a private `HOME`
+**and** a private `XDG_*` tree under the run's output directory, while the display and session
+bus keep coming from the live session.
+
+Every name comes from the shared identity table (`src/modules/identity/namespace.json`, read by
+the Rust application too); a runner may never hardcode a product identifier or a namespace.
 
 `preflight()` is the refusal: it runs before a build/launch and returns every reason the run
-would not be disposable. `--self-test` of both runners feeds it deliberately unsafe
-environments and asserts they are refused.
+would not be disposable — including an identifier that is this fork's product identifier *or*
+one of upstream Terax's, which would share the installed application's profile. `--self-test`
+of both runners feeds it deliberately unsafe environments and asserts they are refused.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import shutil
 import subprocess
 from pathlib import Path
 
-PRODUCT_IDENTIFIER = "app.crynta.terax"
+_IDENTITY_FILE = Path(__file__).resolve().parent.parent / "src/modules/identity/namespace.json"
+
+
+def _identity() -> dict:
+    return json.loads(_IDENTITY_FILE.read_text(encoding="utf-8"))
+
+
+IDENTITY = _identity()
+# This fork's provisional product identifier (final branding: ticket #39/#40).
+PRODUCT_IDENTIFIER = IDENTITY["appIdentifier"]
+# The directory token the control descriptor, shell integration and CLI launcher use.
+NAMESPACE = IDENTITY["namespace"]
+UPSTREAM_IDENTIFIER = IDENTITY["upstream"]["appIdentifier"]
+UPSTREAM_NAMESPACE = IDENTITY["upstream"]["namespace"]
+
+
+def home_state_dir_name() -> str:
+    """This fork's private per-user directory (task worktrees and their registry)."""
+    return f".{NAMESPACE}"
 # Everything the application must resolve inside the run's output directory. XDG_CACHE_HOME is
 # the one that matters most: the control descriptor is shared with the installed app otherwise.
 PROFILE_ENV = ("HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME")
@@ -52,6 +75,12 @@ def session_env(environ: dict[str, str] | None = None) -> dict[str, str]:
     return {name: environ[name] for name in SESSION_ENV if name in environ}
 
 
+def disposable_identifier(lab: str, token: str | None = None) -> str:
+    """A per-run identifier inside this fork's namespace, never the product identifier."""
+    suffix = token or os.urandom(6).hex()
+    return f"{PRODUCT_IDENTIFIER}.{lab}-{suffix}"
+
+
 def real_cache_dir(environ: dict[str, str] | None = None) -> Path:
     """Where the installed app's control descriptor would live outside a disposable profile."""
     environ = os.environ if environ is None else environ
@@ -71,6 +100,13 @@ def problems(
         found.append(
             f"identifier is the product identifier {PRODUCT_IDENTIFIER}: a run would share the "
             "installed app's profile"
+        )
+    elif identifier == UPSTREAM_IDENTIFIER or identifier.startswith(
+        f"{UPSTREAM_IDENTIFIER}."
+    ):
+        found.append(
+            f"identifier {identifier!r} belongs to upstream Terax ({UPSTREAM_IDENTIFIER}): a run "
+            "would share the installed upstream application's profile"
         )
     elif not identifier.startswith(f"{PRODUCT_IDENTIFIER}."):
         found.append(
@@ -97,7 +133,7 @@ def problems(
     if cache is not None and cache.resolve() == real_cache_dir().resolve():
         found.append(
             f"XDG_CACHE_HOME={str(cache)!r} is the installed app's cache dir; its "
-            "terax/control.json and terax/run launchers would be overwritten"
+            f"{NAMESPACE}/control.json and {NAMESPACE}/run launchers would be overwritten"
         )
     return found
 

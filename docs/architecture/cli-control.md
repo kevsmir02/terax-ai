@@ -32,7 +32,7 @@ Rust handles `ping`, `capabilities`, authentication, and file validation directl
 
 ## Transport and authentication
 
-The app binds an ephemeral loopback TCP port and writes a discovery descriptor to the user cache directory under `terax/control.json`. The descriptor contains the protocol version, address, process id, app version, and a random 256-bit token.
+The app binds an ephemeral loopback TCP port and writes a discovery descriptor to the user cache directory under `terax-workspace/control.json` (this fork's namespace; an installed upstream Terax uses its own `terax/` directory and the two never share a descriptor — see [namespace isolation](namespace-isolation.md)). The descriptor contains the protocol version, address, process id, app version, and a random 256-bit token.
 
 Security properties:
 
