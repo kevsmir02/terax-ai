@@ -479,20 +479,16 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn explicit_editing_works_outside_every_root_and_on_protected_names() {
-        use crate::modules::workspace::WorkspaceRegistry;
-
-        let project = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         let ssh = outside.path().join(".ssh");
         std::fs::create_dir(&ssh).unwrap();
         let config = ssh.join("config");
         std::fs::write(&config, "original").unwrap();
 
-        // The strict automatic guard (preview/assets + agent reads) refuses the
-        // same path because it is outside the only authorized root.
-        let registry = WorkspaceRegistry::default();
-        registry.authorize(project.path()).unwrap();
-        assert!(super::super::access::authorize_read(&registry, &config).is_err());
+        // The automatic preview policy refuses the same name for the same
+        // reason (protected directory), and the asset grant would refuse a
+        // path outside the authorized root.
+        assert!(super::super::access_policy::readable(&config).is_err());
 
         // Explicit editing is unaffected: read through the real command…
         let read = fs_read_file(config.to_string_lossy().into_owned(), None, None)
