@@ -17,8 +17,17 @@ export type BenchAppApi = {
   splitActivePane: (tabId: number, dir: "row" | "col") => number | null;
   closeTab: (id: number) => void;
   /** Opens a file in an editor tab (the app's own planner); returns the tab id. */
-  openFileTab: (path: string, pin?: boolean) => number;
+  openFileTab: (path: string, pin?: boolean, spaceId?: string) => number;
   readBuffer: (leafId: number, maxLines?: number) => string | null;
+  /** Spaces (workspaces) the application knows about. */
+  spaces: { id: string; name: string }[];
+  activeSpaceId: string | null;
+  createSpace: (name: string, root: string | null) => string;
+  setActiveSpace: (id: string) => void;
+  /** Appends a cold terminal tab to a space without stealing focus (it spawns when opened). */
+  newTabInSpace: (spaceId: string, cwd?: string) => number;
+  /** Opens the web preview pane (the app's own planner); returns the tab id. */
+  openPreview: (url: string) => number;
 };
 
 /** One scenario, as written by scripts/app-lab/run.py into TERAX_BENCH_SCENARIO. */
@@ -32,7 +41,10 @@ export type BenchScenario = {
     | "idle"
     | "fs-churn"
     | "input"
-    | "workflow";
+    | "workflow"
+    | "resource"
+    | "stress"
+    | "startup";
   /** tabs: "2" (shell + agent) or "4" (shell, agent, agent+shell split, shell). */
   variant?: string;
   /** Shell command that starts the synthetic agent (see scripts/app-lab/agent-sim.mjs). */
@@ -82,6 +94,26 @@ export type BenchScenario = {
   file?: string;
   /** workflow: the file's distinctive first line, asserted in the rendered editor. */
   fileText?: string;
+  /** resource/stress: directory used as the second Space's root and the preview fixture root. */
+  workspace?: string;
+  /** resource/stress: absolute paths of the text files opened as editor tabs. */
+  files?: string[];
+  /** resource/stress: absolute path opened and closed in every close cycle. */
+  closeFile?: string;
+  /** resource/stress: local fixture URL shown in the active preview tab. */
+  previewUrl?: string;
+  /** resource/stress: seconds of sustained terminal streaming. */
+  streamSeconds?: number;
+  /** resource/stress: shell command that streams terminal output for `streamSeconds`. */
+  streamCommand?: string;
+  /** resource/stress: label of the workload (recorded in the report). */
+  workload?: string;
+  /** resource/stress: number of busy synthetic agents (default 2). */
+  agents?: number;
+  /** resource/stress: number of terminal panes that receive the streaming command (max 4). */
+  streams?: number;
+  /** resource/stress: editor tab open/close cycles. */
+  closeCycles?: number;
 };
 
 export type BenchConfig = {

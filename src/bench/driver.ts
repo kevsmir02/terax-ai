@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { setWindowVibrancy } from "@/modules/settings/store";
 import { whenSessionReady, writeToSession } from "@/modules/terminal";
+import type { Tab } from "@/modules/tabs";
 import {
   readTerminalClipboard,
   writeTerminalClipboard,
@@ -1017,6 +1018,229 @@ async function inputScenario(run: ScenarioRun): Promise<void> {
 /** One observable step of the workflow scenario, as reported to the orchestrator. */
 type WorkflowStep = { name: string; ok: boolean; detail: string };
 
+/** Terminal panes a tab owns (a split tab has two leaves per split). */
+function paneLeaves(tab: Tab): number {
+  if (tab.kind !== "terminal") return 0;
+  const walk = (node: unknown): number => {
+    const current = node as { kind?: string; children?: unknown[] };
+    if (current?.kind === "leaf") return 1;
+    return (current?.children ?? []).reduce<number>(
+      (sum, child) => sum + walk(child),
+      0,
+    );
+  };
+  return walk(tab.paneTree);
+}
+
+/**
+ * The accepted representative workload (spec: "Measurement gates"): two Spaces, four
+ * terminal panes, two busy synthetic agents, several text files and one active preview, then
+ * sustained terminal streaming, hidden/show cycles and editor open/close cycles. `stress`
+ * (run.py's `--scenario stress`) runs the same shape with more agents, more streaming panes and
+ * larger files, so the two reports stay comparable.
+ *
+ * Every phase is sampled by the orchestrator (Linux: `/proc` Pss/Rss per role and a 1 Hz
+ * timeline). The scenario never asserts a numeric budget: it reports what the real app did.
+ */
+async function resourceScenario(
+  run: ScenarioRun,
+): Promise<Record<string, unknown>> {
+  const { scenario } = run;
+  const workspace = scenario.workspace;
+  if (!workspace)
+    throw new Error(
+      "the resource scenario needs `workspace` (scripts/app-lab/run.py creates the fixtures)",
+    );
+  const files = scenario.files ?? [];
+  const cycles = scenario.cycles ?? 3;
+  const closeCycles = scenario.closeCycles ?? 3;
+  const hiddenMs = scenario.hiddenMs ?? 3000;
+  const visibleMs = scenario.visibleMs ?? 2000;
+  const streamSeconds = scenario.streamSeconds ?? 30;
+  const agents = scenario.agents ?? 2;
+  const streams = Math.min(4, scenario.streams ?? 2);
+  const streamCommand = scenario.streamCommand;
+  const app = () => run.app();
+
+  const first = await run.booted();
+  // Startup milestone: the first terminal tab owns a live shell. The orchestrator subtracts
+  // navigation start (page clock) and the native process start to report cold start.
+  await run.sync("booted", {
+    workload: scenario.workload,
+    tabs: app().tabs.length,
+    panes: app().tabs.reduce((sum, tab) => sum + paneLeaves(tab), 0),
+  });
+
+  const spaceA = app().activeSpaceId ?? app().tabs[0]?.spaceId;
+  if (!spaceA) throw new Error("the application reports no active Space");
+  const spaceB = app().createSpace("Lab B", workspace);
+  const step = async (name: string, extra: Record<string, unknown> = {}) => {
+    await run.sync(name, {
+      spaceA,
+      spaceB,
+      workload: scenario.workload,
+      ...extra,
+    });
+  };
+
+  // Space A: the boot tab split into two panes.
+  run.select(first.tabId);
+  const splitA = app().splitActivePane(first.tabId, "row");
+  if (splitA === null) throw new Error("Space A refused the split");
+  await run.sessionReady(splitA);
+  const leavesA = [first.leafId, splitA];
+
+  // Space B: a second terminal tab, split into two panes as well (four panes in total).
+  const tabB = app().newTabInSpace(spaceB, workspace);
+  run.select(tabB);
+  await run.waitFor(
+    () => app().tabs.some((tab) => tab.id === tabB),
+    "the Space B tab",
+  );
+  const tabBState = app().tabs.find((tab) => tab.id === tabB);
+  if (tabBState?.kind !== "terminal")
+    throw new Error("the Space B tab is not a terminal");
+  await run.sessionReady(tabBState.activeLeafId);
+  const splitB = app().splitActivePane(tabB, "row");
+  if (splitB === null) throw new Error("Space B refused the split");
+  await run.sessionReady(splitB);
+  const leavesB = [tabBState.activeLeafId, splitB];
+
+  // One busy synthetic agent per Space (more in the stress workload).
+  const agentsBuilt: number[] = [];
+  for (let index = 0; index < agents; index++) {
+    const inA = index % 2 === 0;
+    app().setActiveSpace(inA ? spaceA : spaceB);
+    // The application applies a Space switch on its next render.
+    await pause(700);
+    const agent = await run.newAgentTab(
+      `agent ${index + 1} ${inA ? "A" : "B"}`,
+      `--seed ${20 + index}`,
+    );
+    agentsBuilt.push(agent.tabId);
+  }
+
+  // Several text files through the app's own planner, opened in the Space that owns them.
+  const firstHalf = Math.ceil(files.length / 2);
+  const editorTabs: number[] = [];
+  app().setActiveSpace(spaceA);
+  await pause(700);
+  for (const file of files.slice(0, firstHalf)) {
+    editorTabs.push(app().openFileTab(file, true));
+    await pause(150);
+  }
+  app().setActiveSpace(spaceB);
+  await pause(700);
+  for (const file of files.slice(firstHalf)) {
+    editorTabs.push(app().openFileTab(file, true));
+    await pause(150);
+  }
+
+  // Back to Space A with the one active preview (the app's own preview pane).
+  app().setActiveSpace(spaceA);
+  await pause(900);
+  if (!scenario.previewUrl) throw new Error("the resource scenario needs `previewUrl`");
+  const previewTab = app().openPreview(scenario.previewUrl);
+  await pause(1500);
+  if (app().activeId !== previewTab)
+    throw new Error("the preview tab did not become active");
+
+  const panes = app().tabs.reduce((sum, tab) => sum + paneLeaves(tab), 0);
+  const layout = {
+    spaces: app().spaces.length,
+    panes,
+    editors: editorTabs.length,
+    agents: agentsBuilt.length,
+    previewTab,
+  };
+  await step("setup", layout);
+  await pause(2000);
+  await step("space-a", layout);
+  app().setActiveSpace(spaceB);
+  await pause(1200);
+  await step("space-b", layout);
+  app().setActiveSpace(spaceA);
+  await pause(1200);
+  await step("baseline", layout);
+
+  await step("measure-start", layout);
+  // Sustained terminal streaming in up to four panes; the fixture stops on its own.
+  const streamLeaves = [leavesA[1], leavesB[0], leavesA[0], leavesB[1]].slice(
+    0,
+    Math.max(1, streams),
+  );
+  if (streamCommand) {
+    for (const leafId of streamLeaves)
+      writeToSession(
+        leafId,
+        `${streamCommand} --seconds ${streamSeconds}\r`,
+      );
+  }
+  await step("stream-start", { ...layout, streamLeaves });
+  await pause(streamSeconds * 1000);
+  await step("stream-end", { ...layout, streamSeconds });
+
+  // Editor open/close cycles: the decoded file and its editor are released on close.
+  const closeFile = scenario.closeFile ?? files[0];
+  if (closeFile) {
+    for (let cycle = 1; cycle <= closeCycles; cycle++) {
+      const tabId = app().openFileTab(closeFile, true);
+      await run.waitFor(
+        () => app().activeId === tabId,
+        "the close-cycle editor tab",
+        15_000,
+      );
+      await pause(600);
+      await step(`close-cycle-${cycle}-open`, { cycle, tabId, file: closeFile });
+      app().closeTab(tabId);
+      await pause(800);
+      await step(`close-cycle-${cycle}-closed`, { cycle, tabId });
+    }
+    // Leave the preview active again, like the baseline.
+    if (app().tabs.some((tab) => tab.id === previewTab))
+      run.select(previewTab);
+    else app().openPreview(scenario.previewUrl);
+    await pause(600);
+  }
+
+  // Hidden/show cycles: the window is really hidden (WebKitGTK has no occlusion signal).
+  for (let cycle = 1; cycle <= cycles; cycle++) {
+    const hide = await run.native({ cmd: "hide", mode: "orderout" });
+    await pause(hiddenMs);
+    await step(`cycle-${cycle}-hidden`, { cycle, step: "hidden", hide });
+    const show = await run.native({ cmd: "show", mode: "orderout" });
+    await pause(visibleMs);
+    await step(`cycle-${cycle}-visible`, { cycle, step: "visible", show });
+  }
+
+  await step("measure-end", layout);
+  await run.settle();
+  return {
+    workload: scenario.workload,
+    layout,
+    cycles,
+    hiddenMs,
+    visibleMs,
+    closeCycles,
+    streamSeconds,
+    streamLeaves,
+    agents: agentsBuilt,
+    editors: editorTabs,
+  };
+}
+
+/**
+ * Boot-only scenario for cold/warm startup: the orchestrator relaunches it with a fresh profile
+ * (cold) and then with the same profile (warm), so the reports differ only by caches.
+ */
+async function startupScenario(
+  run: ScenarioRun,
+): Promise<Record<string, unknown>> {
+  const first = await run.booted();
+  await run.sync("booted", { tabId: first.tabId, leafId: first.leafId });
+  return { startup: true, tabId: first.tabId, leafId: first.leafId };
+}
+
 /**
  * The acceptance workflow through the real application: a shell spawns, a marker round-trips
  * exactly, a second tab opens, the active pane splits, the app switches back and a temp file
@@ -1178,6 +1402,9 @@ const SCENARIOS: Record<
   "fs-churn": fsChurnScenario,
   input: inputScenario,
   workflow: workflowScenario,
+  resource: resourceScenario,
+  stress: resourceScenario,
+  startup: startupScenario,
 };
 
 let started = false;

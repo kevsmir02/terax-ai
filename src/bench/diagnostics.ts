@@ -11,6 +11,8 @@ function tabSummary(tabs: Tab[], activeId: number) {
     active: tab.id === activeId,
     cold: "cold" in tab ? Boolean(tab.cold) : false,
     leaves: tab.kind === "terminal" ? countLeaves(tab.paneTree) : 0,
+    // Which Space (workspace) owns the tab: the resource workload reports two of them.
+    spaceId: tab.spaceId,
   }));
 }
 
