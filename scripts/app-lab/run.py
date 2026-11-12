@@ -1251,7 +1251,9 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             try:
                 if "appIdentifier" not in manifest and isinstance(event.get("identifier"), str):
                     manifest["appIdentifier"] = event["identifier"]
-                    manifest["identifierMatchesHarness"] = event["identifier"] == args.identifier
+                    manifest["appIdentifierInForkNamespace"] = event["identifier"].startswith(
+                        f"{linux_profile.PRODUCT_IDENTIFIER}."
+                    )
                 if phase == "error":
                     raise RuntimeError(event)
                 if phase == "done":
@@ -1303,11 +1305,11 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         manifest["workflow"] = workflow
         # Coexistence evidence: the hashes of the upstream installation's files, taken before
         # the launch, must still match now that the application has run and exited.
-        if manifest.get("identifierMatchesHarness") is False:
+        if manifest.get("appIdentifierInForkNamespace") is False:
             manifest["qualification"]["advisories"].append(
-                f"the measured binary reports the compiled identifier "
-                f"{manifest.get('appIdentifier')!r}, not the harness identifier {args.identifier!r}; "
-                f"the profile is still private, but a pre-identity-table binary is upstream-namespaced"
+                f"the measured binary was compiled with the identifier "
+                f"{manifest.get('appIdentifier')!r}, which is outside the fork identifier namespace; "
+                f"the profile is still private, but this revision predates the fork identity table"
             )
         unchanged = isolation_report.finish(manifest["isolation"], home, sentinels)
         if unchanged:
@@ -1353,12 +1355,6 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             if "devicePixelRatio" in diag:
                 manifest["environment"]["observedDevicePixelRatio"] = diag["devicePixelRatio"]
                 break
-        if manifest.get("identifierMatchesHarness") is False:
-            manifest["qualification"]["advisories"].append(
-                f"the measured binary reports the compiled identifier "
-                f"{manifest.get('appIdentifier')!r}, not the harness identifier {args.identifier!r}; "
-                f"the profile is still private, but a pre-identity-table binary is upstream-namespaced"
-            )
         if workflow:
             manifest["qualification"]["workflowPass"] = bool(workflow.get("pass"))
         completed = [sample for sample in manifest["samples"] if "memory" in sample]
@@ -1493,7 +1489,9 @@ def run_linux_startup(args, binary: Path, source: Path, output: Path) -> int:
                     try:
                         if "appIdentifier" not in manifest and isinstance(event.get("identifier"), str):
                             manifest["appIdentifier"] = event["identifier"]
-                            manifest["identifierMatchesHarness"] = event["identifier"] == args.identifier
+                            manifest["appIdentifierInForkNamespace"] = event["identifier"].startswith(
+                                f"{linux_profile.PRODUCT_IDENTIFIER}."
+                            )
                         if phase == "booted":
                             booted = build_startup_entry(kind, launch, event, spawned_wall)
                             found = linux_proc.sample(process.pid)
@@ -1537,11 +1535,11 @@ def run_linux_startup(args, binary: Path, source: Path, output: Path) -> int:
             if booted is None:
                 raise RuntimeError(f"launch {launch} reported no boot milestone")
             print(json.dumps({key: booted.get(key) for key in ("launch", "kind", "exec_to_boot_ms", "nav_to_boot_ms", "first_paint_ms")}), flush=True)
-        if manifest.get("identifierMatchesHarness") is False:
+        if manifest.get("appIdentifierInForkNamespace") is False:
             manifest["qualification"]["advisories"].append(
-                f"the measured binary reports the compiled identifier "
-                f"{manifest.get('appIdentifier')!r}, not the harness identifier {args.identifier!r}; "
-                f"the profile is still private, but a pre-identity-table binary is upstream-namespaced"
+                f"the measured binary was compiled with the identifier "
+                f"{manifest.get('appIdentifier')!r}, which is outside the fork identifier namespace; "
+                f"the profile is still private, but this revision predates the fork identity table"
             )
         unchanged = isolation_report.finish(manifest["isolation"], home, sentinels)
         if unchanged:
