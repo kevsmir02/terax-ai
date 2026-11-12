@@ -52,7 +52,6 @@ explorer.search: Shift+Cmd+f
 search.focus: Cmd+f
 ai.toggle: Cmd+i
 ai.toggleMini: Shift+Cmd+i
-ai.askSelection: Cmd+j
 agent.focusAttention: Shift+Cmd+a
 sidebar.toggle: Cmd+b, Shift+Cmd+b
 explorer.focus: Shift+Cmd+e
@@ -64,7 +63,6 @@ view.zenMode: Shift+Cmd+'
 editor.undo: Cmd+z
 editor.redo: Cmd+y, Shift+Cmd+z
 editor.save: Cmd+s
-editor.aiComplete: Alt+\\
 editor.codeComplete: Ctrl+ `;
 
 const describeBinding = (b: KeyBinding): string =>

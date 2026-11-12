@@ -54,7 +54,6 @@ export type CommandPaletteActionContext = {
   toggleSidebar: () => void;
   toggleHiddenFiles: () => void;
   toggleAi: () => void;
-  askAiSelection: () => void;
   openSettings: () => void;
   openKeyboardShortcuts: () => void;
   spaces: { id: string; name: string }[];
@@ -292,15 +291,6 @@ export function createCommandItems(
       icon: SparklesIcon,
       shortcutId: "ai.toggle",
       run: ctx.toggleAi,
-    },
-    {
-      id: "ai.askSelection",
-      title: "Ask AI about selection",
-      group: "AI",
-      keywords: ["selection", "explain", "assistant", "chat"],
-      icon: SparklesIcon,
-      shortcutId: "ai.askSelection",
-      run: ctx.askAiSelection,
     },
   ];
 }
