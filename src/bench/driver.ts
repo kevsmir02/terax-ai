@@ -3747,10 +3747,15 @@ async function gitScenario(run: ScenarioRun): Promise<unknown> {
     for (let attempt = 0; attempt < 60; attempt++) {
       if (pending()) app().destructiveGit().cancel();
       await app().destructiveGit().requestDiscard([path]);
+      // The bridge reads React state: wait for the pending plan to render
+      // instead of cancelling it on the next microtask.
+      for (let wait = 0; wait < 20 && pending() === null; wait++) {
+        await pause(50);
+      }
       const plan = pending();
       if (plan?.affected.includes(path)) return plan;
       app().destructiveGit().cancel();
-      await pause(250);
+      await pause(200);
     }
     throw new Error(`no destructive plan was built for ${path}`);
   };
@@ -3781,15 +3786,10 @@ async function gitScenario(run: ScenarioRun): Promise<unknown> {
     );
     run.select(fileATab);
     await pause(1500);
-    await run.log(
-      `[git] tab ${fileATab}; tabs ${app()
-        .tabs.map((tab) => `${tab.id}:${tab.kind}:${tab.spaceId}`)
-        .join("|")}; active ${app().activeId}; editors ${
-        document.querySelectorAll(".cm-content").length
-      }; body ${(document.body.textContent ?? "").slice(0, 240)}`,
-    );
+    // The fixture is committed without the disk edits, so the editor opens the
+    // edited wording a discard would throw away.
     await run.waitFor(
-      () => editorText().includes(fixture.baseA),
+      () => editorText().includes(fixture.editedA),
       "the tracked file in the editor",
       20_000,
     );

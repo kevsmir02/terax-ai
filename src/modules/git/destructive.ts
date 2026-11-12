@@ -620,8 +620,9 @@ function acknowledgementMessage(missing: {
 }): string {
   const parts: string[] = [];
   if (missing.unsavedBuffers.length > 0) {
+    const count = missing.unsavedBuffers.length;
     parts.push(
-      `${missing.unsavedBuffers.length} buffer${missing.unsavedBuffers.length === 1 ? "" : "s"} still have unsaved changes`,
+      `${count} buffer${count === 1 ? " still has" : "s still have"} unsaved changes`,
     );
   }
   if (missing.activeWork.length > 0) {

@@ -1628,6 +1628,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     poller.start()
     failed: BaseException | None = None
     workflow: dict = {}
+    git_scenario: dict = {}
     markdown: dict = {}
     images: dict = {}
     started = time.monotonic()
@@ -1669,6 +1670,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                 if phase == "done":
                     manifest["samples"].append({"phase": "done", "tMonoNs": time.monotonic_ns(), "event": app_report.slim_event(event)})
                     workflow = event.get("workflow") or {}
+                    git_scenario = event.get("git") or {}
                     markdown = event.get("markdown") or {}
                     if event.get("images") is not None:
                         images = event["images"]
@@ -1746,7 +1748,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                     "reasons": ["Space deletion changed the project directory"],
                 })
         if args.scenario == "git":
-            git_report = (workflow or {}).get("git") if isinstance(workflow, dict) else None
+            git_report = git_scenario
             manifest["gitScenario"] = git_report
             if not git_report or not git_report.get("pass"):
                 manifest["qualification"]["qualified"] = False
