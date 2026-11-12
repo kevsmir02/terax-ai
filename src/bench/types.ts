@@ -48,6 +48,7 @@ export type BenchScenario = {
     | "workflow"
     | "markdown"
     | "preview"
+    | "images"
     | "resource"
     | "stress"
     | "startup";
@@ -118,6 +119,19 @@ export type BenchScenario = {
     remoteImage: string;
     /** Marker text inside the large document. */
     largeMarker: string;
+  };
+  /** images: fixture paths the scenario opens and asserts through the image surface. */
+  images?: {
+    png: string;
+    jpeg: string;
+    gif: string;
+    webp: string;
+    bmp: string;
+    ico: string;
+    avif: string;
+    svg: string;
+    corrupt: string;
+    oversized: string;
   };
   /** resource/stress: directory used as the second Space's root and the preview fixture root. */
   workspace?: string;

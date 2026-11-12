@@ -54,7 +54,7 @@ test fails when the copies diverge.
 | 10 MiB read, 50 MiB override | `src-tauri/src/modules/fs/file.rs` (`MAX_READ_BYTES`, `FORCE_MAX_READ_BYTES`) | the native reader refuses and returns the limit it applied; the UI never re-reads a file to re-decide |
 | 4 MiB syntax ceiling | `src/modules/preview/lib/limits.ts`, consumed by `src/modules/editor/EditorPane.tsx` | a renderer behaviour, not a read limit |
 | Asset delivery (read/override, chunk, outstanding reads) | `src-tauri/src/modules/fs/assets.rs` (`DeliveryLimits`) | derived from the two read ceilings; no separate asset ceiling exists |
-| 64 MiB image decode | `src/modules/preview/ImagePreview.tsx` via `imageBudgetDecision` | measured when the raster loads; a larger image is not kept |
+| 64 MiB image decode | `src/modules/preview/lib/imageViewer.ts` via `imageBudgetDecision`, fed by `src-tauri/src/modules/fs/image_probe.rs` (`fs_image_probe`) | dimensions come from the container header before the `<img>` mounts; a larger raster is never allocated |
 | 4 viewers / 192 MiB decoded | `src/modules/preview/lib/viewerAdmission.ts` via `decideViewerAdmission` | hidden viewers are evictable, a visible viewer never is |
 | PDF page and media playback | `src/modules/preview/lib/limits.ts` | still contract only; issues #30/#31 and #29 implement the readers |
 
@@ -85,13 +85,48 @@ scheme handler never allocates a whole large file by default:
   the read aborts the response instead of serving a token the tab no longer
   owns.
 
-Images and decoded viewers are enforced by the preview surfaces: an image raster
-above 64 MiB is refused (issue #28 owns a genuine reduced-size decode), and
+Images are bounded before the decoder sees the file (issue #28). The editor
+routes a file to the image surface by extension, which is a *routing* guess only;
+the native `fs_image_probe` command then reads at most 256 KiB of the container
+header and reports the intrinsic dimensions without decoding pixels. The
+approved `imageBudgetDecision` runs on those dimensions, so a raster above
+64 MiB decoded is refused before an `<img>` is mounted. The surface offers
+`open-externally`; it does **not** claim a reduced-size decode, because the
+WebKitGTK `<img>` path decodes at intrinsic size and a CSS-scaled element would
+not reduce the allocation. A future viewer that genuinely decodes to a smaller
+target may return `downscale` from the same decision. SVG is a vector format and
+does not consume the raster budget. Only formats actually measured in this
+build's webview are claimed as supported:
+
+| Format | Routing extensions | Measured decode (2026-11-12) |
+| --- | --- | --- |
+| PNG | `.png` | Fedora 44, WebKitGTK 2.54.2: renders 64×64 fixture |
+| JPEG | `.jpg`, `.jpeg` | same run: renders 64×64 fixture |
+| GIF | `.gif` | same run: renders 64×64 fixture |
+| WebP | `.webp` | same run: renders 64×64 fixture (lossless bitstream) |
+| BMP | `.bmp` | same run: renders 64×64 fixture |
+| ICO | `.ico` | same run: renders the largest directory entry (64×64) |
+| AVIF | `.avif` | same run: renders 64×64 fixture |
+| SVG | (not routed to the file viewer) | same run: inline/embedded SVG renders; an explicitly opened `.svg` stays an editable text tab, so the user can still edit it |
+
+The evidence is the `--scenario images` run of `scripts/app-lab` against the real
+application (the driver asserts the rendered element's `naturalWidth`, the
+oversized/corrupt states, hidden-tab release and open/close cleanup), not the
+extension list. SVG is measured as an inline/embedded vector, but an explicitly
+opened `.svg` stays in the editor because it is editable text; that is a routing
+decision, not a decode-support claim. Any other extension stays with the binary
+notice, and a routed extension whose header does not parse is reported as
+corrupt/unsupported rather than shown as a blank image.
+
+Images and decoded viewers are enforced by the preview surfaces:
 `viewerAdmission.ts` admits decoded viewers against the four-viewer and 192 MiB
 ceiling, releasing hidden viewers least-recently-used first and never evicting a
-visible one. PDF opens in the bounded frame, so the file read is bounded, but
-the 32 MiB per-page render ceiling is still contract only until issue #31, and a
-hidden media element still only pauses its own pane until issue #29.
+visible one. Hidden image tabs drop the rendered element and release their
+decoded slot; closing or replacing the tab releases the raster, the slot and the
+tab-owned asset grant. PDF opens in the bounded frame, so the file read is
+bounded, but the 32 MiB per-page render ceiling is still contract only until
+issue #31, and a hidden media element still only pauses its own pane until issue
+#29.
 
 Markdown previews (issue #27) use the same read contract: the native read
 refuses above 10 MiB with the limit it applied, the pane offers the explicit
@@ -122,8 +157,9 @@ setting.
 | Text file above 10 MiB, at most 50 MiB | refusal that explains the size and offers the explicit override; the override opens the file with syntax off |
 | Text file above 50 MiB | refusal naming the 50 MiB ceiling; open externally |
 | File above 4 MiB but within the read ceiling | opens normally, syntax features disabled |
-| Image above 64 MiB decoded | refusal explaining the decoded size and offering an external viewer; a viewer that can genuinely decode at reduced size may instead downscale to the returned target size |
-| Image with unusable dimensions | refusal; external viewer |
+| Image above 64 MiB decoded | refusal explaining the decoded size and offering `open-externally`; the image is refused from its header, so no raster is allocated. A viewer that genuinely decodes at reduced size may instead return the `downscale` decision |
+| Image with an unusable header or unknown format | corrupt/unsupported notice with a retry where the file may change, and an external viewer; never a blank pane |
+| Image routed by extension but not measured in this build | refusal naming the format as unverified; external viewer (routing is not decode support) |
 | PDF page above 32 MiB rendered | refusal with the zoom that would fit the page and the external fallback |
 | Fifth concurrent viewer | refusal naming the blocking viewers; the user closes one, or opens the file externally. Hidden viewers may be released, visible ones never are |
 | Viewer larger than the whole 192 MiB budget | refusal; external viewer |
@@ -156,7 +192,9 @@ Do not add one to the other, and do not derive one from the other.
   tickets own it.
 - **Codec and format support.** Which image/media formats actually decode is
   measured in issues #28 and #29, not implied by an extension list or by these
-  numbers.
+  numbers. Issue #28 measured PNG, JPEG, GIF, WebP, BMP, ICO, AVIF and SVG in the
+  Fedora WebKitGTK build recorded above; a different engine build needs its own
+  run.
 - **The PDF reader path.** Issue #30 decides whether the current iframe can
   meet the PDF contract and issue #31 implements the reader; these limits apply
   either way.
@@ -171,6 +209,8 @@ Later preview tickets import from `@/modules/preview/lib/limits`:
 | `LIMITS_APPROVAL` | provenance (issue, decision, approver, date, evidence, open questions) |
 | `textReadDecision(bytes, forced)` | read / read-without-syntax / too-large with override offered |
 | `decodedImageBytes(width, height)`, `imageBudgetDecision(width, height, { reducedDecode })` | allow / downscale / refuse |
+| `fs_image_probe` (native), `imageFormatForPath`, `imageDecodeSupport` | header dimensions before decode, and routing kept separate from measured format support |
+| `imageViewerState`, `imageViewerRequest`, `imageViewerRegistration` | the image surface's order: probe → budget → admission → mount, with honest refusal states |
 | `pdfPageDecision(renderBytes)` | allow / refuse with a suggested zoom |
 | `decideViewerAdmission(viewers, request)` | admit (with explicit evictions) / refuse with blockers |
 | `decideMediaPlayback(sessions, request)` | play (with sibling pauses) / refuse with blockers |

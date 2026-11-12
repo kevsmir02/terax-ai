@@ -295,6 +295,7 @@ pub fn run() {
             fs::file::fs_write_file,
             fs::file::fs_stat,
             fs::file::fs_file_revision,
+            fs::image_probe::fs_image_probe,
             fs::file::fs_canonicalize,
             fs::mutate::fs_create_file,
             fs::mutate::fs_create_dir,

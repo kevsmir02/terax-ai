@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
+import { assetScopes } from "@/lib/assetScopes";
 import { setWindowVibrancy } from "@/modules/settings/store";
+import { useViewerAdmissionStore } from "@/modules/preview/lib/viewerAdmission";
 import { whenSessionReady, writeToSession } from "@/modules/terminal";
 import type { Tab } from "@/modules/tabs";
 import {
@@ -2184,16 +2186,19 @@ async function markdownScenario(
     largeSrc || "no asset src",
   );
   run.app().closeTab(largeTab);
-  await pause(800);
+  await pause(1000);
   const servedAfterClose = await new Promise<boolean>((resolve) => {
     if (!largeSrc) {
       resolve(false);
       return;
     }
+    // A distinct query makes this a fresh request: the browser's memory image
+    // cache must not answer for a grant that was just revoked.
+    const probeUrl = `${largeSrc}${largeSrc.includes("?") ? "&" : "?"}probe=${Date.now()}`;
     const probe = new Image();
     probe.onload = () => resolve(true);
     probe.onerror = () => resolve(false);
-    probe.src = largeSrc;
+    probe.src = probeUrl;
   });
   await check(
     "close revokes the document's asset grant",
@@ -2225,6 +2230,296 @@ async function markdownScenario(
   };
 }
 
+/**
+ * The image acceptance scenario through the real application: representative
+ * formats are opened through the app's own file-tab planner, and the rendered
+ * element's decoded size is asserted (not the extension). Oversized, corrupt
+ * and hidden-tab states are observed through the surface the app really shows,
+ * and closing the tab is asserted to release both the decoded-viewer slot and
+ * the tab-owned asset grant scope.
+ */
+async function imagesScenario(
+  run: ScenarioRun,
+): Promise<Record<string, unknown>> {
+  const { scenario } = run;
+  const fixtures = scenario.images;
+  if (!fixtures)
+    throw new Error(
+      "the images scenario needs fixture paths (scripts/app-lab/run.py creates them)",
+    );
+  const steps: WorkflowStep[] = [];
+  const formats: Record<string, unknown> = {};
+  const check = async (name: string, ok: boolean, detail: string) => {
+    steps.push({ name, ok, detail });
+    await run.log(`[images] ${ok ? "PASS" : "FAIL"} ${name}: ${detail}`);
+  };
+  const failed = async (name: string, detail: string) => {
+    await check(name, false, detail);
+    return `images step failed: ${name}: ${detail}`;
+  };
+
+  /** The visible image surface, skipping the aria-hidden wrapper of an inactive tab. */
+  const surface = () =>
+    [...document.querySelectorAll<HTMLElement>("[data-image-viewer]")].find(
+      (element) => !element.closest('[aria-hidden="true"]'),
+    ) ?? null;
+  const surfaceState = () => surface()?.dataset.imageState ?? null;
+  const image = () =>
+    surface()?.querySelector<HTMLImageElement>("img[data-image-preview]") ??
+    null;
+  const viewers = () => useViewerAdmissionStore.getState().viewers;
+  const waitForState = (state: string, what: string, timeoutMs = 30_000) =>
+    run.waitFor(() => surfaceState() === state, what, timeoutMs);
+  const waitForDecoded = (what: string) =>
+    run.waitFor(
+      () => {
+        const element = image();
+        return Boolean(element?.complete && (element?.naturalWidth ?? 0) > 0);
+      },
+      what,
+      30_000,
+    );
+
+  try {
+    const first = await run.booted();
+    const open = async (path: string) => {
+      const tabId = run.app().openFileTab(path);
+      run.select(tabId);
+      return tabId;
+    };
+
+    for (const name of [
+      "png",
+      "jpeg",
+      "gif",
+      "webp",
+      "bmp",
+      "ico",
+      "avif",
+    ] as const) {
+      const tabId = await open(fixtures[name]);
+      try {
+        await waitForState("ready", `the ${name} image surface`);
+        await waitForDecoded(`the decoded ${name} raster`);
+      } catch (error) {
+        throw new Error(await failed(`${name} renders`, String(error)));
+      }
+      const element = image();
+      await check(
+        `${name} renders`,
+        element?.naturalWidth === 64 &&
+          element?.naturalHeight === 64 &&
+          element?.dataset.imageFormat === name,
+        `${element?.naturalWidth}x${element?.naturalHeight} format=${element?.dataset.imageFormat} state=${surfaceState()}`,
+      );
+      formats[name] = {
+        width: element?.naturalWidth ?? 0,
+        height: element?.naturalHeight ?? 0,
+      };
+      await run.sync(`images-${name}`, {
+        width: element?.naturalWidth ?? 0,
+        height: element?.naturalHeight ?? 0,
+      });
+      run.app().closeTab(tabId);
+      await run.waitFor(
+        () =>
+          viewers().every((viewer) => !viewer.id.startsWith(`image:${tabId}:`)),
+        `the ${name} viewer slot to be released`,
+        8000,
+      );
+    }
+
+    // SVG is not routed to the image surface: an explicitly opened .svg stays
+    // an editable text tab, even though the webview decodes inline SVG.
+    {
+      const tabId = await open(fixtures.svg);
+      try {
+        await run.waitFor(
+          () =>
+            (document.querySelector(".cm-content")?.textContent ?? "").includes(
+              "<svg",
+            ),
+          "the SVG source in the editor",
+          30_000,
+        );
+      } catch (error) {
+        throw new Error(await failed("svg stays text", String(error)));
+      }
+      const tab = run.app().tabs.find((entry) => entry.id === tabId);
+      await check(
+        "svg stays an editable text tab",
+        tab?.kind === "editor" &&
+          !document.querySelector("[data-image-viewer]"),
+        `tab ${tabId} kind ${tab?.kind}`,
+      );
+      run.app().closeTab(tabId);
+      await run.waitFor(
+        () => !run.app().tabs.some((entry) => entry.id === tabId),
+        "the SVG tab to close",
+        8000,
+      );
+    }
+
+    // A recognized header above the 64 MiB decoded ceiling is refused from the
+    // header dimensions, before the element is ever mounted.
+    {
+      const tabId = await open(fixtures.oversized);
+      try {
+        await waitForState("oversized", "the oversized refusal");
+      } catch (error) {
+        throw new Error(await failed("oversized refused", String(error)));
+      }
+      const text = surface()?.textContent ?? "";
+      await check(
+        "oversized refused before decode",
+        !image() && text.includes("64 MiB") && text.includes("Open externally"),
+        `${surfaceState()}: ${text.slice(0, 160)}`,
+      );
+      await check(
+        "oversized holds no decoded slot",
+        viewers().length === 0,
+        `${viewers().length} admitted viewers`,
+      );
+      run.app().closeTab(tabId);
+      await run.waitFor(
+        () => !run.app().tabs.some((tab) => tab.id === tabId),
+        "the oversized tab to close",
+        8000,
+      );
+    }
+
+    // Corrupt input must produce an informative state, never a blank pane or a crash.
+    {
+      const tabId = await open(fixtures.corrupt);
+      try {
+        await waitForState("corrupt", "the corrupt-image notice");
+      } catch (error) {
+        throw new Error(await failed("corrupt reports", String(error)));
+      }
+      const text = surface()?.textContent ?? "";
+      await check(
+        "corrupt reports an honest state",
+        !image() &&
+          text.includes("could not be decoded") &&
+          text.includes("Retry") &&
+          text.includes("Open externally"),
+        `${surfaceState()}: ${text.slice(0, 160)}`,
+      );
+      run.app().closeTab(tabId);
+      await run.waitFor(
+        () => !run.app().tabs.some((tab) => tab.id === tabId),
+        "the corrupt tab to close",
+        8000,
+      );
+    }
+
+    // A hidden tab stops presenting: the decoded element and its slot go away,
+    // and returning remounts it.
+    {
+      const tabId = await open(fixtures.png);
+      try {
+        await waitForState("ready", "the PNG surface");
+        await waitForDecoded("the decoded PNG raster");
+      } catch (error) {
+        throw new Error(await failed("hidden-tab setup", String(error)));
+      }
+      run.select(first.tabId);
+      try {
+        await run.waitFor(
+          () =>
+            Boolean(
+              document.querySelector(
+                '[data-image-viewer][data-image-state="hidden"]',
+              ),
+            ) && !document.querySelector("img[data-image-preview]"),
+          "the hidden tab to stop presenting the image",
+          8000,
+        );
+      } catch (error) {
+        throw new Error(await failed("hidden tab stops decode", String(error)));
+      }
+      await check(
+        "hidden tab releases the raster",
+        viewers().length === 0 &&
+          !document.querySelector("img[data-image-preview]"),
+        `${viewers().length} admitted viewers`,
+      );
+      run.select(tabId);
+      try {
+        await waitForDecoded("the raster to return with the tab");
+      } catch (error) {
+        throw new Error(await failed("visible tab returns", String(error)));
+      }
+      await check(
+        "visible tab returns",
+        Boolean(image()) && viewers().length === 1,
+        `${viewers().length} admitted viewers`,
+      );
+      run.app().closeTab(tabId);
+    }
+
+    // Repeated open/close cycles must not retain decoded data or grants.
+    let released = true;
+    let detail = "";
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      const tabId = await open(fixtures.png);
+      try {
+        await waitForDecoded(`cycle ${cycle + 1}'s raster`);
+      } catch (error) {
+        throw new Error(
+          await failed(`cycle ${cycle + 1} opens`, String(error)),
+        );
+      }
+      run.app().closeTab(tabId);
+      try {
+        await run.waitFor(
+          () =>
+            !run.app().tabs.some((tab) => tab.id === tabId) &&
+            viewers().length === 0 &&
+            assetScopes.size === 0,
+          `cycle ${cycle + 1} to release raster and grants`,
+          10_000,
+        );
+      } catch (error) {
+        released = false;
+        detail = String(error);
+      }
+      if (!released) break;
+      detail = `cycle ${cycle + 1}: ${viewers().length} viewers, ${assetScopes.size} grant scopes`;
+    }
+    await check(
+      "open/close cycles release rasters and grants",
+      released && viewers().length === 0 && assetScopes.size === 0 && !image(),
+      detail,
+    );
+
+    const pass = steps.every((step) => step.ok);
+    await run.log(
+      `[images] ${pass ? "PASS" : "FAIL"} summary: ${steps.filter((step) => !step.ok).length} failures of ${steps.length}`,
+    );
+    return {
+      images: {
+        pass,
+        steps,
+        formats,
+        retainedViewers: viewers().length,
+        retainedGrantScopes: assetScopes.size,
+      },
+    };
+  } catch (error) {
+    return {
+      images: {
+        pass: false,
+        steps: [
+          ...steps,
+          { name: "scenario completed", ok: false, detail: String(error) },
+        ],
+        formats,
+      },
+    };
+  }
+}
+
 const SCENARIOS: Record<
   BenchScenario["name"],
   (run: ScenarioRun) => Promise<unknown>
@@ -2240,6 +2535,7 @@ const SCENARIOS: Record<
   workflow: workflowScenario,
   markdown: markdownScenario,
   preview: previewScenario,
+  images: imagesScenario,
   resource: resourceScenario,
   stress: resourceScenario,
   startup: startupScenario,

@@ -4,38 +4,27 @@ on:
   push:
     tags:
       - "v*"
-  # Manual runs only build Linux workflow artifacts; publishing requires a tag push.
+  # Manual runs build the same Linux x86-64 artifact set without publishing: the upload steps
+  # require a tag push, so a dispatch never touches a release.
   workflow_dispatch:
 
 jobs:
   publish-tauri:
+    # Linux x86-64 is the only platform this fork builds or distributes (ticket #34). The package
+    # formats come from `bundle.targets` in `src-tauri/tauri.conf.json` (`rpm`, `deb`), so there is
+    # no AppImage, no macOS leg, no Windows leg and no aarch64 leg to keep in step. Packaging,
+    # signing and publication gates are tickets #39/#40; this job produces and inspects candidates.
+    name: publish-tauri (linux x86-64)
+    runs-on: ubuntu-22.04
     outputs:
       app-version: ${{ steps.tauri.outputs.appVersion }}
     permissions:
       actions: read
       contents: write
-      id-token: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include: >-
-          ${{ fromJSON(github.event_name == 'workflow_dispatch' && '[
-            {"platform":"ubuntu-22.04","args":"","rust-target":"x86_64-unknown-linux-gnu","appimage-arch":"x86_64","deb-arch":"amd64"},
-            {"platform":"ubuntu-24.04-arm","args":"","rust-target":"aarch64-unknown-linux-gnu","appimage-arch":"aarch64","deb-arch":"arm64"}
-          ]' || '[
-            {"platform":"macos-latest","args":"--target aarch64-apple-darwin","rust-target":"aarch64-apple-darwin"},
-            {"platform":"macos-latest","args":"--target x86_64-apple-darwin","rust-target":"x86_64-apple-darwin"},
-            {"platform":"ubuntu-22.04","args":"","rust-target":"x86_64-unknown-linux-gnu","appimage-arch":"x86_64","deb-arch":"amd64"},
-            {"platform":"ubuntu-24.04-arm","args":"","rust-target":"aarch64-unknown-linux-gnu","appimage-arch":"aarch64","deb-arch":"arm64"},
-            {"platform":"windows-latest","args":"","rust-target":""}
-          ]') }}
-
-    runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v7
 
       - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -57,300 +46,62 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.99.1"
-          targets: ${{ matrix.rust-target }}
+          targets: x86_64-unknown-linux-gnu
 
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: ./src-tauri -> target
-          key: ${{ matrix.platform }}-${{ matrix.rust-target }}
+          key: linux-x86_64
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Write Apple API key to disk
-        if: startsWith(matrix.platform, 'macos')
-        shell: bash
-        env:
-          KEY_CONTENT: ${{ secrets.APPLE_API_KEY_PATH }}
-        run: |
-          mkdir -p "$HOME/private_keys"
-          printf '%s' "$KEY_CONTENT" > "$HOME/private_keys/AuthKey.p8"
-          echo "APPLE_API_KEY_PATH=$HOME/private_keys/AuthKey.p8" >> "$GITHUB_ENV"
 
       - id: tauri
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TERAX_CLI_TARGET: ${{ matrix.rust-target }}
-
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          # `scripts/build-cli.mjs` names the sidecar with this triple, so the external binary
+          # Tauri bundles is the one built for the released architecture.
+          TERAX_CLI_TARGET: x86_64-unknown-linux-gnu
         with:
           tagName: ${{ github.event_name == 'push' && github.ref_name || '' }}
           releaseName: ${{ github.event_name == 'push' && format('Terax {0}', github.ref_name) || '' }}
-          releaseBody: "See the assets to download and install. Auto-update is built in."
+          # Updates are installed with the distribution's package tool, never by the application,
+          # so the release text must not promise a built-in updater.
+          releaseBody: "Linux x86-64 only. Install the RPM (dnf) or DEB (apt) with your package manager; the application never downloads, installs or restarts itself."
           releaseDraft: true
           prerelease: false
-          args: ${{ matrix.args }}
+          args: --target x86_64-unknown-linux-gnu
 
-      # Strip the bundled libwayland-* libs from the AppImage so it loads the
-      # host copies at runtime. The Ubuntu 22.04 build host ships libwayland
-      # 1.20, but recent Mesa (Fedora 43 / Arch / Bazzite, Mesa 1.22+) needs
-      # newer symbols; AppImage puts its bundled libs first on the search path,
-      # so the stale copy wins and EGL fails with EGL_BAD_PARAMETER. libgdk-3
-      # hard-links these three, so removing them only redirects resolution to
-      # the host copy, which every GTK-capable system has. They are on the
-      # AppImage excludelist for this exact reason. The re-signed AppImage and
-      # its .sig are re-uploaded here; the updater manifest is patched in the
-      # patch-updater-manifest job after all matrix legs finish, so a parallel
-      # macOS/Windows upload cannot clobber the combined latest.json.
-      - name: Fix AppImage wayland libs and re-sign
-        if: runner.os == 'Linux'
-        env:
-          APPIMAGE_ARCH: ${{ matrix.appimage-arch }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-
-          APPIMAGE=$(ls src-tauri/target/release/bundle/appimage/*.AppImage | head -n1)
-          BASENAME=$(basename "$APPIMAGE")
-          echo "Patching: $APPIMAGE"
-
-          WORK=$(mktemp -d)
-          cp "$APPIMAGE" "$WORK/"
-          pushd "$WORK" >/dev/null
-          chmod +x "./$BASENAME"
-          "./$BASENAME" --appimage-extract >/dev/null
-
-          test -x squashfs-root/usr/bin/terax \
-            || { echo "terax binary missing from AppImage"; exit 1; }
-
-          # linuxdeploy may already exclude some of these libraries.
-          find squashfs-root \( -type f -o -type l \) \
-            -name 'libwayland-*.so*' -print -delete
-
-          curl -fsSL -o appimagetool.AppImage \
-            "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-${APPIMAGE_ARCH}.AppImage"
-          chmod +x appimagetool.AppImage
-          ARCH="$APPIMAGE_ARCH" ./appimagetool.AppImage --appimage-extract-and-run squashfs-root "$BASENAME"
-
-          # Sanity-check the repacked image before it replaces the original.
-          rm -rf squashfs-root
-          chmod +x "./$BASENAME"
-          "./$BASENAME" --appimage-extract >/dev/null
-          if find squashfs-root -name 'libwayland-*.so*' -print -quit | grep -q .; then
-            echo "Wayland library still present after repack"
-            exit 1
-          fi
-          test -x squashfs-root/usr/bin/terax \
-            || { echo "terax binary missing from repacked AppImage"; exit 1; }
-          squashfs-root/usr/bin/terax-cli --help
-          popd >/dev/null
-
-          cp "$WORK/$BASENAME" "$APPIMAGE"
-
-          rm -f "$APPIMAGE.sig"
-          pnpm tauri signer sign "$APPIMAGE"
-
-      - name: Verify Linux packages and stage artifacts
-        if: runner.os == 'Linux'
-        env:
-          APPIMAGE_ARCH: ${{ matrix.appimage-arch }}
-          DEB_ARCH: ${{ matrix.deb-arch }}
+      - name: Verify the x86-64 RPM and DEB and stage the artifacts
         run: |
           set -euo pipefail
           mkdir linux-packages
-          for package in src-tauri/target/release/bundle/{deb/*.deb,rpm/*.rpm,appimage/*.AppImage}; do
+          # Exactly the two configured bundle formats: a third format appearing here would be a
+          # platform commitment this fork did not make.
+          for package in src-tauri/target/release/bundle/{deb/*.deb,rpm/*.rpm}; do
             test -s "$package"
-            test -s "$package.sig"
-            cp "$package" "$package.sig" linux-packages/
+            cp "$package" linux-packages/
           done
-          test "$(dpkg-deb -f linux-packages/*.deb Architecture)" = "$DEB_ARCH"
-          test "$(rpm -qp --queryformat '%{ARCH}' linux-packages/*.rpm)" = "$APPIMAGE_ARCH"
+          test "$(dpkg-deb -f linux-packages/*.deb Architecture)" = "amd64"
+          test "$(rpm -qp --queryformat '%{ARCH}' linux-packages/*.rpm)" = "x86_64"
           dpkg-deb -x linux-packages/*.deb unpacked-deb
-          unpacked-deb/usr/bin/terax-cli --help
-          file unpacked-deb/usr/bin/terax unpacked-deb/usr/bin/terax-cli
+          unpacked-deb/usr/bin/terax-workspace-cli --help
+          file unpacked-deb/usr/bin/terax
           (cd linux-packages && sha256sum * > SHA256SUMS)
           stat --printf='%n %s bytes\n' linux-packages/* >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload Linux workflow artifacts
-        if: runner.os == 'Linux'
+      - name: Upload the release artifact set
         uses: actions/upload-artifact@v7
         with:
-          name: linux-${{ matrix.appimage-arch }}-packages
+          name: linux-x86_64-packages
           path: linux-packages/
           if-no-files-found: error
 
-      - name: Upload re-signed AppImage to release
-        if: runner.os == 'Linux' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+      - name: Upload the packages and their hashes to the draft release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "$GITHUB_REF_NAME" linux-packages/*.AppImage linux-packages/*.AppImage.sig \
-            --clobber --repo "$GITHUB_REPOSITORY"
-
-      # SignPath Authenticode-signs the Windows installers. Their bytes change,
-      # so the minisign updater signatures tauri-action produced over the
-      # unsigned files no longer match. We stage the installers under the exact
-      # names the SignPath artifact configuration expects, submit them, then
-      # re-run the tauri signer over the SIGNED files and re-upload both the
-      # installers and their new .sig. latest.json is patched in the final
-      # patch-updater-manifest job, after every matrix leg has merged, so a
-      # parallel macOS/Linux upload cannot clobber the Windows signatures.
-      - name: Stage Windows installers for SignPath
-        if: matrix.platform == 'windows-latest' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $bundleDir = "src-tauri/target/release/bundle"
-          $exe = Get-ChildItem "$bundleDir/nsis" -Filter *.exe | Select-Object -First 1
-          $msi = Get-ChildItem "$bundleDir/msi"  -Filter *.msi | Select-Object -First 1
-          if (-not $exe) { throw "No NSIS .exe produced by Tauri" }
-          if (-not $msi) { throw "No .msi produced by Tauri" }
-          New-Item -ItemType Directory -Path signpath-staging -Force | Out-Null
-          Copy-Item $exe.FullName signpath-staging/terax-setup.exe
-          Copy-Item $msi.FullName signpath-staging/terax.msi
-          "EXE_REAL_PATH=$($exe.FullName)" | Out-File $env:GITHUB_ENV -Append
-          "MSI_REAL_PATH=$($msi.FullName)" | Out-File $env:GITHUB_ENV -Append
-
-      - name: Upload unsigned Windows artifact
-        id: upload-windows
-        if: matrix.platform == 'windows-latest' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-        uses: actions/upload-artifact@v7
-        with:
-          name: windows-unsigned
-          path: signpath-staging/
-          if-no-files-found: error
-
-      # Requires manual approval in the SignPath UI for the production policy.
-      # The default wait timeout is 600s; bumped so the job survives the time
-      # it takes to review and approve the request during a release.
-      - name: Submit Windows installers to SignPath
-        if: matrix.platform == 'windows-latest' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-        uses: signpath/github-action-submit-signing-request@v3
-        with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: 'df665bf4-9b76-41ae-9596-1ba3a23010aa'
-          project-slug: 'terax-ai'
-          signing-policy-slug: 'release-signing'
-          artifact-configuration-slug: 'initial'
-          github-artifact-id: ${{ steps.upload-windows.outputs.artifact-id }}
-          wait-for-completion: true
-          wait-for-completion-timeout-in-seconds: 3600
-          output-artifact-directory: 'signed'
-
-      - name: Re-sign updater and upload signed Windows installers
-        if: matrix.platform == 'windows-latest' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          $signedExe = "signed/terax-setup.exe"
-          $signedMsi = "signed/terax.msi"
-          foreach ($f in @($signedExe, $signedMsi)) {
-            if (-not (Test-Path $f)) { throw "Signed artifact missing: $f" }
-            $sig = Get-AuthenticodeSignature $f
-            if ($null -eq $sig.SignerCertificate) { throw "$f is NOT Authenticode-signed" }
-            if ($sig.Status -ne 'Valid') { throw "$f signature status: $($sig.Status)" }
-            Write-Host "OK $f -> $($sig.SignerCertificate.Subject)"
-          }
-          Copy-Item $signedExe $env:EXE_REAL_PATH -Force
-          Copy-Item $signedMsi $env:MSI_REAL_PATH -Force
-          Remove-Item "$($env:EXE_REAL_PATH).sig" -ErrorAction SilentlyContinue
-          Remove-Item "$($env:MSI_REAL_PATH).sig" -ErrorAction SilentlyContinue
-          pnpm tauri signer sign $env:EXE_REAL_PATH
-          pnpm tauri signer sign $env:MSI_REAL_PATH
-          gh release upload $env:GITHUB_REF_NAME `
-            $env:EXE_REAL_PATH "$($env:EXE_REAL_PATH).sig" `
-            $env:MSI_REAL_PATH "$($env:MSI_REAL_PATH).sig" `
-            --clobber --repo $env:GITHUB_REPOSITORY
-
-  # Patch the re-signed AppImage and SignPath-signed Windows signatures into the
-  # combined updater manifest. Runs once, after every matrix leg has finished
-  # merging its platform into latest.json, so it operates on the full manifest
-  # and cannot be clobbered by a parallel upload. Each Linux architecture points
-  # at its AppImage; the three windows keys are patched from the minisign signatures
-  # regenerated over the Authenticode-signed installers.
-  patch-updater-manifest:
-    needs: publish-tauri
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Patch latest.json with re-signed AppImage and Windows signatures
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APP_VERSION: ${{ needs.publish-tauri.outputs.app-version }}
-        run: |
-          set -euo pipefail
-          TAG="${GITHUB_REF_NAME}"
-
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern "latest.json" \
-            --pattern "*.AppImage.sig" \
-            --pattern "*_x64-setup.exe.sig" \
-            --pattern "*_x64_en-US.msi.sig" --clobber
-
-          EXE_SIG=$(cat ./*_x64-setup.exe.sig)
-          MSI_SIG=$(cat ./*_x64_en-US.msi.sig)
-
-          # Re-signing an artifact re-uploads it with --clobber, which deletes
-          # and recreates the asset under a new id. tauri-action baked the old
-          # asset-id API urls into latest.json, so we also rewrite the urls of
-          # the re-signed artifacts to the tag+filename download url, which is
-          # stable across clobbers. Filenames come from the .sig names.
-          EXE_FILE=$(basename "$(ls ./*_x64-setup.exe.sig)" .sig)
-          MSI_FILE=$(basename "$(ls ./*_x64_en-US.msi.sig)" .sig)
-          DL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
-
-          jq -e 'has("platforms") and (.platforms | has("linux-x86_64")
-            and has("linux-aarch64") and has("windows-x86_64") and has("windows-x86_64-msi")
-            and has("windows-x86_64-nsis"))' latest.json >/dev/null \
-            || { echo "latest.json missing an expected platform key"; exit 1; }
-
-          # The generic windows-x86_64 key mirrors whichever installer Tauri
-          # picked as primary; decode its current signature to see which file it
-          # references so the correct regenerated signature and url are used.
-          GEN_FILE=$(jq -r '.platforms["windows-x86_64"].signature' latest.json \
-            | base64 -d | grep -oE 'file:[^[:space:]]+' | head -n1)
-          GEN_FILE=${GEN_FILE#file:}
-          case "$GEN_FILE" in
-            *.msi) WIN_GEN="$MSI_SIG" ;;
-            *)     WIN_GEN="$EXE_SIG" ;;
-          esac
-
-          for entry in x86_64:amd64 aarch64:aarch64; do
-            ARCH=${entry%:*}
-            SUFFIX=${entry#*:}
-            APP_FILE="Terax_${APP_VERSION}_${SUFFIX}.AppImage"
-            APP_SIG=$(cat "$APP_FILE.sig")
-            jq --arg key "linux-$ARCH" --arg sig "$APP_SIG" --arg url "$DL/$APP_FILE" '
-              .platforms[$key] += {signature: $sig, url: $url}
-              | .platforms[$key + "-appimage"] += {signature: $sig, url: $url}
-            ' latest.json > latest.json.tmp
-            mv latest.json.tmp latest.json
-          done
-
-          jq --arg gen "$WIN_GEN" \
-             --arg msi "$MSI_SIG" --arg nsis "$EXE_SIG" \
-             --arg genurl "$DL/$GEN_FILE" \
-             --arg msiurl "$DL/$MSI_FILE" --arg exeurl "$DL/$EXE_FILE" '
-            .platforms["windows-x86_64"] += {signature: $gen, url: $genurl}
-            | .platforms["windows-x86_64-msi"] += {signature: $msi, url: $msiurl}
-            | .platforms["windows-x86_64-nsis"] += {signature: $nsis, url: $exeurl}
-          ' latest.json > latest.json.tmp
-          mv latest.json.tmp latest.json
-
-          gh release upload "$TAG" latest.json --clobber --repo "$GITHUB_REPOSITORY"
+          gh release upload "$GITHUB_REF_NAME" linux-packages/* --clobber \
+            --repo "$GITHUB_REPOSITORY"
