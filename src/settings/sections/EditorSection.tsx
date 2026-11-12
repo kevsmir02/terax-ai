@@ -37,7 +37,6 @@ import {
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
-import { LspServersGroup } from "../components/LspServersGroup";
 import { SectionHeader } from "../components/SectionHeader";
 import { SettingRow } from "../components/SettingRow";
 
@@ -66,7 +65,7 @@ export function EditorSection() {
     <div className="flex flex-col gap-6">
       <SectionHeader
         title="Editor"
-        description="Editing behavior, saving, and language servers."
+        description="Editing behavior, saving, and formatting."
       />
 
       <div className="flex flex-col gap-2">
@@ -152,7 +151,7 @@ export function EditorSection() {
           <>
             <SettingRow
               title="Formatter"
-              description="Language server formats the buffer before writing; external tools run on the saved file from your PATH."
+              description="External tools run on the saved file from your PATH."
             >
               <FormatterSelect
                 value={editorFormatter}
@@ -164,14 +163,11 @@ export function EditorSection() {
           </>
         )}
       </div>
-
-      <LspServersGroup />
     </div>
   );
 }
 
 const FORMATTER_OPTIONS: EditorFormatter[] = [
-  "lsp",
   ...(Object.keys(FORMATTERS) as EditorFormatter[]),
   "custom",
 ];
@@ -248,7 +244,7 @@ function FormatterOverrides() {
           className="h-8 rounded-md border border-border px-3 text-[12px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
           onClick={() => {
             const first = unused[0];
-            if (first) update({ ...byLang, [first.ext]: "lsp" });
+            if (first) update({ ...byLang, [first.ext]: "custom" });
           }}
         >
           Add override

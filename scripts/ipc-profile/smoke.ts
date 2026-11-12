@@ -31,7 +31,7 @@ async function checkMainThread(output: Record<string, unknown>) {
   const latencies: number[] = [];
   while (pending) {
     const started = performance.now();
-    await invoke("lsp_host_pid");
+    await invoke("pty_diagnostics");
     latencies.push(performance.now() - started);
     await sleep(2);
   }

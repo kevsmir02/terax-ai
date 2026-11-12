@@ -194,12 +194,9 @@ export type Preferences = {
   editorFormatterByLang: Record<string, EditorFormatter>;
   /** Shell template for the "custom" formatter; {file} is the quoted path. */
   editorCustomFormatCommand: string;
-  lspActivation: Record<string, LspActivation>;
-  lspCustomServers: LspCustomServer[];
 };
 
 export type EditorFormatter =
-  | "lsp"
   | "biome"
   | "prettier"
   | "ruff"
@@ -209,18 +206,6 @@ export type EditorFormatter =
   | "shfmt"
   | "zigfmt"
   | "custom";
-
-export type LspActivation = "enabled" | "dismissed";
-
-export type LspCustomServer = {
-  id: string;
-  name: string;
-  command: string;
-  args: string[];
-  /** languageResolver id -> LSP languageId */
-  languages: Record<string, string>;
-  rootMarkers: string[];
-};
 
 const STORE_PATH = "terax-settings.json";
 const KEY_THEME = "theme";
@@ -290,8 +275,6 @@ const KEY_EDITOR_FORMAT_ON_SAVE = "editorFormatOnSave";
 const KEY_EDITOR_FORMATTER = "editorFormatter";
 const KEY_EDITOR_FORMATTER_BY_LANG = "editorFormatterByLang";
 const KEY_EDITOR_CUSTOM_FORMAT_COMMAND = "editorCustomFormatCommand";
-const KEY_LSP_ACTIVATION = "lspActivation";
-const KEY_LSP_CUSTOM_SERVERS = "lspCustomServers";
 
 const TERMINAL_FONT_SIZE_DEFAULT = 14;
 const TERMINAL_FONT_SIZE_MIN = 8;
@@ -384,11 +367,9 @@ export const DEFAULT_PREFERENCES: Preferences = {
   editorAutoSave: false,
   editorAutoSaveDelay: 1000,
   editorFormatOnSave: false,
-  editorFormatter: "lsp",
+  editorFormatter: "custom",
   editorFormatterByLang: {},
   editorCustomFormatCommand: "",
-  lspActivation: {},
-  lspCustomServers: [],
 };
 
 const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
@@ -403,6 +384,34 @@ async function writePref<T>(key: string, value: T): Promise<void> {
   await store.set(key, value);
   await store.save();
   await emit(PREFS_CHANGED_EVENT, { key, value });
+}
+
+// `lsp` was the stored default before language servers were removed. A stale
+// value must not reach the formatter registry, where it would resolve to
+// nothing; map it (and anything unrecognised) to the no-op "custom" choice.
+const REMOVED_FORMATTER_ID = "lsp";
+
+function normalizeEditorFormatter(
+  value: unknown,
+  fallback: EditorFormatter,
+): EditorFormatter {
+  if (typeof value !== "string" || value === REMOVED_FORMATTER_ID)
+    return fallback;
+  return value as EditorFormatter;
+}
+
+function normalizeFormatterByLang(
+  value: unknown,
+): Record<string, EditorFormatter> {
+  if (!value || typeof value !== "object") return {};
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(
+        ([, formatter]) =>
+          typeof formatter === "string" && formatter !== REMOVED_FORMATTER_ID,
+      )
+      .map(([lang, formatter]) => [lang, formatter as EditorFormatter]),
+  );
 }
 
 export async function loadPreferences(): Promise<Preferences> {
@@ -584,41 +593,17 @@ export async function loadPreferences(): Promise<Preferences> {
     editorFormatOnSave:
       get<boolean>(KEY_EDITOR_FORMAT_ON_SAVE) ??
       DEFAULT_PREFERENCES.editorFormatOnSave,
-    editorFormatter:
-      get<EditorFormatter>(KEY_EDITOR_FORMATTER) ??
+    editorFormatter: normalizeEditorFormatter(
+      get<unknown>(KEY_EDITOR_FORMATTER),
       DEFAULT_PREFERENCES.editorFormatter,
-    editorFormatterByLang:
-      get<Record<string, EditorFormatter>>(KEY_EDITOR_FORMATTER_BY_LANG) ??
-      DEFAULT_PREFERENCES.editorFormatterByLang,
+    ),
+    editorFormatterByLang: normalizeFormatterByLang(
+      get<unknown>(KEY_EDITOR_FORMATTER_BY_LANG),
+    ),
     editorCustomFormatCommand:
       get<string>(KEY_EDITOR_CUSTOM_FORMAT_COMMAND) ??
       DEFAULT_PREFERENCES.editorCustomFormatCommand,
-    lspActivation:
-      get<Record<string, LspActivation>>(KEY_LSP_ACTIVATION) ??
-      DEFAULT_PREFERENCES.lspActivation,
-    lspCustomServers:
-      get<LspCustomServer[]>(KEY_LSP_CUSTOM_SERVERS) ??
-      DEFAULT_PREFERENCES.lspCustomServers,
   };
-}
-
-export async function setLspActivation(
-  id: string,
-  value: LspActivation | null,
-): Promise<void> {
-  const current =
-    ((await store.get(KEY_LSP_ACTIVATION)) as Record<string, LspActivation>) ??
-    {};
-  const next = { ...current };
-  if (value === null) delete next[id];
-  else next[id] = value;
-  await writePref(KEY_LSP_ACTIVATION, next);
-}
-
-export async function setLspCustomServers(
-  value: LspCustomServer[],
-): Promise<void> {
-  await writePref(KEY_LSP_CUSTOM_SERVERS, value);
 }
 
 export async function setTheme(value: ThemePref): Promise<void> {
@@ -1061,8 +1046,6 @@ export async function onPreferencesChange(
     [KEY_EDITOR_FORMATTER]: "editorFormatter",
     [KEY_EDITOR_FORMATTER_BY_LANG]: "editorFormatterByLang",
     [KEY_EDITOR_CUSTOM_FORMAT_COMMAND]: "editorCustomFormatCommand",
-    [KEY_LSP_ACTIVATION]: "lspActivation",
-    [KEY_LSP_CUSTOM_SERVERS]: "lspCustomServers",
   };
   // Same-process writes still fire onChange immediately; cross-window writes
   // arrive via the Tauri event emitted by writePref().

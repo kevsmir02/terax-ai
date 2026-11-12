@@ -156,14 +156,6 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => ({
   resolve: {
     alias: [
       { find: "@", replacement: path.resolve(rootDir, "./src") },
-      // Shim keeps the ~117 kB CJS protocol package out of the bundle.
-      {
-        find: "vscode-languageserver-protocol",
-        replacement: path.resolve(
-          rootDir,
-          "./src/modules/lsp/lib/protocolShim.ts",
-        ),
-      },
       // The AI SDK reads one enum from zod 3; the shim keeps the rest of it
       // (~14 kB gzipped) out. Exact match only: nothing else may import zod/v3.
       {

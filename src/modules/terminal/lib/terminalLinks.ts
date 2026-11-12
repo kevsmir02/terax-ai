@@ -14,7 +14,7 @@ import {
   resolveLinkPath,
 } from "@/modules/terminal/ghostty/core/terminalLinkTargets";
 import type { TerminalLinkHit } from "@/modules/terminal/ghostty/core/terminalLinks";
-import { getLspNavigator } from "@/modules/lsp/lib/navigator";
+import { getFileNavigator } from "@/modules/editor/lib/fileNavigator";
 import { getWslHome, type WorkspaceEnv } from "@/modules/workspace";
 
 export type LinkActivationContext = {
@@ -172,7 +172,7 @@ function truncate(text: string, max = 200): string {
 
 function defaultDeps(context: LinkActivationContext): LinkActivationDeps {
   const workspace = context.workspace;
-  const navigator = getLspNavigator();
+  const navigator = getFileNavigator();
   return {
     openUrl: (url, focus) => openExternalUrl(url, focus),
     stat: async (path, localOnly) => {

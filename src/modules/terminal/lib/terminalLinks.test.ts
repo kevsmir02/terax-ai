@@ -8,7 +8,9 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 }));
 vi.mock("@tauri-apps/plugin-os", () => ({ hostname: vi.fn() }));
 vi.mock("sonner", () => ({ toast: vi.fn() }));
-vi.mock("@/modules/lsp/lib/navigator", () => ({ getLspNavigator: vi.fn() }));
+vi.mock("@/modules/editor/lib/fileNavigator", () => ({
+  getFileNavigator: vi.fn(),
+}));
 vi.mock("@/modules/workspace", () => ({
   currentWorkspaceEnv: () => ({ kind: "local" }),
   getWslHome: vi.fn(),

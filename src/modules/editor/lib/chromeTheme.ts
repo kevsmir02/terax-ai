@@ -346,65 +346,6 @@ const chrome = EditorView.theme({
     },
   },
 
-  ".cm-lsp-rename-panel": {
-    display: "flex",
-    gap: "6px",
-    padding: "6px 8px",
-    backgroundColor: "var(--popover)",
-    borderTop: "1px solid var(--border)",
-  },
-  ".cm-lsp-rename-input": {
-    flex: "1",
-    fontFamily: detectMonoFontFamily(),
-    fontSize: "12px",
-    backgroundColor: "color-mix(in srgb, var(--muted) 50%, transparent)",
-    color: "var(--foreground)",
-    border: "1px solid var(--border)",
-    borderRadius: "6px",
-    padding: "3px 8px",
-    outline: "none",
-    "&:focus": {
-      borderColor: "color-mix(in srgb, var(--ring) 60%, var(--border))",
-    },
-  },
-
-  ".cm-lsp-locations": {
-    fontFamily: detectMonoFontFamily(),
-    fontSize: "12px",
-    backgroundColor: "var(--popover)",
-    color: "var(--popover-foreground)",
-    "& .cm-lsp-locations-header": {
-      padding: "5px 10px",
-      fontSize: "10.5px",
-      fontWeight: "600",
-      textTransform: "uppercase",
-      letterSpacing: "0.04em",
-      color: "var(--muted-foreground)",
-      borderBottom: "1px solid var(--border)",
-    },
-    "& ul": {
-      listStyle: "none",
-      margin: "0",
-      padding: "4px",
-      maxHeight: "220px",
-      overflowY: "auto",
-      outline: "none",
-    },
-    "& li": {
-      padding: "3px 8px",
-      borderRadius: "5px",
-      cursor: "pointer",
-      whiteSpace: "nowrap",
-      overflow: "hidden",
-      textOverflow: "ellipsis",
-      "&:hover": { backgroundColor: "var(--accent)" },
-    },
-    "& li.cm-lsp-locations-active": {
-      backgroundColor: "var(--accent)",
-      color: "var(--accent-foreground)",
-    },
-  },
-
   ".cm-tooltip ::-webkit-scrollbar": { width: "8px", height: "8px" },
   ".cm-tooltip ::-webkit-scrollbar-thumb": {
     backgroundColor:
