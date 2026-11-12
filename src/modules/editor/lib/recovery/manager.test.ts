@@ -269,6 +269,69 @@ describe("quota", () => {
     expect(h.storage.records.get("buf-a")?.text).toBe("small again");
   });
 
+  it("resumes an idle buffer that another buffer's total-bound refusal paused", async () => {
+    // Reviewed defect: `pauseAll` stops every coalescer permanently, and resume
+    // used to rebuild only buffers with pending text. A buffer that was idle
+    // and durable at the pause then never scheduled again — its next edit sat
+    // as "pending" until a quit flush, unprotected against a crash.
+    const limits = {
+      perFileBytes: 10 * MiB,
+      totalBytes: 12 * MiB,
+      directory: "recovery",
+    };
+    const clock = new FakeClock();
+    const storage = new MemoryStorage();
+    const manager = createRecoveryManager({
+      storage,
+      limits,
+      enabled: () => true,
+      now: () => clock.now,
+      schedule: clock.schedule,
+      cancel: clock.cancel,
+    });
+    const a = manager.buffer({
+      bufferId: "buf-a",
+      spaceId: "sp-a",
+      path: "/home/me/a.txt",
+      diskRevision: null,
+    });
+    const b = manager.buffer({
+      bufferId: "buf-b",
+      spaceId: "sp-a",
+      path: "/home/me/b.txt",
+      diskRevision: null,
+    });
+
+    const eight = "a".repeat(8 * MiB);
+    a.edit({ text: eight, diskRevision: null });
+    await clock.advanceTo(2000);
+    await settle();
+    expect(a.status().kind).toBe("durable");
+
+    // B hits the total bound: recovery pauses for every buffer, including the
+    // idle-and-durable A.
+    b.edit({ text: "b".repeat(8 * MiB), diskRevision: null });
+    await clock.advanceTo(4000);
+    await settle();
+    expect(b.status().kind).toBe("paused");
+    expect(a.status().kind).toBe("paused");
+
+    // B's resolution resumes recovery; A's own draft is still durable.
+    await b.discard();
+    expect(a.status().kind).toBe("durable");
+
+    a.edit({ text: "typed after the pause", diskRevision: null });
+    expect(a.status().kind).toBe("pending");
+    // A pending write that is actually scheduled is honest progress, not a stall.
+    expect(a.status().scheduled).toBe(true);
+    await clock.advanceTo(8000);
+    await settle();
+
+    expect(a.status().kind).toBe("durable");
+    expect(a.status().scheduled).toBe(false);
+    expect(storage.records.get("buf-a")?.text).toBe("typed after the pause");
+  });
+
   it("pauses every buffer at the total bound and resumes when a draft is resolved", async () => {
     const limits = {
       perFileBytes: 10 * MiB,

@@ -183,7 +183,8 @@ export function EditorSection() {
   );
 }
 
-const FORMATTER_OPTIONS: EditorFormatter[] = [  ...(Object.keys(FORMATTERS) as EditorFormatter[]),
+const FORMATTER_OPTIONS: EditorFormatter[] = [
+  ...(Object.keys(FORMATTERS) as EditorFormatter[]),
   "custom",
 ];
 

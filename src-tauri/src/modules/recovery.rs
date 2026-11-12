@@ -98,11 +98,18 @@ pub enum StoreError {
     Failed { message: String },
 }
 
+/// Why a write was refused. The strings are the frontend's `QuotaRefusal`
+/// vocabulary (`src/modules/editor/lib/recovery/quota.ts`) on purpose: the
+/// frontend turns this refusal into a *pause*, and a mismatch would degrade to
+/// a generic failure. `src/modules/editor/lib/recovery/wireContract.test.ts`
+/// parses this enum and fails if the two ever drift.
 #[derive(Serialize, Debug, PartialEq, Eq, Clone, Copy)]
 #[serde(rename_all = "kebab-case")]
 pub enum QuotaReason {
-    PerFile,
-    Total,
+    /// One record over the 10 MiB per-file bound.
+    FileLimit,
+    /// The recovery directory over the 100 MiB total bound.
+    TotalLimit,
 }
 
 #[derive(Serialize, Debug, PartialEq, Eq)]
@@ -190,7 +197,7 @@ impl Store {
         let bytes = record_json.len() as u64;
         if bytes > self.policy.per_file_bytes {
             return Err(StoreError::Quota {
-                reason: QuotaReason::PerFile,
+                reason: QuotaReason::FileLimit,
             });
         }
         self.ensure_dirs()?;
@@ -201,7 +208,7 @@ impl Store {
         let after = used.saturating_sub(existing).saturating_add(bytes);
         if after > self.policy.total_bytes {
             return Err(StoreError::Quota {
-                reason: QuotaReason::Total,
+                reason: QuotaReason::TotalLimit,
             });
         }
 
@@ -563,17 +570,17 @@ mod tests {
     fn errors_serialize_to_the_frontend_contract() {
         assert_eq!(
             serde_json::to_value(StoreError::Quota {
-                reason: QuotaReason::PerFile
+                reason: QuotaReason::FileLimit
             })
             .unwrap(),
-            serde_json::json!({ "kind": "quota", "reason": "per-file" })
+            serde_json::json!({ "kind": "quota", "reason": "file-limit" })
         );
         assert_eq!(
             serde_json::to_value(StoreError::Quota {
-                reason: QuotaReason::Total
+                reason: QuotaReason::TotalLimit
             })
             .unwrap(),
-            serde_json::json!({ "kind": "quota", "reason": "total" })
+            serde_json::json!({ "kind": "quota", "reason": "total-limit" })
         );
         assert_eq!(
             serde_json::to_value(StoreError::Unavailable {
@@ -612,7 +619,7 @@ mod tests {
         assert_eq!(
             err,
             StoreError::Quota {
-                reason: QuotaReason::PerFile
+                reason: QuotaReason::FileLimit
             }
         );
         assert_eq!(store.list().unwrap(), vec![record("buf-a", 1, "older")]);
@@ -636,7 +643,7 @@ mod tests {
         assert_eq!(
             err,
             StoreError::Quota {
-                reason: QuotaReason::Total
+                reason: QuotaReason::TotalLimit
             }
         );
         // Nothing was removed to make room.

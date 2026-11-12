@@ -12,6 +12,7 @@ function status(overrides: Partial<RecoveryStatus>): RecoveryStatus {
     durableRevision: 3,
     bytes: 2048,
     totalBytes: 4096,
+    scheduled: false,
     ...overrides,
   };
 }
@@ -32,13 +33,28 @@ describe("recovery status is visible", () => {
   });
 
   it("distinguishes a pending write from an acknowledged one", () => {
-    const pending = render(status({ kind: "pending", durableRevision: 2 }));
+    const pending = render(
+      status({ kind: "pending", durableRevision: 2, scheduled: true }),
+    );
     expect(pending).toContain("Saving draft");
     expect(pending).not.toContain("Draft saved");
+    // A scheduled write is honest progress; no Retry noise.
+    expect(pending).not.toContain("Retry");
 
     const durable = render(status({ kind: "durable" }));
     expect(durable).toContain("Draft saved");
     expect(durable).toContain("2.0 KB");
+  });
+
+  it("does not claim progress for pending text that is not scheduled", () => {
+    // If recovery ever leaves pending text with no persistence scheduled, the
+    // status must say so and offer Retry instead of "Saving draft…" forever.
+    const stalled = render(
+      status({ kind: "pending", durableRevision: 2, scheduled: false }),
+    );
+    expect(stalled).not.toContain("Saving draft");
+    expect(stalled).toContain("not scheduled");
+    expect(stalled).toContain("Retry");
   });
 
   it("shows a failed write instead of pretending it was saved", () => {

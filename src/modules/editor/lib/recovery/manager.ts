@@ -81,6 +81,12 @@ export type RecoveryStatus = {
   bytes: number;
   /** Total recovery bytes the last observation saw. */
   totalBytes: number;
+  /**
+   * True while a persistence write for the newest text is armed or in flight.
+   * A `pending` status with `scheduled: false` is a stall, not progress: the
+   * UI offers Retry instead of "Saving draft…" forever.
+   */
+  scheduled: boolean;
   message?: string;
   reason?: QuotaRefusal;
 };
@@ -148,8 +154,12 @@ const HISTORY_LIMIT = 8;
 function failureOf(error: unknown): RecoveryStorageFailure {
   if (typeof error === "object" && error !== null) {
     const raw = error as { kind?: unknown; reason?: unknown; message?: unknown };
+    // `quota` is the native tag today; `paused` is accepted as the same refusal
+    // so renaming it on the Rust side cannot silently turn a pause into a
+    // generic "failed" state. The reason vocabulary is shared (see
+    // `wireContract.test.ts`).
     if (
-      raw.kind === "quota" &&
+      (raw.kind === "quota" || raw.kind === "paused") &&
       (raw.reason === "file-limit" || raw.reason === "total-limit")
     ) {
       return { kind: "quota", reason: raw.reason };
@@ -221,6 +231,7 @@ export function createRecoveryManager(
           ? (state.persisted?.bytes ?? 0)
           : textBytes(state.pending.text),
       totalBytes: state.totalBytes,
+      scheduled: state.pending !== null && state.coalescer.pending,
     };
     if (!enabled()) {
       return { ...base, kind: "off" };
@@ -273,18 +284,23 @@ export function createRecoveryManager(
     state.failure = null;
   };
 
-  /** Re-evaluates the total-bound pause after bytes were freed. */
+  /**
+   * Re-evaluates the total-bound pause after bytes were freed.
+   *
+   * `pauseAll` calls `coalescer.cancel()`, which is permanent, so *every* live
+   * buffer needs a fresh scheduler here — not only the ones with pending text.
+   * A buffer that was idle and durable when the pause happened would otherwise
+   * never schedule again: its next edit would sit as `pending` until a quit
+   * flush, unprotected against a crash.
+   */
   const tryResume = () => {
     if (!quotaPaused) return;
     quotaPaused = false;
     for (const state of buffers.values()) {
       if (state.disposed) continue;
-      if (state.pending !== null) {
-        // The pause cancelled this buffer's timer, so it needs a fresh one.
-        state.coalescer.cancel();
-        state.coalescer = freshCoalescer(state);
-        state.coalescer.touch();
-      }
+      state.coalescer.cancel();
+      state.coalescer = freshCoalescer(state);
+      if (state.pending !== null) state.coalescer.touch();
       notify(state);
     }
   };

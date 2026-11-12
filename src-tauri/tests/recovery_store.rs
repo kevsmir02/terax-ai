@@ -117,7 +117,7 @@ fn only_a_completed_write_is_reader_visible() {
     assert_eq!(
         store.put(&too_big).unwrap_err(),
         StoreError::Quota {
-            reason: QuotaReason::PerFile
+            reason: QuotaReason::FileLimit
         }
     );
 
@@ -175,7 +175,7 @@ fn the_real_policy_is_wired_into_the_store() {
     assert_eq!(
         store.put(&over).unwrap_err(),
         StoreError::Quota {
-            reason: QuotaReason::PerFile
+            reason: QuotaReason::FileLimit
         }
     );
     assert!(store.list().unwrap().is_empty());

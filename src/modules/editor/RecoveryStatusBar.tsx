@@ -38,7 +38,12 @@ export function RecoveryStatusBar({
   const label = (() => {
     switch (status.kind) {
       case "pending":
-        return "Saving draft…";
+        // `scheduled` is what separates an in-progress coalesced write from a
+        // stall: claiming progress on unscheduled text would hide lost
+        // protection behind "Saving draft…" forever.
+        return status.scheduled
+          ? "Saving draft…"
+          : "Draft not being saved yet (not scheduled)";
       case "durable":
         return `Draft saved · ${formatBytes(status.bytes)}`;
       case "failed":
@@ -65,9 +70,12 @@ export function RecoveryStatusBar({
         {status.kind === "durable" ? "●" : "○"}
       </span>
       <span className="truncate">{label}</span>
+      {/* Retry is offered for every state where recovery is not making
+          progress on its own, including a pending write with no scheduler. */}
       {(status.kind === "failed" ||
         status.kind === "unavailable" ||
-        status.kind === "paused") && (
+        status.kind === "paused" ||
+        (status.kind === "pending" && !status.scheduled)) && (
         <Button
           type="button"
           variant="ghost"
