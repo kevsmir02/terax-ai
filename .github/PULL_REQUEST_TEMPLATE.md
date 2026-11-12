@@ -24,8 +24,8 @@ Examples: feat(terminal): add split panes / fix(explorer): close button alignmen
 - [ ] (If you touched `src-tauri/`) `cargo nextest run --locked` clean (or `cargo test --locked`)
 - [ ] (If you changed a `#[tauri::command]` signature) called out below so the FE caller can be updated in lockstep
 - [ ] (If UI) tested in `pnpm tauri dev`
-- [ ] Platforms tested: <!-- macOS / Linux / Windows -->
-- [ ] Shells tested (if relevant): <!-- bash / zsh / fish / pwsh / cmd -->
+- [ ] Platforms tested: <!-- Linux x86-64 only (Fedora 44 KDE Wayland / Debian 13) -->
+- [ ] Shells tested (if relevant): <!-- bash / zsh / fish -->
 
 
 ## Screenshots / GIFs

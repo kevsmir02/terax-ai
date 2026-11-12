@@ -43,10 +43,12 @@ are not dependency policy.
 
 ## Required checks before merge
 
-A dependency pull request is mergeable when the CI checks below pass. `terminal-platforms` and
-`rust-platforms` are matrix jobs, so GitHub reports one check per matrix entry; the exact names
+A dependency pull request is mergeable when the CI checks below pass. Since ticket #34 the fork
+builds one platform, so every named job is a single check rather than a matrix; the exact names
 are emitted by `python3 scripts/dependency-review/run.py --required-checks`, which also prints the
-`gh api` command that applies them to the protected branch.
+`gh api` command that applies them to the protected branch. A job that stops existing (as
+`terminal-platforms` and `rust-platforms` did) has to leave this list in the same change: the
+script refuses a required check that names no workflow job.
 
 Apply with (this is a deliberate maintainer action, not part of ordinary CI):
 
@@ -61,9 +63,7 @@ The rest of this section is the machine-readable contract the script enforces.
   "requiredChecks": [
     "frontend",
     "rust",
-    "rust-platforms",
     "terminal-linux",
-    "terminal-platforms",
     "repo-guards"
   ],
   "notRequired": {

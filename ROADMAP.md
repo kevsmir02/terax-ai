@@ -4,6 +4,12 @@ Terax direction, what's shipped, what's coming, and what's deliberately out of s
 
 This file is updated as direction evolves. For day-to-day work, see [GitHub Issues](https://github.com/crynta/terax-ai/issues) and the Projects board.
 
+> **Fork note.** This is upstream Terax's roadmap, kept for context. This fork distributes
+> **Linux x86-64 only**, has no built-in AI surface, and updates through the distribution's
+> package tool. Sections below that describe other platforms, the AI features or automatic
+> updates are upstream's plans, not this fork's commitments — see the
+> [README](README.md#platform-support) for what this build actually supports.
+
 ## What Terax is
 
 Terax is a fast, lightweight, terminal-first AI-native development environment (ADE). It pairs a native PTY backend with a modern UI: multi-tab terminals, an integrated code editor, a file explorer, source control, and a first-class AI agent system that works with your own API keys or fully local models. About 7-8 MB on disk. No telemetry. Keys stored in the OS keychain.
@@ -87,11 +93,15 @@ The themes below frame every scope decision.
 
 ### Platform Integration
 
-- [x] macOS, Linux (.deb / .rpm / AppImage), Windows (NSIS), WSL
-- [x] AUR (Arch)
-- [x] Windows Explorer context-menu integration
-- [x] Auto-updater
-- [x] OS keychain for API keys
+- [x] Linux x86-64 (.deb / .rpm) — the only platform this fork builds and distributes
+- [ ] macOS, Windows (NSIS), WSL, AppImage and Nix: **removed in this fork** (ticket #34); upstream
+      Terax still ships them, and the shared source seams stay only so upstream imports keep
+      compiling
+- [x] AUR (Arch) — upstream only; this fork carries an authored, unbuilt recipe in
+      `packaging/arch`
+- [x] Windows Explorer context-menu integration — upstream only
+- [x] Auto-updater — upstream only; this fork never downloads, installs or restarts itself and
+      upgrades through the distribution's package tool
 - [x] No telemetry
 
 ### Security

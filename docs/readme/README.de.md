@@ -13,7 +13,7 @@
   <p>
     <img src="https://img.shields.io/github/v/release/crynta/terax-ai?label=version&color=blue" alt="Version" />
     <img src="https://img.shields.io/github/downloads/crynta/terax-ai/total?label=downloads&color=blue" alt="Downloads" />
-    <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="Plattform" />
+    <img src="https://img.shields.io/badge/platform-Linux%20x86_64-lightgrey" alt="Plattform" />
     <a href="https://discord.gg/tyveTUyEp7"><img src="https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
     <a href="https://www.youtube.com/@crynta"><img src="https://img.shields.io/badge/Youtube-FF0000?logo=youtube&logoColor=white" alt="YouTube" /></a>
   </p>
@@ -114,18 +114,20 @@ Terax ist eine leichtgewichtige, quelloffene, terminalorientierte und KI-native 
 
 ## Installation
 
-Die neuesten Installationspakete stehen auf der Seite [Releases](https://github.com/crynta/terax-ai/releases/latest). Terax aktualisiert sich von dort automatisch.
+> **Platform support (authoritative, English):** this fork builds and distributes Linux x86-64
+> only, as an RPM and a DEB. macOS, Windows/WSL and Nix build and distribution support was
+> removed, and no other architecture is produced. See the
+> [English README](../../README.md#platform-support).
 
-### Hinweise für Windows
+Install the RPM (`sudo dnf install ./terax-workspace-*.x86_64.rpm`) or the DEB (`sudo apt
+install ./terax-workspace_*_amd64.deb`) from the
+[Releases](https://github.com/crynta/terax-ai/releases/latest) page with your package manager.
+Fedora 44 KDE Plasma on Wayland is the primary validation target; Debian 13 still needs an
+actual graphical WebKitGTK session, and package install/upgrade validation is ticket #43.
+`packaging/arch/PKGBUILD` carries an Arch recipe that is authored but **not built**, so it is
+not a validated Arch claim. The application never downloads, installs or restarts itself.
 
-- Standardmäßige Shell-Erkennung: `pwsh.exe` (PowerShell 7+) -> `powershell.exe` (Windows PowerShell 5.1) -> `cmd.exe`.
-- WSL ist eine vollwertige Arbeitsumgebung und kein umschlossener Unterprozess.
-
-### Hinweise für Linux
-
-- **Arch / AUR:** `yay -S terax-bin` (oder `paru` usw.). Folgt der neuesten Version.
-- **NixOS / Nix:** Nutze den offiziellen Flake: `nix profile install github:crynta/terax-ai` außerhalb von NixOS. Unter NixOS importierst du den Flake und fügst `inputs.terax.packages.${pkgs.system}.terax` zu `environment.systemPackages` hinzu. Für eine einfachere Einrichtung ist auch `nixosModules.terax` verfügbar.
-- **AppImage:** Benötigt FUSE. Ohne FUSE: `./Terax_*.AppImage --appimage-extract-and-run`. Bei Darstellungsfehlern unter Wayland hilft möglicherweise `WEBKIT_DISABLE_DMABUF_RENDERER=1`. Die `.deb`- / `.rpm`-Pakete binden stattdessen den GTK-Stack des Systems ein und laufen meist flüssiger.
+On Wayland with rendering glitches, try `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
 
 ## KI konfigurieren
 
@@ -166,14 +168,6 @@ Tauri 2, Rust, `portable-pty`, React 19, TypeScript, Vite, xterm.js, CodeMirror 
 ## Mitwirken
 
 Issues und PRs sind willkommen. Melde Probleme, schlage Funktionen vor oder reiche Pull Requests ein. Weitere Informationen findest du in [CONTRIBUTING.md](../../CONTRIBUTING.md) und der [Architekturdokumentation](../README.md).
-
-## Codesignierung
-
-<a href="https://signpath.org"><img src="https://avatars.githubusercontent.com/u/34448643?s=200&v=4" width="80" alt="SignPath" align="left" /></a>
-
-Windows-Builds werden mit einem kostenlosen Codesignaturzertifikat von [SignPath.io](https://signpath.io) signiert, das von der [SignPath Foundation](https://signpath.org) ausgestellt wird.
-
-<br clear="left" />
 
 ## Lizenz
 
