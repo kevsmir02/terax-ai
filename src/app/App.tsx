@@ -23,11 +23,9 @@ import {
   AgentRunBridge,
   AiMiniWindow,
   LocalAgentNotificationsBridge,
-  SelectionAskAi,
   useAiBootstrap,
   useAiLiveBridge,
   useChatStore,
-  useSelectionAskAi,
 } from "@/modules/ai";
 import { AiComposerProvider } from "@/modules/ai/lib/composer";
 import { native } from "@/modules/workspace/native";
@@ -60,7 +58,6 @@ import { setShowHidden } from "@/modules/settings/store";
 import {
   type ShortcutHandlers,
   type ShortcutId,
-  shouldDisableAskSelection,
   shouldDisablePaneSwapShortcut,
   tabDigit,
   useGlobalShortcuts,
@@ -183,8 +180,6 @@ export default function App() {
     newMarkdownTab,
     setMarkdownView,
     setOverrideLanguage,
-    openAiDiffTab,
-    closeAiDiffTab,
     openGitDiffTab,
     openCommitHistoryTab,
     openCommitFileDiffTab,
@@ -364,7 +359,6 @@ export default function App() {
   const openPanel = useChatStore((s) => s.openPanel);
   const panelOpen = useChatStore((s) => s.panelOpen);
   const setLive = useChatStore((s) => s.setLive);
-  const respondToApproval = useChatStore((s) => s.respondToApproval);
 
   const { hasComposer, keysLoaded } = useAiBootstrap();
 
@@ -535,19 +529,6 @@ export default function App() {
     setActive(spaces[next].id);
   }, []);
 
-  const captureActiveSelection = useCallback((): string | null => {
-    const t = tabs.find((x) => x.id === activeId);
-    if (!t) return null;
-    if (t.kind === "terminal") {
-      const lid = t.activeLeafId;
-      return terminalRefs.current.get(lid)?.getSelection() ?? null;
-    }
-    if (t.kind === "editor") {
-      return editorRefs.current.get(activeId)?.getSelection() ?? null;
-    }
-    return null;
-  }, [tabs, activeId]);
-
   const togglePanelAndFocus = useCallback(() => {
     if (!hasComposer) {
       void openSettingsWindow("models");
@@ -560,8 +541,6 @@ export default function App() {
       focusInput(null);
     }
   }, [hasComposer, panelOpen, openPanel, focusInput]);
-
-  const attachSelection = useChatStore((s) => s.attachSelection);
 
   const handleAttachFileToAgent = useCallback(
     (path: string) => {
@@ -579,33 +558,6 @@ export default function App() {
     },
     [hasComposer, openPanel, focusInput],
   );
-
-  const askFromSelection = useCallback(() => {
-    if (!hasComposer) {
-      void openSettingsWindow("models");
-      return;
-    }
-    const selection = captureActiveSelection();
-    if (!selection || !selection.trim()) {
-      focusInput(null);
-      return;
-    }
-    const source: "terminal" | "editor" =
-      activeTab?.kind === "editor" ? "editor" : "terminal";
-    attachSelection(selection, source);
-  }, [
-    hasComposer,
-    captureActiveSelection,
-    focusInput,
-    attachSelection,
-    activeTab,
-  ]);
-
-  const { askPopup, setAskPopup, onAskFromSelection } = useSelectionAskAi({
-    captureActiveSelection,
-    askFromSelection,
-  });
-  const askPresence = usePresence(Boolean(askPopup), 120);
 
   const openNewTab = useCallback(() => {
     newTab(inheritedCwdForNewTab());
@@ -948,7 +900,6 @@ export default function App() {
         }
         toggleMini();
       },
-      "ai.askSelection": onAskFromSelection,
       "agent.focusAttention": () => {
         const t = nextAttentionTarget();
         if (t) activateAgentTarget(t.tabId, t.leafId);
@@ -966,8 +917,6 @@ export default function App() {
       "editor.save": () => {
         void editorRefs.current.get(activeId)?.save();
       },
-      "editor.aiComplete": () =>
-        editorRefs.current.get(activeId)?.triggerAiComplete(),
       "editor.codeComplete": () =>
         editorRefs.current.get(activeId)?.triggerCodeComplete(),
     }),
@@ -990,7 +939,6 @@ export default function App() {
       hasComposer,
       togglePanelAndFocus,
       toggleMini,
-      onAskFromSelection,
       toggleSidebar,
       toggleExplorerFocus,
       toggleHiddenFiles,
@@ -1012,19 +960,9 @@ export default function App() {
         id === "editor.undo" ||
         id === "editor.redo" ||
         id === "editor.save" ||
-        id === "editor.aiComplete" ||
         id === "editor.codeComplete"
       ) {
         return activeTab?.kind !== "editor";
-      }
-      if (id === "ai.askSelection") {
-        const target =
-          (e.target as HTMLElement | null) ?? document.activeElement;
-        return shouldDisableAskSelection(
-          e,
-          () => isTerminalSurfaceTarget(target),
-          () => !!captureActiveSelection()?.trim(),
-        );
       }
       if (id === "terminal.clear") {
         // Only intercept ⌘K while a terminal is focused; elsewhere let the key
@@ -1053,7 +991,7 @@ export default function App() {
       }
       return false;
     },
-    [activeTab, captureActiveSelection],
+    [activeTab],
   );
 
   useGlobalShortcuts(shortcutHandlers, { isDisabled: shortcutsDisabled });
@@ -1287,7 +1225,6 @@ export default function App() {
             toggleSidebar,
             toggleHiddenFiles,
             toggleAi: togglePanelAndFocus,
-            askAiSelection: askFromSelection,
             openSettings: () => void openSettingsWindow(),
             openKeyboardShortcuts: () => void openSettingsWindow("shortcuts"),
             spaces: useSpaces.getState().spaces,
@@ -1315,7 +1252,6 @@ export default function App() {
       toggleSidebar,
       toggleHiddenFiles,
       togglePanelAndFocus,
-      askFromSelection,
       activeSpaceId,
       handleNewSpace,
     ],
@@ -1568,8 +1504,6 @@ export default function App() {
                         onEditorCloseTab={disposeTab}
                         registerPreviewHandle={registerPreviewHandle}
                         onPreviewUrlChange={handlePreviewUrl}
-                        onAiDiffAccept={(id) => respondToApproval(id, true)}
-                        onAiDiffReject={(id) => respondToApproval(id, false)}
                         onOpenCommitFile={openCommitFileDiffTab}
                         onGitHistorySearchHandle={setGitHistoryHandle}
                         onSetMarkdownView={setMarkdownView}
@@ -1625,10 +1559,7 @@ export default function App() {
 
           {hasComposer ? (
             <>
-              <AgentRunBridge
-                openAiDiffTab={openAiDiffTab}
-                closeAiDiffTab={closeAiDiffTab}
-              />
+              <AgentRunBridge />
               <LocalAgentNotificationsBridge />
             </>
           ) : null}
@@ -1636,16 +1567,6 @@ export default function App() {
           {hasComposer && miniPresence.mounted ? (
             <AiMiniWindow state={miniPresence.state} />
           ) : null}
-          {askPresence.mounted ? (
-            <SelectionAskAi
-              state={askPresence.state}
-              x={askPopup?.x ?? 0}
-              y={askPopup?.y ?? 0}
-              onAsk={onAskFromSelection}
-              onDismiss={() => setAskPopup(null)}
-            />
-          ) : null}
-
           {switcherState && (
             <TabSwitcherHud tabs={spaceTabs} state={switcherState} />
           )}

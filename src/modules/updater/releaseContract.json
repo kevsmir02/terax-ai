@@ -1,0 +1,34 @@
+{
+  "provisional": true,
+  "note": "Fork-owned release contract for the personal Linux workspace. The final release owner/URL and signing keys are ticket #39/#40 decisions; until then every default here is deliberately non-live. The endpoint host is under `.invalid` (RFC 2606), which never resolves, so no build of this fork can query a real release feed by accident, and the inherited upstream endpoint is recorded only so tests and code can REFUSE it. Rename/retarget here first; src-tauri/tauri.conf.json is compared against this file by tests instead of duplicating the values.",
+  "finalTrustTicket": 39,
+  "channel": "stable",
+  "endpoints": [
+    "https://updates.invalid/terax-workspace/stable/latest.json"
+  ],
+  "check": {
+    "timeoutMs": 8000,
+    "attempts": 3,
+    "baseDelayMs": 500,
+    "maxDelayMs": 8000,
+    "maxRetryAfterMs": 30000,
+    "intervalMs": 21600000
+  },
+  "trust": {
+    "provisioned": false,
+    "publicKey": "",
+    "note": "No fork signing key is provisioned yet, so artifact trust cannot be established. The production verifier therefore fails closed on every release instead of trusting an artifact, and the discovery check reports check-failed(signature)."
+  },
+  "fixtures": {
+    "directory": "src/modules/updater/fixtures",
+    "endpointEnv": "VITE_TERAX_WORKSPACE_UPDATE_ENDPOINT",
+    "devServerCommand": "pnpm dev:update-fixtures",
+    "note": "Development and tests point the contract at the isolated fixture directory (served over 127.0.0.1 by scripts/update-fixtures.mjs). A loopback endpoint is the only override accepted in development, and a development build marks those releases as fixture-unverified rather than verified."
+  },
+  "upstream": {
+    "repository": "crynta/terax-ai",
+    "endpoints": [
+      "https://github.com/crynta/terax-ai/releases/latest/download/latest.json"
+    ]
+  }
+}

@@ -395,8 +395,6 @@ pub fn run() {
             get_launch_dir,
             get_launch_files,
             open_settings_window,
-            agent::agent_enable_hooks,
-            agent::agent_disable_hooks,
             agent::agent_hooks_plan,
             agent::agent_hooks_apply,
             agent::agent_hooks_status,

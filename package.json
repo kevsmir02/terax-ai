@@ -13,6 +13,7 @@
     "build:cli:dev": "node scripts/build-cli.mjs",
     "dev": "vite",
     "dev:inspect": "INSPECT=true vite",
+    "dev:update-fixtures": "node scripts/update-fixtures.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",

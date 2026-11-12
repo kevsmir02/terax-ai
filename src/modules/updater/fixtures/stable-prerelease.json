@@ -1,0 +1,13 @@
+{
+  "version": "0.11.0-beta.1",
+  "channel": "stable",
+  "notes": "A prerelease version on the stable channel: stable-only checking must refuse it.",
+  "pub_date": "2026-10-01T12:00:00Z",
+  "platforms": {
+    "linux-x86_64": {
+      "url": "http://127.0.0.1:8787/Terax_0.11.0_beta1_amd64.deb",
+      "signature": "untrusted comment: signature from terax-workspace fixture key\nRWSrlADhilltCj0yNBLyHJgiIA8P02+qho9ljASmV6EH+9K0ju6t2MDdjMRV/VPQxMFG947vA3ykyV7/2rBBAsQcFRRBOx6+fwM=\ntrusted comment: timestamp:1759233600\tfile:Terax_0.11.0_beta1_amd64.deb\n23t6wYK0Yx3YLZpMt58/nWolfzyh+T1NRfao+Ob8AKwy19ZdUm4ck7CJXVlhxI1Z/79LjHXAiQcGv7hdLSjsMA==",
+      "size": 1234
+    }
+  }
+}
