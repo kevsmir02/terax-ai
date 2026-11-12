@@ -63,6 +63,7 @@ a literal; tests compare that literal against the table (Rust
 | Update channel (endpoint + minisign key) | upstream `latest.json` + upstream key | **not yet isolated** — deferred | release identity/trust is #39/#40 (discovery #36). This fork must not be published, and a publication claim stays blocked, until those land: today the Linux update check still queries upstream's release feed, which is a publication gate, not a data-mutation path |
 | macOS FSEvents queue label | `app.crynta.terax.fsevents` | identifier-derived | hardcoded copy of the identifier; macOS is out of scope (#33) but the label now follows the table |
 | Bundle `productName`, publisher, binary/desktop entry names | `Terax`, `Crynta` | unchanged | packaging identity, not runtime state: installing two packages that ship the same binary name is a #39/#40 (and #33 distribution) decision, not a coexistence bug for a dev run |
+| Build-time CLI target (`TERAX_CLI_TARGET`) | `TERAX_CLI_TARGET` | **unchanged** | read by `scripts/build-cli.mjs` and set by `.github/workflows/release.yml`; a build input for the release pipeline, not runtime state. Its rename belongs with the release pipeline in #39/#40, not with namespace isolation |
 
 ## Refusal instead of migration
 
