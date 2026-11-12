@@ -4910,7 +4910,6 @@ async function worktreeScenario(run: ScenarioRun): Promise<unknown> {
   return { worktree: { pass, steps } };
 }
 
-
 /**
  * Manual checkpoints through the real app's native commands and a scratch
  * repository: two captures with the same optional name keep distinct
