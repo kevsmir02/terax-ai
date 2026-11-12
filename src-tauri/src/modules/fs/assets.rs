@@ -861,6 +861,74 @@ mod tests {
             .is_err());
     }
 
+    #[test]
+    fn an_explicit_file_grant_does_not_expose_its_directory() {
+        // Explicit single-file selection (opening one image in a tab) is a
+        // different grant than the automatic directory embedding policy
+        // (Markdown images under a document directory). The file grant serves
+        // exactly the selected file; a sibling needs its own grant.
+        let dir = tempfile::tempdir().unwrap();
+        let selected = dir.path().join("selected.png");
+        let sibling = dir.path().join("sibling.png");
+        for path in [&selected, &sibling] {
+            std::fs::write(path, "SYNTHETIC_PNG_FIXTURE").unwrap();
+        }
+        let grants = AssetGrants::default();
+        let file_token = grants
+            .grant(
+                "main".into(),
+                Some("tab-1".into()),
+                &super::super::to_canon(&selected),
+                WorkspaceEnv::Local,
+                0,
+                0,
+            )
+            .unwrap();
+        let file_grant = grants
+            .state
+            .lock()
+            .unwrap()
+            .grants
+            .get(&file_token)
+            .cloned()
+            .unwrap();
+        assert!(!file_grant.directory);
+        assert_eq!(
+            respond(&grants, "main", &request(&selected, &file_token), &test_limits()).status(),
+            200
+        );
+        let sibling_response =
+            respond(&grants, "main", &request(&sibling, &file_token), &test_limits());
+        assert_eq!(sibling_response.status(), 403);
+        assert_eq!(code(&sibling_response), "outside-grant");
+
+        // The automatic directory grant is the other policy: it can serve the
+        // sibling because its root is the directory, not one file.
+        let directory_token = grants
+            .grant(
+                "main".into(),
+                Some("tab-1".into()),
+                &super::super::to_canon(dir.path()),
+                WorkspaceEnv::Local,
+                0,
+                0,
+            )
+            .unwrap();
+        let directory_grant = grants
+            .state
+            .lock()
+            .unwrap()
+            .grants
+            .get(&directory_token)
+            .cloned()
+            .unwrap();
+        assert!(directory_grant.directory);
+        assert_eq!(
+            respond(&grants, "main", &request(&sibling, &directory_token), &test_limits()).status(),
+            200
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn byte_distinct_siblings_are_not_inside_a_media_grant() {

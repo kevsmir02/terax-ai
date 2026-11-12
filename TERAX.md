@@ -11,7 +11,11 @@ Terax loads `TERAX.md` from the workspace root as agent memory (similar to AGENT
   `app.crynta.terax`; the two must coexist without sharing state — see
   `docs/architecture/namespace-isolation.md`.
 - Package manager: **pnpm**
-- Platforms: macOS, Linux, Windows
+- Platforms: **Linux x86-64 only** for build and distribution (RPM/DEB, plus an authored Arch
+  recipe). The Windows, macOS and WSL code paths upstream shares with Linux are retained in the
+  source as inert seams so upstream imports keep compiling; they are not supported
+  configurations, and their build/distribution workflows and platform bundle config were removed
+  in ticket #34. See `docs/architecture/linux-packages.md`.
 - Frontend checks: `pnpm lint`, `pnpm check-types`, `pnpm test`
 - Rust checks: `cd src-tauri && cargo clippy --all-targets --locked -- -D warnings`, `cd src-tauri && cargo nextest run --locked` (local fallback: `cargo test --locked`)
 
@@ -329,7 +333,9 @@ it is never started automatically. `pnpm soak:ghostty` exercises real WASM model
 without launching the application. `pnpm profile:ghostty` compares allocation
 and parsing workloads in a fresh process per artifact and optional baseline.
 `pnpm profile:renderer:macos` exercises the real renderer in an isolated native
-WKWebView, including optional four-pane layouts and live visual inspection.
+WKWebView, including optional four-pane layouts and live visual inspection; it is a
+macOS-only lab retained as upstream evidence tooling and runs on no supported
+platform, so it establishes nothing about the Linux build on its own.
 `scripts/terminal-visual` draws a fixed pattern through any source tree and reads
 the canvas back as exact pixels for comparison.
 The macOS-only IPC profile that exercised the built-in AI streaming and
@@ -400,7 +406,7 @@ Each module is self-contained, exports a thin barrel via `index.ts`, and owns it
 - **editor/** - CodeMirror 6 stack (`EditorStack` mirrors `TerminalStack`). `extensions.ts` configures language modes; supports vim mode. Buffers live in LF space and the original EOL (`lib/eol.ts`, majority-vote detection) is restored on save; indent unit/tab size are detected per file (`lib/indent.ts`) via a per-pane compartment. Saves are conflict-checked against the disk mtime returned by `fs_read_file`/`fs_write_file` (mismatch → warning toast with explicit Overwrite, never silent last-writer-wins); external format-on-save only applies the disk read-back if the doc is unchanged since the save snapshot. Files over 10 MB offer "Open anyway" (hard cap 50 MB, `force` arg); above 4 MB syntax highlighting stays off. Cmd-F routes to CodeMirror's own search panel (find/replace/regex) when an editor tab is active, Ctrl-G opens go-to-line; both panels styled in `chromeTheme.ts`. Format-on-save formatters live in `lib/externalFormat.ts` (`FORMATTERS` registry: biome, prettier, ruff, rustfmt, gofmt, clang-format, shfmt, zig fmt, plus a custom `{file}` command template); `resolveFormatter` applies per-language overrides (`editorFormatterByLang`) over the global default, a global external default only runs on languages its tool understands, and a language with no applicable formatter saves unformatted. `lib/fileNavigator.ts` is the app-shell bridge that lets terminal links open a file at a line in an editor tab. Diff panes resolve the language before mounting CodeMirror: a late compartment reconfigure leaves the merge view's deleted-chunk widgets unhighlighted. CodeMirror's own completion popup is not AI completion: the `Tab` key accepts an open popup, and the `editor.codeComplete` registry shortcut opens it (guarded to editor tabs so the key falls through to terminals). There is no inline AI completion and no AI edit-review surface. Markdown editing is GFM (`markdownLanguage` base) with fenced-code highlighting resolved through the shared lazy language registry, Cmd/Ctrl+Click URLs, and clickable task checkboxes (`markdownExtras.ts`, all inside the lazy markdown chunk; the eager-budget test enforces this). Dotenv files (`.env`, `.env.*`, and `*.env`) use the lazy shell grammar. Editor theme is decoupled from the app theme: the `editorTheme` pref is `"auto" | EditorThemeId` (default `"auto"`), resolved at render time by `useEditorThemeExt` via `resolveEditorThemeId`. In `auto` the editor follows the active app theme's `editorTheme[mode]` pairing (live, never stale); an explicit pick overrides. Theme ids + labels live in `settings/store.ts` (`EDITOR_THEMES`/`EDITOR_THEME_LABELS`); the matching extensions in `editor/lib/themes.ts` (`EDITOR_THEME_EXT`). Prebuilt `@uiw` themes plus locally-built ones in `editor/lib/cmThemes.ts` (Kanagawa wave/lotus/dragon, Everforest, Dracula, Solarized, Catppuccin, Rosé Pine) via `createTheme` (no extra deps). The CM surfaces (`EditorPane`, `GitDiffPane`) all read the theme through `useEditorThemeExt`.
   Editor code size is stored separately as `editorFontSize` and does not affect `terminalFontSize`.
 - **explorer/** - file tree with Catppuccin icons, fuzzy search, keyboard nav, inline rename, context actions. Backslash-aware `basename`. Icons are lazy: `iconResolver.ts` is the startup-safe shell and fetches the ~360 kB set (`iconEngine.ts`) when the first `FileIcon`/`FolderIcon` mounts; until then those components render a same-size blank slot that fades the icon in, and the set is never in either window's startup graph. The tree stays mounted when the sidebar collapses but is `visible={false}`: no native fs watchers (`watchRegistry.ts` disarms them), no `fs:changed` subscription, no drop listener and no reloads; showing it re-registers the watchers and reloads loaded directories once.
-- **preview/** - auto-detected dev-server preview tab (status-bar pill suggests opening when a localhost URL is detected), plus the bounded local-asset surfaces: `AssetPreview` gates image/PDF/media delivery on the approved read ceilings (with an explicit "load anyway" choice), `ImagePreview` refuses a raster above the image ceiling, and `lib/viewerAdmission` admits decoded viewers against the four-viewer / 192 MiB budget, releasing only hidden ones. Asset grants are tab-owned through `lib/assetScopes`, so a closed tab revokes them and a late grant is revoked instead of installed.
+- **preview/** - auto-detected dev-server preview tab (status-bar pill suggests opening when a localhost URL is detected), plus the bounded local-asset surfaces: `AssetPreview` gates image/PDF/media delivery on the approved read ceilings (with an explicit "load anyway" choice), `ImagePreview` reads intrinsic dimensions with the native `fs_image_probe` header probe and runs `lib/imageViewer` (budget → admission → mount) so an oversized raster is refused before the `<img>` exists; `lib/viewerAdmission` admits decoded viewers against the four-viewer / 192 MiB budget, releasing only hidden ones. Image routing (`lib/imageFormats`) is kept separate from measured decode support; hidden image tabs drop the element and release their decoded slot. Asset grants are tab-owned through `lib/assetScopes`, so a closed tab revokes them and a late grant is revoked instead of installed.
 - **tabs/** - `useTabs` is the source of truth for tab list + active id. `useWorkspaceCwd` derives explorer root + inherited cwd for new tabs from active tab. `basename` splits on both `/` and `\`.
 - **spaces/** - named organization (project root, tabs, layout) persisted per Space, not a sandbox. Roots are compared textually so two Spaces on one checkout show a shared-folder badge that says files and processes are shared and points at worktrees for separate trees. Deleting a Space is guarded like closing tabs: dirty buffers and live/uncertain processes are summarized first (Save & Delete saves only complete revisions and re-checks before committing), cancellation keeps everything, and only saved organization is removed: project and worktree directories are never touched. Restore replays saved tabs cold at their saved cwd/paths and never re-runs a command. `planSpaceRestore` and `SpaceDeleteGuard` are the pure planning seams.
 - **header/** - top bar + inline search (`SearchInline` adapts to terminal vs editor via `SearchTarget`). `WindowControls` rendered when `USE_CUSTOM_WINDOW_CONTROLS` is true (Linux + Windows; macOS uses native traffic lights).
@@ -450,9 +456,15 @@ Stored upstream conversations and credentials are never read, migrated or delete
 
 ### Window styling
 
-- macOS: `titleBarStyle: Overlay` + `hiddenTitle: true` in `tauri.conf.json` (native traffic lights via overlay). The main window is created opaque, because a non-opaque `NSWindow` makes WindowServer blend every terminal frame. `window_set_backdrop` makes the window and its `WKWebView` (`drawsBackground`) see-through only while vibrancy is on, and paints the opaque window with the theme's frame colour otherwise. `macOSPrivateApi: true` stays for that `WKWebView` key and the private `NSVisualEffectView` hosting, so the macOS build uses a private API and is not App Store eligible.
-- Linux: `decorations: false` + `transparent: true` from `tauri.linux.conf.json`; re-asserted post-realize for GNOME/Mutter CSD. Windows and Linux stay transparent from creation because the borderless chrome paints its own rounded corners.
-- Windows: same as Linux via `tauri.windows.conf.json`. React renders custom `WindowControls`.
+- Linux is the distributed target: `decorations: false` + `transparent: true` from
+  `tauri.linux.conf.json`; re-asserted post-realize for GNOME/Mutter CSD. React renders custom
+  `WindowControls` (`USE_CUSTOM_WINDOW_CONTROLS`).
+- The macOS/Windows window styling (overlay title bar and native traffic lights,
+  `macOSPrivateApi`, `NSVisualEffectView` hosting, transparent-from-creation on Windows) stays in
+  the Rust/React code as an inert upstream seam. `macOSPrivateApi`, `bundle.macOS`,
+  `bundle.windows`, `tauri.windows.conf.json`, `entitlements.plist`, `Info.plist` and the NSIS
+  `installer-hooks.nsh` were bundle/distribution config and were removed with the platform
+  narrowing (ticket #34); re-adding any of them is re-adding a platform commitment.
 
 ### Tauri capabilities
 
@@ -469,11 +481,16 @@ Stored upstream conversations and credentials are never read, migrated or delete
 
 ### Bundle config
 
-- `bundle.targets: "all"` plus per-platform sections in `tauri.conf.json`:
-  - **macOS**: `minimumSystemVersion: 13.0`.
-  - **Linux**: deb depends `libwebkit2gtk-4.1-0`, `libgtk-3-0`; rpm `webkit2gtk4.1`, `gtk3`; AppImage bundles its media framework.
-  - **Windows**: NSIS installer in `currentUser` mode (no admin required), WebView2 via `downloadBootstrapper`. Installing a missing WebView2 runtime requires internet access; there is no bundled offline runtime. Packaged and offline-install validation remains in the release-readiness gates.
-- Auto-updater configured with a public minisign key; release artifacts at `https://github.com/crynta/terax-ai/releases/latest/download/latest.json`.
+- `bundle.targets` is exactly `["rpm", "deb"]` (ticket #34 narrowed the release to Linux x86-64; the
+  candidate packaging path owns this and refuses anything broader):
+  - **Linux**: deb depends `libwebkit2gtk-4.1-0`, `libgtk-3-0`; rpm `webkit2gtk4.1`, `gtk3`.
+  - No AppImage, DMG, NSIS or MSI output is produced, and no aarch64 artifact. `scripts/packaging.py`
+    and `scripts/tests/test_packaging.py` refuse a broader target set.
+- `bundle.createUpdaterArtifacts` is `false` and the updater endpoints are the fork's non-live
+  `.invalid` contract values (`src/modules/updater/releaseContract.json`). The application never
+  downloads, installs or restarts itself: RPM/DEB upgrades go through the distribution's package
+  tool (the explicit package-tool handoff), and Arch stays package-tool managed. Signing, release
+  trust and publication gates belong to tickets #39/#40.
 - `bundle.resources` includes the upstream Ghostty, Restty, ghostty-web, and xterm.js license notices under `licenses/terminal/`. Repository documentation and test-only reference WASM cores are not packaged; the frontend includes only the adapted SIMD and scalar cores.
 
 ### Known gotchas

@@ -209,11 +209,38 @@ class RequiredChecksTest(unittest.TestCase):
         self.assertIn("brand-new", result.detail)
 
     def test_matrix_jobs_expand_to_the_check_names_github_reports(self) -> None:
-        names = self.module.expand_required(self.policy["requiredChecks"], self.workflow)
+        # Ticket #34 narrowed the fork to one platform, so the shipped workflow has no matrix
+        # jobs left; GitHub still reports one check per matrix entry, so the expansion itself
+        # stays tested against a workflow that has one.
+        workflow = {
+            "jobs": {
+                "frontend": {"runs-on": "ubuntu-latest", "steps": []},
+                "terminal-test": {
+                    "name": "terminal-test (${{ matrix.os }})",
+                    "runs-on": "ubuntu-latest",
+                    "strategy": {"matrix": {"os": ["windows-latest", "macos-latest"]}},
+                    "steps": [],
+                },
+                "rust-test": {
+                    "name": "rust-test (${{ matrix.os }}, ${{ matrix.target }})",
+                    "runs-on": "ubuntu-latest",
+                    "strategy": {"matrix": {"os": ["windows-latest"], "target": ["x86_64"]}},
+                    "steps": [],
+                },
+            }
+        }
+        names = self.module.expand_required(
+            ["frontend", "terminal-test", "rust-test"], workflow
+        )
         self.assertIn("frontend", names)
         self.assertIn("terminal-test (windows-latest)", names)
         self.assertIn("terminal-test (macos-latest)", names)
-        self.assertIn("rust-test (windows-latest)", names)
+        self.assertIn("rust-test (windows-latest, x86_64)", names)
+
+    def test_the_shipped_workflow_needs_no_matrix_expansion(self) -> None:
+        for job_name, job in self.workflow["jobs"].items():
+            with self.subTest(job=job_name):
+                self.assertNotIn("strategy", job)
 
     def test_the_required_checks_can_be_applied_without_editing_github_settings(self) -> None:
         payload = self.module.required_checks_payload(self.policy, self.workflow, branch="main")
