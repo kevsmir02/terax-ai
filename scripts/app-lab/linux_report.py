@@ -43,9 +43,6 @@ KEY_PHASES = (
     "blank", "booted", "setup", "space-a", "space-b", "baseline", "measure-start", "stream-start",
     "stream-end", "measure-end", "cycles-complete", "end+10s", "end+30s",
 )
-# Roles summarised as columns; unknown roles are appended by the table helper.
-KEY_ROLES = ("host", "web_content", "gpu", "networking", "sandbox", "workload")
-
 # The metric families this module produces, for `run.py --list-metrics` and for anyone writing a
 # comparison after a feature is removed. `<phase>` is a scenario phase and `<role>` a process role.
 METRIC_NAMES = (
