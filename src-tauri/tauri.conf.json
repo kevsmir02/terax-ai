@@ -70,8 +70,8 @@
       }
     },
     "category": "DeveloperTool",
-    "shortDescription": "AI-native terminal emulator",
-    "longDescription": "Terax — an open-source AI-native terminal emulator with multi-tab, file explorer, code editor, web preview, and AI agents.",
+    "shortDescription": "Terminal workspace with editor, Git and previews",
+    "longDescription": "Terax — an open-source terminal workspace: multi-tab terminal, file explorer, code editor, source control and rendered previews, for launching independently installed coding agents.",
     "fileAssociations": [
       {
         "name": "Terax Document",

@@ -1,7 +1,7 @@
 [package]
 name = "terax"
 version = "0.9.0"
-description = "Terax — an open-source AI-native terminal emulator"
+description = "Terax — an open-source terminal workspace with editor, source control and previews"
 authors = ["crynta"]
 license = "Apache-2.0"
 edition = "2021"
