@@ -53,24 +53,55 @@ test fails when the copies diverge.
 | --- | --- | --- |
 | 10 MiB read, 50 MiB override | `src-tauri/src/modules/fs/file.rs` (`MAX_READ_BYTES`, `FORCE_MAX_READ_BYTES`) | the native reader refuses and returns the limit it applied; the UI never re-reads a file to re-decide |
 | 4 MiB syntax ceiling | `src/modules/preview/lib/limits.ts`, consumed by `src/modules/editor/EditorPane.tsx` | a renderer behaviour, not a read limit |
-| Image, PDF, viewer and media ceilings | `src/modules/preview/lib/limits.ts` | enforced by the viewers built in issues #25, #28, #29 and #30/#31 (see "Enforcement today") |
+| Asset delivery (read/override, chunk, outstanding reads) | `src-tauri/src/modules/fs/assets.rs` (`DeliveryLimits`) | derived from the two read ceilings; no separate asset ceiling exists |
+| 64 MiB image decode | `src/modules/preview/ImagePreview.tsx` via `imageBudgetDecision` | measured when the raster loads; a larger image is not kept |
+| 4 viewers / 192 MiB decoded | `src/modules/preview/lib/viewerAdmission.ts` via `decideViewerAdmission` | hidden viewers are evictable, a visible viewer never is |
+| PDF page and media playback | `src/modules/preview/lib/limits.ts` | still contract only; issues #30/#31 and #29 implement the readers |
 
 ### Enforcement today
 
-Only the text ceilings are enforced today: `modules::fs` refuses a read above
-10 MiB and reports the limit it applied, the explicit override reaches 50 MiB,
-and the editor disables syntax features above 4 MiB.
+The text ceilings are enforced by `modules::fs`: a read above 10 MiB is refused
+with the limit it applied, the explicit override reaches 50 MiB, and the editor
+disables syntax features above 4 MiB.
 
-The image, PDF, viewer and media ceilings are an approved contract without an
-enforcement path yet. The current image pane decodes at intrinsic size, PDF
-opens in an iframe with no per-page budget, a media element only pauses its own
-hidden pane, and no admission layer counts viewers. Issues #25, #28, #29 and
-#30/#31 implement and verify those paths. Until they do, this record is
-**planned implementation, not validated support**: no measurement claims those
-ceilings are observed at runtime.
+Asset delivery is bounded by the same two read ceilings (issue #25). The asset
+scheme handler never allocates a whole large file by default:
+
+- a range request is answered with at most one chunk (a tenth of the normal
+  read ceiling), with a 206 and a shortened `Content-Range`; `bytes=0-` from a
+  media element is therefore one chunk, not the file;
+- a non-range request at or below 10 MiB is served whole; above it the response
+  is a 413 that names the size, offers the explicit `override=1` choice up to
+  50 MiB, and keeps `Accept-Ranges` available;
+- above 50 MiB the only alternative is an external viewer;
+- outstanding deliveries are bounded by the approved concurrent-viewer count
+  and by one override read's worth of bytes, with a short bounded wait and an
+  explicit 503 + `Retry-After` instead of an unbounded queue;
+- every request re-canonicalizes the requested path, re-applies the secret
+  policy and re-checks the *opened descriptor* against the grant, so a symlink
+  or replaced target cannot step outside it;
+- a grant is revoked with its tab scope (and on page load or window close), and
+  a delivery checks the scope again after it has been reserved: a revoke during
+  the read aborts the response instead of serving a token the tab no longer
+  owns.
+
+Images and decoded viewers are enforced by the preview surfaces: an image raster
+above 64 MiB is refused (issue #28 owns a genuine reduced-size decode), and
+`viewerAdmission.ts` admits decoded viewers against the four-viewer and 192 MiB
+ceiling, releasing hidden viewers least-recently-used first and never evicting a
+visible one. PDF opens in the bounded frame, so the file read is bounded, but
+the 32 MiB per-page render ceiling is still contract only until issue #31, and a
+hidden media element still only pauses its own pane until issue #29. Markdown
+inline images go through the same asset delivery bounds but are not separate
+decoded viewers until issue #27.
+
+This is **planned implementation, not validated support** for anything that
+needs a real WebKitGTK session: no measurement claims these ceilings are
+observed at runtime on the packaged application yet.
 
 `limits.test.ts` parses the Rust constants and rejects an editor-side copy of
-the override or syntax literal, so "single source" is a checked property.
+the override or syntax literal; `assetDelivery.test.ts` parses
+`modules/fs/assets.rs` the same way, so "single source" is a checked property.
 
 ## Behaviour when a ceiling is reached
 
@@ -135,6 +166,9 @@ Later preview tickets import from `@/modules/preview/lib/limits`:
 | `pdfPageDecision(renderBytes)` | allow / refuse with a suggested zoom |
 | `decideViewerAdmission(viewers, request)` | admit (with explicit evictions) / refuse with blockers |
 | `decideMediaPlayback(sessions, request)` | play (with sibling pauses) / refuse with blockers |
+| `ASSET_DELIVERY`, `assetDeliveryDecision(bytes, kind, { override })` | the native delivery bounds and the whole-file / explicit-choice / refuse decision |
+| `assetFailureNotice(error)`, `assetUrlWithOverride(url, override)` | a readable refusal with alternatives, and the explicit-choice URL |
+| `admitDecodedViewer`, `useViewerAdmissionStore` | the applied 4-viewer / 192 MiB table with eviction bookkeeping |
 
 The module imports nothing: decisions are pure functions over plain data, so
 viewer components stay thin and the policy is testable without a DOM.

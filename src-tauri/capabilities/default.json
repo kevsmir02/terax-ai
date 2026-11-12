@@ -21,6 +21,11 @@
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "opener:default",
+    {
+      "identifier": "opener:allow-open-path",
+      "description": "The approved 'open externally' alternative for a preview that exceeds an approved limit: the person chooses the button, the pane opens exactly the file it was showing.",
+      "allow": [{ "path": "/**" }]
+    },
     "log:default",
     "os:default",
     "notification:default",

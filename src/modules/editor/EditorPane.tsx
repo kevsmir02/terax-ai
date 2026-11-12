@@ -17,6 +17,7 @@ import {
   TEXT_OVERRIDE_LIMIT_BYTES,
   TEXT_SYNTAX_LIMIT_BYTES,
 } from "@/modules/preview/lib/limits";
+import { AssetPreview } from "@/modules/preview/AssetPreview";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import {
   forwardRef,
@@ -53,7 +54,6 @@ import { useDocument } from "./lib/useDocument";
 import { useEditorThemeExt } from "./lib/useEditorThemeExt";
 import { initVimGlobals, vimHandlersExtension } from "./lib/vim";
 import { mediaPreviewKind } from "./lib/mediaPreview";
-import { MediaPreview } from "./MediaPreview";
 import { SaveConflictDialog } from "./SaveConflictDialog";
 
 initVimGlobals();
@@ -83,6 +83,8 @@ export type EditorPaneHandle = {
 
 type Props = {
   path: string;
+  /** The tab this pane belongs to; asset grants are tab-owned. */
+  tabId: number;
   overrideLanguage?: string | null;
   onDirtyChange?: (dirty: boolean) => void;
   onSaved?: () => void;
@@ -104,6 +106,7 @@ export const EditorPane = memo(
   forwardRef<EditorPaneHandle, Props>(function EditorPane(props, ref) {
     const {
       path,
+      tabId,
       overrideLanguage,
       onDirtyChange,
       onSaved,
@@ -127,7 +130,13 @@ export const EditorPane = memo(
       saveConflictCopy,
       dismissConflict,
     } = useDocument({ path, visible, onDirtyChange });
-    const assetGrant = useAssetGrant((doc.status === "binary" || doc.status === "toolarge") && mediaPreviewKind(path) ? path : null);
+    const assetGrant = useAssetGrant(
+      (doc.status === "binary" || doc.status === "toolarge") &&
+        mediaPreviewKind(path)
+        ? path
+        : null,
+      tabId,
+    );
     const reloadRef = useRef(reload);
     reloadRef.current = reload;
     const adoptDiskTextRef = useRef(adoptDiskText);
@@ -477,45 +486,20 @@ export const EditorPane = memo(
     }
     if (doc.status === "binary" || doc.status === "toolarge") {
       const kind = mediaPreviewKind(path);
-      const isImage = kind === "image";
-      const isVideo = kind === "video";
-      const isAudio = kind === "audio";
-      const isPdf = kind === "pdf";
-
-      if (isImage || isVideo || isAudio || isPdf) {
-        const assetUrl = assetGrant.urlFor(path);
-        if (!assetUrl) return (
-          <div className="p-4 text-xs text-muted-foreground">
-            {assetGrant.error ? <><p role="alert">Media preview unavailable: {assetGrant.error}</p><button type="button" className="mt-2 underline" onClick={assetGrant.retry}>Retry</button></> : "Loading media preview…"}
-          </div>
-        );
+      if (kind) {
         return (
-          <div className="flex h-full min-h-0 flex-col items-center justify-center bg-background p-4 overflow-auto">
-            {isImage && (
-              <img
-                src={assetUrl}
-                loading="lazy"
-                decoding="async"
-                className="max-w-full max-h-full object-contain rounded-md border border-border shadow-sm"
-                style={{
-                  backgroundImage:
-                    "conic-gradient(var(--muted) 0.25turn, transparent 0.25turn 0.5turn, var(--muted) 0.5turn 0.75turn, transparent 0.75turn)",
-                  backgroundSize: "20px 20px",
-                }}
-                alt={path.split("/").pop()}
-              />
-            )}
-            {(kind === "video" || kind === "audio") && (
-              <MediaPreview kind={kind} src={assetUrl} active={mediaActive} />
-            )}
-            {isPdf && (
-              <iframe
-                src={assetUrl}
-                className="w-full h-full border-none"
-                title={path.split("/").pop()}
-              />
-            )}
-          </div>
+          <AssetPreview
+            key={path}
+            path={path}
+            tabId={tabId}
+            kind={kind}
+            bytes={doc.size}
+            url={assetGrant.urlFor(path)}
+            grantError={assetGrant.error}
+            onRetryGrant={assetGrant.retry}
+            visible={visible}
+            mediaActive={mediaActive}
+          />
         );
       }
 

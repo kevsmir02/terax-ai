@@ -1,3 +1,4 @@
+import { assetScopes } from "@/lib/assetScopes";
 import { isMarkdownPath } from "@/lib/utils";
 import {
   type AgentInstanceCount,
@@ -715,7 +716,11 @@ export function useTabs(initial?: Partial<TerminalTab>) {
   const removeTabsForSpace = useCallback(
     (spaceId: string, fallbackSpaceId: string, fallbackCwd?: string) => {
       let toDispose: number[] = [];
+      let toClose: number[] = [];
       setTabs((curr) => {
+        const leaving = curr
+          .filter((tab) => tab.spaceId === spaceId)
+          .map((tab) => tab.id);
         const plan = planSpaceRemoval(
           curr,
           activeIdRef.current,
@@ -726,10 +731,12 @@ export function useTabs(initial?: Partial<TerminalTab>) {
         );
         if (!plan) return curr;
         toDispose = plan.disposeLeafIds;
+        toClose = leaving;
         setActiveId(plan.activeId);
         return plan.tabs;
       });
       for (const lid of toDispose) disposeSession(lid);
+      for (const id of toClose) assetScopes.closeTab(id);
     },
     [setActiveId, setTabs],
   );
@@ -1067,6 +1074,9 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       setTabs(result.tabs);
       setActiveId(result.nextActiveId);
       for (const lid of result.disposeLeafIds) disposeSession(lid);
+      // A closed tab owns no asset grant: revoke every scope it opened now,
+      // not whenever its panes happen to unmount.
+      assetScopes.closeTab(id);
     },
     [setTabs, setActiveId],
   );
@@ -1080,6 +1090,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       setTabs(result.tabs);
       setActiveId(result.nextActiveId);
       for (const leafId of result.disposeLeafIds) disposeSession(leafId);
+      for (const id of result.closeIds) assetScopes.closeTab(id);
       return result.closeIds;
     },
     [setTabs, setActiveId],
