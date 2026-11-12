@@ -472,6 +472,71 @@ mod tests {
         );
     }
 
+    /// Tier A: explicit user editing. `fs_read_file`/`fs_write_file` take no
+    /// registry and apply no secret-path policy, so a deliberately opened
+    /// configuration file outside every authorized root — even one whose name
+    /// the automatic guards refuse — must keep opening and saving.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn explicit_editing_works_outside_every_root_and_on_protected_names() {
+        use crate::modules::workspace::WorkspaceRegistry;
+
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let ssh = outside.path().join(".ssh");
+        std::fs::create_dir(&ssh).unwrap();
+        let config = ssh.join("config");
+        std::fs::write(&config, "original").unwrap();
+
+        // The strict automatic guard (preview/assets + agent reads) refuses the
+        // same path because it is outside the only authorized root.
+        let registry = WorkspaceRegistry::default();
+        registry.authorize(project.path()).unwrap();
+        assert!(super::super::access::authorize_read(&registry, &config).is_err());
+
+        // Explicit editing is unaffected: read through the real command…
+        let read = fs_read_file(config.to_string_lossy().into_owned(), None, None)
+            .await
+            .unwrap();
+        match read {
+            ReadResult::Text { content, .. } => assert_eq!(content, "original"),
+            _ => panic!("expected text"),
+        }
+        // …and write through the same atomic path `fs_write_file` uses.
+        write_atomic(&config, b"saved").unwrap();
+        let reread = fs_read_file(config.to_string_lossy().into_owned(), None, None)
+            .await
+            .unwrap();
+        match reread {
+            ReadResult::Text { content, .. } => assert_eq!(content, "saved"),
+            _ => panic!("expected text"),
+        }
+    }
+
+    /// Secret basenames are likewise editable by explicit user action; only
+    /// the automatic guards refuse them.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn explicit_editing_accepts_secret_basenames() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in [".env", "key.pem"] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, "SECRET=1").unwrap();
+            let read = fs_read_file(path.to_string_lossy().into_owned(), None, None)
+                .await
+                .unwrap();
+            match read {
+                ReadResult::Text { content, size, .. } => {
+                    assert_eq!(content, "SECRET=1");
+                    assert_eq!(size, 8);
+                }
+                _ => panic!("expected text for {name}"),
+            }
+            write_atomic(&path, b"SECRET=2").unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), b"SECRET=2");
+        }
+    }
+
     #[test]
     fn read_file_classifies_utf8_as_text() {
         let dir = tempfile::tempdir().unwrap();
