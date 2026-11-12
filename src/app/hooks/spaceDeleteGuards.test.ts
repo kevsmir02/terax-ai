@@ -56,6 +56,14 @@ function harness(over: Partial<SpaceDeleteDeps> = {}) {
 }
 
 describe("space hazard snapshot", () => {
+  it("uses the authoritative buffer state when the tab list lags a save", () => {
+    const tabs = [editor(1, "a", true), term(2, "a", [20])];
+    expect(spaceHazardSnapshot(tabs, "a", () => false)).toEqual({
+      dirtyIds: [],
+      leafIds: [20],
+    });
+  });
+
   it("counts only the tabs of the Space being deleted", () => {
     const tabs = [
       editor(1, "a", true),
@@ -102,6 +110,18 @@ describe("SpaceDeleteGuard", () => {
     expect(message).toContain("1 file has unsaved changes");
     expect(message).toContain("1 process may still be running");
     expect(message).toContain("Files and worktrees on disk are not deleted");
+  });
+
+  it("inspects hazards without opening a transaction", async () => {
+    const { deps, commit } = harness();
+    const guard = new SpaceDeleteGuard(deps);
+
+    await expect(guard.inspect("a")).resolves.toEqual({
+      dirtyIds: [1],
+      busyLeafIds: [],
+    });
+    expect(guard.current()).toBeNull();
+    expect(commit).not.toHaveBeenCalled();
   });
 
   it("cancel aborts everything and leaves the Space's work untouched", async () => {
@@ -153,6 +173,26 @@ describe("SpaceDeleteGuard", () => {
     expect(commit).not.toHaveBeenCalled();
 
     await expect(guard.confirm()).resolves.toMatchObject({ status: "deleted" });
+    expect(commit).toHaveBeenCalledOnce();
+  });
+
+  it("does not let a saved buffer's newer typing ride on the earlier acknowledgement", async () => {
+    let dirty = true;
+    const { deps, commit } = harness({
+      tabs: () => [editor(1, "a", dirty), editor(3, "b", false)],
+    });
+    const guard = new SpaceDeleteGuard(deps);
+    await guard.request("a");
+
+    await expect(
+      guard.confirm({ savedDirtyIds: [1] }),
+    ).resolves.toMatchObject({ status: "needs-confirmation" });
+    expect(commit).not.toHaveBeenCalled();
+
+    dirty = false;
+    await expect(
+      guard.confirm({ savedDirtyIds: [1] }),
+    ).resolves.toMatchObject({ status: "deleted" });
     expect(commit).toHaveBeenCalledOnce();
   });
 

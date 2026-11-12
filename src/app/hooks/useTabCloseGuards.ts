@@ -3,6 +3,7 @@ import {
   type CloseManyKind,
   type CloseManyPending,
   deletedPathTabs,
+  dirtyAfterSave,
   evaluateCloseHazards,
   hasCloseManyHazards,
   hasNewCloseManyHazards,
@@ -106,7 +107,9 @@ export function useTabCloseGuards({
     const affected = tabsRef.current.filter((tab) => close.has(tab.id));
     return {
       dirtyIds: affected
-        .filter((tab) => tab.kind === "editor" && tab.dirty)
+        .filter(
+          (tab) => tab.kind === "editor" && isTabDirtyRef.current(tab.id),
+        )
         .map((tab) => tab.id),
       leafIds: affected
         .filter((tab) => tab.kind === "terminal")
@@ -207,10 +210,13 @@ export function useTabCloseGuards({
       if (requestId !== closeManyRequestRef.current) return;
       if (
         !complete ||
+        dirtyAfterSave(pendingCloseMany.dirtyIds, hazards) ||
         hasNewCloseManyHazards(pendingCloseMany, hazards)
       ) {
         setPendingCloseMany({ ...pendingCloseMany, ...hazards });
-        setCloseManyIncomplete(!complete);
+        setCloseManyIncomplete(
+          !complete || dirtyAfterSave(pendingCloseMany.dirtyIds, hazards),
+        );
         return;
       }
       disposeTabs(

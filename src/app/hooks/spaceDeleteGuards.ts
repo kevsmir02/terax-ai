@@ -1,4 +1,5 @@
 import {
+  dirtyAfterSave,
   evaluateCloseHazards,
   hasNewCloseManyHazards,
 } from "@/app/hooks/tabCloseGuards";
@@ -14,11 +15,15 @@ export type SpaceHazardSnapshot = {
 export function spaceHazardSnapshot(
   tabs: readonly Tab[],
   spaceId: string,
+  isDirty: (tabId: number) => boolean = (tabId) => {
+    const tab = tabs.find((candidate) => candidate.id === tabId);
+    return tab?.kind === "editor" && tab.dirty;
+  },
 ): SpaceHazardSnapshot {
   const affected = tabs.filter((tab) => tab.spaceId === spaceId);
   return {
     dirtyIds: affected
-      .filter((tab) => tab.kind === "editor" && tab.dirty)
+      .filter((tab) => tab.kind === "editor" && isDirty(tab.id))
       .map((tab) => tab.id),
     leafIds: affected
       .filter((tab) => tab.kind === "terminal")
@@ -39,6 +44,8 @@ export type SpaceDeleteResult =
 
 export type SpaceDeleteDeps = {
   tabs: () => readonly Tab[];
+  /** Authoritative buffer dirty state; the tab list can lag a completed save by one render. */
+  isDirty?: (tabId: number) => boolean;
   isBusy: (leafId: number) => Promise<boolean>;
   confirmRunning: () => boolean;
   /** Removes saved organization only. Files, worktrees and processes are not this callback. */
@@ -62,6 +69,11 @@ export class SpaceDeleteGuard {
     return this.pendingTransaction;
   }
 
+  /** Current hazards for a Space, without opening or changing a transaction. */
+  inspect(spaceId: string): Promise<CloseManyHazards> {
+    return this.evaluate(spaceId);
+  }
+
   async request(spaceId: string): Promise<SpaceDeleteTransaction | null> {
     const generation = ++this.generation;
     const hazards = await this.evaluate(spaceId);
@@ -75,28 +87,41 @@ export class SpaceDeleteGuard {
     this.pendingTransaction = null;
   }
 
-  confirm(): Promise<SpaceDeleteResult> {
+  confirm(options: { savedDirtyIds?: readonly number[] } = {}): Promise<SpaceDeleteResult> {
     if (this.pendingTransaction === null) {
       return Promise.resolve({ status: "idle" });
     }
     if (this.confirming !== null) return this.confirming;
     const generation = this.generation;
     const acknowledged = this.pendingTransaction;
-    this.confirming = this.finishConfirm(generation, acknowledged).finally(
-      () => {
-        this.confirming = null;
-      },
-    );
+    this.confirming = this.finishConfirm(
+      generation,
+      acknowledged,
+      options.savedDirtyIds ?? [],
+    ).finally(() => {
+      this.confirming = null;
+    });
     return this.confirming;
   }
 
   private async finishConfirm(
     generation: number,
     acknowledged: SpaceDeleteTransaction,
+    savedDirtyIds: readonly number[],
   ): Promise<SpaceDeleteResult> {
     const hazards = await this.evaluate(acknowledged.spaceId);
     if (generation !== this.generation || this.pendingTransaction === null) {
       return { status: "canceled" };
+    }
+    if (dirtyAfterSave(savedDirtyIds, hazards)) {
+      this.pendingTransaction = {
+        spaceId: acknowledged.spaceId,
+        hazards,
+      };
+      return {
+        status: "needs-confirmation",
+        pending: this.pendingTransaction,
+      };
     }
     if (hasNewCloseManyHazards(acknowledged.hazards, hazards)) {
       this.pendingTransaction = {
@@ -116,7 +141,12 @@ export class SpaceDeleteGuard {
 
   private evaluate(spaceId: string): Promise<CloseManyHazards> {
     return evaluateCloseHazards(
-      () => spaceHazardSnapshot(this.deps.tabs(), spaceId),
+      () =>
+        spaceHazardSnapshot(
+          this.deps.tabs(),
+          spaceId,
+          this.deps.isDirty,
+        ),
       this.deps.isBusy,
       this.deps.confirmRunning(),
     );

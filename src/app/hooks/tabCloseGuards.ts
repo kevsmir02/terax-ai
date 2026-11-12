@@ -97,6 +97,19 @@ export async function saveAllForClose(
   return true;
 }
 
+/**
+ * Whether a buffer that was saved for this close is dirty again. It stays in
+ * the acknowledged hazard set under the same id, so a "no new hazards" check
+ * alone would let a late edit be closed away.
+ */
+export function dirtyAfterSave(
+  savedIds: readonly number[],
+  hazards: CloseManyHazards,
+): boolean {
+  const saved = new Set(savedIds);
+  return hazards.dirtyIds.some((id) => saved.has(id));
+}
+
 export type CloseHazardSnapshot = {
   dirtyIds: number[];
   leafIds: number[];

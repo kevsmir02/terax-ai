@@ -2,7 +2,7 @@ import { leafHasForegroundProcess } from "@/modules/terminal";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { Tab } from "@/modules/tabs";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
-import { saveAllForClose } from "./tabCloseGuards";
+import { dirtyAfterSave, saveAllForClose } from "./tabCloseGuards";
 import {
   SpaceDeleteGuard,
   type SpaceDeleteResult,
@@ -48,6 +48,7 @@ export function useSpaceDeleteGuard({
   if (guardRef.current === null) {
     guardRef.current = new SpaceDeleteGuard({
       tabs: () => tabsRef.current,
+      isDirty: (tabId) => dirtyRef.current(tabId),
       isBusy: leafHasForegroundProcess,
       confirmRunning: () =>
         usePreferencesStore.getState().confirmCloseRunningTerminal,
@@ -111,6 +112,8 @@ export function useSpaceDeleteGuard({
           (id) => saveRef.current(id),
           (id) => dirtyRef.current(id),
         );
+        // The user may have canceled while the saves were in flight.
+        if (guard.current() === null) return { status: "canceled" };
         if (!complete) {
           const refreshed = await guard.request(pending.spaceId);
           setPendingSpaceDelete(refreshed);
@@ -120,8 +123,15 @@ export function useSpaceDeleteGuard({
             pending: refreshed ?? pending,
           };
         }
-        const result = await guard.confirm();
+        const result = await guard.confirm({
+          savedDirtyIds: pending.hazards.dirtyIds,
+        });
         setPendingSpaceDelete(guard.current());
+        if (result.status === "needs-confirmation") {
+          setSpaceDeleteIncomplete(
+            dirtyAfterSave(pending.hazards.dirtyIds, result.pending.hazards),
+          );
+        }
         return result;
       } catch {
         setSpaceDeleteIncomplete(true);

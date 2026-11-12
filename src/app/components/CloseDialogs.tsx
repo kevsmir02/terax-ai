@@ -207,7 +207,7 @@ export function CloseDialogs({
                   }" has unsaved changes.`
                 : "This file has unsaved changes."}{" "}
               {closeSaveState === "incomplete"
-                ? "The save did not complete: newer edits, a file conflict or a write failure is still unsaved, so the tab stays open."
+                ? "The save did not cover the current text: newer edits, a file conflict or a write failure is still unsaved, so the tab stays open."
                 : "Save them, or close and discard them."}
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -354,7 +354,7 @@ export function CloseDialogs({
                 ? spaceDeleteMessage(pendingSpaceDelete, tabs, spaceName)
                 : ""}
               {spaceDeleteIncomplete
-                ? " The save did not complete (newer edits, a file conflict or a write failure), so the Space and its tabs stay as they are."
+                ? " The save did not cover the current text (newer edits, a file conflict or a write failure), so the Space and its tabs stay as they are."
                 : ""}
             </AlertDialogDescription>
           </AlertDialogHeader>

@@ -3,6 +3,7 @@ import {
   type CloseHazardSnapshot,
   type CloseManyHazards,
   deletedPathTabs,
+  dirtyAfterSave,
   evaluateCloseHazards,
   hasOpenPathTab,
   hasCloseManyHazards,
@@ -294,5 +295,17 @@ describe("saveAllForClose", () => {
     await expect(
       saveAllForClose([1], save, () => dirty),
     ).resolves.toBe(false);
+  });
+});
+
+describe("dirtyAfterSave", () => {
+  it("rejects a close where a saved buffer has newer typing", () => {
+    expect(dirtyAfterSave([2], { dirtyIds: [2], busyLeafIds: [] })).toBe(true);
+  });
+
+  it("accepts a close after every saved buffer is clean", () => {
+    expect(dirtyAfterSave([2, 3], { dirtyIds: [], busyLeafIds: [] })).toBe(
+      false,
+    );
   });
 });
