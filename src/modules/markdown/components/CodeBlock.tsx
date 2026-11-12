@@ -61,9 +61,11 @@ function normalizeLangLabel(raw: string): string {
 export type CodeBlockProps = {
   code: string;
   lang: string | null;
+  /** False above the approved syntax ceiling: no parsing or tokenising. */
+  syntax?: boolean;
 };
 
-export function CodeBlock({ code, lang }: CodeBlockProps) {
+export function CodeBlock({ code, lang, syntax = true }: CodeBlockProps) {
   const streaming = useContext(StreamingCtx);
   const label = normalizeLangLabel(lang ?? "");
 
@@ -72,10 +74,10 @@ export function CodeBlock({ code, lang }: CodeBlockProps) {
   }
 
   if (SHELL_LANGS.has(label)) {
-    return <CommandCard code={code} lang={label} />;
+    return <CommandCard code={code} lang={label} syntax={syntax} />;
   }
 
-  return <FinalizedCodeBlock code={code} lang={label} />;
+  return <FinalizedCodeBlock code={code} lang={label} syntax={syntax} />;
 }
 
 function GeneratingPlaceholder({ label }: { label: string }) {
@@ -92,14 +94,19 @@ function GeneratingPlaceholder({ label }: { label: string }) {
 function BlockChrome({
   label,
   code,
+  syntax,
   children,
 }: {
   label: string;
   code: string;
+  syntax: boolean;
   children: React.ReactNode;
 }) {
   return (
-    <div className="not-prose my-2 overflow-hidden rounded-lg border border-border/50 bg-muted/30">
+    <div
+      data-syntax={syntax ? "on" : "off"}
+      className="not-prose my-2 overflow-hidden rounded-lg border border-border/50 bg-muted/30"
+    >
       <div className="flex items-center justify-between gap-2 border-b border-border/40 bg-muted/20 px-3 py-1">
         <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
           {label}
@@ -111,10 +118,18 @@ function BlockChrome({
   );
 }
 
-function FinalizedCodeBlock({ code, lang }: { code: string; lang: string }) {
-  if (!isHighlightable(lang)) {
+function FinalizedCodeBlock({
+  code,
+  lang,
+  syntax,
+}: {
+  code: string;
+  lang: string;
+  syntax: boolean;
+}) {
+  if (!syntax || !isHighlightable(lang)) {
     return (
-      <BlockChrome label={lang} code={code}>
+      <BlockChrome label={lang} code={code} syntax={syntax}>
         <pre className="m-0 px-3 py-2.5 font-mono text-[11.5px] leading-relaxed text-foreground">
           {code}
         </pre>
@@ -122,7 +137,7 @@ function FinalizedCodeBlock({ code, lang }: { code: string; lang: string }) {
     );
   }
   return (
-    <BlockChrome label={lang} code={code}>
+    <BlockChrome label={lang} code={code} syntax={syntax}>
       <HighlightedPre code={code} lang={lang} />
     </BlockChrome>
   );
@@ -181,11 +196,22 @@ const HighlightedPre = memo(function HighlightedPre({
   );
 });
 
-function CommandCard({ code, lang }: { code: string; lang: string }) {
+function CommandCard({
+  code,
+  lang,
+  syntax,
+}: {
+  code: string;
+  lang: string;
+  syntax: boolean;
+}) {
   const isMultiline = code.includes("\n");
   const prompt = shellPrompt(lang);
   return (
-    <div className="not-prose my-2 overflow-hidden rounded-lg border border-border/50 bg-muted/40">
+    <div
+      data-syntax={syntax ? "on" : "off"}
+      className="not-prose my-2 overflow-hidden rounded-lg border border-border/50 bg-muted/40"
+    >
       <div className="flex items-center justify-between gap-2 px-3 py-1.5">
         <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
           {normalizeLangLabel(lang)}

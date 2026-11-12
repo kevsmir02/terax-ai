@@ -250,6 +250,12 @@ export default function App() {
     () => Object.fromEntries(spaceList.map((space) => [space.id, space.name])),
     [spaceList],
   );
+  // Markdown previews anchor automatic local assets to the Space's configured
+  // project root, not to a terminal's current directory.
+  const spaceRoots = useMemo(
+    () => Object.fromEntries(spaceList.map((space) => [space.id, space.root])),
+    [spaceList],
+  );
   const activeSpaceIdRef = useRef(activeSpaceId);
   useLayoutEffect(() => {
     tabsRef.current = tabs;
@@ -1335,6 +1341,8 @@ export default function App() {
               openFileTab={(path, pin = true, spaceId) =>
                 openFileTab(path, pin, spaceId ? { spaceId } : undefined)
               }
+              openMarkdownTab={newMarkdownTab}
+              setLeafCwd={setLeafCwd}
               readBuffer={(leafId, maxLines) =>
                 terminalRefs.current.get(leafId)?.getBuffer(maxLines) ?? null
               }
@@ -1486,6 +1494,7 @@ export default function App() {
                         activeId={activeId}
                         activeTab={activeTab}
                         activeSpaceId={activeSpaceId ?? DEFAULT_SPACE_ID}
+                        spaceRoots={spaceRoots}
                         subscribeWindowPresentation={
                           subscribeWindowPresentation
                         }

@@ -2,7 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { assetScopes } from "@/lib/assetScopes";
 import { setWindowVibrancy } from "@/modules/settings/store";
 import { ASSET_DELIVERY } from "@/modules/preview/lib/assetDelivery";
-import { PDF_PAGE_LIMIT_BYTES, pdfPageDecision } from "@/modules/preview/lib/limits";
+import {
+  PDF_PAGE_LIMIT_BYTES,
+  pdfPageDecision,
+} from "@/modules/preview/lib/limits";
 import { useViewerAdmissionStore } from "@/modules/preview/lib/viewerAdmission";
 import { whenSessionReady, writeToSession } from "@/modules/terminal";
 import type { Tab } from "@/modules/tabs";
@@ -13,7 +16,12 @@ import {
 import { collectDiagnostics } from "./diagnostics";
 import { nativeWindow, reportError, reportPhase } from "./report";
 import { installSmoothProbe, type SmoothSummary } from "./smoothProbe";
-import type { BenchAppApi, BenchConfig, BenchScenario, PdfFixtures } from "./types";
+import type {
+  BenchAppApi,
+  BenchConfig,
+  BenchScenario,
+  PdfFixtures,
+} from "./types";
 
 const pause = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -1192,7 +1200,8 @@ async function resourceScenario(
   // Back to Space A with the one active preview (the app's own preview pane).
   app().setActiveSpace(spaceA);
   await pause(900);
-  if (!scenario.previewUrl) throw new Error("the resource scenario needs `previewUrl`");
+  if (!scenario.previewUrl)
+    throw new Error("the resource scenario needs `previewUrl`");
   const previewTab = app().openPreview(scenario.previewUrl);
   await pause(1500);
   if (app().activeId !== previewTab)
@@ -1225,10 +1234,7 @@ async function resourceScenario(
   );
   if (streamCommand) {
     for (const leafId of streamLeaves)
-      writeToSession(
-        leafId,
-        `${streamCommand} --seconds ${streamSeconds}\r`,
-      );
+      writeToSession(leafId, `${streamCommand} --seconds ${streamSeconds}\r`);
   }
   await step("stream-start", { ...layout, streamLeaves });
   await pause(streamSeconds * 1000);
@@ -1245,14 +1251,17 @@ async function resourceScenario(
         15_000,
       );
       await pause(600);
-      await step(`close-cycle-${cycle}-open`, { cycle, tabId, file: closeFile });
+      await step(`close-cycle-${cycle}-open`, {
+        cycle,
+        tabId,
+        file: closeFile,
+      });
       app().closeTab(tabId);
       await pause(800);
       await step(`close-cycle-${cycle}-closed`, { cycle, tabId });
     }
     // Leave the preview active again, like the baseline.
-    if (app().tabs.some((tab) => tab.id === previewTab))
-      run.select(previewTab);
+    if (app().tabs.some((tab) => tab.id === previewTab)) run.select(previewTab);
     else app().openPreview(scenario.previewUrl);
     await pause(600);
   }
@@ -1948,6 +1957,418 @@ async function previewScenario(
   }
 }
 
+/** A rendered Markdown image, identified by the alt text the fixture wrote. */
+function markdownImage(alt: string): HTMLImageElement | null {
+  return document.querySelector<HTMLImageElement>(
+    `[data-streamdown="image"][alt="${alt}"]`,
+  );
+}
+
+/** A document-rendered link; the hardened href may be normalized to `/path`. */
+function markdownLink(fragment: string): HTMLAnchorElement | null {
+  return (
+    [...document.querySelectorAll<HTMLAnchorElement>("a")].find((anchor) =>
+      (anchor.getAttribute("href") ?? "").includes(fragment),
+    ) ?? null
+  );
+}
+
+function buttonWithText(text: string): HTMLButtonElement | null {
+  return (
+    [...document.querySelectorAll("button")].find((button) =>
+      (button.textContent ?? "").includes(text),
+    ) ?? null
+  );
+}
+
+/**
+ * The Markdown panes actually on screen. Every preview tab stays mounted (so scroll state
+ * survives a switch), so a selector for the rendered text must skip the `aria-hidden`
+ * wrappers of the inactive ones.
+ */
+function visibleMarkdownPanes(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>(".select-text")].filter(
+    (element) => !element.closest('[aria-hidden="true"]'),
+  );
+}
+
+function visibleMarkdownText(): string {
+  return visibleMarkdownPanes()
+    .map((element) => element.textContent ?? "")
+    .join("\n");
+}
+
+/**
+ * The Markdown acceptance scenario through the real WebKitGTK webview.
+ *
+ * It drives the app's own Markdown tab planner and observes what the page really rendered and
+ * fetched: an in-Space image, a symlink escape refused by the native grant, an outside
+ * document confined to its own folder, an explicit grant, a counted remote image that is only
+ * fetched after the person chooses, inert links, the syntax ceiling, and grant revocation on
+ * close. The terminal cwd changes through the same `setLeafCwd` update an OSC 7 report drives.
+ */
+async function markdownScenario(
+  run: ScenarioRun,
+): Promise<Record<string, unknown>> {
+  const config = run.scenario.markdown;
+  if (!config)
+    throw new Error(
+      "the markdown scenario needs its fixture paths (scripts/app-lab/run.py creates them)",
+    );
+  const steps: WorkflowStep[] = [];
+  const check = async (name: string, ok: boolean, detail: string) => {
+    steps.push({ name, ok, detail });
+    await run.log(`[markdown] ${ok ? "PASS" : "FAIL"} ${name}: ${detail}`);
+  };
+  const failed = async (name: string, detail: string) => {
+    await check(name, false, detail);
+    return `markdown step failed: ${name}: ${detail}`;
+  };
+  const remoteHits = async (): Promise<number> => {
+    try {
+      const response = await fetch(run.url("/preview-ping"));
+      const body = (await response.json()) as { markdownRemoteHits?: number };
+      return body.markdownRemoteHits ?? 0;
+    } catch {
+      return -1;
+    }
+  };
+
+  const domState = () => {
+    const tabs = run
+      .app()
+      .tabs.map((tab) =>
+        tab.kind === "terminal" ||
+        tab.kind === "editor" ||
+        tab.kind === "preview" ||
+        tab.kind === "markdown"
+          ? `${tab.kind}:${"path" in tab ? tab.path : "cwd" in tab ? tab.cwd : "url" in tab ? tab.url : ""}`
+          : tab.kind,
+      )
+      .join(",");
+    const body = document.querySelector(".select-text")?.textContent ?? "";
+    return `tabs [${tabs}], active ${run.app().activeId}, page ${JSON.stringify(body.slice(0, 120))}, imgs ${document.querySelectorAll("img").length}, notice ${JSON.stringify((document.querySelector("[data-markdown-asset-notice]")?.textContent ?? "").slice(0, 160))}, alert ${JSON.stringify((document.querySelector('[role="alert"]')?.textContent ?? "").slice(0, 160))}`;
+  };
+
+  const first = await run.booted();
+
+  // 1. A document inside the Space: its image loads from the configured root, and a symlink
+  //    inside that root which points outside is refused by the native canonical check.
+  const insideTab = run.app().openMarkdownTab(config.insideDoc);
+  try {
+    await run.waitFor(
+      () =>
+        run.app().activeId === insideTab &&
+        markdownImage("inside")?.naturalWidth === 16,
+      "the in-Space Markdown image",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(
+      await failed("inside document image", `${String(error)}; ${domState()}`),
+    );
+  }
+  const insideSrc = markdownImage("inside")?.src ?? "";
+  await check(
+    "inside document image",
+    insideSrc.includes("token="),
+    insideSrc || "no src",
+  );
+  try {
+    await run.waitFor(
+      () => markdownImage("escape")?.complete === true,
+      "the symlink escape attempt",
+      15_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("symlink escape refused", String(error)));
+  }
+  const escaped = markdownImage("escape");
+  await check(
+    "symlink escape refused",
+    escaped !== null && escaped.naturalWidth === 0,
+    `naturalWidth ${escaped?.naturalWidth ?? "missing"}`,
+  );
+
+  // 2. The mutable terminal cwd changes; the document's access must not follow it.
+  run.app().setLeafCwd(first.leafId, "/tmp");
+  run.select(first.tabId);
+  try {
+    await run.waitFor(
+      () => {
+        const tab = run
+          .app()
+          .tabs.find((candidate) => candidate.id === first.tabId);
+        return tab?.kind === "terminal" && tab.cwd === "/tmp";
+      },
+      "the terminal cwd update",
+      10_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("terminal cwd changes", String(error)));
+  }
+  run.select(insideTab);
+  await pause(400);
+  const afterCwd = markdownImage("inside");
+  await check(
+    "cwd change does not change document access",
+    afterCwd?.src === insideSrc && afterCwd.naturalWidth === 16,
+    `src ${afterCwd?.src === insideSrc ? "unchanged" : "changed"}, naturalWidth ${afterCwd?.naturalWidth ?? 0}`,
+  );
+
+  // 3. A document outside the Space root anchors on its own folder; a sibling image beyond it
+  //    needs the explicit grant the notice offers.
+  const outsideTab = run.app().openMarkdownTab(config.outsideDoc);
+  try {
+    await run.waitFor(
+      () =>
+        run.app().activeId === outsideTab &&
+        markdownImage("own")?.naturalWidth === 16,
+      "the outside document's own image",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(
+      await failed("outside document own-folder image", String(error)),
+    );
+  }
+  await check(
+    "outside document own-folder image",
+    markdownImage("parent") === null,
+    "the outside image waits for consent",
+  );
+  const allow = buttonWithText("Allow");
+  if (!allow)
+    throw new Error(await failed("explicit grant offered", "no Allow button"));
+  allow.click();
+  try {
+    await run.waitFor(
+      () => markdownImage("parent")?.naturalWidth === 16,
+      "the explicitly granted outside image",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("explicit outside grant", String(error)));
+  }
+  await check(
+    "explicit outside grant",
+    (markdownImage("parent")?.src ?? "").includes("token="),
+    "loaded after the person chose",
+  );
+
+  // 4. Remote content: rendering the document fetches nothing; the counted pixel is requested
+  //    only after the deliberate choice.
+  const hitsBefore = await remoteHits();
+  const remoteTab = run.app().openMarkdownTab(config.remoteDoc);
+  try {
+    await run.waitFor(
+      () => run.app().activeId === remoteTab && buttonWithText("Load") !== null,
+      "the remote-consent notice",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("remote consent notice", String(error)));
+  }
+  await pause(600);
+  const beforeConsent = await remoteHits();
+  await check(
+    "remote image is not fetched automatically",
+    markdownImage("remote") === null && hitsBefore === 0 && beforeConsent === 0,
+    `image ${markdownImage("remote") ? "present" : "absent"}, hits ${hitsBefore}->${beforeConsent}`,
+  );
+  const loadRemote = buttonWithText("Load 1 remote image");
+  if (!loadRemote)
+    throw new Error(await failed("remote consent button", "no Load button"));
+  loadRemote.click();
+  try {
+    await run.waitFor(
+      () => (markdownImage("remote")?.naturalWidth ?? 0) > 0,
+      "the consented remote image",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("consented remote load", String(error)));
+  }
+  const afterConsent = await remoteHits();
+  await check(
+    "consented remote load",
+    afterConsent > beforeConsent,
+    `hits ${beforeConsent}->${afterConsent}`,
+  );
+
+  // 5. A relative link is inert: it never navigates the application webview or opens a tab.
+  const linkTab = run.app().openMarkdownTab(config.linkDoc);
+  try {
+    await run.waitFor(
+      () =>
+        run.app().activeId === linkTab && markdownLink("elsewhere.md") !== null,
+      "the link document",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("link document", String(error)));
+  }
+  const hrefBefore = window.location.href;
+  const tabsBefore = run.app().tabs.length;
+  document
+    .querySelector<HTMLAnchorElement>('a[href="./elsewhere.md"]')
+    ?.click();
+  await pause(500);
+  await check(
+    "relative link cannot navigate the app",
+    window.location.href === hrefBefore && run.app().tabs.length === tabsBefore,
+    `url ${window.location.href === hrefBefore ? "unchanged" : "changed"}, tabs ${tabsBefore}->${run.app().tabs.length}`,
+  );
+
+  // 5b. A document of hostile references: nothing in it runs, no handler survives into the
+  //     DOM, a javascript: link keeps no script href, and the only asset URLs are the ones the
+  //     app minted with a grant token.
+  const maliciousTab = run.app().openMarkdownTab(config.maliciousDoc);
+  try {
+    await run.waitFor(
+      () =>
+        run.app().activeId === maliciousTab &&
+        visibleMarkdownText().includes("malicious-marker"),
+      "the hostile document",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(
+      await failed(
+        "hostile document renders",
+        `${String(error)}; ${domState()}`,
+      ),
+    );
+  }
+  await pause(600);
+  const scope = visibleMarkdownPanes()[0] ?? null;
+  const executed = (window as unknown as Record<string, unknown>)
+    .__teraxMarkdownPwned;
+  const scripts = scope?.querySelectorAll("script").length ?? 0;
+  const handlers =
+    scope?.querySelectorAll("[onerror],[onclick],[onload],[onmouseover]")
+      .length ?? 0;
+  const injected =
+    scope === null || scope === undefined
+      ? 0
+      : [...scope.querySelectorAll("img")].filter((img) =>
+          (img.getAttribute("src") ?? "").includes("/etc/passwd"),
+        ).length;
+  const untokened =
+    scope === null || scope === undefined
+      ? 0
+      : [...scope.querySelectorAll<HTMLImageElement>("img")].filter(
+          (img) =>
+            /^asset:/i.test(img.getAttribute("src") ?? "") &&
+            !(img.getAttribute("src") ?? "").includes("token="),
+        ).length;
+  const scriptHrefs =
+    scope === null || scope === undefined
+      ? 0
+      : [...scope.querySelectorAll<HTMLAnchorElement>("a")].filter((anchor) =>
+          /^\s*javascript:/i.test(anchor.getAttribute("href") ?? ""),
+        ).length;
+  await check(
+    "hostile document executes nothing",
+    executed === undefined &&
+      scripts === 0 &&
+      handlers === 0 &&
+      scriptHrefs === 0,
+    `effect ${JSON.stringify(executed)}, ${scripts} scripts, ${handlers} handlers, ${scriptHrefs} javascript: hrefs`,
+  );
+  await check(
+    "hostile references never become app or file URLs",
+    injected === 0 && untokened === 0,
+    `${injected} references to /etc/passwd, ${untokened} untokened asset URLs`,
+  );
+  run.app().closeTab(maliciousTab);
+  await pause(300);
+
+  // 6. Above the 4 MiB syntax ceiling the document still opens, without highlighting. Closing
+  //    its tab revokes the asset grant it held, and a late completion does not resurrect it.
+  const largeTab = run.app().openMarkdownTab(config.largeDoc);
+  try {
+    await run.waitFor(
+      () =>
+        run.app().activeId === largeTab &&
+        document.querySelector('[data-syntax="off"]') !== null &&
+        markdownImage("large")?.naturalWidth === 16,
+      "the large document",
+      40_000,
+    );
+  } catch (error) {
+    throw new Error(
+      await failed("large document without syntax", String(error)),
+    );
+  }
+  const largeSrc = markdownImage("large")?.src ?? "";
+  await check(
+    "large document opens without syntax",
+    largeSrc.includes("token="),
+    largeSrc || "no asset src",
+  );
+  run.app().closeTab(largeTab);
+  await pause(1000);
+  const servedAfterClose = await new Promise<boolean>((resolve) => {
+    if (!largeSrc) {
+      resolve(false);
+      return;
+    }
+    // A distinct query makes this a fresh request: the browser's memory image
+    // cache must not answer for a grant that was just revoked.
+    const probeUrl = `${largeSrc}${largeSrc.includes("?") ? "&" : "?"}probe=${Date.now()}`;
+    const probe = new Image();
+    probe.onload = () => resolve(true);
+    probe.onerror = () => resolve(false);
+    probe.src = probeUrl;
+  });
+  await check(
+    "close revokes the document's asset grant",
+    largeSrc !== "" && !servedAfterClose,
+    `asset ${servedAfterClose ? "still served" : "refused"}`,
+  );
+  await check(
+    "closed document does not resurrect",
+    run.app().tabs.every((tab) => tab.id !== largeTab) &&
+      document.querySelector('[data-syntax="off"]') === null,
+    `tab ${run.app().tabs.some((tab) => tab.id === largeTab) ? "present" : "gone"}`,
+  );
+
+  // 7. A read landing after its document closed must not resurrect it: the 4 MiB document is
+  //    closed while its read is still in flight, and nothing it owned may appear afterwards.
+  const tabsBeforeLate = run.app().tabs.length;
+  const lateTab = run.app().openMarkdownTab(config.largeDoc);
+  run.app().closeTab(lateTab);
+  await pause(1500);
+  const afterLate = visibleMarkdownText();
+  await check(
+    "a read landing after close does not resurrect the document",
+    run.app().tabs.every((tab) => tab.id !== lateTab) &&
+      run.app().tabs.length === tabsBeforeLate &&
+      !afterLate.includes(config.largeMarker) &&
+      document.querySelector('[data-syntax="off"]') === null,
+    `tabs ${tabsBeforeLate}->${run.app().tabs.length}, marker ${afterLate.includes(config.largeMarker) ? "present" : "absent"}`,
+  );
+
+  const pass = steps.every((step) => step.ok);
+  await run.log(
+    `[markdown] ${pass ? "PASS" : "FAIL"} summary: ${steps.filter((step) => !step.ok).length} failures of ${steps.length}`,
+  );
+  return {
+    markdown: {
+      pass,
+      steps,
+      insideTab,
+      outsideTab,
+      remoteTab,
+      linkTab,
+      maliciousTab,
+      cwdAfter: "/tmp",
+      remoteHits: { before: hitsBefore, after: afterConsent },
+    },
+  };
+}
+
 /** One asset request/response pair the app's own server answered (see fs::bench_probe). */
 type AssetEntry = {
   seq: number;
@@ -1988,7 +2409,9 @@ function memorySummary(report: Record<string, unknown>): MemorySummary {
     appPss: Number((report.app as { pss?: number } | undefined)?.pss ?? 0),
     webContentPss: pss("web_content"),
     hostPss: pss("host"),
-    processes: Number((report.total as { processes?: number } | undefined)?.processes ?? 0),
+    processes: Number(
+      (report.total as { processes?: number } | undefined)?.processes ?? 0,
+    ),
   };
 }
 
@@ -2080,8 +2503,7 @@ async function pdfDocuments(
       };
     }
   };
-  const mib = (bytes: number) =>
-    Math.round((bytes / (1024 * 1024)) * 10) / 10;
+  const mib = (bytes: number) => Math.round((bytes / (1024 * 1024)) * 10) / 10;
   const notes: string[] = [];
 
   // The fixture geometry must map onto the approved per-page ceiling exactly as the generator
@@ -2135,9 +2557,7 @@ async function pdfDocuments(
       element.addEventListener("load", () => finish(true), { once: true });
     });
 
-  const openTab = async (
-    key: keyof PdfFixtures["files"],
-  ): Promise<PdfTab> => {
+  const openTab = async (key: keyof PdfFixtures["files"]): Promise<PdfTab> => {
     const path = facts.files[key];
     const name = nameOf(key);
     await run.log(`[preview] pdf: requesting a tab for ${name} (${path})`);
@@ -2164,7 +2584,10 @@ async function pdfDocuments(
       throw new Error(await failed(`pdf ${opened.name} frame`, String(error)));
     }
     await run.log(`[preview] pdf: the ${opened.name} frame exists`);
-    return { ...opened, loaded: watchLoad(opened.frame() as HTMLIFrameElement) };
+    return {
+      ...opened,
+      loaded: watchLoad(opened.frame() as HTMLIFrameElement),
+    };
   };
 
   const closeTab = async (opened: PdfTab) => {
@@ -2227,7 +2650,9 @@ async function pdfDocuments(
     let location = "";
     try {
       const view = opened.frame() as
-        | (HTMLIFrameElement & { contentWindow?: { location?: { href?: string } } })
+        | (HTMLIFrameElement & {
+            contentWindow?: { location?: { href?: string } };
+          })
         | null;
       location = String(view?.contentWindow?.location?.href ?? "");
     } catch (error) {
@@ -2297,7 +2722,9 @@ async function pdfDocuments(
   const scriptedRead = await fetch(textSrc)
     .then((response) => `resolved status=${response.status}`)
     .catch((error: unknown) => `refused (${String(error).slice(0, 120)})`);
-  notes.push(`scripted fetch of the granted PDF from the app page: ${scriptedRead}`);
+  notes.push(
+    `scripted fetch of the granted PDF from the app page: ${scriptedRead}`,
+  );
   served.text = servedFor((await assetLog()).entries, text.name);
   memories.text = await memory();
   frames.text = textEvidence;
@@ -2442,10 +2869,11 @@ async function pdfDocuments(
   // Nothing reaches the viewer until the explicit choice, and the refusal has to explain itself.
   const oversized = await openTab("oversized");
   const gate = () =>
-    Array.from(
-      document.querySelectorAll<HTMLElement>('[role="alert"]'),
-    ).find((node) =>
-      (node.textContent ?? "").includes("Large file needs an explicit choice"),
+    Array.from(document.querySelectorAll<HTMLElement>('[role="alert"]')).find(
+      (node) =>
+        (node.textContent ?? "").includes(
+          "Large file needs an explicit choice",
+        ),
     ) ?? null;
   try {
     await run.waitFor(
@@ -2455,7 +2883,10 @@ async function pdfDocuments(
     );
   } catch (error) {
     throw new Error(
-      await failed("pdf above the read ceiling needs an explicit choice", String(error)),
+      await failed(
+        "pdf above the read ceiling needs an explicit choice",
+        String(error),
+      ),
     );
   }
   const notice = gate() as HTMLElement;
@@ -2573,7 +3004,9 @@ async function pdfDocuments(
       30_000,
     );
   } catch (error) {
-    throw new Error(await failed("pdf-named text opens as text", String(error)));
+    throw new Error(
+      await failed("pdf-named text opens as text", String(error)),
+    );
   }
   const misnamedFrame = frameFor(misnamed.name);
   errors["not-a-pdf"] = {
@@ -2603,7 +3036,10 @@ async function pdfDocuments(
     `grants ${start.activeGrants} -> ${afterAll.activeGrants}`,
   );
   await run.sync("pdf-closed", {
-    pdf: { activeGrants: afterAll.activeGrants, baselineGrants: start.activeGrants },
+    pdf: {
+      activeGrants: afterAll.activeGrants,
+      baselineGrants: start.activeGrants,
+    },
   });
 
   const servedSummary: Record<string, unknown> = {};
@@ -2676,7 +3112,7 @@ async function spacesScenario(run: ScenarioRun): Promise<unknown> {
       path,
       workspace: { kind: "local" },
       force: false,
-    }).then((result) => (result.kind === "text" ? result.content ?? "" : ""));
+    }).then((result) => (result.kind === "text" ? (result.content ?? "") : ""));
   const statOk = (path: string) =>
     invoke("fs_stat", { path, workspace: { kind: "local" } }).then(
       () => true,
@@ -2705,7 +3141,10 @@ async function spacesScenario(run: ScenarioRun): Promise<unknown> {
   await check(
     "shared checkout indication",
     badge !== null && badgeRoot === workspace.replace(/\/+$/, ""),
-    `badge ${badge ? badgeRoot : "missing"}; spaces ${run.app().spaces.map((s) => s.id).join(",")}`,
+    `badge ${badge ? badgeRoot : "missing"}; spaces ${run
+      .app()
+      .spaces.map((s) => s.id)
+      .join(",")}`,
   );
   await run.sync("spaces-shared", { spaceA, spaceB, shared: badge !== null });
 
@@ -2726,8 +3165,9 @@ async function spacesScenario(run: ScenarioRun): Promise<unknown> {
   await run.switchSpace(spaceA);
   run.select(first.tabId);
   await pause(700);
-  const seen = (buffer(first.leafId).match(new RegExp(`${marker}-[0-9]`, "g")) ?? [])
-    .length;
+  const seen = (
+    buffer(first.leafId).match(new RegExp(`${marker}-[0-9]`, "g")) ?? []
+  ).length;
   await check(
     "switch keeps hidden output flowing",
     seen >= 5 && presentationHidden,
@@ -2752,7 +3192,9 @@ async function spacesScenario(run: ScenarioRun): Promise<unknown> {
       10_000,
     );
   } catch (error) {
-    throw new Error(await failed("tab close with a running process", String(error)));
+    throw new Error(
+      await failed("tab close with a running process", String(error)),
+    );
   }
   const terminalPrompt = pageText();
   await check(
@@ -2763,7 +3205,10 @@ async function spacesScenario(run: ScenarioRun): Promise<unknown> {
     `dialog: ${terminalPrompt.includes("Close Terminal?")}`,
   );
   run.app().cancelPendingClose();
-  await run.waitFor(() => guards().terminalTabId === null, "the canceled guard");
+  await run.waitFor(
+    () => guards().terminalTabId === null,
+    "the canceled guard",
+  );
   await check(
     "cancel keeps the running terminal",
     run.app().tabs.some((tab) => tab.id === busyTab.tabId),
@@ -2805,7 +3250,10 @@ async function spacesScenario(run: ScenarioRun): Promise<unknown> {
     `dialog: ${dirtyPrompt.includes("Save & Close")}`,
   );
   run.app().cancelPendingClose();
-  await run.waitFor(() => guards().closeTabId === null, "the canceled close guard");
+  await run.waitFor(
+    () => guards().closeTabId === null,
+    "the canceled close guard",
+  );
   await check(
     "cancel keeps the dirty buffer",
     dirty(),
@@ -2894,7 +3342,15 @@ async function spacesScenario(run: ScenarioRun): Promise<unknown> {
   await check(
     "cancel keeps the Space, its tabs and its dirty buffer",
     run.app().spaces.some((space) => space.id === spaceC) &&
-      run.app().tabs.some((tab) => tab.spaceId === spaceC && tab.id === deletedDirtyTab && tab.kind === "editor" && tab.dirty),
+      run
+        .app()
+        .tabs.some(
+          (tab) =>
+            tab.spaceId === spaceC &&
+            tab.id === deletedDirtyTab &&
+            tab.kind === "editor" &&
+            tab.dirty,
+        ),
     `spaces ${run.app().spaces.length}, tabs ${run.app().tabs.length}`,
   );
   await run.sync("spaces-delete-canceled", { spaceC });
@@ -3003,7 +3459,15 @@ async function imagesScenario(
       return tabId;
     };
 
-    for (const name of ["png", "jpeg", "gif", "webp", "bmp", "ico", "avif"] as const) {
+    for (const name of [
+      "png",
+      "jpeg",
+      "gif",
+      "webp",
+      "bmp",
+      "ico",
+      "avif",
+    ] as const) {
       const tabId = await open(fixtures[name]);
       try {
         await waitForState("ready", `the ${name} image surface`);
@@ -3029,7 +3493,8 @@ async function imagesScenario(
       });
       run.app().closeTab(tabId);
       await run.waitFor(
-        () => viewers().every((viewer) => !viewer.id.startsWith(`image:${tabId}:`)),
+        () =>
+          viewers().every((viewer) => !viewer.id.startsWith(`image:${tabId}:`)),
         `the ${name} viewer slot to be released`,
         8000,
       );
@@ -3054,7 +3519,8 @@ async function imagesScenario(
       const tab = run.app().tabs.find((entry) => entry.id === tabId);
       await check(
         "svg stays an editable text tab",
-        tab?.kind === "editor" && !document.querySelector("[data-image-viewer]"),
+        tab?.kind === "editor" &&
+          !document.querySelector("[data-image-viewer]"),
         `tab ${tabId} kind ${tab?.kind}`,
       );
       run.app().closeTab(tabId);
@@ -3171,7 +3637,9 @@ async function imagesScenario(
       try {
         await waitForDecoded(`cycle ${cycle + 1}'s raster`);
       } catch (error) {
-        throw new Error(await failed(`cycle ${cycle + 1} opens`, String(error)));
+        throw new Error(
+          await failed(`cycle ${cycle + 1} opens`, String(error)),
+        );
       }
       run.app().closeTab(tabId);
       try {
@@ -3236,6 +3704,7 @@ const SCENARIOS: Record<
   "fs-churn": fsChurnScenario,
   input: inputScenario,
   workflow: workflowScenario,
+  markdown: markdownScenario,
   spaces: spacesScenario,
   preview: previewScenario,
   images: imagesScenario,
@@ -3253,6 +3722,17 @@ export async function startBenchDriver(app: () => BenchAppApi): Promise<void> {
     .__teraxBenchConfig;
   if (!config?.scenario || !config.reportUrl) return;
   started = true;
+  // Forward console warnings/errors to the run log so a failing step leaves its cause behind.
+  for (const level of ["error", "warn"] as const) {
+    const original = console[level].bind(console);
+    console[level] = (...args: unknown[]) => {
+      original(...args);
+      void fetch(`${config.reportUrl}/log`, {
+        method: "POST",
+        body: `console.${level}: ${args.map((value) => String(value)).join(" ")}`,
+      }).catch(() => undefined);
+    };
+  }
   const run = new ScenarioRun(config.reportUrl, config.scenario, app);
   try {
     await pause(1500);
