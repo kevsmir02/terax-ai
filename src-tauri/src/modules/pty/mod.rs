@@ -537,6 +537,152 @@ pub fn pty_shell_name() -> String {
     shell_init::detect_shell_name()
 }
 
+/// What a graceful quit pass found: sessions whose work exited after SIGTERM,
+/// and sessions that still had running work when the grace period ran out.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminateReport {
+    pub terminated: Vec<u32>,
+    pub survived: Vec<u32>,
+}
+
+/// Longest grace period a caller may ask for. A quit that waited longer would
+/// look like a hung window, and the answer is the same: ask the user.
+const MAX_TERMINATE_GRACE_MS: u64 = 10_000;
+
+/// Sends SIGTERM to the work a terminal started and waits, bounded, for it to
+/// exit. **It never escalates**: a job that ignores SIGTERM is reported as a
+/// survivor so the window can ask before forcing, and forcing stays the
+/// separate, explicitly confirmed `pty_close_all`.
+fn terminate_sessions(
+    state: &PtyState,
+    ids: Vec<u32>,
+    grace_ms: u64,
+) -> TerminateReport {
+    let grace = grace_ms.min(MAX_TERMINATE_GRACE_MS);
+    let targets: Vec<(u32, Arc<Session>)> = {
+        let sessions = state.sessions.read().unwrap();
+        ids.into_iter()
+            .filter_map(|id| sessions.get(&id).map(|session| (id, session.clone())))
+            .collect()
+    };
+
+    for (id, session) in &targets {
+        signal_app_owned_work(session);
+        log::info!(
+            "pty_terminate: asked id={id} (shell={} children={}) to exit",
+            session.shell_pid,
+            foreground::children_of(session.shell_pid).len()
+        );
+    }
+
+    // Poll instead of sleeping the whole grace: a cooperating job is usually
+    // gone in a few milliseconds, and quit should not wait for the bound.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(grace);
+    loop {
+        let busy: Vec<u32> = targets
+            .iter()
+            .filter(|(_, session)| session_has_work(session))
+            .map(|(id, _)| *id)
+            .collect();
+        if busy.is_empty() || std::time::Instant::now() >= deadline {
+            let survived = busy;
+            let terminated = targets
+                .iter()
+                .map(|(id, _)| *id)
+                .filter(|id| !survived.contains(id))
+                .collect();
+            return TerminateReport {
+                terminated,
+                survived,
+            };
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+/// "Is there still work in this terminal?" means *children of the shell*, not
+/// "is the shell alive": every terminal has a shell, so counting the shell would
+/// report an idle prompt as a survivor and turn every quit into a force prompt.
+/// A shell that exits takes its children with it, so this is also false once the
+/// work is gone.
+fn session_has_work(session: &Session) -> bool {
+    session.shell_pid != 0 && foreground::shell_has_children(session.shell_pid)
+}
+
+/// SIGTERM for the job group the terminal is showing, plus any children of the
+/// shell that job control did not put in that group (background jobs, and every
+/// shell without job control, which includes `sh -c`).
+#[cfg(unix)]
+fn signal_app_owned_work(session: &Session) {
+    let shell_pid = session.shell_pid;
+    if shell_pid == 0 {
+        return;
+    }
+    let shell_pid = shell_pid as i32;
+    let own_group = unsafe { libc::getpgid(0) };
+    let foreground_group = session
+        .master
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|master| master.process_group_leader());
+    let shell_group = unsafe { libc::getpgid(shell_pid) };
+
+    if let Some(group) = foreground_group {
+        // Never signal our own group, pid 1, or the shell's own group: the
+        // shell must outlive this pass so survivors can be reported honestly.
+        if group > 1 && group != shell_group && group != own_group {
+            unsafe {
+                libc::kill(-group, libc::SIGTERM);
+            }
+        }
+    }
+
+    for child in foreground::children_of(shell_pid as u32) {
+        let child = child as i32;
+        if child <= 1 || child == shell_pid {
+            continue;
+        }
+        // A child that made itself a group leader takes its own children with
+        // it; anything else is signalled on its own.
+        if unsafe { libc::getpgid(child) } == child && child != own_group {
+            unsafe {
+                libc::kill(-child, libc::SIGTERM);
+            }
+        } else {
+            unsafe {
+                libc::kill(child, libc::SIGTERM);
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn signal_app_owned_work(_session: &Session) {
+    // Windows has no SIGTERM-handling contract for console programs; the
+    // graceful pass reports the work as surviving so quit asks before forcing.
+}
+
+/// Asks the terminals' app-owned work to exit, then reports which terminals
+/// still have running work. Bounded and non-escalating; the window decides
+/// whether to offer a force.
+#[tauri::command]
+pub async fn pty_terminate(
+    app: tauri::AppHandle,
+    ids: Vec<u32>,
+    grace_ms: u64,
+) -> Result<TerminateReport, String> {
+    // `terminate_sessions` waits (bounded) on the OS; keep it off the runtime's
+    // worker threads and off the main thread.
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<PtyState>();
+        terminate_sessions(state.inner(), ids, grace_ms)
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 pub fn pty_list_shells() -> Vec<shell_init::ShellInfo> {
     shell_init::list_shells()
@@ -596,6 +742,128 @@ mod tests {
             assert!(Instant::now() < deadline, "timed out waiting for {what}");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    /// A terminal whose shell runs `script` (the `open` helper pins `sleep 30`).
+    fn open_running(state: &Arc<PtyState>, id: u32, script: &str) -> Arc<Session> {
+        let reaper = state.clone();
+        let session = spawn_with(
+            Host {
+                id,
+                owner: Arc::from("main"),
+                hub: state.hub.clone(),
+                class: PresentationClass::Hidden,
+                signal: Arc::new(|_| {}),
+                notify: Arc::new(|_| {}),
+                pane_id: None,
+                link: agent_detect::AgentLink::new(),
+                reap: Box::new(move || {
+                    if let Some(session) = reaper.take(id) {
+                        session::drop_session(session);
+                    }
+                }),
+                colors: None,
+            },
+            PtySize::default(),
+            || {
+                let mut command = CommandBuilder::new("/bin/sh");
+                command.arg("-c");
+                command.arg(script);
+                Ok(command)
+            },
+        )
+        .unwrap();
+        state.sessions.write().unwrap().insert(id, session.clone());
+        session
+    }
+
+    #[test]
+    fn graceful_termination_ends_a_cooperating_job() {
+        let state = Arc::new(PtyState::default());
+        // A trailing command keeps the shell from exec-ing its only child, which
+        // is how a foreground job looks in a real terminal.
+        let session = open_running(&state, 1, "sleep 30; true");
+        wait_for("the shell to start its job", || {
+            foreground::shell_has_children(session.shell_pid)
+        });
+
+        let report = terminate_sessions(&state, vec![1], 3000);
+
+        assert_eq!(report.terminated, vec![1]);
+        assert!(report.survived.is_empty());
+        wait_for("the job to exit after SIGTERM", || {
+            !foreground::shell_has_children(session.shell_pid)
+        });
+    }
+
+    #[test]
+    fn graceful_termination_reports_a_job_that_ignores_sigterm_without_killing_it() {
+        let state = Arc::new(PtyState::default());
+        // The child ignores SIGTERM, so only an explicit force can end it. It
+        // writes a marker once the trap is in place: signalling in the window
+        // between fork and `trap` would kill it with the default disposition and
+        // the test would prove nothing (and, under a loaded machine, flake).
+        let directory = tempfile::tempdir().unwrap();
+        let ready = directory.path().join("ready");
+        let session = open_running(
+            &state,
+            1,
+            &format!(
+                r#"sh -c 'trap "" TERM; printf ok > {}; exec sleep 30'; true"#,
+                ready.display()
+            ),
+        );
+        wait_for("the job to install its TERM trap", || {
+            ready.exists() && foreground::shell_has_children(session.shell_pid)
+        });
+
+        let report = terminate_sessions(&state, vec![1], 400);
+
+        assert_eq!(report.survived, vec![1]);
+        assert!(report.terminated.is_empty());
+        // Asking is not killing: the job is still there.
+        assert!(foreground::shell_has_children(session.shell_pid));
+
+        // The separate, explicitly confirmed escalation ends it.
+        if let Some(session) = state.take(1) {
+            reap(1, session, "test cleanup");
+        }
+        wait_for("the forced job to exit", || {
+            !foreground::shell_has_children(session.shell_pid)
+        });
+    }
+
+    #[test]
+    fn an_idle_shell_waiting_for_input_is_not_a_survivor() {
+        // Regression: counting "the shell process is alive" as work made every
+        // idle terminal a survivor, so every quit ended in a force prompt.
+        let state = Arc::new(PtyState::default());
+        let session = open_running(&state, 1, "read line");
+        wait_for("the shell to block on input", || {
+            !foreground::shell_has_children(session.shell_pid)
+        });
+
+        let report = terminate_sessions(&state, vec![1], 200);
+
+        assert_eq!(report.terminated, vec![1]);
+        assert!(report.survived.is_empty());
+        // Nothing was signalled, so the idle shell is still there.
+        assert_eq!(
+            unsafe { libc::kill(session.shell_pid as i32, 0) },
+            0,
+            "an idle shell must not be terminated by the graceful pass"
+        );
+        if let Some(session) = state.take(1) {
+            reap(1, session, "test cleanup");
+        }
+    }
+
+    #[test]
+    fn graceful_termination_ignores_terminals_that_are_already_gone() {
+        let state = Arc::new(PtyState::default());
+        let report = terminate_sessions(&state, vec![42], 100);
+        assert!(report.terminated.is_empty());
+        assert!(report.survived.is_empty());
     }
 
     #[test]

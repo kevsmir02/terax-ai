@@ -7,7 +7,11 @@ import {
 } from "@/modules/preview/lib/limits";
 import { pdfRenderBytes } from "@/modules/preview/lib/pdfPage";
 import { useViewerAdmissionStore } from "@/modules/preview/lib/viewerAdmission";
-import { whenSessionReady, writeToSession } from "@/modules/terminal";
+import {
+  whenSessionReady,
+  writeToSession,
+  ptyIdForLeaf,
+} from "@/modules/terminal";
 import type { Tab } from "@/modules/tabs";
 import {
   readTerminalClipboard,
@@ -3334,6 +3338,389 @@ async function pdfDocuments(
   };
 }
 
+/** sessionStorage marker: the quit scenario's second pass runs after a reload. */
+const QUIT_RESTORE_KEY = "terax:bench:quit-restore";
+
+/**
+ * Quit (ticket #18) through the real application.
+ *
+ * First pass: work in two Spaces (dirty buffers plus one cooperating and one
+ * SIGTERM-ignoring job), the survey, a repeated close request that is not an
+ * answer, cancel, save-then-quit, graceful termination and the survivor prompt,
+ * then a confirmed force. Before the window would close it writes a replay
+ * marker and reloads the page — the second pass proves the layout came back and
+ * the command was not re-run, then quits a quiet application.
+ */
+async function quitScenario(run: ScenarioRun): Promise<unknown> {
+  const { scenario } = run;
+  const workspace = scenario.workspace?.replace(/\/+$/, "");
+  const file = scenario.file;
+  const firstLine = scenario.fileText;
+  if (!workspace || !file || !firstLine)
+    throw new Error(
+      "the quit scenario needs a workspace, a file and its text (scripts/app-lab/run.py creates them)",
+    );
+
+  const steps: WorkflowStep[] = [];
+  const check = async (name: string, ok: boolean, detail: string) => {
+    steps.push({ name, ok, detail });
+    await run.log(`[quit] ${ok ? "PASS" : "FAIL"} ${name}: ${detail}`);
+  };
+  const failed = async (name: string, detail: string) => {
+    await check(name, false, detail);
+    return `quit step failed: ${name}: ${detail}`;
+  };
+
+  const pageText = () => document.body.textContent ?? "";
+  // Only the active tab's editor is on screen; the others (including another
+  // Space's) stay mounted behind `aria-hidden="true"`, so an unscoped
+  // `.cm-content` query would read the wrong buffer.
+  const editorText = () => {
+    for (const node of document.querySelectorAll(".cm-content")) {
+      if (node.closest('[aria-hidden="true"]') === null) {
+        return node.textContent ?? "";
+      }
+    }
+    return "";
+  };
+  // Every phase the gate passed through, for the failure detail: a wrong final
+  // phase is much easier to read with the transitions beside it.
+  const trace: string[] = [];
+  let traced = "";
+  const quit = () => {
+    const state = run.app().quitState();
+    if (state.phase !== traced) {
+      traced = state.phase;
+      trace.push(state.phase);
+    }
+    return state;
+  };
+  const traceTimer = window.setInterval(() => void quit(), 50);
+  const traceText = () => trace.join(">");
+  const ptyBusy = async (leafId: number): Promise<boolean> => {
+    const ptyId = ptyIdForLeaf(leafId);
+    if (ptyId === null) return false;
+    return invoke<boolean>("pty_has_foreground_process", { id: ptyId }).catch(
+      () => false,
+    );
+  };
+  // A file that does not exist yet (the replay marker before the shell creates
+  // it) reads as empty instead of failing the scenario.
+  const readFile = (path: string) =>
+    invoke<{ kind: string; content?: string }>("fs_read_file", {
+      path,
+      workspace: { kind: "local" },
+      force: false,
+    })
+      .then((result) => (result.kind === "text" ? (result.content ?? "") : ""))
+      .catch(() => "");
+  const waitUntil = async (
+    condition: () => boolean | Promise<boolean>,
+    what: string,
+    timeoutMs = 20_000,
+  ) => {
+    const started = performance.now();
+    while (!(await condition())) {
+      if (performance.now() - started > timeoutMs)
+        throw new Error(`timed out waiting for ${what}`);
+      await pause(100);
+    }
+  };
+
+  const notesFile = `${workspace}/quit-notes.txt`;
+  const notesLine = (await readFile(notesFile)).split("\n")[0] ?? "";
+  const markerFile = `${workspace}/quit-replay.txt`;
+  const markerLines = async () =>
+    (await readFile(markerFile)).split("\n").filter(Boolean).length;
+
+  // ---------------------------------------------------------------- reload pass
+  const stored = window.sessionStorage.getItem(QUIT_RESTORE_KEY);
+  if (stored !== null) {
+    window.sessionStorage.removeItem(QUIT_RESTORE_KEY);
+    const first = JSON.parse(stored) as { steps: WorkflowStep[] };
+    const restored = await run.booted();
+    const tabs = run.app().tabs;
+    const editors = tabs.filter((tab) => tab.kind === "editor");
+    const notesRestored = editors.some((tab) => tab.path === notesFile);
+    const fileRestored = editors.some((tab) => tab.path === file);
+    const marker = await markerLines();
+    await check(
+      "reload restores Spaces, tabs and file locations",
+      notesRestored &&
+        fileRestored &&
+        run.app().spaces.length >= 2 &&
+        restored.tabId > 0,
+      `editors ${editors.map((tab) => tab.path.split("/").pop()).join(",")}; spaces ${run.app().spaces.length}`,
+    );
+    await check(
+      "reload does not replay the previous commands",
+      marker === 1,
+      `${marker} marker line(s) after the reload`,
+    );
+    await run.sync("quit-restored", {
+      editors: editors.length,
+      spaces: run.app().spaces.length,
+      markerLines: marker,
+    });
+
+    // The restored application has nothing at stake, so it quits without a question.
+    run.app().requestQuit();
+    await pause(150);
+    try {
+      await waitUntil(() => quit().phase === "closing", "the quiet quit");
+    } catch (error) {
+      throw new Error(
+        await failed("quitting a restored application", String(error)),
+      );
+    }
+    await check(
+      "a quiet restored application closes without asking",
+      quit().closed &&
+        quit().totals.buffers === 0 &&
+        quit().survivors.length === 0,
+      `phase ${quit().phase}; closed ${quit().closed}`,
+    );
+    window.clearInterval(traceTimer);
+    const all = [...first.steps, ...steps];
+    return {
+      workflow: {
+        token: firstLine,
+        pass: all.every((step) => step.ok),
+        steps: all,
+      },
+    };
+  }
+
+  // ---------------------------------------------------------------- first pass
+  const booted = await run.booted();
+  void booted;
+  const spaceA = run.app().activeSpaceId;
+  if (!spaceA) throw new Error("the application reports no active Space");
+  const spaceB = run.app().createSpace("Quit Notes", workspace);
+  run.app().newTabInSpace(spaceB, workspace);
+  await run.sync("quit-setup", { spaceA, spaceB });
+
+  // Unsaved text in A, and a job that will honour SIGTERM.
+  const dirtyA = run.app().openFileTab(file, true, spaceA);
+  try {
+    await run.waitFor(
+      () =>
+        run.app().tabs.some((tab) => tab.id === dirtyA) &&
+        editorText().includes(firstLine),
+      "the editor in the first Space",
+    );
+  } catch (error) {
+    throw new Error(await failed("quit setup", String(error)));
+  }
+  run.app().editEditor(dirtyA, "unsaved text from the first Space\n");
+  const cooperative = await run.newShellTab();
+  writeToSession(cooperative.leafId, "sleep 300\r");
+  await waitUntil(() => ptyBusy(cooperative.leafId), "the cooperating job");
+
+  // Unsaved text in B, and a job that ignores SIGTERM.
+  await run.switchSpace(spaceB);
+  const dirtyB = run.app().openFileTab(notesFile, true, spaceB);
+  try {
+    await run.waitFor(
+      () =>
+        run.app().tabs.some((tab) => tab.id === dirtyB) &&
+        editorText().includes(notesLine),
+      "the editor in the second Space",
+    );
+  } catch (error) {
+    throw new Error(
+      await failed("quit setup in the second Space", String(error)),
+    );
+  }
+  run.app().editEditor(dirtyB, "unsaved text from the second Space\n");
+  const stubborn = await run.newShellTab();
+  writeToSession(stubborn.leafId, "sh -c 'trap \"\" TERM; exec sleep 300'\r");
+  await waitUntil(() => ptyBusy(stubborn.leafId), "the stubborn job");
+
+  // A command whose replay would be visible after the reload.
+  const markerShell = await run.newShellTab();
+  // A fresh marker per run: the output directory (and its workspace) is reused
+  // between runs, and a leftover line would look like a replay.
+  writeToSession(
+    markerShell.leafId,
+    `rm -f '${markerFile}'; printf 'replayed\\n' >> '${markerFile}'\r`,
+  );
+  await waitUntil(async () => (await markerLines()) === 1, "the replay marker");
+
+  // 1. The survey names both Spaces, their buffers and their processes.
+  run.app().requestQuit();
+  await pause(150);
+  try {
+    await waitUntil(() => quit().phase === "resolving", "the quit survey");
+  } catch (error) {
+    throw new Error(await failed("quit survey", String(error)));
+  }
+  const survey = quit();
+  const spaceNames = survey.spaces.map((space) => space.name);
+  const summaryText = pageText();
+  await check(
+    "quit summarises unsaved buffers and running work across Spaces",
+    survey.totals.buffers === 2 &&
+      survey.totals.processes === 2 &&
+      spaceNames.length === 2 &&
+      spaceNames.includes("Quit Notes") &&
+      summaryText.includes("Quit Terax?"),
+    `spaces ${spaceNames.join(",")}; buffers ${survey.totals.buffers}; processes ${survey.totals.processes}`,
+  );
+  await check(
+    "the summary names the unsaved buffers",
+    summaryText.includes("workflow-file.txt") &&
+      summaryText.includes("quit-notes.txt"),
+    `names ${summaryText.includes("workflow-file.txt")}/${summaryText.includes("quit-notes.txt")}`,
+  );
+  await check(
+    "the summary does not claim control of detached services",
+    summaryText.includes("keep running") &&
+      summaryText.includes("outside Terax"),
+    `caveat ${summaryText.includes("keep running")}`,
+  );
+  await run.sync("quit-survey", {
+    spaceNames,
+    totals: survey.totals,
+  });
+
+  // 2. A second close request is not an answer.
+  run.app().requestQuit();
+  await pause(150);
+  await pause(500);
+  await check(
+    "a repeated close request does not quit",
+    quit().phase === "resolving" && !quit().closed,
+    `phase ${quit().phase}; closed ${quit().closed}`,
+  );
+
+  // 3. Cancel keeps the window and the processes.
+  run.app().cancelQuit();
+  await pause(150);
+  await waitUntil(() => quit().phase === "idle", "the cancelled quit");
+  await check(
+    "cancel keeps the application and its processes",
+    !quit().closed &&
+      (await ptyBusy(cooperative.leafId)) &&
+      (await ptyBusy(stubborn.leafId)),
+    `cooperative ${await ptyBusy(cooperative.leafId)}; stubborn ${await ptyBusy(stubborn.leafId)}`,
+  );
+
+  // 4. Save-then-quit persists both buffers and re-asks about the processes.
+  run.app().requestQuit();
+  await pause(150);
+  await waitUntil(() => quit().phase === "resolving", "the second survey");
+  run.app().saveAllAndQuit();
+  await pause(150);
+  try {
+    await waitUntil(
+      () => quit().phase === "resolving" || quit().phase === "flushing",
+      "the post-save survey",
+      30_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("save before quit", String(error)));
+  }
+  const savedText = await readFile(file);
+  const savedNotes = await readFile(notesFile);
+  await check(
+    "save before quit writes the buffers and asks again",
+    savedText.includes("unsaved text from the first Space") &&
+      savedNotes.includes("unsaved text from the second Space") &&
+      quit().totals.buffers === 0,
+    `first ${savedText.includes("unsaved text from the first Space")}; notes ${savedNotes.includes("unsaved text from the second Space")}; buffers ${quit().totals.buffers}`,
+  );
+
+  // 5. Confirmed quit: graceful termination, then a question about survivors.
+  if (quit().phase !== "resolving") {
+    throw new Error(
+      await failed(
+        "quit confirmation",
+        `unexpected phase ${quit().phase}; ${traceText()}; totals ${JSON.stringify(quit().totals)}`,
+      ),
+    );
+  }
+  run.app().confirmQuit();
+  await pause(150);
+  try {
+    await waitUntil(
+      () => quit().phase === "force-prompt",
+      "the survivor prompt",
+      30_000,
+    );
+  } catch (error) {
+    throw new Error(
+      await failed(
+        "graceful termination",
+        `${String(error)}; phase ${quit().phase}`,
+      ),
+    );
+  }
+  await check(
+    "graceful termination ends a cooperating job",
+    !(await ptyBusy(cooperative.leafId)),
+    `cooperative still running ${await ptyBusy(cooperative.leafId)}`,
+  );
+  await check(
+    "a process that ignores SIGTERM is reported, not killed",
+    (await ptyBusy(stubborn.leafId)) &&
+      quit().survivors.length === 1 &&
+      pageText().includes("Processes Did Not Exit"),
+    `stubborn still running ${await ptyBusy(stubborn.leafId)}; survivors ${quit().survivors.join(",")}`,
+  );
+  await run.sync("quit-survivors", {
+    survivors: quit().survivors,
+    totals: quit().totals,
+  });
+
+  // 6. The survivor prompt is a question, not a countdown.
+  run.app().cancelQuit();
+  await pause(150);
+  await waitUntil(() => quit().phase === "idle", "the cancelled force prompt");
+  await check(
+    "cancel at the survivor prompt keeps the window open",
+    !quit().closed && (await ptyBusy(stubborn.leafId)),
+    `closed ${quit().closed}; stubborn ${await ptyBusy(stubborn.leafId)}`,
+  );
+
+  // 7. Only an explicit force ends the survivor.
+  run.app().requestQuit();
+  await pause(150);
+  await waitUntil(() => quit().phase === "resolving", "the final survey");
+  run.app().confirmQuit();
+  await pause(150);
+  await waitUntil(
+    () => quit().phase === "force-prompt",
+    "the final survivor prompt",
+    30_000,
+  );
+  run.app().forceQuit();
+  await pause(150);
+  try {
+    await waitUntil(
+      () => quit().phase === "closing" && quit().closed,
+      "the forced close",
+    );
+  } catch (error) {
+    throw new Error(await failed("forced quit", String(error)));
+  }
+  await check(
+    "force runs only after the survivor question",
+    quit().closed && !(await ptyBusy(stubborn.leafId)),
+    `closed ${quit().closed}; stubborn running ${await ptyBusy(stubborn.leafId)}`,
+  );
+
+  // 8. Reopen (a webview reload: the app process survives, every PTY is reaped
+  // by the boot path) and check the restored layout replays nothing.
+  window.clearInterval(traceTimer);
+  await run.sync("quit-closed", { steps });
+  window.sessionStorage.setItem(QUIT_RESTORE_KEY, JSON.stringify({ steps }));
+  await pause(300);
+  window.location.reload();
+  // The page is going away; the reload pass reports the run.
+  await new Promise<void>(() => undefined);
+}
+
 /**
  * Selects the first text-layer span that contains `needle`, through the DOM
  * Selection API. This is the selection state a copy acts on; a physical drag
@@ -4237,6 +4624,7 @@ const SCENARIOS: Record<
   workflow: workflowScenario,
   markdown: markdownScenario,
   spaces: spacesScenario,
+  quit: quitScenario,
   git: gitScenario,
   preview: previewScenario,
   images: imagesScenario,

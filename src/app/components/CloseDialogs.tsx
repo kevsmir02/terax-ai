@@ -4,10 +4,6 @@ import {
   type SpaceDeleteTransaction,
 } from "@/app/hooks/spaceDeleteGuards";
 import {
-  type AppCloseBlocker,
-  canOptOutOfAppClosePrompt,
-} from "@/app/hooks/useAppCloseGuard";
-import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -49,24 +45,7 @@ type Props = {
   onCancelSpaceDelete: () => void;
   onConfirmSpaceDelete: () => void;
   onSaveAndDeleteSpace: () => void;
-  pendingAppClose: AppCloseBlocker | null;
-  onCancelAppClose: () => void;
-  onConfirmAppClose: () => void;
 };
-
-function appCloseMessage(blocker: AppCloseBlocker): string {
-  const dirty =
-    blocker.dirtyEditors === 1
-      ? "1 file has unsaved changes"
-      : `${blocker.dirtyEditors} files have unsaved changes`;
-  if (blocker.dirtyEditors > 0 && blocker.busyTerminal) {
-    return `A process is still running and ${dirty}. Quitting will terminate it and discard the changes.`;
-  }
-  if (blocker.dirtyEditors > 0) {
-    return `${dirty.charAt(0).toUpperCase()}${dirty.slice(1)}. Quitting will discard them.`;
-  }
-  return "A process is still running in a terminal. Quitting will terminate it.";
-}
 
 function OptOutRow({
   checked,
@@ -158,14 +137,8 @@ export function CloseDialogs({
   onCancelSpaceDelete,
   onConfirmSpaceDelete,
   onSaveAndDeleteSpace,
-  pendingAppClose,
-  onCancelAppClose,
-  onConfirmAppClose,
 }: Props) {
   const [optOutTerminalClose, setOptOutTerminalClose] = useState(false);
-  const [optOutAppClose, setOptOutAppClose] = useState(false);
-  const appCloseCanOptOut =
-    pendingAppClose !== null && canOptOutOfAppClosePrompt(pendingAppClose);
 
   const confirmTerminalClose = () => {
     if (optOutTerminalClose) void persistOptOut();
@@ -176,19 +149,6 @@ export function CloseDialogs({
   const cancelTerminalClose = () => {
     setOptOutTerminalClose(false);
     onCancelTerminalClose();
-  };
-
-  // The pref write has to land before the window closes, or quitting drops it.
-  const confirmAppClose = async () => {
-    const optOut = appCloseCanOptOut && optOutAppClose;
-    setOptOutAppClose(false);
-    if (optOut) await persistOptOut();
-    onConfirmAppClose();
-  };
-
-  const cancelAppClose = () => {
-    setOptOutAppClose(false);
-    onCancelAppClose();
   };
 
   return (
@@ -386,34 +346,6 @@ export function CloseDialogs({
               pendingSpaceDelete.hazards.dirtyIds.length > 0
                 ? "Delete Without Saving"
                 : "Delete Space"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      <AlertDialog
-        open={pendingAppClose !== null}
-        onOpenChange={(open) => !open && cancelAppClose()}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Quit Terax?</AlertDialogTitle>
-            <AlertDialogDescription>
-              {pendingAppClose ? appCloseMessage(pendingAppClose) : ""}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          {appCloseCanOptOut ? (
-            <OptOutRow
-              checked={optOutAppClose}
-              onCheckedChange={setOptOutAppClose}
-            />
-          ) : null}
-          <AlertDialogFooter>
-            <AlertDialogCancel onClick={cancelAppClose}>
-              Cancel
-            </AlertDialogCancel>
-            <AlertDialogAction onClick={() => void confirmAppClose()}>
-              Quit Anyway
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
