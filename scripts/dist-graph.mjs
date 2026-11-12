@@ -327,9 +327,8 @@ if (isCli) {
     );
     process.exit(1);
   }
-  const duplicates = findDuplicatePackagesInDist(distDir);
   const maps = sourcemapCount(distDir);
-  if (duplicates === null || maps === 0) {
+  if (maps === 0) {
     // Not a skip: the duplicate check is half of what this script is for, so a build
     // without sourcemaps must be a failure, not a green run that quietly checked less.
     console.error(
@@ -338,6 +337,7 @@ if (isCli) {
     );
     process.exit(1);
   }
+  const duplicates = findDuplicatePackagesInDist(distDir);
   if (duplicates.length) {
     for (const { name, versions } of duplicates) {
       console.log(`  x ${name} bundled in ${versions.join(", ")}`);
