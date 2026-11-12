@@ -1,4 +1,5 @@
 import { leafIds } from "@/modules/terminal";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   AGENT_LAUNCHERS,
@@ -103,5 +104,23 @@ describe("createAgentPanePlan", () => {
     expect(() =>
       createAgentPanePlan(5 as AgentInstanceCount, allocator()),
     ).toThrow(RangeError);
+  });
+});
+
+// Launching is a composition inside `App.tsx` and this suite renders no React
+// tree, so the invariant the ticket needs is an absence: an ordinary launch must
+// not install agent hooks. Hook installation stays an explicit command
+// (`control/lib/hooksConfig.ts`, covered by `hooksConfig.test.ts`).
+describe("hook-free launching", () => {
+  it("does not enable hooks from the launch path", () => {
+    const app = readFileSync(
+      new URL("../../../app/App.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(app.match(/agent_enable_hooks/g) ?? []).toEqual([]);
+    // Hook capability must not shape launching either: every launcher writes the
+    // configured command and nothing else.
+    expect(app.match(/supportsHooks/g) ?? []).toEqual([]);
   });
 });

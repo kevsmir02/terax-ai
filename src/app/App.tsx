@@ -123,7 +123,6 @@ import {
   type WorkspaceEnv,
   workspaceScopeKey,
 } from "@/modules/workspace";
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -633,20 +632,13 @@ export default function App() {
         title,
         request.instances,
       );
-      const hooksReady = launcher.supportsHooks
-        ? invoke("agent_enable_hooks", {
-            agent: request.agent,
-          }).catch((error) => {
-            console.warn(
-              `[terax] could not enable ${request.agent} notifications:`,
-              error,
-            );
-          })
-        : Promise.resolve();
 
+      // Ordinary launching is hook-free: hook installation is an explicit
+      // opt-in from the notifications UI, never a launch side effect. Each pane
+      // only runs the configured command.
       for (const leafId of agentLeafIds) {
         void (async () => {
-          await Promise.all([whenSessionReady(leafId), hooksReady]);
+          await whenSessionReady(leafId);
           if (!writeToSession(leafId, `${command.command}\r`)) {
             console.error(
               `[terax] agent terminal ${leafId} closed before launch`,
