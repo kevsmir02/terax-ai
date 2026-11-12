@@ -131,9 +131,10 @@ import {
   useState,
 } from "react";
 import { CloseDialogs } from "./components/CloseDialogs";
+import { QuitDialog } from "./components/QuitDialog";
 import { WorkspaceInputBar } from "./components/WorkspaceInputBar";
 import { WorkspaceSurface } from "./components/WorkspaceSurface";
-import { useAppCloseGuard } from "./hooks/useAppCloseGuard";
+import { useQuitGuard } from "./hooks/useQuitGuard";
 import {
   hasOpenPathTab,
   renamedPath,
@@ -526,8 +527,30 @@ export default function App() {
     isTabDirty,
   });
 
-  const { pendingAppClose, confirmAppClose, cancelAppClose } =
-    useAppCloseGuard(tabsRef);
+  // The app lab records the confirmed close instead of ending the process, so
+  // a scenario can report what quitting resolved to before the app exits.
+  const benchQuitClosed = useRef(false);
+  const benchCloseWindow = __TERAX_BENCH__
+    ? async () => {
+        benchQuitClosed.current = true;
+      }
+    : undefined;
+
+  const {
+    quit,
+    requestQuit,
+    cancel: cancelQuit,
+    confirm: confirmQuit,
+    saveAll: saveAllAndQuit,
+    retryFlush: retryQuitFlush,
+    loseDrafts: loseDraftsAndQuit,
+    force: forceQuit,
+  } = useQuitGuard({
+    tabsRef,
+    isTabDirty,
+    saveTab,
+    ...(benchCloseWindow ? { closeWindow: benchCloseWindow } : {}),
+  });
 
   useEffect(() => {
     const live = new Set<number>();
@@ -1458,6 +1481,52 @@ export default function App() {
               editEditor={(tabId, text) =>
                 editorRefs.current.get(tabId)?.insertText(text)
               }
+              requestQuit={requestQuit}
+              cancelQuit={cancelQuit}
+              confirmQuit={confirmQuit}
+              saveAllAndQuit={saveAllAndQuit}
+              retryQuitFlush={retryQuitFlush}
+              loseDraftsAndQuit={loseDraftsAndQuit}
+              forceQuit={forceQuit}
+              quitState={() => ({
+                phase: quit.phase,
+                closed: benchQuitClosed.current,
+                note: quit.note,
+                totals: quit.survey?.totals ?? {
+                  buffers: 0,
+                  processes: 0,
+                  uncertainProcesses: 0,
+                  drafts: 0,
+                },
+                spaces: (quit.survey?.spaces ?? []).map((space) => ({
+                  id: space.id,
+                  name: space.name,
+                  buffers: space.buffers.map((buffer) => ({
+                    tabId: buffer.tabId,
+                    title: buffer.title,
+                  })),
+                  processes: space.processes.map((process) => ({
+                    leafId: process.leafId,
+                    state: process.state,
+                  })),
+                  drafts: space.drafts.map((draft) => ({
+                    bufferId: draft.bufferId,
+                    title: draft.title,
+                    state: draft.state,
+                  })),
+                })),
+                survivors: quit.survivors,
+                flush: quit.flush
+                  ? {
+                      outcome: quit.flush.outcome,
+                      drafts: quit.flush.drafts.map((draft) => ({
+                        bufferId: draft.bufferId,
+                        title: draft.title,
+                        state: draft.state,
+                      })),
+                    }
+                  : null,
+              })}
               openSourceControl={openSourceControl}
               openWorktreeDialog={() => {
                 openSourceControl();
@@ -1706,9 +1775,17 @@ export default function App() {
             onCancelSpaceDelete={cancelSpaceDelete}
             onConfirmSpaceDelete={() => void confirmSpaceDelete()}
             onSaveAndDeleteSpace={() => void saveAndDeleteSpace()}
-            pendingAppClose={pendingAppClose}
-            onCancelAppClose={cancelAppClose}
-            onConfirmAppClose={confirmAppClose}
+          />
+
+          <QuitDialog
+            quit={quit}
+            tabs={tabs}
+            onCancel={cancelQuit}
+            onConfirm={confirmQuit}
+            onSaveAll={saveAllAndQuit}
+            onRetryFlush={retryQuitFlush}
+            onLoseDrafts={loseDraftsAndQuit}
+            onForce={forceQuit}
           />
         </div>
       </TooltipProvider>

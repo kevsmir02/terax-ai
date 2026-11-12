@@ -30,6 +30,11 @@ Scenarios (`--scenario`):
   images         Linux image seam: representative formats decode in the real WebKitGTK, oversized
                  and corrupt inputs are refused honestly, hidden tabs release, close cycles do not
                  retain decoded viewers or grants
+  spaces         Linux Space lifecycle: shared checkout, switch with hidden output flowing, tab
+                 close guards, Space deletion that keeps the project directory (pass/fail in page.log)
+  quit           Linux quit: the survey across Spaces, a repeated close that is not consent, cancel,
+                 save-then-quit, graceful termination, the survivor prompt, a confirmed force, and a
+                 reload that restores the layout without replaying commands (pass/fail in page.log)
   worktree       Linux worktree seam: the Source Control dialog creates a worktree with a new
                  branch and an ignored file, checks derived access, opens it as its own Space, and
                  refuses an unknown start point, a file target, a non-empty target and a branch
@@ -91,7 +96,7 @@ SYSTEM = platform.system()
 # measured scenarios (tabs, resize, split-drag, occlusion, agents-steady, idle, fs-churn, input)
 # stay unavailable here: WebKitGTK has no occlusion signal, no layer-tree mirror and no native
 # input hook (ticket 32).
-LINUX_SCENARIOS = ("workflow", "spaces", "markdown", "git", "worktree", "preview", "images", "resource", "stress", "startup")
+LINUX_SCENARIOS = ("workflow", "spaces", "quit", "markdown", "git", "worktree", "preview", "images", "resource", "stress", "startup")
 SCENARIOS = list(dict.fromkeys([*app_report.SCENARIOS, *LINUX_SCENARIOS]))
 IDENTIFIER = linux_profile.disposable_identifier("app-lab", "stable")
 PRODUCT_NAME = "Terax App Lab"
@@ -629,6 +634,10 @@ def host_timeout(args, scenario: dict) -> float:
         return 720
     if name == "images":
         return 600
+    if name == "quit":
+        # Two Spaces, the survey, save-then-quit, a 2 s grace pass, the survivor
+        # prompt and a reload pass with a fresh boot.
+        return 900
     if name == "startup":
         return max(1, args.startup_repeats) * 150 + 120
     if name in ("resource", "stress"):
@@ -1066,9 +1075,9 @@ def scenario_json_linux(
         "cwds": {"shell": str(workspace)},
         "localStorage": local,
     }
-    if args.scenario in ("workflow", "spaces"):
+    if args.scenario in ("workflow", "spaces", "quit"):
         scenario.update({"file": str(file), "fileText": first_line})
-    if args.scenario == "spaces":
+    if args.scenario in ("spaces", "quit"):
         scenario.update({"workspace": str(workspace)})
     if args.scenario == "preview" and pdf:
         files = pdf["manifest"]["files"]
@@ -1168,14 +1177,16 @@ def build_startup_entry(kind: str, launch: int, event: dict, spawned_wall_s: flo
 # ---------------------------------------------------------------------------------------------
 
 LIMITATIONS_LINUX = [
-    "PDF: the fixtures are generated and verified by scripts/app-lab/pdf_fixtures.py, and the "
-    "phase exercises the app's own delivery gate, the bytes the asset server served (recorded "
-    "natively), the document boundary and the tab lifecycle. The reader functions (navigation, "
-    "zoom, search, text selection inside the page) cannot be driven from this harness: WebKitGTK "
-    "hands the PDF to its own separate document (the built-in PDF.js viewer at "
-    "webkit-pdfjs-viewer://), which the app page cannot script or even read, and WebKitGTK "
-    "exposes no screenshot/input seam. Those checks are named manual checks in "
-    "docs/architecture/pdf-reader.md, not automated passes.",
+    "PDF: the fixtures are generated and verified by scripts/app-lab/pdf_fixtures.py. Since issue "
+    "#31 the reader is the app's own DOM, so the phase drives and asserts navigation, zoom (with "
+    "the 32 MiB per-page refusal and its suggested zoom), search, selectable text, the raster "
+    "cache's byte counts, the corrupt state, the whole-file gate, hidden-tab unloading and "
+    "tab-close grant release. It still cannot inject native input: physical keys, a real drag and "
+    "the OS clipboard round-trip, the visual crispness of a re-render, a network capture, a "
+    "password/unsupported-feature fixture and the 4-viewer admission refusal remain named manual "
+    "checks in docs/architecture/pdf-reader.md. Display renders need animation frames, which this "
+    "host suspends for an occluded window; the reader's print-intent fallback and "
+    "`data-pdf-render-fallback` report which path painted a page.",
     "Image format support is measured only on this host's WebKitGTK build and only for the "
     "committed fixtures; a different distro/WebKit version needs its own run.",
     "The images scenario observes the rendered element and the decoded-viewer table; it does not "
@@ -1592,6 +1603,10 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             workspace.joinpath("spaces-keep.txt").write_text(
                 "This file belongs to the project and must survive Space deletion.\n"
             )
+        if args.scenario == "quit":
+            workspace.joinpath("quit-notes.txt").write_text(
+                "quit-notes line, edited in the second Space before quitting.\n"
+            )
     report_path = (args.report or output / "report.json").resolve()
     report_path.parent.mkdir(parents=True, exist_ok=True)
     scenario = scenario_json_linux(
@@ -1918,7 +1933,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         linux_profile.cleanup(home, output)
     if failed is not None:
         raise failed
-    if args.scenario in ("workflow", "spaces", "preview"):
+    if args.scenario in ("workflow", "spaces", "quit", "preview"):
         steps = workflow.get("steps") or []
         passed = sum(1 for step in steps if step.get("ok"))
         print(f"{args.scenario} {'PASS' if workflow.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
@@ -1963,7 +1978,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             [app_report.load(path) for path in args.compare], [manifest], args.compare_format
         ))
     print(f"\nSaved {report_path}")
-    if args.scenario in ("workflow", "spaces", "preview") and not workflow.get("pass"):
+    if args.scenario in ("workflow", "spaces", "quit", "preview") and not workflow.get("pass"):
         print(
             f"Run failed: the {args.scenario} scenario reported a failing step (see page.log).",
             file=sys.stderr,

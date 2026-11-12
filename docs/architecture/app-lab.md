@@ -60,6 +60,11 @@ python3 scripts/app-lab/run.py --scenario spaces --profile debug \
 python3 scripts/app-lab/run.py --scenario worktree --profile debug \
     --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-worktree
 
+# the quit seam (survey across Spaces, repeated close, save-then-quit, graceful
+# termination, survivor prompt, forced exit, reload without command replay)
+python3 scripts/app-lab/run.py --scenario quit --profile debug \
+    --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-quit
+
 # the image seam (real decode per format, oversized/corrupt refusal, hidden-tab and
 # close-cycle release of decoded viewers and grants)
 python3 scripts/app-lab/run.py --scenario images --profile debug \
@@ -163,7 +168,24 @@ process is asked about and canceled first (Space, tabs and dirty text still ther
 deleted; the report records that the project directory and its `spaces-keep.txt` still exist under
 `spaceDeletion`. The runner exits 2 when any step failed. The scenario does not relaunch the app:
 restart restoration (layout, cwd and file locations cold, no command replay) is verified at the
-planning seam in `src/modules/spaces/lib/restore.test.ts`.
+planning seam in `src/modules/spaces/lib/restore.test.ts`, and — for quit — by the reload pass of
+`--scenario quit` (below).
+
+**Quit** (`--scenario quit`, ticket #18): the real application quits. Two Spaces hold a dirty
+buffer (edited through CodeMirror) and a busy terminal — one job honours `SIGTERM`, one runs
+`sh -c 'trap "" TERM; exec sleep 300'`. Asking to quit opens the survey, which must name both
+Spaces, both buffers and both processes and must state that detached services keep running. A
+second close request while the dialog is open is asserted **not** to quit. Cancel keeps the window
+and both processes. Save All & Quit writes both buffers (read back from disk) and asks again with
+only the processes left. Confirming runs the bounded recovery flush, then the native graceful pass:
+the cooperating job is gone, the survivor's terminal still runs, and the survivor prompt has
+appeared. Cancelling there keeps the window open; a second round forces only after that prompt.
+Before the window would close the scenario appends one line to a replay-marker file and reloads the
+page (the boot path reaps every PTY, exactly as a relaunch would); the second pass asserts the
+Spaces and editor tabs came back, the marker still has one line — no command was replayed — and a
+quiet restored application closes without a question. The runner exits 2 when any step failed.
+A full process relaunch needs two profiles; the reload exercises the same restore path, and the
+difference is stated rather than papered over.
 
 **The preview** (`previewScenario`): a preview tab opens through the app's own planner
 (`openPreviewTab`) at `/preview-fixture?redirect=1`, which the orchestrator serves. The fixture page
@@ -196,28 +218,44 @@ The step list and the observed signals (`blurExercised`, minimize `visibility`, 
 ride the final `done` sync as `preview` next to `workflow`; the fixture server's counters
 (`fixtureLoads`, `redirectHits`, `pings`) are recorded as `previewServer`.
 
-**PDF documents** (`pdfDocuments` in `src/bench/driver.ts`, issue #30). The same preview
-scenario opens five generated documents through the app's file planner and asserts what the
-application can actually own:
+**PDF documents** (`pdfDocuments` in `src/bench/driver.ts`, issues #30 and #31). The preview
+scenario opens six generated documents through the app's file planner.
 
-- the app's delivery gate: a 12 MiB document above the 10 MiB whole-file read ceiling shows the
-  explicit-choice notice, mounts no frame and sends no request until "Load anyway" is used; then
-  exactly one `200` response carries the whole file with `override=1`;
-- the transport, recorded natively by `fs::bench_probe`/`bench_asset_log` (bench-only): method,
-  content type, status, bytes, the client's `Range`, advertised `Accept-Ranges` and the live grant
-  count — the app page cannot read the document, so the request log is the honest witness;
-- the document boundary: the frame commits a cross-origin document (`contentDocument` null, its
-  location refused), which is also why no reader function can be asserted from the page;
-- the error paths (`corrupt.pdf` is served and must not destabilise the app; `not-a-pdf.pdf` opens
-  as text because classification is by content) and the lifecycle (a hidden tab, tab close and
-  grant release).
+Issue #30 recorded the iframe path: the app's delivery gate, the bytes the asset server served
+(natively, through `fs::bench_probe`/`bench_asset_log`), the cross-origin frame the app could not
+read, and the lifecycle. That path is gone.
+
+Since issue #31 the reader is the app's own DOM, so the same scenario asserts, from the reader's
+own `data-pdf-*` attributes and text layer:
+
+- page count and page number, and navigation through the toolbar and the reader's key handling;
+- zoom with a real re-render: the canvas's backing-store size, its inked pixels read through
+  `getImageData`, and the bounded raster cache's byte counts;
+- the 32 MiB per-page ceiling: a 400 % A4 page renders 32,090,304 B, 800 % refuses naming the
+  ceiling and “409 %”, and taking the offered zoom really paints within the ceiling; a 72-inch page
+  refuses 100 % and offers 64 %;
+- search (match count, page navigation, highlighted span) and selectable text through a DOM
+  `Selection`;
+- the whole-file gate (12 MiB document: explicit choice with zero bytes read, then one `200` with
+  `override=1`), the corrupt-document state, and the misnamed `.pdf` opening as text;
+- hidden-tab unloading over three cycles, tab-close grant release, and no reader element left
+  behind.
+
+What it still cannot do: inject native input or take a screenshot (ticket #32), so a physical key
+press, a real drag and the clipboard round-trip, the visual crispness of a re-render, a network
+capture, a password/unsupported-feature fixture and the 4-viewer admission refusal stay named
+manual checks in `docs/architecture/pdf-reader.md`.
+
+A display render is scheduled on animation frames, which WebKit suspends for an occluded window —
+even while the page reports itself visible on this host. The reader retries a render that makes no
+progress for four seconds with print-intent scheduling and reports
+`data-pdf-render-fallback="print"`; the driver records which path painted each canvas instead of
+assuming.
 
 Fixtures are written and re-verified by `scripts/app-lab/pdf_fixtures.py` (poppler as the
 independent check) into the run's workspace, never the repository, and the manifest travels in the
 report with its verification. `--pdf-hold-ms N` keeps `text.pdf` on screen for `N` milliseconds
-after its sample so the named manual reader checks in `docs/architecture/pdf-reader.md` can be run
-against the real window; the reader functions themselves are not automated (WebKitGTK offers no
-input or screenshot seam, and the viewer's document is cross-origin).
+after its sample so the remaining manual checks can be run against the real window.
 
 **The images** (`imagesScenario`): committed containers from
 `src-tauri/tests/fixtures/images/` are copied into the run's workspace and opened through the

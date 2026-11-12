@@ -104,7 +104,12 @@ export function useAssetGrants(
     };
   }, [listKey, workspace, key, tabId]);
 
-  const urlFor = useMemo(
+  /**
+   * The grant token an asset would be served with, or undefined while the
+   * scope is not live. `urlFor` is this plus `convertFileSrc`; a surface that
+   * reads the bytes through IPC (the PDF reader) needs the capability itself.
+   */
+  const tokenFor = useMemo(
     () => (asset: string) => {
       if (
         !grant?.key ||
@@ -118,18 +123,26 @@ export function useAssetGrants(
       // An exact file grant wins; otherwise the first granted folder that
       // contains the asset.
       const exact = grant.tokens[asset];
-      const token =
+      return (
         exact ??
         Object.entries(grant.tokens).find(([grantPath]) =>
           covers(grantPath, asset),
-        )?.[1];
-      return token ? `${convertFileSrc(asset)}?token=${token}` : undefined;
+        )?.[1]
+      );
     },
     [grant, key],
+  );
+  const urlFor = useMemo(
+    () => (asset: string) => {
+      const token = tokenFor(asset);
+      return token ? `${convertFileSrc(asset)}?token=${token}` : undefined;
+    },
+    [tokenFor],
   );
 
   return {
     urlFor,
+    tokenFor,
     error: grant?.key === key ? grant.error : undefined,
     /** Changes when the native grant set changes (tokens, retry, refusal). */
     version: grant?.key === key ? version : 0,

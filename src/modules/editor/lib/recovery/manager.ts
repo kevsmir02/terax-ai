@@ -145,6 +145,12 @@ export type RecoveryManager = {
   adopt(input: { record: RecoveryRecord; bufferId: string }): void;
   /** Drops a recovered draft the user explicitly discarded. */
   discardDraft(record: RecoveryRecord): Promise<void>;
+  /**
+   * Every live buffer's status, without touching storage. Quit reads this
+   * before and after a bounded flush so a stalled write can still be reported
+   * as *not saved* instead of vanishing behind the timeout.
+   */
+  statuses(): Map<string, RecoveryStatus>;
   /** Bounded flush for quit: writes every pending buffer now. */
   flushAll(): Promise<Map<string, RecoveryStatus>>;
 };
@@ -660,6 +666,14 @@ export function createRecoveryManager(
         await persist(state);
         // Drain the operation chain so the reported status is settled.
         await state.chain;
+        statuses.set(state.bufferId, statusOf(state));
+      }
+      return statuses;
+    },
+    statuses() {
+      const statuses = new Map<string, RecoveryStatus>();
+      for (const state of buffers.values()) {
+        if (state.disposed) continue;
         statuses.set(state.bufferId, statusOf(state));
       }
       return statuses;

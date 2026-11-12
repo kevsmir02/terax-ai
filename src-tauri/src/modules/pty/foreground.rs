@@ -61,6 +61,93 @@ fn children_listed(contents: &str) -> bool {
     contents.split_whitespace().next().is_some()
 }
 
+/// Immediate children of `pid`, for the quit-time graceful pass.
+///
+/// Unlike `shell_has_children` this allocates: it is called only when the user
+/// quits, once per running terminal, not on every tab switch.
+#[cfg(target_os = "linux")]
+pub(super) fn children_of(pid: u32) -> Vec<u32> {
+    use std::fs;
+    let mut children = Vec::new();
+    let tasks = format!("/proc/{pid}/task");
+    if let Ok(entries) = fs::read_dir(&tasks) {
+        for task in entries.flatten() {
+            let Ok(contents) = fs::read_to_string(task.path().join("children")) else {
+                continue;
+            };
+            for child in contents.split_whitespace() {
+                if let Ok(child) = child.parse::<u32>() {
+                    children.push(child);
+                }
+            }
+        }
+    }
+    if !children.is_empty() {
+        return children;
+    }
+    // No `children` files (CONFIG_PROC_CHILDREN off): scan parents.
+    if let Ok(entries) = fs::read_dir("/proc") {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if !name.bytes().all(|b| b.is_ascii_digit()) {
+                continue;
+            }
+            let parent = fs::read_to_string(entry.path().join("stat"))
+                .ok()
+                .and_then(|stat| stat_parent(&stat));
+            if parent == Some(pid) {
+                if let Ok(child) = name.parse::<u32>() {
+                    children.push(child);
+                }
+            }
+        }
+    }
+    children
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn children_of(pid: u32) -> Vec<u32> {
+    let mut children = [0 as libc::pid_t; 64];
+    let listed = unsafe {
+        libc::proc_listchildpids(
+            pid as libc::pid_t,
+            children.as_mut_ptr(),
+            std::mem::size_of_val(&children) as libc::c_int,
+        )
+    };
+    if listed <= 0 {
+        return Vec::new();
+    }
+    children[..listed as usize]
+        .iter()
+        .filter(|child| **child > 1)
+        .map(|child| *child as u32)
+        .collect()
+}
+
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "linux"))))]
+pub(super) fn children_of(pid: u32) -> Vec<u32> {
+    std::process::Command::new("pgrep")
+        .args(["-P", &pid.to_string()])
+        .output()
+        .ok()
+        .map(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .split_whitespace()
+                .filter_map(|child| child.parse().ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(windows)]
+pub(super) fn children_of(_pid: u32) -> Vec<u32> {
+    // Windows uses a job object for the same purpose; the graceful pass has no
+    // console-wide SIGTERM, so it reports the work as surviving.
+    Vec::new()
+}
+
 /// Parent pid from `/proc/<pid>/stat`: `pid (comm) state ppid ...` where
 /// `comm` may itself contain spaces and parentheses, so anchor on the last `)`.
 #[cfg(any(target_os = "linux", test))]

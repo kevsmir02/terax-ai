@@ -53,5 +53,21 @@
     "limit": "730 KB",
     "gzip": false,
     "brotli": false
+  },
+  {
+    "name": "PDF reader JS (loaded only for a visible PDF tab)",
+    "path": [
+      "dist/assets/PdfReader-*.js"
+    ],
+    "limit": "160 KB",
+    "gzip": true
+  },
+  {
+    "name": "PDF.js worker (loaded on demand, never at startup)",
+    "path": [
+      "dist/pdfjs/pdf.worker.min.mjs"
+    ],
+    "limit": "400 KB",
+    "gzip": true
   }
 ]
