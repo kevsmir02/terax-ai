@@ -48,14 +48,14 @@ RPM_ARCH = "x86_64"
 DEB_ARCH = "amd64"
 BUNDLE_TARGETS = ("rpm", "deb")
 
-# Runtime libraries the packaged app links against. Kept in one place; both the generated
-# Tauri overlay and the Arch recipe are checked against it.
+# Runtime libraries the packaged app links against live in the bundle config
+# (`src-tauri/tauri.conf.json`), so a plain `tauri build` and the candidate overlay cannot
+# disagree. `deb_depends()`/`rpm_depends()` read the effective config; only the Arch
+# ecosystem's names are separate.
 #
 # Fedora names: `webkit2gtk4.1`, `gtk3`. Debian names: `libwebkit2gtk-4.1-0`; Debian 13's
 # time_t transition renamed GTK to `libgtk-3-0t64` (which Provides `libgtk-3-0`), so the
 # alternative covers Debian 12/13 and Ubuntu without claiming either was tested.
-DEB_DEPENDS = ("libwebkit2gtk-4.1-0", "libgtk-3-0t64 | libgtk-3-0")
-RPM_DEPENDS = ("webkit2gtk4.1", "gtk3")
 ARCH_DEPENDS = ("webkit2gtk-4.1", "gtk3")
 # Matches the webkit and GTK runtime in either ecosystem's spelling.
 WEBKIT_GTK = re.compile(r"(webkit2gtk|libwebkit2gtk)", re.IGNORECASE)
@@ -277,16 +277,11 @@ def candidate_config() -> dict:
         "identifier": c.app_identifier,
         "version": c.version,
         "bundle": {
-            "targets": list(BUNDLE_TARGETS),
             "createUpdaterArtifacts": False,
             "publisher": c.vendor,
             "copyright": "Copyright 2026 Crynta and Terax Workspace contributors",
             "shortDescription": c.short_description,
             "longDescription": c.long_description,
-            "linux": {
-                "deb": {"depends": list(DEB_DEPENDS), "section": "utils"},
-                "rpm": {"depends": list(RPM_DEPENDS)},
-            },
         },
         # A candidate must not be able to check upstream's release feed or trust upstream's
         # signing key. The plugin is left installed (issue #37 replaces the discovery flow),
@@ -308,6 +303,20 @@ def merged_bundle_config(base: dict | None = None, overlay: dict | None = None) 
         else:
             bundle[key] = value
     return bundle
+
+
+def deb_depends(base: dict | None = None, overlay: dict | None = None) -> list[str]:
+    """The effective deb runtime dependencies (from the bundle config, not a copy)."""
+    return list(
+        merged_bundle_config(base, overlay).get("linux", {}).get("deb", {}).get("depends") or []
+    )
+
+
+def rpm_depends(base: dict | None = None, overlay: dict | None = None) -> list[str]:
+    """The effective rpm runtime dependencies (from the bundle config, not a copy)."""
+    return list(
+        merged_bundle_config(base, overlay).get("linux", {}).get("rpm", {}).get("depends") or []
+    )
 
 
 def config_problems(base: dict | None = None, overlay: dict | None = None) -> list[str]:
@@ -339,6 +348,18 @@ def config_problems(base: dict | None = None, overlay: dict | None = None) -> li
         found.append(
             f"bundle.externalBin is {external!r}; the candidate installs "
             f"binaries/{c.cli_binary_name}"
+        )
+
+    # Tauri's config merge concatenates arrays (`depends` came out duplicated when both
+    # configs listed it), so the overlay may only carry identity/scalar fields. The base
+    # config is the single place for targets and dependencies.
+    overlay_bundle = overlay.get("bundle") or {}
+    if "targets" in overlay_bundle:
+        found.append("the overlay must not repeat bundle.targets: the base config owns it")
+    if "linux" in overlay_bundle:
+        found.append(
+            "the overlay must not repeat bundle.linux.depends: the base config owns the "
+            "runtime dependency list"
         )
 
     # A candidate may not keep upstream's update endpoint or trust key.
@@ -664,26 +685,33 @@ def rpm_metadata(path: Path) -> dict:
     return metadata
 
 
-def rpm_files(path: Path) -> list[dict]:
-    """Regular payload files with sizes and modes, from the rpm header (no extraction)."""
-    raw = rpm_query(path, "-qlp", "--dump").splitlines()
+def parse_rpm_dump(lines: list[str]) -> list[dict]:
+    """Parse `rpm -qlp --dump` lines; the path may contain spaces."""
     files: list[dict] = []
-    for line in raw:
-        parts = line.split()
-        if len(parts) < 5:
+    for line in lines:
+        # Take the ten fixed fields from the right: size mtime digest mode owner group
+        # isconfig isdoc rdev symlink.
+        parts = line.rsplit(None, 10)
+        if len(parts) != 11:
             continue
-        mode = int(parts[4], 8)
+        path_text, size_text, _mtime, _digest, mode_text = parts[:5]
+        mode = int(mode_text, 8)
         if (mode & 0o170000) != 0o100000:  # keep regular files only
             continue
         files.append(
             {
-                "path": parts[0],
-                "sizeBytes": int(parts[1]),
+                "path": path_text,
+                "sizeBytes": int(size_text),
                 "mode": format(mode & 0o777, "04o"),
-                "kind": classify_path(parts[0]),
+                "kind": classify_path(path_text),
             }
         )
     return files
+
+
+def rpm_files(path: Path) -> list[dict]:
+    """Regular payload files with sizes and modes, from the rpm header (no extraction)."""
+    return parse_rpm_dump(rpm_query(path, "-qlp", "--dump").splitlines())
 
 
 def elf_needed(binary: Path) -> list[str]:
@@ -702,6 +730,27 @@ def unresolved_libraries(binary: Path) -> list[str]:
         for line in result.stdout.splitlines()
         if "not found" in line
     ]
+
+
+def bundle_type_marker_difference(left: Path, right: Path) -> bool:
+    """True when two copies of one binary differ only by Tauri's bundle-type marker.
+
+    The bundler patches `TAURI_BUNDLE_TYPE_VAR_*` in the main binary per format, so the deb
+    and rpm payloads are byte-identical except for three bytes (`DEB` versus `RPM`). Anything
+    else is a real difference and must not be excused.
+    """
+    first = Path(left).read_bytes()
+    second = Path(right).read_bytes()
+    if len(first) != len(second):
+        return False
+    differing = [index for index, (a, b) in enumerate(zip(first, second)) if a != b]
+    if len(differing) != 3 or differing != list(range(differing[0], differing[0] + 3)):
+        return False
+    start = differing[0]
+    marker = b"TAURI_BUNDLE_TYPE_VAR_"
+    if marker not in first[max(0, start - len(marker)) : start]:
+        return False
+    return {first[start : start + 3], second[start : start + 3]} == {b"DEB", b"RPM"}
 
 
 def command_version(*command: str) -> str:

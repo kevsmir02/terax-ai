@@ -50,10 +50,12 @@ The runner (`scripts/package-candidate/run.py`) refuses to start when any of the
 
 The runner builds with `pnpm tauri build --target x86_64-unknown-linux-gnu --bundles rpm,deb` and a
 generated overlay (`inputs/tauri.candidate.conf.json`) so the base config's resources, CSP, icons
-and file associations are inherited rather than duplicated. Declared runtime dependencies are
-`webkit2gtk4.1`/`gtk3` for rpm and `libwebkit2gtk-4.1-0`/`libgtk-3-0t64 | libgtk-3-0` for deb
-(Debian 13's time_t transition renamed GTK; the alternative covers Debian 12 as well). The
-dependency lists were not resolved by dnf/apt here.
+and file associations are inherited rather than duplicated. Runtime dependencies live in the base
+config (`src-tauri/tauri.conf.json`): `webkit2gtk4.1`/`gtk3` for rpm and
+`libwebkit2gtk-4.1-0`/`libgtk-3-0t64 | libgtk-3-0` for deb (Debian 13's time_t transition renamed
+GTK; the alternative covers Debian 12 as well). The overlay deliberately does not repeat arrays,
+because Tauri's config merge concatenates them — listing `depends` twice produced a duplicated
+control field. The dependency lists were not resolved by dnf/apt here.
 
 It never installs a package, never calls `sudo`/`dnf`/`apt`, and executes only the packaged CLI —
 with a disposable `HOME`/`XDG` profile under the run output.

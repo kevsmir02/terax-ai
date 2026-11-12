@@ -221,17 +221,34 @@ def single(entries: list[dict], kind: str) -> dict | None:
     return next((entry for entry in entries if entry["kind"] == kind), None)
 
 
-def cross_format(files: dict[str, list[dict]]) -> dict:
-    """Do both formats carry the same payload bytes?"""
-    lists = {name: {entry["path"]: entry["sha256"] for entry in entries} for name, entries in files.items()}
+def cross_format(
+    files: dict[str, list[dict]],
+    roots: dict[str, Path],
+    main_binary: str,
+) -> dict:
+    """Do both formats carry the same payload bytes (apart from the bundle-type marker)?"""
+    lists = {
+        name: {entry["path"]: entry["sha256"] for entry in entries}
+        for name, entries in files.items()
+    }
     rpm, deb = lists.get("rpm", {}), lists.get("deb", {})
+    differing = sorted(path for path in set(rpm) & set(deb) if rpm[path] != deb[path])
+    marker_only: list[str] = []
+    unexpected: list[str] = []
+    for path in differing:
+        relative = path.lstrip("/")
+        if path == main_binary and packaging.bundle_type_marker_difference(
+            roots["deb"] / relative, roots["rpm"] / relative
+        ):
+            marker_only.append(path)
+        else:
+            unexpected.append(path)
     return {
         "samePaths": sorted(rpm) == sorted(deb),
         "onlyInRpm": sorted(set(rpm) - set(deb)),
         "onlyInDeb": sorted(set(deb) - set(rpm)),
-        "differingHashes": sorted(
-            path for path in set(rpm) & set(deb) if rpm[path] != deb[path]
-        ),
+        "bundleTypeMarkerOnly": marker_only,
+        "differingHashes": unexpected,
     }
 
 
@@ -373,8 +390,8 @@ def main() -> int:
     artifacts: list[dict] = []
     dependencies = {
         "declared": {
-            "deb": list(packaging.DEB_DEPENDS),
-            "rpm": list(packaging.RPM_DEPENDS),
+            "deb": packaging.deb_depends(),
+            "rpm": packaging.rpm_depends(),
             "arch": list(packaging.ARCH_DEPENDS),
         },
         "observedElf": [],
@@ -409,15 +426,22 @@ def main() -> int:
             "deb": {"files": len(deb["files"]), "controlFields": sorted(deb["control"])},
             "rpm": {"files": len(rpm["files"])},
         }
-        cross = cross_format({artifact["format"]: artifact["files"] for artifact in artifacts})
+        app_entry = next(
+            entry for entry in deb["binaries"] if entry["kind"] == "binary"
+        )
+        cross = cross_format(
+            {artifact["format"]: artifact["files"] for artifact in artifacts},
+            {"deb": scratch / "deb", "rpm": scratch / "rpm"},
+            app_entry["path"],
+        )
         validation["crossFormat"] = {
-            "status": "verified" if not (cross["onlyInDeb"] or cross["onlyInRpm"] or cross["differingHashes"]) else "mismatch",
+            "status": "verified"
+            if not (cross["onlyInDeb"] or cross["onlyInRpm"] or cross["differingHashes"])
+            else "mismatch",
             **cross,
         }
 
-        app_binary = next(
-            entry for entry in deb["binaries"] if entry["kind"] == "binary"
-        )
+        app_binary = app_entry
         extracted_binary = scratch / "deb" / app_binary["path"].lstrip("/")
         dependencies["observedElf"] = packaging.elf_needed(extracted_binary)
         dependencies["unresolvedOnHost"] = packaging.unresolved_libraries(extracted_binary)

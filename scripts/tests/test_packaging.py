@@ -154,12 +154,24 @@ class TargetTest(unittest.TestCase):
         )
 
     def test_a_broader_target_set_is_refused(self) -> None:
-        overlay = packaging.candidate_config()
-        overlay["bundle"]["targets"] = "all"
-        problems = packaging.config_problems(overlay=overlay)
+        base = json.loads(packaging.TAURI_CONFIG.read_text())
+        base["bundle"]["targets"] = "all"
+        problems = packaging.config_problems(base=base)
         self.assertTrue(any("bundle.targets" in problem for problem in problems))
-        overlay["bundle"]["targets"] = ["rpm", "deb", "appimage"]
-        self.assertTrue(any("appimage" in problem for problem in packaging.config_problems(overlay=overlay)))
+        base["bundle"]["targets"] = ["rpm", "deb", "appimage"]
+        self.assertTrue(
+            any("appimage" in problem for problem in packaging.config_problems(base=base))
+        )
+
+    def test_the_overlay_may_not_repeat_bundle_arrays(self) -> None:
+        # Tauri's config merge concatenates arrays (it duplicated `depends` once), so the
+        # overlay must leave targets/dependencies to the base config only.
+        overlay = packaging.candidate_config()
+        overlay["bundle"]["targets"] = ["rpm", "deb"]
+        overlay["bundle"]["linux"] = {"deb": {"depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"]}}
+        problems = packaging.config_problems(overlay=overlay)
+        self.assertTrue(any("repeat bundle.targets" in p for p in problems), problems)
+        self.assertTrue(any("bundle.linux.depends" in p for p in problems), problems)
 
     def test_other_host_architectures_are_refused(self) -> None:
         self.assertEqual(packaging.target_problems("Linux", "x86_64"), [])
@@ -186,10 +198,9 @@ class DependencyTest(unittest.TestCase):
         self.assertTrue(any("updater" in problem for problem in problems), problems)
 
     def test_deb_and_rpm_require_the_webkit_and_gtk_runtime(self) -> None:
-        linux = packaging.merged_bundle_config()["linux"]
         for label, depends in (
-            ("deb", linux["deb"]["depends"]),
-            ("rpm", linux["rpm"]["depends"]),
+            ("deb", packaging.deb_depends()),
+            ("rpm", packaging.rpm_depends()),
         ):
             self.assertTrue(
                 any(packaging.WEBKIT_GTK.search(dep) for dep in depends), label
@@ -197,9 +208,9 @@ class DependencyTest(unittest.TestCase):
             self.assertTrue(any(packaging.GTK.search(dep) for dep in depends), label)
 
     def test_a_missing_gtk_dependency_is_refused(self) -> None:
-        overlay = packaging.candidate_config()
-        overlay["bundle"]["linux"]["rpm"]["depends"] = ["webkit2gtk4.1"]
-        problems = packaging.config_problems(overlay=overlay)
+        base = json.loads(packaging.TAURI_CONFIG.read_text())
+        base["bundle"]["linux"]["rpm"]["depends"] = ["webkit2gtk4.1"]
+        problems = packaging.config_problems(base=base)
         self.assertTrue(any("rpm depends" in problem for problem in problems), problems)
 
     def test_the_arch_recipe_requires_the_same_runtime(self) -> None:
@@ -299,6 +310,64 @@ class DebReaderTest(unittest.TestCase):
         bad.write_bytes(b"not an archive")
         with self.assertRaises(ValueError):
             packaging.ar_members(bad)
+
+
+class BundleTypeMarkerTest(unittest.TestCase):
+    """The only allowed deb/rpm payload difference is the main binary's bundle-type marker."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="terax-package-marker-")
+        self.root = Path(self._tmp.name)
+        prefix = b"\x7fELF" + b"\x00" * 16 + b"TAURI_BUNDLE_TYPE_VAR_"
+        self.deb = self.root / "deb.bin"
+        self.rpm = self.root / "rpm.bin"
+        self.deb.write_bytes(prefix + b"DEB" + b"\x01" * 64)
+        self.rpm.write_bytes(prefix + b"RPM" + b"\x01" * 64)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_the_bundle_type_marker_is_accepted(self) -> None:
+        self.assertTrue(packaging.bundle_type_marker_difference(self.deb, self.rpm))
+
+    def test_any_other_byte_difference_is_refused(self) -> None:
+        payload = bytearray(self.rpm.read_bytes())
+        payload[10] ^= 0xFF
+        self.rpm.write_bytes(bytes(payload))
+        self.assertFalse(packaging.bundle_type_marker_difference(self.deb, self.rpm))
+
+    def test_a_length_difference_is_refused(self) -> None:
+        self.rpm.write_bytes(self.rpm.read_bytes() + b"\x00")
+        self.assertFalse(packaging.bundle_type_marker_difference(self.deb, self.rpm))
+
+
+class RpmDumpTest(unittest.TestCase):
+    """`rpm -qlp --dump` keeps spaces in paths (the resource dir is `/usr/lib/Terax Workspace`)."""
+    def setUp(self) -> None:
+        self.lines = [
+            "/usr/bin/terax-workspace 14816432 1794460064 "
+            "2d23cca23316ec63df95abe2af21dfa96aeceecb3b3d7b998cc40c1fb64fa78b "
+            "0100755 root root 0 0 0 X",
+            "/usr/lib/Terax Workspace 0 1794460064 "
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 "
+            "040755 root root 0 0 0 X",
+            "/usr/lib/Terax Workspace/licenses/terminal/ghostty.txt 1062 1794458330 "
+            "5eccd0eeca906db6d661b64dd05e1d4a4b2e49d37d43bbcfd2c8cce4d7832920 "
+            "0100644 root root 0 0 0 X",
+        ]
+
+    def test_a_directory_is_skipped_and_a_spaced_path_is_kept(self) -> None:
+        files = packaging.parse_rpm_dump(self.lines)
+        self.assertEqual(
+            [entry["path"] for entry in files],
+            [
+                "/usr/bin/terax-workspace",
+                "/usr/lib/Terax Workspace/licenses/terminal/ghostty.txt",
+            ],
+        )
+        self.assertEqual(files[0]["mode"], "0755")
+        self.assertEqual(files[0]["kind"], "binary")
+        self.assertEqual(files[1]["kind"], "license")
 
 
 class ArchRecipeTest(unittest.TestCase):
