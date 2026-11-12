@@ -79,6 +79,84 @@ protocol, conflict outcomes, newer typing during a pending save, reload/discard,
 and format-baseline checks. Not exercised here: a packaged two-Space UI race and
 two independently running app instances.
 
+## Recovery drafts
+
+Opt-in durable recovery of unsaved editor text. It is **off by default** and is
+a separate action from autosave of the original file and from layout/preference
+persistence: recovery never writes a project file. Enabling it is an explicit
+setting (`Editor → Recover unsaved drafts`) that discloses the storage location,
+the bounds and the exclusions.
+
+**Ownership is the buffer, not the path.** A record carries:
+
+- `bufferId` — `buf-<session>-t<tab>-<space-hash>`: stable for the life of one
+  editor buffer, different for every Space and tab. Two Spaces editing the same
+  pathname are two ids and two records; the path alone never owns a draft.
+- `path` and `fileIdentity` — the original file at the time of the record. The
+  identity is the device/inode portion of the ticket-#15 disk revision.
+- `bufferRevision` — a monotonic counter of this buffer's own text.
+- `diskRevision` — the opaque `r1:<digest>:<size>:<identity>` revision the text
+  was edited from, so a recovered draft knows whether the file still matches.
+- `text`, `bytes`, `updatedAt`, `version`.
+
+The session component changes every launch, so a buffer created after a crash
+never silently inherits a pre-crash record: the record is *offered* to a document
+reopened in the same Space and at the same path, as a comparison/Save As draft.
+Restoring only puts the text back into the editor buffer (dirty, unsaved); a
+changed, replaced/moved, missing or unreadable original is only ever compared or
+saved to a path the user chooses.
+
+**Storage.** `<app data>/recovery/records/<hex(bufferId)>.json` — its own private
+subdirectory (`0700`, records `0600`), written with a tempfile + `fsync` +
+rename so a crash mid-write leaves the older valid record. Hex file names mean a
+buffer id can never escape the directory. The native store
+(`src-tauri/src/modules/recovery.rs`) is the enforcement point; the frontend
+mirrors the same policy file
+(`src/modules/editor/lib/recovery/policy.json`) for its pre-check and status
+text.
+
+**Quota is a pause, not an eviction.** 10 MiB per record and 100 MiB total,
+measured on the stored bytes. A record over the per-file bound pauses recovery
+for that buffer and keeps its older draft; exhausting the total pauses every
+buffer. Room comes back only from an explicitly resolved draft (or shrinking
+text), never by deleting an unrecovered one. A refused or failed write leaves the
+older record byte-identical.
+
+**Acknowledgement, coalescing and cleanup.**
+
+- Continuous editing schedules a persistence write after 1.5 s, not on idle: the
+  first edit arms one timer and further edits only update the snapshot. Edits
+  typed during a slow write get an immediate follow-up write.
+- Only a completed storage write is reported as `durable`; `pending`, `failed`,
+  `paused` and `unavailable` are visible states, and there is no optimistic
+  success.
+- Every buffer has one operation chain, so a write cannot land after the delete
+  that resolved it. A save/discard also retires the revisions it resolved (a
+  watermark) and the delete is revision-aware natively, so a late completion
+  cannot resurrect resolved text or remove newer typing. Cleanup removes only the
+  resolving buffer's revision: newer unsaved text and another Space's draft of
+  the same pathname survive.
+- Save As retargets the record only after the write succeeds; a failed Save As
+  leaves the draft owned by the original file.
+- Known-sensitive paths are excluded by reusing `src/modules/workspace/policy.ts`
+  and `pathPolicy.json`. This is a filename/location policy, **not complete
+  secret detection**: text from an innocuously named file is recorded, which the
+  settings disclosure says.
+
+Validated support: `src/modules/editor/lib/recovery/*.test.ts` (record model,
+quota admission, coalescing in virtual time, cleanup/watermark/restore plans,
+manager races: late completions, discard-then-complete, failure-preserves-older,
+two-Space independence, Save As retarget), `RecoveryStatusBar.test.tsx` /
+`RecoveryDraftBanner.test.tsx` (visible states, offer-never-impose),
+`src-tauri/src/modules/recovery.rs` unit tests (atomicity, private modes,
+quota refusal, revision-aware delete, corrupt-record handling) and
+`src-tauri/tests/recovery_store.rs` (restart, two-Space records through the
+native seam, refusal leaves the older record). Not exercised: a real forced kill
+of the packaged application, a packaged two-Space UI race, and the quit-time
+bounded flush UI (the manager exposes `flushAll`; the close/quit flow is ticket
+#34).
+
+
 Limitation, deliberately not claimed otherwise: this coordinates **app-owned**
 writes only. An independent external writer is not locked out, and a change that
 lands between the revision check and the rename is indistinguishable from one
