@@ -12,6 +12,7 @@ pub mod history;
 pub mod identity;
 pub mod proc;
 pub mod pty;
+pub mod recovery;
 pub mod runtime;
 pub mod shell;
 pub mod vibrancy;

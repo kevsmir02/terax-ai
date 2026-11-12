@@ -19,6 +19,9 @@ import {
   type SaveResult,
 } from "./diskSync";
 import { detectEol, type Eol, normalizeToLf, restoreEol } from "./eol";
+import type { DiskTarget } from "./recovery/cleanup";
+import type { RecoveryRecord } from "./recovery/model";
+import { useRecovery } from "./recovery/useRecovery";
 
 type ReadResult =
   | {
@@ -49,9 +52,15 @@ type Options = {
   /** Only a visible buffer rereads the disk on an external-change signal. */
   visible: boolean;
   onDirtyChange?: (dirty: boolean) => void;
+  /**
+   * Identity of the editor buffer. Recovery owns drafts by buffer, not by path:
+   * two Spaces editing one pathname are two independent records, and a buffer
+   * that is not identified (e.g. a non-tab editor) is not recovered.
+   */
+  buffer?: { spaceId: string; tabId: number };
 };
 
-export function useDocument({ path, visible, onDirtyChange }: Options) {
+export function useDocument({ path, visible, onDirtyChange, buffer }: Options) {
   const [doc, setDoc] = useState<DocumentState>({ status: "loading" });
   const [dirty, setDirty] = useState(false);
   const [conflict, setConflict] = useState<SaveConflict | null>(null);
@@ -65,6 +74,7 @@ export function useDocument({ path, visible, onDirtyChange }: Options) {
 
   const autoSave = usePreferencesStore((s) => s.editorAutoSave);
   const autoSaveDelay = usePreferencesStore((s) => s.editorAutoSaveDelay);
+  const recoveryEnabled = usePreferencesStore((s) => s.editorRecoveryDrafts);
 
   // Track the saved buffer so we can detect changes cheaply.
   const savedRef = useRef<string>("");
@@ -142,6 +152,20 @@ export function useDocument({ path, visible, onDirtyChange }: Options) {
   });
   const io = ioRef.current;
 
+  /**
+   * Durable unsaved-text recovery for this buffer. Identity comes from the
+   * Space and tab, never from the path, so two Spaces on one file keep separate
+   * drafts. The view is mirrored into a ref for the stable callbacks below.
+   */
+  const recovery = useRecovery({
+    spaceId: buffer?.spaceId ?? "",
+    tabId: buffer?.tabId ?? -1,
+    path,
+    enabled: recoveryEnabled && buffer !== undefined,
+  });
+  const recoveryRef = useRef(recovery);
+  recoveryRef.current = recovery;
+
   /** Adopts what a successful write left on disk. */
   const adoptSaved = useCallback(
     (result: Extract<SaveResult, { status: "saved" }>): boolean => {
@@ -150,6 +174,9 @@ export function useDocument({ path, visible, onDirtyChange }: Options) {
       // buffer dirty and `save()` answers false for close guards.
       savedRef.current = result.writtenText;
       setDirty(bufferRef.current !== result.writtenText);
+      // Resolves only the revision that was written. Text typed while the save
+      // was in flight keeps its own recovery record.
+      recoveryRef.current.saved(result.writtenText);
       return result.complete;
     },
     [],
@@ -371,6 +398,9 @@ export function useDocument({ path, visible, onDirtyChange }: Options) {
       toast.error("Could not reload file", { description: result.message });
       return false;
     }
+    // An explicit discard resolves this buffer's draft; a late recovery write
+    // for the abandoned text is dropped rather than resurrected.
+    recoveryRef.current.discard();
     adoptRead({ kind: "text", ...result.disk });
     setConflictNow(null);
     return true;
@@ -386,7 +416,10 @@ export function useDocument({ path, visible, onDirtyChange }: Options) {
       });
       if (result.status === "saved") {
         // The buffer stays dirty against its own file: nothing was resolved
-        // about the original, only a copy was made.
+        // about the original, only a copy was made. The recovery record is
+        // retargeted to the new file only now that the write succeeded, so a
+        // failed Save As leaves the draft owned by the original.
+        recoveryRef.current.retarget(targetPath, result.revision);
         setConflictNow(null);
         toast.success("Saved a copy", { description: targetPath });
         return true;
@@ -404,11 +437,71 @@ export function useDocument({ path, visible, onDirtyChange }: Options) {
     [setConflictNow],
   );
 
+  /**
+   * What a recovered draft may become, given the current file. Read from the
+   * revision this buffer loaded, so "changed/replaced/missing/unreadable" is
+   * decided on the same identity a save would use.
+   */
+  const recoveryTarget = useCallback((): DiskTarget => {
+    if (doc.status === "error") return { status: "unreadable" };
+    const revision = diskRevisionRef.current;
+    if (revision === null) return { status: "missing" };
+    return { status: "present", revision };
+  }, [doc.status]);
+
+  /**
+   * Puts recovered draft text back into the *buffer* only: it becomes ordinary
+   * unsaved text, and nothing is written to the original file. Refused while
+   * the buffer has its own unsaved edits, which must not be clobbered.
+   */
+  const applyRecoveredText = useCallback((text: string): boolean => {
+    if (bufferRef.current !== savedRef.current) return false;
+    bufferRef.current = text;
+    setDirty(text !== savedRef.current);
+    setDoc({ status: "ready", content: text, size: text.length });
+    recoveryRef.current.edit(text, diskRevisionRef.current);
+    return true;
+  }, []);
+
+  /** Saves recovered draft text to a path the user chose (never the original). */
+  const saveDraftCopy = useCallback(
+    async (targetPath: string, text: string): Promise<boolean> => {
+      const result = await saveCopy(io, {
+        sourcePath: path,
+        targetPath,
+        text,
+      });
+      if (result.status === "saved") {
+        toast.success("Saved the recovered draft", { description: targetPath });
+        return true;
+      }
+      toast.error("Could not save the recovered draft", {
+        description: result.status === "failed" ? result.message : undefined,
+      });
+      return false;
+    },
+    [io, path],
+  );
+
+  const dismissDraft = useCallback(
+    (record: RecoveryRecord) => recoveryRef.current.dismissDraft(record),
+    [],
+  );
+
   const onChange = useCallback(
     (next: string) => {
       bufferRef.current = next;
       const isDirty = next !== savedRef.current;
       setDirty(isDirty);
+      if (isDirty) {
+        // Coalesced by the recovery scheduler: continuous typing persists
+        // within two seconds instead of waiting for idle.
+        recoveryRef.current.edit(next, diskRevisionRef.current);
+      } else {
+        // Typed back to the saved text: there is no unsaved text left to
+        // recover, so the draft this buffer produced is resolved by choice.
+        recoveryRef.current.discard();
+      }
 
       clearAutoSaveTimer();
 
@@ -439,5 +532,14 @@ export function useDocument({ path, visible, onDirtyChange }: Options) {
     reloadConflict,
     saveConflictCopy,
     dismissConflict,
+    recoveryEnabled,
+    recoveryStatus: recovery.status,
+    recoveryDrafts: recovery.drafts,
+    recoveryRetry: recovery.retry,
+    recoveryRestore: recovery.restore,
+    recoveryTarget,
+    applyRecoveredText,
+    saveDraftCopy,
+    dismissDraft,
   };
 }
