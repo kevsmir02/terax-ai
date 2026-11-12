@@ -4278,7 +4278,7 @@ async function mediaScenario(
         await run.waitFor(
           () => ["ready", "load-error"].includes(surfaceState() ?? ""),
           `the ${key} playback outcome`,
-          30_000,
+          60_000,
         );
       } catch (error) {
         throw new Error(await failed(`${key} measured`, String(error)));

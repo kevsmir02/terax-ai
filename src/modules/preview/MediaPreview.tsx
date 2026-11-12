@@ -63,6 +63,7 @@ export function MediaPreview({
   // Media elements cannot load the custom `asset:` scheme on WebKitGTK
   // (WebKit bug 146351): the same grant is served over a loopback URL that
   // applies the identical token, range and delivery bounds.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: urlAttempt forces a fresh resolve after Retry
   useEffect(() => {
     setMediaUrl(undefined);
     setSourceError(null);

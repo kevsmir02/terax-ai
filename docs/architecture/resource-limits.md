@@ -156,10 +156,11 @@ custom URI schemes (WebKit bug 146351; every container failed with
 `MEDIA_ERR_SRC_NOT_SUPPORTED` in the first measured run, while the same bytes
 played from a blob URL). `assets.rs` therefore serves the same tab-owned token
 at `http://127.0.0.1:<ephemeral-port>/media?token=…`, with one chunk (a tenth of
-the read ceiling) per range response, no whole-file allocation, the same
-revocation and a bounded connection count. The endpoint is loopback-only and
-grants no file the token did not already cover. Closing or replacing the tab
-unmounts the element and revokes the tab-owned grant.
+the read ceiling) per range response, a whole response bounded by the approved
+read ceiling (never an unbounded file), the same revocation and a bounded
+connection count. The endpoint is loopback-only and grants no file the token did
+not already cover. Closing or replacing the tab unmounts the element and revokes
+the tab-owned grant.
 
 Playback is bounded by **1 element per tab and 3 application-wide**
 (`mediaPlayback.ts`): starting a sibling pauses the other element in the tab,
@@ -198,9 +199,10 @@ blob URL: that is the WebKitGTK transport limitation, not a codec result. The
 table records what actually plays through the bounded loopback delivery on this
 host.
 
-This is **planned implementation, not validated support** for anything that
-needs a real WebKitGTK session: no measurement claims these ceilings are
-observed at runtime on the packaged application yet.
+These limits and the media rows above are validated by the real-app runs cited
+here on Fedora 44 WebKitGTK 2.54.2. Packaged builds, other distributions,
+codec packs and whole-application budgets remain release work: no measurement
+here claims the packaged application.
 
 `limits.test.ts` parses the Rust constants and rejects an editor-side copy of
 the override or syntax literal; `assetDelivery.test.ts` parses
