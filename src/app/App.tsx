@@ -76,7 +76,7 @@ import {
 import { normalizeSpaceRoot } from "@/modules/spaces/lib/sharedRoots";
 import { worktreeSpaceName } from "@/modules/worktrees/lib/createWorktree";
 import { worktreeBridge } from "@/modules/worktrees/worktreeBridge";
-import { type WorktreeRemovalTarget } from "@/modules/worktrees/WorktreeRemoveDialog";
+import type { WorktreeRemovalTarget } from "@/modules/worktrees/WorktreeRemoveDialog";
 import { worktreeRemovalBridge } from "@/modules/worktrees/worktreeRemovalBridge";
 import { StatusBar } from "@/modules/statusbar";
 import {
