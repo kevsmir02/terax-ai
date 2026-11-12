@@ -39,7 +39,9 @@ Scenarios (`--scenario`):
                  unacknowledged plans are refused, a confirmed discard still restores its file
   checkpoints    Linux manual-checkpoint seam: two same-named captures keep distinct identities,
                  limits/exclusions are disclosed, inspection lists captured paths, explicit cleanup
-                 removes only the named ref, and HEAD/the index/working files never move
+                 removes only the named ref, and HEAD/the index/working files never move; then the
+                 visible panel preflights, refuses an unacknowledged restore, restores captured
+                 content, recovers it from the safety ref and deletes one named ref
 
 Linux currently implements `workflow`, `spaces`, `quit`, `markdown`, `git`, `checkpoints`,
 `preview`, `images`, `resource`, `stress` and `startup` (WebKitGTK); the measured scenarios above stay

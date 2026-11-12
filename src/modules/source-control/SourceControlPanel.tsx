@@ -79,6 +79,7 @@ import {
   DestructiveGitPrompt,
   type DestructivePromptState,
 } from "./DestructiveGitPrompt";
+import { CheckpointPanel } from "./CheckpointPanel";
 import { registerDestructiveGitBridge } from "./destructiveGitBridge";
 import type { SourceControlSummary } from "./useSourceControl";
 import {
@@ -769,6 +770,11 @@ export const SourceControlPanel = memo(function SourceControlPanel({
             ) : null}
           </div>
           <div className="flex shrink-0 items-center gap-0.5">
+            <CheckpointPanel
+              worktree={scm.repo?.repoRoot ?? null}
+              destructive={destructive}
+              onMutated={() => void scm.refresh()}
+            />
             <IconActionButton
               label={fetchBusy ? "Fetching…" : "Fetch from remote"}
               disabled={!canFetch}

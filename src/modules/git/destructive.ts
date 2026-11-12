@@ -46,6 +46,10 @@ export type DestructiveAction =
       repoRoot: string;
       worktreeRoot: string;
       ref: string;
+      /** The paths the native preflight says restore will change. */
+      paths: readonly string[];
+      /** The native preview the confirmation was bound to. */
+      previewFingerprint: string;
       force?: boolean;
     }
   | {
@@ -320,6 +324,10 @@ export async function assessDestructiveAction(input: {
     for (const entry of action.entries) wanted.add(entry.path);
   } else if (action.kind === "revert") {
     for (const path of action.paths) wanted.add(path);
+  } else if (action.kind === "restore") {
+    // Only the paths the native preflight named are changed, even though a
+    // dirty buffer anywhere in the worktree is still a blocker.
+    for (const path of action.paths) wanted.add(path);
   } else {
     for (const file of changed) wanted.add(file.path);
   }
@@ -438,6 +446,7 @@ export async function assessDestructiveAction(input: {
     worktree.path,
     action.kind === "checkout" ? action.branch : "",
     action.kind === "restore" ? action.ref : "",
+    action.kind === "restore" ? action.previewFingerprint : "",
     force ? "force" : "",
     ...affected.map(
       (path) =>

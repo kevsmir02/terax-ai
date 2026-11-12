@@ -6,7 +6,7 @@ use tauri::{AppHandle, Manager};
 use crate::modules::git::branch::{self, BranchCreated, UpstreamInfo};
 use crate::modules::git::checkpoint::{
     self, CheckpointCreated, CheckpointInfo, CheckpointInspection, CheckpointList, CleanupReport,
-    ManualCheckpointCreated, RestoreReport,
+    ManualCheckpointCreated, ManualRestorePreview, ManualRestoreReport, RestoreReport,
 };
 use crate::modules::git::review::{
     self, ApplyHunksRequest, ApplyOutcome, GitDiffScope, GitDiffSummary, GitFileDiff,
@@ -268,6 +268,44 @@ pub async fn git_checkpoint_cleanup(
     let workspace = WorkspaceEnv::from_option(workspace);
     blocking(app, move |r| {
         checkpoint::cleanup(r, &worktree, &refs, &workspace).map_err(Into::into)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_checkpoint_manual_restore_preview(
+    worktree: String,
+    reference: String,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<ManualRestorePreview, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    blocking(app, move |r| {
+        checkpoint::restore_preview(r, &worktree, &reference, &workspace).map_err(Into::into)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_checkpoint_manual_restore(
+    worktree: String,
+    reference: String,
+    fingerprint: String,
+    force: Option<bool>,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<ManualRestoreReport, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    blocking(app, move |r| {
+        checkpoint::restore_manual(
+            r,
+            &worktree,
+            &reference,
+            Some(&fingerprint),
+            force.unwrap_or(false),
+            &workspace,
+        )
+        .map_err(Into::into)
     })
     .await
 }

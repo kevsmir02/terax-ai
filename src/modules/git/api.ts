@@ -25,6 +25,8 @@ import type {
   GitStatusSnapshot,
   GitWatchInfo,
   ManualCheckpointCreated,
+  ManualRestorePreview,
+  ManualRestoreReport,
   ProjectConfig,
   RestoreReport,
   TaskArchive,
@@ -341,6 +343,34 @@ export const git = {
     invoke<CheckpointCleanupReport>("git_checkpoint_cleanup", {
       worktree,
       refs,
+      workspace: currentWorkspaceEnv(),
+    }),
+  /**
+   * Read-only restore preflight: affected paths, staging/HEAD effects, ignored
+   * files left alone, and the fingerprint a restore is bound to.
+   */
+  checkpointRestorePreview: (worktree: string, ref: string) =>
+    invoke<ManualRestorePreview>("git_checkpoint_manual_restore_preview", {
+      worktree,
+      reference: ref,
+      workspace: currentWorkspaceEnv(),
+    }),
+  /**
+   * Restores captured content after that preview. A required safety capture is
+   * published first; a stale fingerprint, staged affected paths, a failed
+   * capture or a failed ref publication changes nothing.
+   */
+  checkpointRestoreManual: (
+    worktree: string,
+    ref: string,
+    fingerprint: string,
+    force = false,
+  ) =>
+    invoke<ManualRestoreReport>("git_checkpoint_manual_restore", {
+      worktree,
+      reference: ref,
+      fingerprint,
+      force,
       workspace: currentWorkspaceEnv(),
     }),
 
