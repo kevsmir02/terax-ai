@@ -43,6 +43,7 @@ export type BenchScenario = {
     | "input"
     | "workflow"
     | "preview"
+    | "images"
     | "resource"
     | "stress"
     | "startup";
@@ -95,6 +96,19 @@ export type BenchScenario = {
   file?: string;
   /** workflow: the file's distinctive first line, asserted in the rendered editor. */
   fileText?: string;
+  /** images: fixture paths the scenario opens and asserts through the image surface. */
+  images?: {
+    png: string;
+    jpeg: string;
+    gif: string;
+    webp: string;
+    bmp: string;
+    ico: string;
+    avif: string;
+    svg: string;
+    corrupt: string;
+    oversized: string;
+  };
   /** resource/stress: directory used as the second Space's root and the preview fixture root. */
   workspace?: string;
   /** resource/stress: absolute paths of the text files opened as editor tabs. */

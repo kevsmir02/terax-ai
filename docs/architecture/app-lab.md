@@ -47,6 +47,11 @@ python3 scripts/app-lab/run.py --scenario workflow --profile debug \
 python3 scripts/app-lab/run.py --scenario preview --profile debug \
     --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-preview
 
+# the image seam (real decode per format, oversized/corrupt refusal, hidden-tab and
+# close-cycle release of decoded viewers and grants)
+python3 scripts/app-lab/run.py --scenario images --profile debug \
+    --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-images
+
 # prove both refusals without running a scenario (preflight + the binary's isolation guard)
 python3 scripts/app-lab/run.py --scenario workflow --self-test
 ```
@@ -170,6 +175,17 @@ report with its verification. `--pdf-hold-ms N` keeps `text.pdf` on screen for `
 after its sample so the named manual reader checks in `docs/architecture/pdf-reader.md` can be run
 against the real window; the reader functions themselves are not automated (WebKitGTK offers no
 input or screenshot seam, and the viewer's document is cross-origin).
+
+**The images** (`imagesScenario`): committed containers from
+`src-tauri/tests/fixtures/images/` are copied into the run's workspace and opened through the
+app's own file-tab planner. The driver asserts the rendered element's
+`naturalWidth`/`naturalHeight` for every format claimed as supported (it does not infer support
+from the extension), the oversized refusal before an element exists (a valid 5000×5000 IHDR with
+no pixel data), the corrupt notice, the hidden tab dropping the raster and releasing its
+decoded-viewer slot, and three open/close cycles leaving zero decoded viewers and zero tab-owned
+grant scopes. An explicitly opened SVG is asserted to stay an editable text tab. The result
+(`images.pass`, `steps`, `formats`) rides the same final `done` sync; the runner exits 2 when a
+step fails.
 
 **Focus is advisory on Linux.** Wayland lets the compositor decide focus (`set_focus` is a hint)
 and WebKitGTK exposes no occlusion state, so `qualify()` does not fail the workflow or preview

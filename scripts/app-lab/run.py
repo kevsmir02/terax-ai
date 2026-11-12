@@ -25,6 +25,9 @@ Scenarios (`--scenario`):
                  sandbox, no native access, hidden-tab/Space/window teardown and reload) and PDF
                  documents (served content type and byte ranges, the frame as a separate document,
                  open/close stability, memory) — pass/fail in page.log
+  images         Linux image seam: representative formats decode in the real WebKitGTK, oversized
+                 and corrupt inputs are refused honestly, hidden tabs release, close cycles do not
+                 retain decoded viewers or grants
 
 Linux currently implements `workflow`, `preview`, `resource`, `stress` and `startup`
 (WebKitGTK); the measured scenarios above stay
@@ -82,7 +85,7 @@ SYSTEM = platform.system()
 # measured scenarios (tabs, resize, split-drag, occlusion, agents-steady, idle, fs-churn, input)
 # stay unavailable here: WebKitGTK has no occlusion signal, no layer-tree mirror and no native
 # input hook (ticket 32).
-LINUX_SCENARIOS = ("workflow", "preview", "resource", "stress", "startup")
+LINUX_SCENARIOS = ("workflow", "preview", "images", "resource", "stress", "startup")
 SCENARIOS = list(dict.fromkeys([*app_report.SCENARIOS, *LINUX_SCENARIOS]))
 IDENTIFIER = linux_profile.disposable_identifier("app-lab", "stable")
 PRODUCT_NAME = "Terax App Lab"
@@ -608,6 +611,8 @@ def host_timeout(args, scenario: dict) -> float:
         # The web-preview teardown/reload cycle plus the PDF document checks (open, sample,
         # close, memory) each take a rendered sample.
         return 720
+    if name == "images":
+        return 600
     if name == "startup":
         return max(1, args.startup_repeats) * 150 + 120
     if name in ("resource", "stress"):
@@ -883,6 +888,44 @@ def run(args, app: Path, source: Path, output: Path) -> int:
     return 0
 
 
+def prepare_image_fixtures(workspace: Path, source: Path) -> dict:
+    """Copy the committed image fixtures the `images` scenario opens.
+
+    The files are real containers (generated once, not synthesized per run), so
+    the scenario measures this webview's decoders rather than this script's idea
+    of an image. `oversized.png` carries a valid 5000x5000 IHDR and no pixel
+    data: the probe must refuse it from the header before any decode.
+    """
+    origin = source / "src-tauri/tests/fixtures/images"
+    if not origin.is_dir():
+        origin = REPO / "src-tauri/tests/fixtures/images"
+    names = {
+        "png": "sample.png",
+        "jpeg": "sample.jpg",
+        "gif": "sample.gif",
+        "webp": "sample.webp",
+        "bmp": "sample.bmp",
+        "ico": "sample.ico",
+        "avif": "sample.avif",
+        "svg": "sample.svg",
+        "corrupt": "corrupt.png",
+        "oversized": "oversized.png",
+    }
+    workspace.mkdir(parents=True, exist_ok=True)
+    copied = {}
+    for key, name in names.items():
+        destination = workspace / name
+        shutil.copyfile(origin / name, destination)
+        copied[key] = str(destination)
+    (workspace / "images-README.md").write_text(
+        "# Image fixtures\n\n"
+        "Committed containers copied by `scripts/app-lab/run.py` for the `images` scenario.\n"
+        "`sample.*` are 64x64; `oversized.png` declares 5000x5000 (95.4 MiB RGBA8) and has no\n"
+        "pixel data; `corrupt.png` has a PNG signature but no usable header.\n"
+    )
+    return copied
+
+
 def scenario_json_linux(
     args,
     file: Path | None,
@@ -890,6 +933,7 @@ def scenario_json_linux(
     workspace: Path,
     fixtures: dict | None,
     pdf: dict | None = None,
+    images: dict | None = None,
 ) -> dict:
     """The scenario as the driver receives it (Linux; no synthetic agent)."""
     local: dict[str, str | None] = {}
@@ -932,6 +976,8 @@ def scenario_json_linux(
         }
         if args.pdf_hold_ms > 0:
             scenario["pdf"]["holdMs"] = args.pdf_hold_ms
+    if args.scenario == "images" and images:
+        scenario.update({"images": images})
     if args.scenario in ("resource", "stress") and fixtures:
         node = shutil.which("node")
         if not node:
@@ -1013,6 +1059,10 @@ LIMITATIONS_LINUX = [
     "webkit-pdfjs-viewer://), which the app page cannot script or even read, and WebKitGTK "
     "exposes no screenshot/input seam. Those checks are named manual checks in "
     "docs/architecture/pdf-reader.md, not automated passes.",
+    "Image format support is measured only on this host's WebKitGTK build and only for the "
+    "committed fixtures; a different distro/WebKit version needs its own run.",
+    "The images scenario observes the rendered element and the decoded-viewer table; it does not "
+    "measure the webview's private decoded-bitmap memory.",
     "Audio and video codecs are not exercised: the only media fixture is a 64x64 PNG decoded by "
     "the HTML preview.",
     "GPU/VRAM use is not per-process attributable on Linux: /proc exposes no per-process GPU "
@@ -1305,6 +1355,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     fixture_server = None
     fixtures = None
     pdf = None
+    image_fixtures = None
     file = None
     first_line = ""
     if args.scenario in ("resource", "stress"):
@@ -1314,6 +1365,8 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         fixtures["workload"] = describe_workload(args, fixtures)
     elif args.scenario == "preview":
         pdf = prepare_pdf_fixtures(workspace)
+    elif args.scenario == "images":
+        image_fixtures = prepare_image_fixtures(workspace, source)
     else:
         token = uuid.uuid4().hex[:10]
         first_line = f"workflow-file {token}"
@@ -1321,7 +1374,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         file.write_text(f"{first_line}\nsecond line for the editor\n")
     report_path = (args.report or output / "report.json").resolve()
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    scenario = scenario_json_linux(args, file, first_line, workspace, fixtures, pdf)
+    scenario = scenario_json_linux(args, file, first_line, workspace, fixtures, pdf, image_fixtures)
     timeout = host_timeout(args, scenario)
     load_average = [round(value, 2) for value in os.getloadavg()]
 
@@ -1373,8 +1426,12 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         "series": [],
         "startup": [],
         "workload": fixtures["workload"] if fixtures else (
-            "Linux preview acceptance (web-frame teardown/reload plus PDF fixtures)"
-            if pdf else "Linux acceptance workflow only (no resource workload)"
+            "Linux image acceptance scenario (representative formats, oversized/corrupt refusal, "
+            "hidden-tab release, open/close cycles)"
+            if args.scenario == "images"
+            else "Linux preview acceptance (web-frame teardown/reload plus PDF fixtures)"
+            if pdf
+            else "Linux acceptance workflow only (no resource workload)"
         ),
         "limitations": list(LIMITATIONS_LINUX),
     }
@@ -1403,6 +1460,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     poller.start()
     failed: BaseException | None = None
     workflow: dict = {}
+    images: dict = {}
     started = time.monotonic()
 
     def take_sample(phase: str, event: dict, elapsed: float) -> dict:
@@ -1442,6 +1500,8 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                 if phase == "done":
                     manifest["samples"].append({"phase": "done", "tMonoNs": time.monotonic_ns(), "event": app_report.slim_event(event)})
                     workflow = event.get("workflow") or {}
+                    if event.get("images") is not None:
+                        images = event["images"]
                     if event.get("preview") is not None:
                         # Scenario-specific evidence that is not a pass/fail step: how many
                         # frame instances were loaded, whether the blur was exercised, and what
@@ -1501,6 +1561,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         if server.log:
             (output / "page.log").write_text("\n".join(server.log))
         manifest["workflow"] = workflow
+        manifest["images"] = images
         # The fixture server is the independent process previews are served by; these counters
         # show it kept answering across every frame teardown.
         manifest["previewServer"] = {
@@ -1562,6 +1623,8 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                 break
         if workflow:
             manifest["qualification"]["workflowPass"] = bool(workflow.get("pass"))
+        if images:
+            manifest["qualification"]["imagesPass"] = bool(images.get("pass"))
         completed = [sample for sample in manifest["samples"] if "memory" in sample]
         if completed:
             try:
@@ -1583,6 +1646,14 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         for step in steps:
             if not step.get("ok"):
                 print(f"  FAIL {step.get('name')}: {step.get('detail')}")
+    if args.scenario == "images":
+        steps = images.get("steps") or []
+        passed = sum(1 for step in steps if step.get("ok"))
+        print(f"images {'PASS' if images.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
+        if not images.get("pass"):
+            for step in steps:
+                if not step.get("ok"):
+                    print(f"  failed: {step.get('name')}: {step.get('detail')}")
     isolation = manifest["isolation"]
     print(
         f"coexistence {'PASS' if isolation['upstreamStateUnchanged'] else 'FAIL'}: "
@@ -1599,6 +1670,9 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     print(f"\nSaved {report_path}")
     if args.scenario in ("workflow", "preview") and not workflow.get("pass"):
         print(f"Run failed: the {args.scenario} scenario reported a failing step (see page.log).", file=sys.stderr)
+        return 2
+    if args.scenario == "images" and not images.get("pass"):
+        print("Run failed: the images scenario reported a failing step (see page.log).", file=sys.stderr)
         return 2
     if not isolation["upstreamStateUnchanged"]:
         print(

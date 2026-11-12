@@ -7,7 +7,7 @@
   <p>
     <img src="https://img.shields.io/github/v/release/crynta/terax-ai?label=version&color=blue" alt="버전" />
     <img src="https://img.shields.io/github/downloads/crynta/terax-ai/total?label=downloads&color=blue" alt="다운로드" />
-    <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="플랫폼" />
+    <img src="https://img.shields.io/badge/platform-Linux%20x86_64-lightgrey" alt="플랫폼" />
     <a href="https://discord.gg/tyveTUyEp7"><img src="https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
     <a href="https://www.youtube.com/@crynta"><img src="https://img.shields.io/badge/Youtube-FF0000?logo=youtube&logoColor=white" alt="YouTube" /></a>
   </p>
@@ -90,18 +90,20 @@ Terax는 Tauri 2 + Rust와 React 19로 만든 가볍고 오픈 소스이며 터�
 
 ## 설치
 
-최신 설치 프로그램은 [Releases](https://github.com/crynta/terax-ai/releases/latest) 페이지에 있습니다. Terax는 이 페이지에서 자동 업데이트됩니다.
+> **Platform support (authoritative, English):** this fork builds and distributes Linux x86-64
+> only, as an RPM and a DEB. macOS, Windows/WSL and Nix build and distribution support was
+> removed, and no other architecture is produced. See the
+> [English README](../../README.md#platform-support).
 
-### Windows 참고 사항
+Install the RPM (`sudo dnf install ./terax-workspace-*.x86_64.rpm`) or the DEB (`sudo apt
+install ./terax-workspace_*_amd64.deb`) from the
+[Releases](https://github.com/crynta/terax-ai/releases/latest) page with your package manager.
+Fedora 44 KDE Plasma on Wayland is the primary validation target; Debian 13 still needs an
+actual graphical WebKitGTK session, and package install/upgrade validation is ticket #43.
+`packaging/arch/PKGBUILD` carries an Arch recipe that is authored but **not built**, so it is
+not a validated Arch claim. The application never downloads, installs or restarts itself.
 
-- 기본 셸 감지: `pwsh.exe`(PowerShell 7+) -> `powershell.exe`(Windows PowerShell 5.1) -> `cmd.exe`.
-- WSL은 래핑된 하위 프로세스가 아니라 완전한 워크스페이스 환경입니다.
-
-### Linux 참고 사항
-
-- **Arch / AUR:** `yay -S terax-bin` 또는 `paru`. 최신 릴리스를 추적합니다.
-- **NixOS / Nix:** 공식 flake를 사용하세요. NixOS 외부에서는 `nix profile install github:crynta/terax-ai`를 실행합니다. NixOS에서는 flake를 가져오고 `inputs.terax.packages.${pkgs.system}.terax`를 `environment.systemPackages`에 추가합니다. 더 간단한 설정에는 `nixosModules.terax`도 있습니다.
-- **AppImage:** FUSE가 필요합니다. 없다면 `./Terax_*.AppImage --appimage-extract-and-run`을 실행하세요. Wayland 렌더링 문제가 있으면 `WEBKIT_DISABLE_DMABUF_RENDERER=1`을 시도하세요. `.deb` / `.rpm` 패키지는 시스템 GTK 스택을 사용해 보통 더 부드럽습니다.
+On Wayland with rendering glitches, try `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
 
 ## AI 설정
 
@@ -142,14 +144,6 @@ Tauri 2, Rust, `portable-pty`, React 19, TypeScript, Vite, xterm.js, CodeMirror 
 ## 기여
 
 Issue와 PR을 환영합니다. 문제를 보고하고 기능을 제안하거나 Pull Request를 제출하세요. 자세한 내용은 [CONTRIBUTING.md](../../CONTRIBUTING.md)와 [아키텍처 문서](../README.md)를 참조하세요.
-
-## 코드 서명
-
-<a href="https://signpath.org"><img src="https://avatars.githubusercontent.com/u/34448643?s=200&v=4" width="80" alt="SignPath" align="left" /></a>
-
-Windows 빌드는 [SignPath.io](https://signpath.io)가 제공하고 [SignPath Foundation](https://signpath.org)이 발급한 무료 코드 서명 인증서로 서명됩니다.
-
-<br clear="left" />
 
 ## 라이선스
 

@@ -7,6 +7,7 @@ pub mod clipboard;
 pub mod copy;
 pub mod file;
 pub mod grep;
+pub mod image_probe;
 pub mod index;
 #[cfg(windows)]
 mod local_file;
