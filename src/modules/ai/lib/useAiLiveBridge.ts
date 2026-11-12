@@ -1,5 +1,4 @@
 import { type RefObject, useEffect, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { useManagedAgentsStore } from "@/modules/agents/store/managedAgentsStore";
 import {
   findLeafCwd,
@@ -128,11 +127,8 @@ export function useAiLiveBridge(params: Params) {
         useManagedAgentsStore
           .getState()
           .register({ leafId, tabId, sessionId, task: oneLine, cwd });
-        const hooksReady = invoke("agent_enable_hooks", { agent: "claude" }).catch(
-          () => {},
-        );
         void (async () => {
-          await Promise.all([whenSessionReady(leafId), hooksReady]);
+          await whenSessionReady(leafId);
           if (!writeToSession(leafId, "claude\r")) {
             useManagedAgentsStore.getState().remove(leafId);
             return;
