@@ -1119,14 +1119,16 @@ def build_startup_entry(kind: str, launch: int, event: dict, spawned_wall_s: flo
 # ---------------------------------------------------------------------------------------------
 
 LIMITATIONS_LINUX = [
-    "PDF: the fixtures are generated and verified by scripts/app-lab/pdf_fixtures.py, and the "
-    "phase exercises the app's own delivery gate, the bytes the asset server served (recorded "
-    "natively), the document boundary and the tab lifecycle. The reader functions (navigation, "
-    "zoom, search, text selection inside the page) cannot be driven from this harness: WebKitGTK "
-    "hands the PDF to its own separate document (the built-in PDF.js viewer at "
-    "webkit-pdfjs-viewer://), which the app page cannot script or even read, and WebKitGTK "
-    "exposes no screenshot/input seam. Those checks are named manual checks in "
-    "docs/architecture/pdf-reader.md, not automated passes.",
+    "PDF: the fixtures are generated and verified by scripts/app-lab/pdf_fixtures.py. Since issue "
+    "#31 the reader is the app's own DOM, so the phase drives and asserts navigation, zoom (with "
+    "the 32 MiB per-page refusal and its suggested zoom), search, selectable text, the raster "
+    "cache's byte counts, the corrupt state, the whole-file gate, hidden-tab unloading and "
+    "tab-close grant release. It still cannot inject native input: physical keys, a real drag and "
+    "the OS clipboard round-trip, the visual crispness of a re-render, a network capture, a "
+    "password/unsupported-feature fixture and the 4-viewer admission refusal remain named manual "
+    "checks in docs/architecture/pdf-reader.md. Display renders need animation frames, which this "
+    "host suspends for an occluded window; the reader's print-intent fallback and "
+    "`data-pdf-render-fallback` report which path painted a page.",
     "Image format support is measured only on this host's WebKitGTK build and only for the "
     "committed fixtures; a different distro/WebKit version needs its own run.",
     "The images scenario observes the rendered element and the decoded-viewer table; it does not "
