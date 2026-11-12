@@ -123,13 +123,44 @@ export function removalBlockers(
 }
 
 /**
+ * What `force` may override, per native blocker.
+ *
+ * `docs/architecture/worktrees.md` is the spec: force is offered only for the
+ * on-disk Git blockers and never for a lock or a retained recovery point. The
+ * dialog's "force anyway" choice and [`canForceRemoval`] both read this one
+ * map, so a new blocker cannot become forceable by being added to a second
+ * list.
+ */
+export const forcePolicy: Record<
+  WorktreeRemoveBlocker,
+  "overridable" | "refused"
+> = {
+  dirty: "overridable",
+  unmerged: "overridable",
+  ignored: "overridable",
+  inconclusive: "overridable",
+  locked: "refused",
+  recoveryRefs: "refused",
+};
+
+/**
  * Whether `force` is a meaningful choice. It never overrides a lock or a
  * retained recovery point; only explicit cleanup removes the latter.
  */
 export function canForceRemoval(report: WorktreeRemoveReport): boolean {
-  return (
-    !report.blockers.includes("locked") &&
-    !report.blockers.includes("recoveryRefs")
+  return report.blockers.every(
+    (blocker) => forcePolicy[blocker] === "overridable",
+  );
+}
+
+/**
+ * Whether the report names something force *could* override. The dialog asks
+ * for the acknowledgement only then, even when a lock or a recovery point
+ * already refuses the removal.
+ */
+export function hasForceableBlocker(report: WorktreeRemoveReport): boolean {
+  return report.blockers.some(
+    (blocker) => forcePolicy[blocker] === "overridable",
   );
 }
 

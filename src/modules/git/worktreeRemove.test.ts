@@ -8,8 +8,7 @@
  * worktree's own repository and path.
  */
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readRepoFile, rustEnum, rustStructFields } from "@/test/rustSource";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn() }));
@@ -23,30 +22,10 @@ import { git } from "./api";
 import type { WorktreeRemoveBlocker, WorktreeRemoveReport } from "./types";
 
 const workspace = { kind: "local" };
-const root = join(import.meta.dirname, "../../..");
-const read = (path: string) => readFileSync(join(root, path), "utf8");
 
-const worktreeRust = read("src-tauri/src/modules/git/worktree.rs");
-const checkpointRust = read("src-tauri/src/modules/git/checkpoint.rs");
-const libRust = read("src-tauri/src/lib.rs");
-
-function rustEnum(source: string, name: string): string[] {
-  const block = new RegExp(
-    `#\\[serde\\(([^)]*)\\)\\]\\s*pub enum ${name} \\{([\\s\\S]*?)\\n\\}`,
-  ).exec(source);
-  if (!block) throw new Error(`enum ${name} not found in the Rust source`);
-  return [...block[2].matchAll(/^\s{4}([A-Z][A-Za-z]*),/gm)].map(
-    (match) => match[1],
-  );
-}
-
-function rustStructFields(source: string, name: string): string[] {
-  const block = new RegExp(`pub struct ${name} \\{([\\s\\S]*?)\\n\\}`).exec(
-    source,
-  );
-  if (!block) throw new Error(`struct ${name} not found in the Rust source`);
-  return [...block[1].matchAll(/^\s{4}pub (\w+):/gm)].map((match) => match[1]);
-}
+const worktreeRust = readRepoFile("src-tauri/src/modules/git/worktree.rs");
+const checkpointRust = readRepoFile("src-tauri/src/modules/git/checkpoint.rs");
+const libRust = readRepoFile("src-tauri/src/lib.rs");
 
 describe("worktree removal api", () => {
   beforeEach(() => {
@@ -95,7 +74,9 @@ describe("worktree removal api", () => {
 
 describe("worktree removal contract", () => {
   it("keeps every native blocker in step with the TS union", () => {
-    const variants = rustEnum(worktreeRust, "RemoveBlocker");
+    const variants = rustEnum(worktreeRust, "RemoveBlocker", {
+      requireRenameAll: true,
+    }).variants;
     expect(variants).toEqual([
       "Locked",
       "Dirty",
@@ -184,12 +165,12 @@ describe("worktree removal contract", () => {
   it("removal is not reachable from Space deletion", () => {
     // The Space-delete transaction removes organization and nothing else; the
     // removal dialog is only opened from the repository menu.
-    const guards = read("src/app/hooks/spaceDeleteGuards.ts");
+    const guards = readRepoFile("src/app/hooks/spaceDeleteGuards.ts");
     expect(guards).not.toContain("worktree_remove");
     expect(guards).not.toContain("worktreeRemove");
     expect(guards).not.toContain("git worktree remove");
 
-    const app = read("src/app/App.tsx");
+    const app = readRepoFile("src/app/App.tsx");
     const start = app.indexOf("const commitDeleteSpace");
     const end = app.indexOf("const prepareDiscard", start);
     expect(start).toBeGreaterThan(-1);

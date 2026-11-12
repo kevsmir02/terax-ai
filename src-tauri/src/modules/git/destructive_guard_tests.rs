@@ -110,13 +110,35 @@ fn force_does_not_remove_a_locked_worktree_or_touch_its_files() {
     );
 
     let before_status = worktree_status(path);
+    let before_index = worktree_index(path);
     let before_readme = std::fs::read_to_string(path.join("README.md")).unwrap();
 
-    let report =
-        worktree::remove(&repo.registry, &repo.path(), &worktree.path, true, &repo.ws).unwrap();
+    // The guard refuses a locked worktree itself. If it did not, this call would
+    // run `git worktree remove --force`, which fails on a locked tree and comes
+    // back as a git error instead of a report — so an `Ok` here proves the
+    // refusal is the guard's, not git's.
+    let report = worktree::remove(&repo.registry, &repo.path(), &worktree.path, true, &repo.ws)
+        .expect("a locked worktree is refused with a report, not a git error");
 
     assert!(!report.removed);
     assert!(report.blockers.contains(&RemoveBlocker::Locked));
+    assert_eq!(report.lock_reason.as_deref(), Some("held by a test"));
+    assert_eq!(report.recovery.total, 0);
+    assert_eq!(worktree_status(path), before_status);
+    assert_eq!(worktree_index(path), before_index);
+    assert_eq!(
+        std::fs::read_to_string(path.join("README.md")).unwrap(),
+        before_readme
+    );
+    assert!(path.is_dir());
+
+    // The archive path forces removal after it captures a snapshot; force is
+    // still not an argument a lock answers to.
+    let archived =
+        worktree::remove_for_archive(&repo.registry, &repo.path(), &worktree.path, true, &repo.ws)
+            .expect("a locked worktree is refused with a report on the archive path too");
+    assert!(!archived.removed);
+    assert!(archived.blockers.contains(&RemoveBlocker::Locked));
     assert_eq!(worktree_status(path), before_status);
     assert_eq!(
         std::fs::read_to_string(path.join("README.md")).unwrap(),

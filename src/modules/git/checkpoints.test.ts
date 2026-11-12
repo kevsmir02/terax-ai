@@ -1,5 +1,8 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  camelFieldName,
+  readRepoFile,
+  rustStructFields,
+} from "@/test/rustSource";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn() }));
@@ -10,11 +13,9 @@ vi.mock("@/modules/workspace", () => ({
 }));
 
 import { git } from "./api";
-import type { RecoveryKind } from "./types";
+import type { CheckpointStorage, RecoveryKind } from "./types";
 
 const workspace = { kind: "local" };
-const root = join(import.meta.dirname, "../../..");
-const read = (path: string) => readFileSync(join(root, path), "utf8");
 
 describe("manual checkpoint api", () => {
   beforeEach(() => {
@@ -100,7 +101,7 @@ describe("manual checkpoint api", () => {
 
 describe("cross-language checkpoint contracts", () => {
   it("keeps the Rust recovery kinds and the TS union in step", () => {
-    const source = read("src-tauri/src/modules/git/checkpoint.rs");
+    const source = readRepoFile("src-tauri/src/modules/git/checkpoint.rs");
     const body =
       /pub enum RecoveryKind \{([\s\S]*?)\n\}/.exec(source)?.[1] ?? "";
     const variants = [...body.matchAll(/^\s{4}([A-Z][A-Za-z]*),/gm)]
@@ -111,8 +112,8 @@ describe("cross-language checkpoint contracts", () => {
   });
 
   it("registers every checkpoint command the client invokes", () => {
-    const api = read("src/modules/git/api.ts");
-    const lib = read("src-tauri/src/lib.rs");
+    const api = readRepoFile("src/modules/git/api.ts");
+    const lib = readRepoFile("src-tauri/src/lib.rs");
     const commands = new Set(
       [...api.matchAll(/"(git_checkpoint_[a-z_]+)"/g)].map((match) => match[1]),
     );
@@ -123,8 +124,33 @@ describe("cross-language checkpoint contracts", () => {
   });
 
   it("reports storage as shared context, never as reclaimed bytes", () => {
-    const types = read("src/modules/git/types.ts");
-    expect(types).toContain("sharedObjects");
-    expect(types).not.toMatch(/reclaimedBytes|freedBytes|reclaimedKib/);
+    // Parsed from the producer, the way the worktree-removal contract does it:
+    // a positive field list fails on *any* new field, including one a scan for
+    // "reclaimed"/"freed" names would miss (`storageSaved`, `reclaimable`).
+    // Deleting a ref removes reachability, not a measurable number of bytes,
+    // until Git itself prunes unreachable objects — and the app never runs
+    // garbage collection.
+    const fields = rustStructFields(
+      readRepoFile("src-tauri/src/modules/git/checkpoint.rs"),
+      "StoragePressure",
+    );
+    expect(fields).toEqual([
+      "loose_objects",
+      "loose_kib",
+      "packed_objects",
+      "packed_kib",
+      "owned_refs",
+      "shared_objects",
+    ]);
+    const storage: CheckpointStorage = {
+      looseObjects: 0,
+      looseKib: 0,
+      packedObjects: 0,
+      packedKib: 0,
+      ownedRefs: 0,
+      sharedObjects: true,
+    };
+    // Both directions: a native field without a TS peer (or the reverse) fails.
+    expect(Object.keys(storage)).toEqual(fields.map(camelFieldName));
   });
 });

@@ -28,6 +28,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   affectedSpaces,
   canForceRemoval,
+  hasForceableBlocker,
   recoveryRefsToDelete,
   removalBlockers,
   removalRefusal,
@@ -66,17 +67,6 @@ function toggle(list: number[], id: number, checked: boolean): number[] {
   return checked ? [...list, id] : list.filter((value) => value !== id);
 }
 
-function forceableBlockers(report: WorktreeRemoveReport | null): boolean {
-  if (!report) return false;
-  return report.blockers.some(
-    (blocker) =>
-      blocker === "dirty" ||
-      blocker === "unmerged" ||
-      blocker === "ignored" ||
-      blocker === "inconclusive",
-  );
-}
-
 /**
  * The dialog's markup as a pure function of its state, so the render can be
  * asserted without a DOM and the real-app lab drives the stateful wrapper.
@@ -106,7 +96,7 @@ export function WorktreeRemoveBody({
     ? missingAcknowledgements(plan, acknowledged)
     : { unsavedBuffers: [], activeWork: [] };
   const needsForce =
-    forceable && forceableBlockers(report) && !acknowledged.force;
+    forceable && hasForceableBlocker(report) && !acknowledged.force;
   const canConfirm =
     !busy &&
     !cleanupBusy &&
@@ -306,7 +296,7 @@ export function WorktreeRemoveBody({
         </p>
       ) : null}
 
-      {forceable && forceableBlockers(report) ? (
+      {forceable && report !== null && hasForceableBlocker(report) ? (
         <label className="flex items-start gap-2 text-[11.5px]">
           <input
             type="checkbox"
@@ -662,7 +652,8 @@ export function WorktreeRemoveDialog({
             !(now.report?.blockers.includes("locked") ?? false) &&
             !(
               forceable &&
-              forceableBlockers(now.report) &&
+              now.report !== null &&
+              hasForceableBlocker(now.report) &&
               !now.acknowledged.force
             ) &&
             missing.unsavedBuffers.length === 0 &&
