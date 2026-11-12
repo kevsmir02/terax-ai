@@ -144,7 +144,9 @@ ownership.
   link, a hostile document that executes nothing, the syntax ceiling, grant
   revocation on close and a read that lands after its document closed. Steps and
   counters are in the report's `markdown` / `markdownServer` blocks; the
-  scenario is documented in `docs/architecture/app-lab.md`.
+  scenario is documented in `docs/architecture/app-lab.md`. That run is a
+  bench-build observation in a disposable profile on this host, not a
+  packaged-install validation.
 - `src/modules/markdown/ownership.test.ts` - the retained renderer never imports
   the AI feature, every consumer of an old entry point is accounted for, the
   markdown tab kind stays behind its dynamic import, and Streamdown is still

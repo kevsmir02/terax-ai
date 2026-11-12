@@ -44,7 +44,10 @@ secret path is never offered and a symlink that leaves the boundary is still
 refused natively. Remote images are not fetched on render: the transform drops
 their `src` until a deliberate "Load remote images" action. Document links never
 navigate the application webview; only a clicked external target reaches the
-native opener.
+native opener. `tauri.conf.json`'s `img-src` has to allow `https:` for a consented
+remote image to render at all, so CSP is not the consent boundary: the renderer's
+policy is, and the counted `--scenario markdown` fixture is what proves the page
+makes zero remote requests before the person chooses.
 
 The fourth tier, automatic agent reads (`fs::access::authorize_read` plus the `fs::ai` reader commands), was removed with the built-in AI stack (ticket #14). Nothing now reads a file on the user's behalf: an external agent reads files in its own process, and the application reads only what the user opened or the preview policy explicitly serves.
 
