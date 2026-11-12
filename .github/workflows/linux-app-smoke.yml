@@ -1,0 +1,152 @@
+name: Linux app smoke
+
+# The real Linux (WebKitGTK) application in a disposable profile: `scripts/app-lab` builds the
+# bench app (`--features bench`, `TERAX_BENCH=1`), launches it on a virtual X display and asserts
+# the workflow seam from `src/bench/driver.ts` (shell spawn, exact echo, second tab, split,
+# switch back with scrollback intact, file open + rendered editor text). See
+# `docs/architecture/app-lab.md`.
+#
+# This is evidence, not a required check. A hosted runner has never been observed green for this
+# workflow, so it runs nightly, on demand, and on pull requests that carry the `linux-smoke`
+# label - never as a blocking PR gate. Bounded, not flaky-blocking: a 45-minute job timeout, a
+# 20-minute workflow step, one attempt per run, and the runner's own launch retries
+# (`MAX_ATTEMPTS = 3` in `scripts/app-lab/run.py`) are the whole retry story. When it fails, the
+# report, page log and app log are uploaded for diagnosis.
+#
+# It cannot touch a production profile: the runner gets a per-run identifier inside
+# `app.crynta.terax.app-lab-*`, a private `HOME` and private `XDG_*` tree under the output
+# directory, and both the preflight and the bench binary's own guard refuse anything else
+# (`scripts/linux_profile.py`, `--self-test`). The two invariant steps below prove the refusals
+# before and after the build.
+on:
+  workflow_dispatch:
+  schedule:
+    # Nightly, off the top of the hour (queues are least contended then).
+    - cron: "17 5 * * *"
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-app-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workflow:
+    name: app-lab workflow (isolated profile)
+    # A PR without the label costs nothing: the job is skipped before a runner is provisioned.
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'linux-smoke')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      # No GPU on a hosted runner: WebKitGTK's DMA-BUF path needs one, and LLVMpipe is enough to
+      # render the shell. X11 only, because the display is Xvfb.
+      WEBKIT_DISABLE_DMABUF_RENDERER: "1"
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      GDK_BACKEND: x11
+      NO_AT_BRIDGE: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Linux build and virtual-display dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            xvfb \
+            openbox \
+            dbus-daemon
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install Rust 1.99.1 (rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          # The app-lab builds into the shared target dir so this cache covers it.
+          workspaces: ./src-tauri -> target
+          key: app-lab-smoke
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Disposable-profile invariants (no build, no launch)
+        run: python3 -m unittest discover -s scripts/tests -v
+
+      - name: Prepare the virtual desktop
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/xdg-runtime"
+          chmod 700 "$RUNNER_TEMP/xdg-runtime"
+          cat >"$RUNNER_TEMP/with-display.sh" <<'SH'
+          #!/usr/bin/env bash
+          # One virtual display and a window manager, then the command the step asked for.
+          set -euo pipefail
+          openbox --sm-disable >"${RUNNER_TEMP}/openbox.log" 2>&1 &
+          exec "$@"
+          SH
+          chmod +x "$RUNNER_TEMP/with-display.sh"
+
+      - name: Build the bench app (debug, no bundle)
+        run: |
+          python3 scripts/app-lab/run.py --scenario workflow --profile debug --build-only \
+            --identifier app.crynta.terax.app-lab-ci \
+            --target-dir src-tauri/target \
+            --output "$RUNNER_TEMP/app-lab"
+
+      - name: Prove the isolation refusals
+        env:
+          XDG_RUNTIME_DIR: ${{ runner.temp }}/xdg-runtime
+        run: |
+          xvfb-run -a --server-args="-screen 0 1600x1000x24 -nolisten tcp" \
+            dbus-run-session -- "$RUNNER_TEMP/with-display.sh" \
+            python3 scripts/app-lab/run.py --scenario workflow --profile debug --self-test \
+              --reuse-build \
+              --identifier app.crynta.terax.app-lab-ci \
+              --target-dir src-tauri/target \
+              --output "$RUNNER_TEMP/app-lab"
+
+      - name: Workflow smoke
+        timeout-minutes: 20
+        env:
+          XDG_RUNTIME_DIR: ${{ runner.temp }}/xdg-runtime
+        run: |
+          xvfb-run -a --server-args="-screen 0 1600x1000x24 -nolisten tcp" \
+            dbus-run-session -- "$RUNNER_TEMP/with-display.sh" \
+            python3 scripts/app-lab/run.py --scenario workflow --profile debug \
+              --reuse-build \
+              --identifier app.crynta.terax.app-lab-ci \
+              --target-dir src-tauri/target \
+              --output "$RUNNER_TEMP/app-lab" \
+              --label "linux-app-smoke ${{ github.sha }}"
+
+      - name: Upload the report and logs
+        # Always, not just on failure: a passing run is the evidence the seam works.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-app-smoke
+          path: |
+            ${{ runner.temp }}/app-lab/report.json
+            ${{ runner.temp }}/app-lab/page.log
+            ${{ runner.temp }}/app-lab/app.log
+            ${{ runner.temp }}/app-lab/build.log
+            ${{ runner.temp }}/openbox.log
+          if-no-files-found: warn
+          retention-days: 14

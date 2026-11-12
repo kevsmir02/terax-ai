@@ -22,7 +22,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
@@ -47,6 +47,9 @@ jobs:
       - name: Build frontend
         run: pnpm build
 
+      - name: Startup dependency graph
+        run: pnpm check:dist
+
       - name: Size budget
         run: pnpm size
 
@@ -68,7 +71,7 @@ jobs:
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Terminal models, input, blocks, transport, and renderer lifecycle
@@ -106,9 +109,11 @@ jobs:
             librsvg2-dev \
             libssl-dev
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust 1.99.1 (rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@master
         with:
-          components: clippy
+          toolchain: "1.99.1"
+          components: clippy,rustfmt
 
       - uses: swatinem/rust-cache@v2
         with:
@@ -122,9 +127,22 @@ jobs:
         working-directory: src-tauri
         run: cargo check --all-targets --locked
 
+      - name: Locked dependency graph
+        working-directory: src-tauri
+        run: |
+          cargo metadata --locked --format-version 1 > /dev/null
+          git diff --exit-code -- Cargo.lock
+
       - name: cargo clippy
         working-directory: src-tauri
         run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: cargo fmt (advisory)
+        # The tree is not rustfmt-clean yet (905 diff lines at the time of writing), so this
+        # reports drift without blocking. Reformatting the tree is its own change.
+        working-directory: src-tauri
+        run: cargo fmt --all --check
+        continue-on-error: true
 
       - name: Unused crates (advisory)
         working-directory: src-tauri
@@ -162,7 +180,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libssl-dev
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust 1.99.1 (rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
 
       - uses: swatinem/rust-cache@v2
         with:
@@ -197,8 +218,10 @@ jobs:
             librsvg2-dev \
             libssl-dev
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust 1.99.1 (rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.99.1"
           components: llvm-tools-preview
 
       - uses: swatinem/rust-cache@v2
@@ -220,3 +243,17 @@ jobs:
           name: lcov-report
           path: src-tauri/lcov.info
           if-no-files-found: error
+
+  repo-guards:
+    # Proves the repository's own contracts that no compiler checks: exact toolchain pins,
+    # --frozen-lockfile/--locked on every install and build, no auto-merge or release publishing
+    # from ordinary CI, and the disposable-profile refusals of the real-app runners.
+    name: repo-guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Toolchain, lockfile and Linux runner invariants
+        run: python3 -m unittest discover -s scripts/tests -v
