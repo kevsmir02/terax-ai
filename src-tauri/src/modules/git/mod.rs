@@ -4,6 +4,8 @@ pub mod commands;
 pub mod commands_review;
 pub mod diff;
 #[cfg(test)]
+mod destructive_guard_tests;
+#[cfg(test)]
 mod edge_tests;
 pub mod errors;
 #[cfg(test)]
