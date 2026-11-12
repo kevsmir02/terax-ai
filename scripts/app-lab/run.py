@@ -66,6 +66,7 @@ sys.path.insert(0, str(REPO / "scripts/renderer-profile"))
 import app_report  # noqa: E402
 import linux_profile  # noqa: E402
 import linux_proc  # noqa: E402
+import isolation_report  # noqa: E402
 import linux_report  # noqa: E402
 import namespace_sentinels  # noqa: E402
 import procstats  # noqa: E402
@@ -1038,6 +1039,25 @@ class FixtureServer:
         self.httpd.server_close()
 
 
+def harness_revision() -> dict:
+    """The revision of the runner itself, so an `--app` run says which harness measured it."""
+    root = HERE.parent.parent
+    try:
+        revision = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10
+        )
+        dirty = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain", "--", "scripts/app-lab", "scripts/linux_profile.py", "scripts/namespace_sentinels.py"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {"revision": "", "dirty": None}
+    return {
+        "revision": revision.stdout.strip() if revision.returncode == 0 else "",
+        "dirty": bool(dirty.stdout.strip()) if dirty.returncode == 0 else None,
+    }
+
+
 def toolchains() -> dict:
     """The compilers/runtimes a report was built with (recorded, never asserted)."""
     def version(*command: str) -> str:
@@ -1167,24 +1187,13 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                 for key in ("agents", "streams", "streamSeconds", "cycles", "closeCycles", "hiddenMs", "visibleMs", "window", "files")
             },
             "buildSeconds": build_seconds, "window": args.window,
-            "pollIntervalS": args.poll_interval,
+            "pollIntervalS": args.poll_interval, "harness": harness_revision(),
         },
         "sourceRevision": revision.stdout.strip() if has_git else args.revision,
         "sourceTree": str(source),
         "platform": platform.platform(),
         "environment": {**linux_profile.host_stack(), "toolchains": toolchains()},
-        "isolation": {
-            "identifier": args.identifier,
-            "home": str(home),
-            "profile": linux_profile.profile_env(home),
-            "session": linux_profile.session_env(env),
-            "benchIsolated": env.get("TERAX_BENCH_ISOLATED"),
-            "upstreamSentinels": {
-                "upstreamIdentifier": sentinels["upstreamIdentifier"],
-                "files": len(sentinels["files"]),
-                "trees": sorted(sentinels["trees"]),
-            },
-        },
+        "isolation": isolation_report.block(args.identifier, env, home, sentinels, output),
         "appBinarySha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
         "qualification": {"qualified": True, "failures": [], "advisories": []},
         "warnings": [],
@@ -1240,6 +1249,11 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                 continue
             phase = event.get("phase")
             try:
+                if "appIdentifier" not in manifest and isinstance(event.get("identifier"), str):
+                    manifest["appIdentifier"] = event["identifier"]
+                    manifest["appIdentifierInForkNamespace"] = event["identifier"].startswith(
+                        f"{linux_profile.PRODUCT_IDENTIFIER}."
+                    )
                 if phase == "error":
                     raise RuntimeError(event)
                 if phase == "done":
@@ -1291,33 +1305,13 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         manifest["workflow"] = workflow
         # Coexistence evidence: the hashes of the upstream installation's files, taken before
         # the launch, must still match now that the application has run and exited.
-        unchanged = namespace_sentinels.verify(home, sentinels)
-        fork_state = namespace_sentinels.fork_state(home)
-        upstream_cache = home / ".cache" / linux_profile.UPSTREAM_NAMESPACE
-        descriptor = Path(fork_state["controlDescriptor"])
-        if descriptor.is_file():
-            published = json.loads(descriptor.read_text())
-            fork_state["descriptorPid"] = published.get("pid")
-            fork_state["descriptorIsInsideProfile"] = descriptor.is_relative_to(home)
-        isolation = manifest["isolation"]
-        isolation["upstreamStateUnchanged"] = not unchanged
-        isolation["upstreamStateChanges"] = unchanged
-        isolation["upstreamCacheDirUntouched"] = (upstream_cache / "control.json").is_file()
-        isolation["fork"] = fork_state
-        isolation["forkRuntimeDirIsNotUpstream"] = descriptor.parent != upstream_cache
-        own_data = [
-            entry
-            for entry in fork_state["dataDirEntries"]
-            if entry != linux_profile.UPSTREAM_IDENTIFIER
-        ]
-        isolation["forkAppDataDirs"] = own_data
-        isolation["forkDataDirIsIdentifierKeyed"] = bool(own_data) and all(
-            entry.startswith(f"{linux_profile.PRODUCT_IDENTIFIER}.") for entry in own_data
-        )
-        isolation["forkDataDirIsNotUpstream"] = all(
-            not entry.startswith(linux_profile.UPSTREAM_IDENTIFIER) for entry in own_data
-        )
-        isolation["controlDescriptorPublished"] = fork_state["controlDescriptorExists"]
+        if manifest.get("appIdentifierInForkNamespace") is False:
+            manifest["qualification"]["advisories"].append(
+                f"the measured binary was compiled with the identifier "
+                f"{manifest.get('appIdentifier')!r}, which is outside the fork identifier namespace; "
+                f"the profile is still private, but this revision predates the fork identity table"
+            )
+        unchanged = isolation_report.finish(manifest["isolation"], home, sentinels)
         if unchanged:
             manifest["qualification"]["qualified"] = False
             manifest["qualification"]["failures"].append(
@@ -1370,6 +1364,9 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                 manifest["humanSummary"] = linux_report.summarize(manifest)
             except Exception as error:  # a report without metrics is still evidence
                 manifest["metricsError"] = repr(error)
+        reasons = isolation_report.problems(manifest, output)
+        if reasons:
+            raise RuntimeError("refusing to write a report without isolation evidence: " + "; ".join(reasons))
         report_path.write_text(app_report.dump(manifest))
         linux_profile.cleanup(home, output)
     if failed is not None:
@@ -1434,7 +1431,7 @@ def run_linux_startup(args, binary: Path, source: Path, output: Path) -> int:
         "config": {
             "scenario": "startup", "label": args.label, "profile": args.profile, "window": args.window,
             "scenarioVariant": {"repeats": repeats, "window": args.window},
-            "pollIntervalS": args.poll_interval,
+            "pollIntervalS": args.poll_interval, "harness": harness_revision(),
         },
         "sourceRevision": revision.stdout.strip() if has_git else args.revision,
         "sourceTree": str(source),
@@ -1454,6 +1451,11 @@ def run_linux_startup(args, binary: Path, source: Path, output: Path) -> int:
     env = {**{key: value for key, value in os.environ.items() if not key.startswith(("TAURI_", "VITE_", "CARGO_"))}}
     env.update(linux_profile.profile_env(home))
     env.update(linux_profile.session_env())
+    # The startup report carries the same isolation evidence as the measured scenarios: the
+    # profile the preflight accepts and, after every launch, the upstream sentinels unchanged.
+    manifest["isolation"] = isolation_report.block(
+        args.identifier, {**env, "TERAX_BENCH_ISOLATED": "1"}, home, sentinels, output
+    )
     scenario = scenario_json_linux(args, None, None, workspace, None)
     try:
         for launch in range(1, repeats + 1):
@@ -1485,6 +1487,11 @@ def run_linux_startup(args, binary: Path, source: Path, output: Path) -> int:
                         continue
                     phase = event.get("phase")
                     try:
+                        if "appIdentifier" not in manifest and isinstance(event.get("identifier"), str):
+                            manifest["appIdentifier"] = event["identifier"]
+                            manifest["appIdentifierInForkNamespace"] = event["identifier"].startswith(
+                                f"{linux_profile.PRODUCT_IDENTIFIER}."
+                            )
                         if phase == "booted":
                             booted = build_startup_entry(kind, launch, event, spawned_wall)
                             found = linux_proc.sample(process.pid)
@@ -1528,6 +1535,18 @@ def run_linux_startup(args, binary: Path, source: Path, output: Path) -> int:
             if booted is None:
                 raise RuntimeError(f"launch {launch} reported no boot milestone")
             print(json.dumps({key: booted.get(key) for key in ("launch", "kind", "exec_to_boot_ms", "nav_to_boot_ms", "first_paint_ms")}), flush=True)
+        if manifest.get("appIdentifierInForkNamespace") is False:
+            manifest["qualification"]["advisories"].append(
+                f"the measured binary was compiled with the identifier "
+                f"{manifest.get('appIdentifier')!r}, which is outside the fork identifier namespace; "
+                f"the profile is still private, but this revision predates the fork identity table"
+            )
+        unchanged = isolation_report.finish(manifest["isolation"], home, sentinels)
+        if unchanged:
+            manifest["qualification"]["qualified"] = False
+            manifest["qualification"]["failures"].append(
+                {"phase": "coexistence", "reasons": unchanged}
+            )
         manifest["environment"]["loadAverageEnd"] = [round(value, 2) for value in os.getloadavg()]
         manifest["linux"] = {
             "sampler": "procfs",
@@ -1542,17 +1561,39 @@ def run_linux_startup(args, binary: Path, source: Path, output: Path) -> int:
     except BaseException as error:
         manifest["incomplete"] = True
         manifest["error"] = repr(error)
+        isolation_report.finish(manifest["isolation"], home, sentinels)
+        reasons = isolation_report.problems(manifest, output)
+        if reasons:
+            raise RuntimeError(
+                "refusing to write an incomplete report without isolation evidence: "
+                + "; ".join(reasons)
+            ) from error
         report_path.write_text(app_report.dump(manifest))
         linux_profile.cleanup(home, output)
         raise
+    reasons = isolation_report.problems(manifest, output)
+    if reasons:
+        raise RuntimeError("refusing to write a report without isolation evidence: " + "; ".join(reasons))
     report_path.write_text(app_report.dump(manifest))
     linux_profile.cleanup(home, output)
+    print(
+        f"\ncoexistence {'PASS' if manifest['isolation']['upstreamStateUnchanged'] else 'FAIL'}: "
+        f"{manifest['isolation']['upstreamSentinels']['files']} upstream files unchanged; "
+        f"descriptor {'published' if manifest['isolation']['controlDescriptorPublished'] else 'MISSING'}"
+    )
     print("\n" + manifest["humanSummary"])
     if args.compare:
         print("\n" + linux_report.compare(
             [app_report.load(path) for path in args.compare], [manifest], args.compare_format
         ))
     print(f"\nSaved {report_path}")
+    if not manifest["isolation"]["upstreamStateUnchanged"]:
+        print(
+            "Run failed: the run changed upstream state: "
+            + "; ".join(manifest["isolation"]["upstreamStateChanges"]),
+            file=sys.stderr,
+        )
+        return 3
     return 0
 
 

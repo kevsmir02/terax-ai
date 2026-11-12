@@ -94,6 +94,15 @@ After the app exits, every file and every upstream directory tree is re-hashed. 
 (`isolation.fork`): the descriptor it published, its data directory and its shell-integration
 directory. A changed, deleted or newly created upstream file fails the run (exit 3).
 
+`scripts/app-lab/isolation_report.py` builds that block for **every** Linux report — including the
+cold/warm `startup` scenario — from the environment the preflight actually accepted (it re-runs
+`linux_profile.problems()` and refuses to record a block otherwise), and validates it before the
+report is written. A startup report without the private-HOME/XDG record, the disposable identifier
+or the upstream-sentinel result cannot exist; `scripts/tests/test_isolation_report.py` asserts the
+rejection an empty/defaulted block would otherwise slip through. `config.harness.revision` records
+which harness produced a report, which matters when `--app` measures a binary built from another
+tree.
+
 **The workflow** (in `src/bench/driver.ts`): a real login shell spawns in the first tab; a written
 marker is echoed back and asserted to appear exactly once; a second terminal tab opens; the first
 tab's active pane splits and the new leaf gets a live session; the app switches away and back with
