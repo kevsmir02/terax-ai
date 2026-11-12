@@ -81,7 +81,7 @@ SYSTEM = platform.system()
 # measured scenarios (tabs, resize, split-drag, occlusion, agents-steady, idle, fs-churn, input)
 # stay unavailable here: WebKitGTK has no occlusion signal, no layer-tree mirror and no native
 # input hook (ticket 32).
-LINUX_SCENARIOS = ("workflow", "preview", "images", "resource", "stress", "startup")
+LINUX_SCENARIOS = ("workflow", "spaces", "preview", "images", "resource", "stress", "startup")
 SCENARIOS = list(dict.fromkeys([*app_report.SCENARIOS, *LINUX_SCENARIOS]))
 IDENTIFIER = linux_profile.disposable_identifier("app-lab", "stable")
 PRODUCT_NAME = "Terax App Lab"
@@ -945,8 +945,10 @@ def scenario_json_linux(
         "cwds": {"shell": str(workspace)},
         "localStorage": local,
     }
-    if args.scenario == "workflow":
+    if args.scenario in ("workflow", "spaces"):
         scenario.update({"file": str(file), "fileText": first_line})
+    if args.scenario == "spaces":
+        scenario.update({"workspace": str(workspace)})
     if args.scenario == "images" and images:
         scenario.update({"images": images})
     if args.scenario in ("resource", "stress") and fixtures:
@@ -1309,6 +1311,10 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         first_line = f"workflow-file {token}"
         file = output / "workflow-file.txt"
         file.write_text(f"{first_line}\nsecond line for the editor\n")
+        if args.scenario == "spaces":
+            workspace.joinpath("spaces-keep.txt").write_text(
+                "This file belongs to the project and must survive Space deletion.\n"
+            )
     report_path = (args.report or output / "report.json").resolve()
     report_path.parent.mkdir(parents=True, exist_ok=True)
     scenario = scenario_json_linux(args, file, first_line, workspace, fixtures, image_fixtures)
@@ -1491,6 +1497,19 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         if server.log:
             (output / "page.log").write_text("\n".join(server.log))
         manifest["workflow"] = workflow
+        if args.scenario == "spaces":
+            keep = workspace / "spaces-keep.txt"
+            manifest["spaceDeletion"] = {
+                "projectDir": str(workspace),
+                "projectDirExists": workspace.is_dir(),
+                "keepFileExists": keep.is_file(),
+            }
+            if not (workspace.is_dir() and keep.is_file()):
+                manifest["qualification"]["qualified"] = False
+                manifest["qualification"]["failures"].append({
+                    "phase": "spaces-delete",
+                    "reasons": ["Space deletion changed the project directory"],
+                })
         manifest["images"] = images
         # The fixture server is the independent process previews are served by; these counters
         # show it kept answering across every frame teardown.
@@ -1569,10 +1588,10 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         linux_profile.cleanup(home, output)
     if failed is not None:
         raise failed
-    if args.scenario == "workflow":
+    if args.scenario in ("workflow", "spaces"):
         steps = workflow.get("steps") or []
         passed = sum(1 for step in steps if step.get("ok"))
-        print(f"workflow {'PASS' if workflow.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
+        print(f"{args.scenario} {'PASS' if workflow.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
     if args.scenario == "images":
         steps = images.get("steps") or []
         passed = sum(1 for step in steps if step.get("ok"))
@@ -1595,8 +1614,11 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             [app_report.load(path) for path in args.compare], [manifest], args.compare_format
         ))
     print(f"\nSaved {report_path}")
-    if args.scenario == "workflow" and not workflow.get("pass"):
-        print("Run failed: the workflow reported a failing step (see page.log).", file=sys.stderr)
+    if args.scenario in ("workflow", "spaces") and not workflow.get("pass"):
+        print(
+            f"Run failed: the {args.scenario} scenario reported a failing step (see page.log).",
+            file=sys.stderr,
+        )
         return 2
     if args.scenario == "images" and not images.get("pass"):
         print("Run failed: the images scenario reported a failing step (see page.log).", file=sys.stderr)

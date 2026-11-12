@@ -57,3 +57,30 @@ describe("planSpaceRemoval", () => {
     expect(plan?.disposeLeafIds).toEqual([10, 20]);
   });
 });
+
+describe("repeated close attempts", () => {
+  it("is idempotent once the Space's tabs are gone", () => {
+    const tabs = [term(1, "a"), term(2, "a"), term(3, "b")];
+    const first = planSpaceRemoval(
+      tabs,
+      1,
+      "a",
+      "b",
+      undefined,
+      counterFrom(100),
+    );
+    expect(first?.disposeLeafIds).toEqual([10, 20]);
+
+    const second = planSpaceRemoval(
+      first?.tabs ?? tabs,
+      first?.activeId ?? 1,
+      "a",
+      "b",
+      undefined,
+      counterFrom(200),
+    );
+
+    expect(second).toBeNull();
+    expect(first?.tabs.map((tab) => tab.id)).toEqual([3]);
+  });
+});

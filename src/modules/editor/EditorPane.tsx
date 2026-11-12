@@ -79,8 +79,14 @@ export type EditorPaneHandle = {
   /** Apply CodeMirror's undo/redo commands. */
   undo: () => void;
   redo: () => void;
-  /** Persist the buffer (format-on-save + write), same as Mod+S / :w. */
-  save: () => Promise<void>;
+  /** Insert text at the current selection (the app-lab uses the real editing path). */
+  insertText: (text: string) => void;
+  /** Persist the buffer (format-on-save + write). True only when complete: no newer edits, conflict or failure. */
+  save: () => Promise<boolean>;
+  /** True while the buffer has text newer than its last persisted baseline. */
+  isDirty: () => boolean;
+  /** Explicitly resolves this buffer's recovery draft (an announced discard). */
+  discardRecovery: () => void;
   /** Open CodeMirror's completion popup. */
   triggerCodeComplete: () => void;
 };
@@ -130,6 +136,7 @@ export const EditorPane = memo(
       dirty,
       onChange,
       save,
+      isDirty,
       reload,
       adoptDiskText,
       openAnyway,
@@ -149,6 +156,7 @@ export const EditorPane = memo(
       applyRecoveredText,
       saveDraftCopy,
       dismissDraft,
+      discardRecovery,
     } = useDocument({
       path,
       visible,
@@ -188,6 +196,8 @@ export const EditorPane = memo(
     // whole state, wiping the language compartment.
     const saveRef = useRef(save);
     saveRef.current = save;
+    const isDirtyRef = useRef(isDirty);
+    isDirtyRef.current = isDirty;
     const onSavedRef = useRef(onSaved);
     onSavedRef.current = onSaved;
     const onCloseRef = useRef(onClose);
@@ -201,7 +211,7 @@ export const EditorPane = memo(
       // must not be clobbered by the disk read-back.
       const docAtSave = view?.state.doc;
       const saved = await saveRef.current();
-      if (!saved) return;
+      if (!saved) return false;
       // A null formatter means no formatter is configured: save unformatted.
       if (prefs.editorFormatOnSave && formatter) {
         // The formatter rewrites the file itself, so it must start from the
@@ -244,6 +254,7 @@ export const EditorPane = memo(
         }
       }
       onSavedRef.current?.();
+      return !isDirtyRef.current();
     }, []);
     const performSaveRef = useRef(performSave);
     performSaveRef.current = performSave;
@@ -489,7 +500,15 @@ export const EditorPane = memo(
           const view = cmRef.current?.view;
           if (view) redo(view);
         },
+        insertText: (text: string) => {
+          const view = cmRef.current?.view;
+          if (!view) return;
+          view.dispatch(view.state.replaceSelection(text));
+          view.focus();
+        },
         save: () => performSaveRef.current(),
+        isDirty: () => isDirtyRef.current(),
+        discardRecovery,
         triggerCodeComplete: () => {
           const view = cmRef.current?.view;
           if (!view) return;

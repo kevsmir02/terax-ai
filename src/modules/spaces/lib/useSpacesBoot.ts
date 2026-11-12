@@ -5,8 +5,8 @@ import { DEFAULT_SPACE_ID } from "@/modules/tabs/lib/useTabs";
 import { isLeaf, type PaneNode } from "@/modules/terminal/lib/panes";
 import { parseWorkspaceScopeKey, type WorkspaceEnv } from "@/modules/workspace";
 import { useEffect, useRef } from "react";
-import { activeSpaceEnv, freshTabCwd } from "./activeSpace";
-import { freshTerminalTab, hydrateTabs } from "./serialize";
+import { activeSpaceEnv } from "./activeSpace";
+import { planSpaceRestore } from "./restore";
 import { loadAll, type SpaceMeta, saveActiveId, saveSpacesList } from "./store";
 import { useSpaces } from "./useSpaces";
 
@@ -78,13 +78,6 @@ export function useSpacesBoot({
           return;
         }
 
-        const restored: Tab[] = [];
-        for (const space of spaces) {
-          const st = states.get(space.id);
-          if (!st) continue;
-          restored.push(...hydrateTabs(st.tabs, space.id, allocId));
-        }
-
         const active =
           activeId && spaces.some((s) => s.id === activeId)
             ? activeId
@@ -96,25 +89,26 @@ export function useSpacesBoot({
         const env = activeSpaceEnv(spaces, active);
         const restoredHome = await adoptWorkspaceEnv(env);
 
-        // Active space must never be empty, else its tab list shows nothing.
-        if (!restored.some((t) => t.spaceId === active)) {
-          const cwd = freshTabCwd(env, restoredHome, launchCwd, home);
-          restored.push(freshTerminalTab(active, cwd, allocId));
-        }
+        const plan = planSpaceRestore({
+          spaces,
+          states,
+          activeId: active,
+          env,
+          restoredHome,
+          launchCwd,
+          home,
+          allocId,
+        });
+        if (!plan) return;
 
         await Promise.allSettled(
-          uniqueCwds(restored).map((cwd) => native.workspaceAuthorize(cwd)),
+          uniqueCwds(plan.tabs).map((cwd) => native.workspaceAuthorize(cwd)),
         );
 
-        const initialActiveIndex: Record<string, number> = {};
-        for (const [id, st] of states)
-          initialActiveIndex[id] = st.activeTabIndex;
-        useSpaces.getState().hydrate(spaces, active, initialActiveIndex);
-
-        const inActive = restored.filter((t) => t.spaceId === active);
-        const idx = states.get(active)?.activeTabIndex ?? 0;
-        const activeTab = inActive[idx] ?? inActive[0] ?? restored[0];
-        replaceTabs(restored, activeTab.id);
+        useSpaces
+          .getState()
+          .hydrate(spaces, plan.activeSpaceId, plan.initialActiveIndex);
+        replaceTabs(plan.tabs, plan.activeTabId);
       } catch (e) {
         console.error("[terax] spaces boot failed:", e);
       } finally {
