@@ -22,10 +22,12 @@ function render(overrides: Partial<Parameters<typeof AssetPreview>[0]> = {}) {
 }
 
 describe("AssetPreview delivery gate", () => {
-  it("loads a small image through the bounded image surface", () => {
+  it("routes a small image into the bounded image surface", () => {
     const html = render();
-    expect(html).toContain("<img");
-    expect(html).toContain("token=t");
+    // Dimensions come from the native header probe first; the element mounts
+    // only after the budget and admission decide.
+    expect(html).toContain('data-image-state="probing"');
+    expect(html).not.toContain("<img");
     expect(html).not.toContain("Load anyway");
   });
 
