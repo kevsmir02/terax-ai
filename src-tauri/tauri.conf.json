@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Terax",
   "version": "0.9.0",
-  "identifier": "app.crynta.terax",
+  "identifier": "dev.terax-workspace.fork",
   "build": {
     "beforeDevCommand": "pnpm build:cli:dev && pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -94,7 +94,7 @@
     },
     "category": "DeveloperTool",
     "shortDescription": "AI-native terminal emulator",
-    "longDescription": "Terax — an open-source AI-native terminal emulator with multi-tab, file explorer, code editor, web preview, voice input, and AI agents.",
+    "longDescription": "Terax — an open-source AI-native terminal emulator with multi-tab, file explorer, code editor, web preview, and AI agents.",
     "fileAssociations": [
       {
         "name": "Terax Document",

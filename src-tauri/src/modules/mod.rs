@@ -10,6 +10,7 @@ pub mod control;
 pub mod fs;
 pub mod git;
 pub mod history;
+pub mod identity;
 pub mod ipc_body;
 pub mod net;
 pub mod proc;

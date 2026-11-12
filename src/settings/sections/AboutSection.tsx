@@ -2,7 +2,7 @@ import { Button } from "@/components/ui/button";
 import { useUpdater } from "@/modules/updater";
 import { GithubIcon, Globe02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { getName, getVersion } from "@tauri-apps/api/app";
+import { getIdentifier, getName, getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { arch, platform } from "@tauri-apps/plugin-os";
 import { useEffect, useState } from "react";
@@ -23,6 +23,7 @@ const PLATFORM_LABEL: Record<string, string> = {
 export function AboutSection() {
   const [version, setVersion] = useState("");
   const [name, setName] = useState("Terax");
+  const [identifier, setIdentifier] = useState("");
   const [build, setBuild] = useState("");
   const { status, check, install } = useUpdater({ autoCheck: false });
   const checking = status.kind === "checking";
@@ -54,6 +55,9 @@ export function AboutSection() {
   useEffect(() => {
     void getVersion().then(setVersion);
     void getName().then(setName);
+    // The bundle id is the running application's identity, never a literal: a build
+    // under another identifier must not claim this one in its About pane.
+    void getIdentifier().then(setIdentifier);
     try {
       const p = platform();
       const a = arch();
@@ -90,7 +94,7 @@ export function AboutSection() {
         </dd>
 
         <dt className="text-muted-foreground">Bundle ID</dt>
-        <dd className="font-mono text-[11.5px]">app.crynta.terax</dd>
+        <dd className="font-mono text-[11.5px]">{identifier || "—"}</dd>
 
         <dt className="text-muted-foreground">License</dt>
         <dd>Apache 2.0</dd>

@@ -7,6 +7,7 @@ use crate::modules::git::branch;
 use crate::modules::git::checkpoint::{self, RestoreRefusal};
 use crate::modules::git::errors::GitError;
 use crate::modules::git::operations;
+use crate::modules::git::refs;
 use crate::modules::git::testutil::{authorized, git_in, scratch, TestRepo};
 use crate::modules::git::worktree::{self, RemoveBlocker, WorktreeAddRequest, WorktreeBranch};
 
@@ -529,13 +530,13 @@ fn creating_a_checkpoint_never_touches_the_index_head_branches_or_files() {
         .collect();
     assert!(leftovers.is_empty(), "temporary indexes are cleaned up");
 
-    assert_eq!(created.info.ref_name, "refs/terax/checkpoints/task-1/1");
+    assert_eq!(created.info.ref_name, refs::checkpoint_ref("task-1", 1));
     assert_eq!(created.info.parent.as_deref(), Some(head.trim()));
     assert!(created.consistent);
     assert!(created.warnings.is_empty(), "{:?}", created.warnings);
     assert!(!created.limits.atomic);
     assert_eq!(
-        repo.git(&["rev-parse", "refs/terax/checkpoints/task-1/1"])
+        repo.git(&["rev-parse", &refs::checkpoint_ref("task-1", 1)])
             .trim(),
         created.info.commit
     );
@@ -634,6 +635,8 @@ fn task_ids_and_refs_are_validated() {
         "HEAD",
         "refs/terax/checkpoints/x",
         "refs/terax/checkpoints/../1",
+        // An upstream checkpoint ref is not this fork's to restore or prune.
+        "refs/terax/checkpoints/task-1/1",
     ] {
         assert!(
             checkpoint::restore(&repo.registry, &repo.path(), bad, true, &repo.ws).is_err(),
@@ -735,7 +738,7 @@ fn restore_refuses_when_files_changed_since_the_latest_checkpoint_unless_forced(
     assert_eq!(dirty, vec!["a.txt", "user-note.txt"]);
     assert_eq!(
         refused.latest_ref.as_deref(),
-        Some("refs/terax/checkpoints/t/2")
+        Some(refs::checkpoint_ref("t", 2).as_str())
     );
     assert_eq!(
         repo.read("a.txt"),
