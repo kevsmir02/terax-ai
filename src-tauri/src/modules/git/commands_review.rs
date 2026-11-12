@@ -10,7 +10,8 @@ use crate::modules::git::review::{
 };
 use crate::modules::git::watch::{GitWatchInfo, GitWatchState};
 use crate::modules::git::worktree::{
-    self, PruneReport, WorktreeAddRequest, WorktreeAdded, WorktreeEntry, WorktreeRemoveReport,
+    self, PruneReport, WorktreeAddRequest, WorktreeAdded, WorktreeEntry, WorktreePreflight,
+    WorktreeRemoveReport,
 };
 use crate::modules::workspace::{WorkspaceEnv, WorkspaceRegistry};
 
@@ -105,6 +106,23 @@ pub async fn git_worktree_list(
     let workspace = WorkspaceEnv::from_option(workspace);
     blocking(app, move |r| {
         worktree::list(r, &repo_root, &workspace).map_err(Into::into)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_worktree_preflight(
+    repo_root: String,
+    request: WorktreeAddRequest,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<WorktreePreflight, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    let base = dirs::home_dir()
+        .map(|home| crate::modules::identity::home_state_dir(&home).join("worktrees"))
+        .ok_or_else(|| "could not resolve the home directory".to_string())?;
+    blocking(app, move |r| {
+        worktree::preflight(r, &repo_root, &request, &base, &workspace).map_err(Into::into)
     })
     .await
 }

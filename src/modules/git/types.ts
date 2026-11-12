@@ -291,6 +291,25 @@ export type WorktreeAdded = {
   includeTruncated: boolean;
 };
 
+/**
+ * What creating the worktree would run into, computed without creating it.
+ * `add` rechecks everything and stays authoritative.
+ */
+export type WorktreeProblemField = "path" | "branch" | "base" | "include";
+
+export type WorktreeProblem = {
+  field: WorktreeProblemField;
+  message: string;
+};
+
+export type WorktreePreflight = {
+  /** The location `add` would use; null when no safe path could be planned. */
+  path: string | null;
+  /** Set when the managed name was taken and got a `-2` suffix. */
+  collision: string | null;
+  problems: WorktreeProblem[];
+};
+
 type ChangedPath = { path: string; status: GitFileStatus };
 
 /**

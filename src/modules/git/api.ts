@@ -32,6 +32,7 @@ import type {
   WorktreeAdded,
   WorktreeAddRequest,
   WorktreeEntry,
+  WorktreePreflight,
   WorktreePruneReport,
   WorktreeRemoveReport,
 } from "./types";
@@ -251,6 +252,19 @@ export const git = {
   worktreeList: (repoRoot: string) =>
     invoke<WorktreeEntry[]>("git_worktree_list", {
       repoRoot,
+      workspace: currentWorkspaceEnv(),
+    }),
+  /** What `worktreeAdd` would refuse or collide with, without creating anything. */
+  worktreePreflight: (repoRoot: string, request: WorktreeAddRequest) =>
+    invoke<WorktreePreflight>("git_worktree_preflight", {
+      repoRoot,
+      request: {
+        ...request,
+        path: request.path ?? null,
+        taskSlug: request.taskSlug ?? null,
+        base: request.base ?? null,
+        include: request.include ?? [],
+      },
       workspace: currentWorkspaceEnv(),
     }),
   worktreeAdd: (repoRoot: string, request: WorktreeAddRequest) =>

@@ -30,9 +30,13 @@ Scenarios (`--scenario`):
   images         Linux image seam: representative formats decode in the real WebKitGTK, oversized
                  and corrupt inputs are refused honestly, hidden tabs release, close cycles do not
                  retain decoded viewers or grants
+  worktree       Linux worktree seam: the Source Control dialog creates a worktree with a new
+                 branch and an ignored file, checks derived access, opens it as its own Space, and
+                 refuses an unknown start point, a file target, a non-empty target and a branch
+                 checked out elsewhere
 
-Linux currently implements `workflow`, `spaces`, `markdown`, `preview`, `images`, `resource`,
-`stress` and `startup` (WebKitGTK); the measured scenarios above stay
+Linux currently implements `workflow`, `spaces`, `markdown`, `git`, `worktree`, `preview`,
+`images`, `resource`, `stress` and `startup` (WebKitGTK); the measured scenarios above stay
 macOS-only until ticket 02 (sampling) and ticket 32 (input/resize/layers). On Linux the app is
 built with `--no-bundle` into `<target>/<profile>/terax`.
 
@@ -87,7 +91,7 @@ SYSTEM = platform.system()
 # measured scenarios (tabs, resize, split-drag, occlusion, agents-steady, idle, fs-churn, input)
 # stay unavailable here: WebKitGTK has no occlusion signal, no layer-tree mirror and no native
 # input hook (ticket 32).
-LINUX_SCENARIOS = ("workflow", "spaces", "markdown", "git", "preview", "images", "resource", "stress", "startup")
+LINUX_SCENARIOS = ("workflow", "spaces", "markdown", "git", "worktree", "preview", "images", "resource", "stress", "startup")
 SCENARIOS = list(dict.fromkeys([*app_report.SCENARIOS, *LINUX_SCENARIOS]))
 IDENTIFIER = linux_profile.disposable_identifier("app-lab", "stable")
 PRODUCT_NAME = "Terax App Lab"
@@ -942,6 +946,57 @@ def prepare_git_fixture(workspace: Path) -> dict:
     }
 
 
+def prepare_worktree_fixture(workspace: Path) -> dict:
+    """A scratch repository plus the target paths each refusal uses.
+
+    Everything lives under the run's disposable output. The successful create
+    copies `.env` (ignored by the repository), the two refusal targets already
+    exist, and nothing here is a real project.
+    """
+    repo = workspace / "worktree-repo"
+    shutil.rmtree(repo, ignore_errors=True)
+    (repo / "src").mkdir(parents=True, exist_ok=True)
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Terax App Lab",
+        "GIT_AUTHOR_EMAIL": "app-lab@example.invalid",
+        "GIT_COMMITTER_NAME": "Terax App Lab",
+        "GIT_COMMITTER_EMAIL": "app-lab@example.invalid",
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
+    (repo / ".gitignore").write_text(".env\n")
+    (repo / "src/a.ts").write_text("export const a = 'base';\n")
+    (repo / ".env").write_text("LAB_SECRET=worktree\n")
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, env=env, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=repo, env=env, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "worktree fixture"], cwd=repo, env=env, check=True)
+
+    # The output directory can be reused across runs; every target starts clean.
+    create_path = workspace / "created-worktree"
+    shutil.rmtree(create_path, ignore_errors=True)
+    file_path = workspace / "existing-worktree-file"
+    if file_path.is_dir():
+        shutil.rmtree(file_path)
+    elif file_path.exists():
+        file_path.unlink()
+    file_path.write_text("not a directory\n")
+    dirty_path = workspace / "dirty-worktree-target"
+    shutil.rmtree(dirty_path, ignore_errors=True)
+    dirty_path.mkdir(parents=True, exist_ok=True)
+    dirty_file = dirty_path / "keep.txt"
+    dirty_file.write_text("keep me\n")
+    for leftover in workspace.glob("created-worktree-*"):
+        shutil.rmtree(leftover, ignore_errors=True)
+    return {
+        "repo": str(repo),
+        "createPath": str(create_path),
+        "ignoredFile": ".env",
+        "filePath": str(file_path),
+        "dirtyPath": str(dirty_path),
+        "dirtyFile": str(dirty_file),
+    }
+
+
 def prepare_image_fixtures(workspace: Path, source: Path) -> dict:
     """Copy the committed image fixtures the `images` scenario opens.
 
@@ -989,6 +1044,7 @@ def scenario_json_linux(
     pdf: dict | None = None,
     images: dict | None = None,
     git_fixture: dict | None = None,
+    worktree_fixture: dict | None = None,
 ) -> dict:
     """The scenario as the driver receives it (Linux; no synthetic agent)."""
     local: dict[str, str | None] = {}
@@ -1037,6 +1093,8 @@ def scenario_json_linux(
         scenario.update({"images": images})
     if args.scenario == "git" and git_fixture:
         scenario.update({"git": git_fixture})
+    if args.scenario == "worktree" and worktree_fixture:
+        scenario.update({"worktree": worktree_fixture})
     if args.scenario in ("resource", "stress") and fixtures:
         node = shutil.which("node")
         if not node:
@@ -1507,6 +1565,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     pdf = None
     image_fixtures = None
     git_fixture = None
+    worktree_fixture = None
     file = None
     first_line = ""
     if args.scenario == "markdown":
@@ -1522,6 +1581,8 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         image_fixtures = prepare_image_fixtures(workspace, source)
     elif args.scenario == "git":
         git_fixture = prepare_git_fixture(workspace)
+    elif args.scenario == "worktree":
+        worktree_fixture = prepare_worktree_fixture(workspace)
     else:
         token = uuid.uuid4().hex[:10]
         first_line = f"workflow-file {token}"
@@ -1534,7 +1595,15 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     report_path = (args.report or output / "report.json").resolve()
     report_path.parent.mkdir(parents=True, exist_ok=True)
     scenario = scenario_json_linux(
-        args, file, first_line, workspace, fixtures, pdf, image_fixtures, git_fixture
+        args,
+        file,
+        first_line,
+        workspace,
+        fixtures,
+        pdf,
+        image_fixtures,
+        git_fixture,
+        worktree_fixture,
     )
     timeout = host_timeout(args, scenario)
     load_average = [round(value, 2) for value in os.getloadavg()]
@@ -1629,6 +1698,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     failed: BaseException | None = None
     workflow: dict = {}
     git_scenario: dict = {}
+    worktree_scenario: dict = {}
     markdown: dict = {}
     images: dict = {}
     started = time.monotonic()
@@ -1671,6 +1741,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                     manifest["samples"].append({"phase": "done", "tMonoNs": time.monotonic_ns(), "event": app_report.slim_event(event)})
                     workflow = event.get("workflow") or {}
                     git_scenario = event.get("git") or {}
+                    worktree_scenario = event.get("worktree") or {}
                     markdown = event.get("markdown") or {}
                     if event.get("images") is not None:
                         images = event["images"]
@@ -1755,6 +1826,14 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                 manifest["qualification"]["failures"].append({
                     "phase": "git-guard",
                     "reasons": ["destructive Git guard scenario failed"],
+                })
+        if args.scenario == "worktree":
+            manifest["worktreeScenario"] = worktree_scenario
+            if not worktree_scenario or not worktree_scenario.get("pass"):
+                manifest["qualification"]["qualified"] = False
+                manifest["qualification"]["failures"].append({
+                    "phase": "worktree-space",
+                    "reasons": ["worktree creation/Space scenario failed"],
                 })
         manifest["images"] = images
         # The fixture server is the independent process previews are served by; these counters
@@ -1862,6 +1941,14 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             for step in steps:
                 if not step.get("ok"):
                     print(f"  failed: {step.get('name')}: {step.get('detail')}")
+    if args.scenario == "worktree":
+        steps = worktree_scenario.get("steps") or []
+        passed = sum(1 for step in steps if step.get("ok"))
+        print(f"worktree {'PASS' if worktree_scenario.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
+        if not worktree_scenario.get("pass"):
+            for step in steps:
+                if not step.get("ok"):
+                    print(f"  failed: {step.get('name')}: {step.get('detail')}")
     isolation = manifest["isolation"]
     print(
         f"coexistence {'PASS' if isolation['upstreamStateUnchanged'] else 'FAIL'}: "
@@ -1887,6 +1974,9 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         return 2
     if args.scenario == "images" and not images.get("pass"):
         print("Run failed: the images scenario reported a failing step (see page.log).", file=sys.stderr)
+        return 2
+    if args.scenario == "worktree" and not worktree_scenario.get("pass"):
+        print("Run failed: the worktree scenario reported a failing step (see page.log).", file=sys.stderr)
         return 2
     if not isolation["upstreamStateUnchanged"]:
         print(

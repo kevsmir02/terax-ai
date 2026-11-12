@@ -3945,6 +3945,307 @@ async function gitScenario(run: ScenarioRun): Promise<unknown> {
   return { git: { pass, steps } };
 }
 
+/**
+ * Creating a worktree and opening it as a Space, through the dialog the panel
+ * renders.
+ *
+ * The successful creation must leave the worktree with its own branch and the
+ * bounded ignored-file copy, grant access derived from the repository, and
+ * open a separate Space without moving the terminals that already exist. The
+ * refusals (unknown start point, a path that is a file, a non-empty target, a
+ * branch checked out elsewhere) are observed through the same dialog and must
+ * leave every path and file untouched.
+ */
+async function worktreeScenario(run: ScenarioRun): Promise<unknown> {
+  const fixture = run.scenario.worktree;
+  if (!fixture)
+    throw new Error(
+      "the worktree scenario needs a scratch repository (scripts/app-lab/run.py creates it)",
+    );
+  const steps: WorkflowStep[] = [];
+  const check = async (name: string, ok: boolean, detail: string) => {
+    steps.push({ name, ok, detail });
+    await run.log(`[worktree] ${ok ? "PASS" : "FAIL"} ${name}: ${detail}`);
+  };
+  const failed = async (name: string, detail: string) => {
+    await check(name, false, detail);
+    return `worktree step failed: ${name}: ${detail}`;
+  };
+  const app = () => run.app();
+  const bridge = () => app().worktree();
+  const statOk = (path: string) =>
+    invoke("fs_stat", { path, workspace: { kind: "local" } }).then(
+      () => true,
+      () => false,
+    );
+  const readFile = (path: string) =>
+    invoke<{ kind: string; content?: string }>("fs_read_file", {
+      path,
+      workspace: { kind: "local" },
+      force: false,
+    }).then((result) => (result.kind === "text" ? (result.content ?? "") : ""));
+  const accessKind = (path: string) =>
+    invoke<{ access: string }>("workspace_access", {
+      path,
+      workspace: { kind: "local" },
+    }).then((answer) => answer.access);
+  const worktrees = () =>
+    invoke<{ path: string; branch: string | null }[]>("git_worktree_list", {
+      repoRoot: fixture.repo,
+      workspace: { kind: "local" },
+    });
+  const openDialog = async () => {
+    app().openWorktreeDialog();
+    await run.waitFor(() => bridge() !== null, "the worktree dialog", 20_000);
+    await run.waitFor(
+      () => bridge()?.state().repoRoot !== null,
+      "the dialog's repository",
+      20_000,
+    );
+  };
+  const fill = async (fields: Record<string, string>) => {
+    const dialog = bridge();
+    if (!dialog) throw new Error("the worktree dialog is not mounted");
+    for (const [field, value] of Object.entries(fields)) {
+      dialog.setField(field as Parameters<typeof dialog.setField>[0], value);
+    }
+  };
+  const waitForProblem = (field: string) =>
+    run.waitFor(
+      () =>
+        bridge()
+          ?.state()
+          .native.some((problem) => problem.field === field) ?? false,
+      `the ${field} refusal`,
+      20_000,
+    );
+
+  const existing = await run.booted();
+  const marker = `KEEP-${Date.now().toString(36)}`;
+  writeToSession(existing.leafId, `printf '%s\\n' '${marker}'\r`);
+  await pause(400);
+
+  try {
+    const repoSpace = app().createSpace("Worktree repo", fixture.repo);
+    app().newTabInSpace(repoSpace, fixture.repo);
+    await run.switchSpace(repoSpace);
+    const repoTerminal = app().tabs.find(
+      (tab) => tab.spaceId === repoSpace && tab.kind === "terminal",
+    );
+    if (repoTerminal?.kind !== "terminal")
+      throw new Error("the worktree-lab Space did not get a terminal");
+    await run.sessionReady(repoTerminal.activeLeafId);
+    await invoke("workspace_authorize", {
+      path: fixture.repo,
+      workspace: { kind: "local" },
+    });
+    const tabsBefore = app().tabs.map((tab) => tab.id);
+    const repoCwdBefore = repoTerminal.cwd;
+
+    await openDialog();
+    await fill({
+      location: "custom",
+      path: fixture.createPath,
+      branchMode: "newBranch",
+      branchName: "feature/lab",
+      base: "main",
+      include: ".env",
+    });
+    await run.waitFor(
+      () => bridge()?.state().canSubmit === true,
+      "the preflight to accept the form",
+      30_000,
+    );
+    const planned = bridge()?.state().plannedPath ?? null;
+    await check(
+      "the dialog preflights the location, branch and ignored files",
+      planned === fixture.createPath,
+      `planned ${planned}`,
+    );
+    await run.sync("worktree-preflight", { planned });
+
+    await bridge()?.submit();
+    await run.waitFor(
+      () => {
+        const state = bridge()?.state();
+        return state?.result !== null || state?.error !== null;
+      },
+      "the worktree creation",
+      30_000,
+    );
+    const state = bridge()?.state();
+    if (!state?.result)
+      throw new Error(
+        await failed("worktree creation", state?.error ?? "no result"),
+      );
+    const created = state.result.added;
+    const listed = (await worktrees()).find(
+      (entry) => entry.path === created.path,
+    );
+    const copiedEnv = await readFile(
+      `${created.path}/${fixture.ignoredFile.replace(/^.*\//, "")}`,
+    );
+    const access = await accessKind(created.path);
+    // The path is authorized in its own right through the registry: a derived
+    // linked-worktree grant when it is not already inside an authorized folder,
+    // otherwise that folder's grant. "none" would mean the dialog must not
+    // offer a Space.
+    const authorized =
+      access === "derived" || access === "covered" || access === "root";
+    await check(
+      "a valid form creates the branch, copies the ignored file and authorizes the path",
+      listed?.branch === "feature/lab" &&
+        created.copied.includes(fixture.ignoredFile) &&
+        copiedEnv.length > 0 &&
+        authorized &&
+        (await statOk(fixture.createPath)),
+      `branch ${listed?.branch}; copied ${created.copied.join(",")}; access ${access}`,
+    );
+    await run.sync("worktree-created", {
+      path: created.path,
+      branch: created.branch,
+      access,
+      copied: created.copied,
+    });
+
+    const opened = bridge()?.openAsSpace() ?? false;
+    await run.waitFor(
+      () => {
+        const active = app().activeSpaceId;
+        return active !== null && active !== repoSpace;
+      },
+      "the worktree Space",
+      20_000,
+    );
+    const spaceId = app().activeSpaceId;
+    const space = app().spaces.find((candidate) => candidate.id === spaceId);
+    await run.waitFor(
+      () => {
+        const terminal = app().tabs.find(
+          (tab) => tab.spaceId === spaceId && tab.kind === "terminal",
+        );
+        return terminal?.kind === "terminal" && terminal.cwd === created.path;
+      },
+      "the terminal in the worktree Space",
+      20_000,
+    );
+    const worktreeTerminal = app().tabs.find(
+      (tab) => tab.spaceId === spaceId && tab.kind === "terminal",
+    );
+    const repoTerminalAfter = app().tabs.find(
+      (tab) => tab.id === repoTerminal.id,
+    );
+    const afterCwd =
+      repoTerminalAfter?.kind === "terminal" ? repoTerminalAfter.cwd : null;
+    const markerSeen = (
+      run.app().readBuffer(existing.leafId, 500) ?? ""
+    ).includes(marker);
+    await check(
+      "opening as a Space adds a Space and leaves existing terminals where they were",
+      opened &&
+        space?.root === created.path &&
+        worktreeTerminal?.kind === "terminal" &&
+        repoTerminalAfter?.kind === "terminal" &&
+        afterCwd === repoCwdBefore &&
+        tabsBefore.every((id) => app().tabs.some((tab) => tab.id === id)) &&
+        markerSeen,
+      `space root ${space?.root}; original cwd ${afterCwd}; marker ${markerSeen}`,
+    );
+    await run.sync("worktree-opened", {
+      spaceId,
+      spaceRoot: space?.root ?? null,
+      originalCwd: afterCwd,
+    });
+
+    // Refusal 1: a start point that does not resolve to a commit.
+    await openDialog();
+    await fill({
+      location: "custom",
+      path: `${fixture.createPath}-unknown-base`,
+      branchMode: "newBranch",
+      branchName: "feature/unknown-base",
+      base: "does-not-exist",
+    });
+    await waitForProblem("base");
+    await check(
+      "an unknown start point is refused before creation",
+      bridge()?.state().canSubmit === false &&
+        !(await statOk(`${fixture.createPath}-unknown-base`)),
+      `problems ${bridge()
+        ?.state()
+        .native.map((problem) => problem.message)
+        .join("; ")}`,
+    );
+    await run.sync("worktree-refused-base", {
+      problems: bridge()?.state().native ?? [],
+    });
+
+    // Refusal 2: a location that is already a file.
+    await fill({
+      path: fixture.filePath,
+      branchName: "feature/file",
+      base: "main",
+    });
+    await waitForProblem("path");
+    await check(
+      "a path that is a file is refused and the file keeps its contents",
+      bridge()?.state().canSubmit === false &&
+        (await readFile(fixture.filePath)).includes("not a directory"),
+      `file ${fixture.filePath}`,
+    );
+
+    // Refusal 3: a target directory that already holds files.
+    await fill({
+      path: fixture.dirtyPath,
+      branchName: "feature/dirty",
+      base: "main",
+    });
+    await waitForProblem("path");
+    const blockedState = bridge()?.state();
+    await bridge()?.submit();
+    await pause(400);
+    const stillBlocked = bridge()?.state();
+    await check(
+      "a non-empty target is refused without submitting or overwriting its files",
+      blockedState?.canSubmit === false &&
+        stillBlocked?.result === null &&
+        (await readFile(fixture.dirtyFile)).includes("keep me"),
+      `state ${stillBlocked?.result ? "created" : "untouched"}`,
+    );
+    await run.sync("worktree-refused-dirty", {
+      canSubmit: blockedState?.canSubmit ?? null,
+      problems: blockedState?.native ?? [],
+    });
+
+    // Refusal 4: a branch that another worktree already has checked out.
+    await fill({
+      path: `${fixture.createPath}-checked-out`,
+      branchMode: "existingBranch",
+      branchName: "main",
+      base: "",
+    });
+    await waitForProblem("branch");
+    await check(
+      "a branch already checked out elsewhere is refused",
+      bridge()?.state().canSubmit === false &&
+        !(await statOk(`${fixture.createPath}-checked-out`)),
+      `problems ${bridge()
+        ?.state()
+        .native.map((problem) => problem.message)
+        .join("; ")}`,
+    );
+    bridge()?.close();
+  } catch (error) {
+    throw new Error(await failed("scenario completed", String(error)));
+  }
+
+  const pass = steps.every((step) => step.ok);
+  await run.log(
+    `[worktree] ${pass ? "PASS" : "FAIL"} summary: ${steps.filter((step) => !step.ok).length} failures of ${steps.length}`,
+  );
+  return { worktree: { pass, steps } };
+}
+
 const SCENARIOS: Record<
   BenchScenario["name"],
   (run: ScenarioRun) => Promise<unknown>
@@ -3961,6 +4262,7 @@ const SCENARIOS: Record<
   markdown: markdownScenario,
   spaces: spacesScenario,
   git: gitScenario,
+  worktree: worktreeScenario,
   preview: previewScenario,
   images: imagesScenario,
   resource: resourceScenario,
