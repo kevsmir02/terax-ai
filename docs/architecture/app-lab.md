@@ -132,15 +132,19 @@ report stores it under `workflow`, and the runner exits 2 when any step failed.
 
 **The Markdown preview** (`--scenario markdown`) drives the real preview against fixtures the runner
 writes: a document inside the Space root, an outside document, a symlink escape, a remote pixel the
-runner counts, a link document and a document above the 4 MiB syntax ceiling. It asserts the image
+runner counts, a link document, a document of hostile references and a document above the 4 MiB
+syntax ceiling. It asserts the image
 loads from the configured Space root, that changing the terminal cwd through `setLeafCwd` leaves the
 same `asset://` token and pixels in place, that the symlink escape is refused (`naturalWidth 0`), that
 an outside document loads from its own folder and only loads a sibling image after the "Allow"
 button, that the remote image is absent and the fixture server recorded zero hits until "Load remote
-images" is chosen (then one), that a relative link neither navigates the app nor opens a tab, that
-the large document renders with `data-syntax="off"`, and that closing the tab makes its old asset URL
-fail while no content resurfaces. Pass/fail steps and the remote hit counters are in the report's
-`markdown` and `markdownServer` blocks.
+images" is chosen (then one), that a relative link neither navigates the app nor opens a tab, that a
+hostile document leaves no executed effect, no `<script>`, no event-handler attribute, no
+`javascript:` href and no asset URL the app did not mint with a token, that
+the large document renders with `data-syntax="off"`, that closing the tab makes its old asset URL
+fail while no content resurfaces, and that closing it while its 4 MiB read is still in flight
+leaves no tab, no marker text and no syntax block behind. Pass/fail steps and the remote hit
+counters are in the report's `markdown` and `markdownServer` blocks.
 
 **The Spaces lifecycle** (`--scenario spaces`): two Spaces are created on one real checkout and the
 rendered `[data-shared-root]` badge is asserted; a shell in the first Space streams five lines

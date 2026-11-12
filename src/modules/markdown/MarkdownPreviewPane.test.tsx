@@ -44,7 +44,11 @@ beforeEach(() => {
 
 describe("MarkdownPreviewPane", () => {
   it("renders the document once it is read", () => {
-    state.status = { kind: "ready", content: "# Title\n\nBody text.", size: 20 };
+    state.status = {
+      kind: "ready",
+      content: "# Title\n\nBody text.",
+      size: 20,
+    };
     const html = renderPane();
     expect(html).toContain("Title");
     expect(html).toContain("Body text.");

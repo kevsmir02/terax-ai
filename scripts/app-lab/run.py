@@ -1244,6 +1244,20 @@ def prepare_markdown_fixtures(workspace: Path, output: Path) -> dict:
         "[relative](./elsewhere.md)\n\n"
         "[external](https://example.com/)\n"
     )
+    # Hostile references: an asset-protocol URL the document writes itself, a javascript:
+    # link, a file: link, an inline <script> and an <img onerror>. None of them may execute,
+    # navigate, or become an app URL; the page records any effect in `markdownPwned`.
+    malicious_doc = docs / "malicious.md"
+    malicious_doc.write_text(
+        "# Hostile references\n\n"
+        "malicious-marker\n\n"
+        "![injected](asset://localhost/etc/passwd)\n\n"
+        "[js](javascript:window.__teraxMarkdownPwned='link')\n\n"
+        "[file](file:///etc/passwd)\n\n"
+        '<img src="missing.png" onerror="window.__teraxMarkdownPwned=\'onerror\'">\n\n'
+        "<script>window.__teraxMarkdownPwned = 'script'</script>\n\n"
+        "[ok](https://example.com/)\n"
+    )
     marker = "markdown-large-marker"
     large = docs / "large.md"
     with large.open("w") as handle:
@@ -1261,6 +1275,7 @@ def prepare_markdown_fixtures(workspace: Path, output: Path) -> dict:
         "outsideDoc": str(outside_doc),
         "remoteDoc": str(remote_doc),
         "linkDoc": str(link_doc),
+        "maliciousDoc": str(malicious_doc),
         "largeDoc": str(large),
         "largeMarker": marker,
         "escapeImage": str(escape),

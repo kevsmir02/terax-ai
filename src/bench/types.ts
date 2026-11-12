@@ -132,6 +132,8 @@ export type BenchScenario = {
     remoteDoc: string;
     /** A document with relative and external links. */
     linkDoc: string;
+    /** A document whose references are hostile: asset://, javascript:, file:, script, onerror. */
+    maliciousDoc: string;
     /** A large document above the approved 4 MiB syntax ceiling. */
     largeDoc: string;
     /** Orchestrator URL that counts remote image fetches. */

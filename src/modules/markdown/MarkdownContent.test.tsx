@@ -61,9 +61,9 @@ describe("MarkdownContent", () => {
     );
 
     const sources = imageSources(html);
-    expect(
-      sources.filter((src) => src.startsWith(ASSET_PREFIX)),
-    ).toEqual([`${ASSET_PREFIX}/proj/docs/diagram.png?token=t`]);
+    expect(sources.filter((src) => src.startsWith(ASSET_PREFIX))).toEqual([
+      `${ASSET_PREFIX}/proj/docs/diagram.png?token=t`,
+    ]);
     expect(html).toContain("outside the project folder blocked");
     expect(html).toContain("protected image blocked");
   });
@@ -92,10 +92,9 @@ describe("MarkdownContent", () => {
     expect(imageSources(blocked)).toEqual([]);
     expect(blocked).toContain("remote image blocked");
 
-    const allowed = render(
-      "![remote](https://tracker.example/pixel.png)",
-      { allowRemote: true },
-    );
+    const allowed = render("![remote](https://tracker.example/pixel.png)", {
+      allowRemote: true,
+    });
     expect(imageSources(allowed)).toEqual([
       "https://tracker.example/pixel.png",
     ]);
@@ -123,12 +122,10 @@ describe("MarkdownContent", () => {
   });
 
   it("turns code highlighting off above the approved syntax ceiling", () => {
-    expect(render("```ts\nconst a = 1;\n```")).toContain(
-      'data-syntax="on"',
+    expect(render("```ts\nconst a = 1;\n```")).toContain('data-syntax="on"');
+    expect(render("```ts\nconst a = 1;\n```", { syntax: false })).toContain(
+      'data-syntax="off"',
     );
-    expect(
-      render("```ts\nconst a = 1;\n```", { syntax: false }),
-    ).toContain('data-syntax="off"');
   });
 
   it("reports a failed image grant instead of hiding it", () => {

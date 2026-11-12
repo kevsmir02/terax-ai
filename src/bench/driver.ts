@@ -1982,6 +1982,23 @@ function buttonWithText(text: string): HTMLButtonElement | null {
 }
 
 /**
+ * The Markdown panes actually on screen. Every preview tab stays mounted (so scroll state
+ * survives a switch), so a selector for the rendered text must skip the `aria-hidden`
+ * wrappers of the inactive ones.
+ */
+function visibleMarkdownPanes(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>(".select-text")].filter(
+    (element) => !element.closest('[aria-hidden="true"]'),
+  );
+}
+
+function visibleMarkdownText(): string {
+  return visibleMarkdownPanes()
+    .map((element) => element.textContent ?? "")
+    .join("\n");
+}
+
+/**
  * The Markdown acceptance scenario through the real WebKitGTK webview.
  *
  * It drives the app's own Markdown tab planner and observes what the page really rendered and
@@ -2203,6 +2220,70 @@ async function markdownScenario(
     `url ${window.location.href === hrefBefore ? "unchanged" : "changed"}, tabs ${tabsBefore}->${run.app().tabs.length}`,
   );
 
+  // 5b. A document of hostile references: nothing in it runs, no handler survives into the
+  //     DOM, a javascript: link keeps no script href, and the only asset URLs are the ones the
+  //     app minted with a grant token.
+  const maliciousTab = run.app().openMarkdownTab(config.maliciousDoc);
+  try {
+    await run.waitFor(
+      () =>
+        run.app().activeId === maliciousTab &&
+        visibleMarkdownText().includes("malicious-marker"),
+      "the hostile document",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(
+      await failed(
+        "hostile document renders",
+        `${String(error)}; ${domState()}`,
+      ),
+    );
+  }
+  await pause(600);
+  const scope = visibleMarkdownPanes()[0] ?? null;
+  const executed = (window as unknown as Record<string, unknown>)
+    .__teraxMarkdownPwned;
+  const scripts = scope?.querySelectorAll("script").length ?? 0;
+  const handlers =
+    scope?.querySelectorAll("[onerror],[onclick],[onload],[onmouseover]")
+      .length ?? 0;
+  const injected =
+    scope === null || scope === undefined
+      ? 0
+      : [...scope.querySelectorAll("img")].filter((img) =>
+          (img.getAttribute("src") ?? "").includes("/etc/passwd"),
+        ).length;
+  const untokened =
+    scope === null || scope === undefined
+      ? 0
+      : [...scope.querySelectorAll<HTMLImageElement>("img")].filter(
+          (img) =>
+            /^asset:/i.test(img.getAttribute("src") ?? "") &&
+            !(img.getAttribute("src") ?? "").includes("token="),
+        ).length;
+  const scriptHrefs =
+    scope === null || scope === undefined
+      ? 0
+      : [...scope.querySelectorAll<HTMLAnchorElement>("a")].filter((anchor) =>
+          /^\s*javascript:/i.test(anchor.getAttribute("href") ?? ""),
+        ).length;
+  await check(
+    "hostile document executes nothing",
+    executed === undefined &&
+      scripts === 0 &&
+      handlers === 0 &&
+      scriptHrefs === 0,
+    `effect ${JSON.stringify(executed)}, ${scripts} scripts, ${handlers} handlers, ${scriptHrefs} javascript: hrefs`,
+  );
+  await check(
+    "hostile references never become app or file URLs",
+    injected === 0 && untokened === 0,
+    `${injected} references to /etc/passwd, ${untokened} untokened asset URLs`,
+  );
+  run.app().closeTab(maliciousTab);
+  await pause(300);
+
   // 6. Above the 4 MiB syntax ceiling the document still opens, without highlighting. Closing
   //    its tab revokes the asset grant it held, and a late completion does not resurrect it.
   const largeTab = run.app().openMarkdownTab(config.largeDoc);
@@ -2253,6 +2334,22 @@ async function markdownScenario(
     `tab ${run.app().tabs.some((tab) => tab.id === largeTab) ? "present" : "gone"}`,
   );
 
+  // 7. A read landing after its document closed must not resurrect it: the 4 MiB document is
+  //    closed while its read is still in flight, and nothing it owned may appear afterwards.
+  const tabsBeforeLate = run.app().tabs.length;
+  const lateTab = run.app().openMarkdownTab(config.largeDoc);
+  run.app().closeTab(lateTab);
+  await pause(1500);
+  const afterLate = visibleMarkdownText();
+  await check(
+    "a read landing after close does not resurrect the document",
+    run.app().tabs.every((tab) => tab.id !== lateTab) &&
+      run.app().tabs.length === tabsBeforeLate &&
+      !afterLate.includes(config.largeMarker) &&
+      document.querySelector('[data-syntax="off"]') === null,
+    `tabs ${tabsBeforeLate}->${run.app().tabs.length}, marker ${afterLate.includes(config.largeMarker) ? "present" : "absent"}`,
+  );
+
   const pass = steps.every((step) => step.ok);
   await run.log(
     `[markdown] ${pass ? "PASS" : "FAIL"} summary: ${steps.filter((step) => !step.ok).length} failures of ${steps.length}`,
@@ -2265,6 +2362,7 @@ async function markdownScenario(
       outsideTab,
       remoteTab,
       linkTab,
+      maliciousTab,
       cwdAfter: "/tmp",
       remoteHits: { before: hitsBefore, after: afterConsent },
     },
