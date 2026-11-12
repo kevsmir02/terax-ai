@@ -9,6 +9,15 @@ Approved ceilings referenced below live in `docs/architecture/resource-limits.md
 `src/modules/preview/lib/limits.ts` (**32 MiB per rendered PDF page**, 4 concurrent decoded
 viewers, 192 MiB decoded budget), approved by the primary user on 2026-11-12 in issue #4.
 
+**Validated in the real application by this ticket:** the app's own delivery gate and its explicit
+override, the bytes/content type/ranges the asset server served, the cross-origin document
+boundary, the error and misnamed-file paths, hidden-tab behaviour, tab-close grant release, memory
+observations, and profile isolation/coexistence.
+
+**Not validated (planned implementation, issue #31):** every PDF reader function (navigation, zoom,
+search, text selection), the 32 MiB per-page refusal, decoded-viewer admission for PDFs, and the
+dedicated reader itself.
+
 ## The contract this decides
 
 From `docs/specs/personal-linux-workspace.md`:
@@ -46,11 +55,12 @@ From `docs/specs/personal-linux-workspace.md`:
    the file only while that tab scope is live. It answers `application/pdf` with
    `Accept-Ranges: bytes`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff` and
    `Content-Security-Policy: sandbox; default-src 'none'; style-src 'unsafe-inline'`.
-4. **WebKitGTK 2.54.2 substitutes a document of its own** (the built-in PDF.js viewer at
-   `webkit-pdfjs-viewer://`) for the PDF resource. Measured from the app page: the frame commits a
-   document whose `contentDocument` is `null` and whose `contentWindow.location` throws
-   `SecurityError: Sandbox access violation: Blocked a frame at "tauri://localhost"`, and the
-   iframe's `load` event never fires.
+4. **WebKitGTK 2.54.2 substitutes a document of its own** for the PDF resource — WebKit's
+   built-in, PDF.js-based viewer (the scheme string `webkit-pdfjs-viewer://` is present in
+   `libwebkit2gtk-4.1.so.0.24.5`, but the app cannot observe the actual URL). Measured from the app
+   page: the frame commits a document whose `contentDocument` is `null` and whose
+   `contentWindow.location` throws `SecurityError: Sandbox access violation: Blocked a frame at
+   "tauri://localhost"`.
 
 ## Evidence produced by this ticket
 
@@ -129,6 +139,12 @@ cannot make reliable, bound or recover.
   mounted**, the asset server saw **no new request**, and returning to the tab found the **same
   document** still loaded. A web preview, by contrast, unloads its frame the moment its tab is
   hidden. Nothing pauses or releases a hidden PDF.
+- **One request, and the viewer never asked for the file.** The viewer's URL template takes
+  `file=`, so a running viewer normally fetches the document itself; the asset handler saw exactly
+  one request per document — the one the app's iframe navigation made. Either WebKit hands the
+  already-read bytes to the viewer, or the sandboxed viewer never ran its load path. The app cannot
+  tell, and neither outcome is under its control; manual check M1 resolves which one it is, and
+  issue #31 replaces the question with a reader that reports its own state.
 
 ### Resource observations
 
@@ -195,11 +211,12 @@ verification.
 
 ## Named manual checks (not automated here)
 
-WebKitGTK gives this repository no screenshot or input seam (ticket 32), and the validation host
-was a live interactive Wayland session in which the benchmark window could not be made key: the
-compositor declines the focus request while another application is focused, so injecting input
-would have landed in that application. The four reader functions are therefore stated as manual
-checks a person runs at the display, with the exact fixtures. Each takes under two minutes
+WebKitGTK gives this repository no screenshot or input seam (ticket 32), and the validation host's
+desktop was in use by another application for the whole run: the Wayland compositor declines the
+benchmark window's focus request (the report records `appActive=false` in most phases), so
+injecting input would have landed in that other application. Anyone re-running these checks should
+own the display. The four reader functions are therefore stated as manual checks a person runs at
+the display, with the exact fixtures. Each takes under two minutes
 (`python3 scripts/app-lab/pdf_fixtures.py --output /tmp/pdf-fixtures`,
 `--pdf-hold-ms 180000` keeps `text.pdf` open in the run).
 
@@ -283,6 +300,12 @@ The reader is our document, in our pane, with the approved policy applied by cod
 - **A per-page render decision before painting.** Compute the page raster in decoded bytes and pass
   it through `pdfPageDecision` (`src/modules/preview/lib/limits.ts`); a page above 32 MiB refuses
   with the zoom that would fit and the external-viewer alternative, instead of painting.
+- **Rendered pages count against the decoded budget.** At the 32 MiB ceiling only about six
+  rendered pages fit the 192 MiB application budget, so the reader keeps a bounded cache of
+  rendered pages (and hands its size to `decideViewerAdmission`) instead of rendering the whole
+  document; a scroll or zoom therefore re-renders rather than accumulating rasters.
+- **One lazy chunk, inside the existing budget.** The renderer is loaded only for a visible PDF tab
+  and must keep the existing dist-budget test green; no PDF dependency reaches startup.
 - **App-owned navigation, zoom, search and selection.** Page number/count, previous/next, fit-width
   and fit-page, zoom with a genuine vector re-render, search over extracted text with match count
   and navigation, and a text layer that supports selection and copy. Because the reader is app DOM,
