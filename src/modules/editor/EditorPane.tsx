@@ -28,6 +28,7 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
 } from "react";
 import { toast } from "sonner";
 import { diagnosticsReporter } from "./lib/diagnosticsReporter";
@@ -54,6 +55,9 @@ import { useDocument } from "./lib/useDocument";
 import { useEditorThemeExt } from "./lib/useEditorThemeExt";
 import { initVimGlobals, vimHandlersExtension } from "./lib/vim";
 import { mediaPreviewKind } from "./lib/mediaPreview";
+import { planRestore } from "./lib/recovery/cleanup";
+import { RecoveryDraftBanner } from "./RecoveryDraftBanner";
+import { RecoveryStatusBar } from "./RecoveryStatusBar";
 import { SaveConflictDialog } from "./SaveConflictDialog";
 
 initVimGlobals();
@@ -83,7 +87,12 @@ export type EditorPaneHandle = {
 
 type Props = {
   path: string;
-  /** The tab this pane belongs to; asset grants are tab-owned. */
+  /** Space that owns this buffer; part of its recovery identity, not the path. */
+  spaceId: string;
+  /**
+   * Tab id inside the Space: with `spaceId` it keeps buffers independent, and
+   * it owns this pane's asset grants.
+   */
   tabId: number;
   overrideLanguage?: string | null;
   onDirtyChange?: (dirty: boolean) => void;
@@ -106,6 +115,7 @@ export const EditorPane = memo(
   forwardRef<EditorPaneHandle, Props>(function EditorPane(props, ref) {
     const {
       path,
+      spaceId,
       tabId,
       overrideLanguage,
       onDirtyChange,
@@ -117,6 +127,7 @@ export const EditorPane = memo(
 
     const {
       doc,
+      dirty,
       onChange,
       save,
       reload,
@@ -129,7 +140,26 @@ export const EditorPane = memo(
       reloadConflict,
       saveConflictCopy,
       dismissConflict,
-    } = useDocument({ path, visible, onDirtyChange });
+      recoveryEnabled,
+      recoveryStatus,
+      recoveryDrafts,
+      recoveryRetry,
+      recoveryRestore,
+      recoveryTarget,
+      applyRecoveredText,
+      saveDraftCopy,
+      dismissDraft,
+    } = useDocument({
+      path,
+      visible,
+      onDirtyChange,
+      buffer: { spaceId, tabId },
+    });
+    const [hiddenDrafts, setHiddenDrafts] = useState<number[]>([]);
+    const draft =
+      recoveryEnabled && recoveryDrafts.length > 0
+        ? recoveryDrafts.find((r) => !hiddenDrafts.includes(r.bufferRevision))
+        : undefined;
     const assetGrant = useAssetGrant(
       (doc.status === "binary" || doc.status === "toolarge") &&
         mediaPreviewKind(path)
@@ -470,6 +500,27 @@ export const EditorPane = memo(
       [path, applyPendingFocus, applyPendingGoto],
     );
 
+    const draftBanner = draft ? (
+      <RecoveryDraftBanner
+        draft={draft}
+        plan={planRestore(draft, recoveryTarget())}
+        diskText={doc.status === "ready" ? doc.content : null}
+        canRestore={doc.status === "ready" && !dirty}
+        onRestore={() => {
+          if (applyRecoveredText(draft.text)) recoveryRestore(draft);
+        }}
+        onSaveCopy={async (targetPath) => {
+          const saved = await saveDraftCopy(targetPath, draft.text);
+          if (saved) await dismissDraft(draft);
+          return saved;
+        }}
+        onDiscard={() => void dismissDraft(draft)}
+        onDismiss={() =>
+          setHiddenDrafts((current) => [...current, draft.bufferRevision])
+        }
+      />
+    ) : null;
+
     if (doc.status === "loading") {
       return (
         <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
@@ -478,9 +529,17 @@ export const EditorPane = memo(
       );
     }
     if (doc.status === "error") {
+      // A draft for an unreadable/deleted original is exactly the case where
+      // the text may be the only copy left: offer compare/Save As here too.
       return (
-        <div className="flex h-full items-center justify-center px-6 text-center text-xs text-destructive">
-          {doc.message}
+        <div className="flex h-full min-h-0 flex-col">
+          {recoveryEnabled && (
+            <RecoveryStatusBar status={recoveryStatus} onRetry={recoveryRetry} />
+          )}
+          {draftBanner}
+          <div className="flex flex-1 items-center justify-center px-6 text-center text-xs text-destructive">
+            {doc.message}
+          </div>
         </div>
       );
     }
@@ -529,6 +588,10 @@ export const EditorPane = memo(
 
     return (
       <div className="flex h-full min-h-0 flex-col zoom-exempt">
+        {recoveryEnabled && (
+          <RecoveryStatusBar status={recoveryStatus} onRetry={recoveryRetry} />
+        )}
+        {draftBanner}
         {conflict && (
           <SaveConflictDialog
             key={`${conflict.path}:${conflict.currentRevision}`}
