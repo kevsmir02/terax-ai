@@ -107,9 +107,7 @@ export function useTabCloseGuards({
     const affected = tabsRef.current.filter((tab) => close.has(tab.id));
     return {
       dirtyIds: affected
-        .filter(
-          (tab) => tab.kind === "editor" && isTabDirtyRef.current(tab.id),
-        )
+        .filter((tab) => tab.kind === "editor" && isTabDirtyRef.current(tab.id))
         .map((tab) => tab.id),
       leafIds: affected
         .filter((tab) => tab.kind === "terminal")
@@ -231,12 +229,7 @@ export function useTabCloseGuards({
         setCloseManyConfirming(false);
       }
     }
-  }, [
-    pendingCloseMany,
-    disposeTabs,
-    evaluateCloseMany,
-    withCurrentActive,
-  ]);
+  }, [pendingCloseMany, disposeTabs, evaluateCloseMany, withCurrentActive]);
 
   const cancelCloseMany = useCallback(() => {
     closeManyRequestRef.current += 1;

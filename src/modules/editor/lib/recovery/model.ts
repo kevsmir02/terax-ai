@@ -176,14 +176,14 @@ export function parseRecord(raw: string): RecoveryRecord | null {
   ) {
     return null;
   }
-  if (
-    record.diskRevision !== null &&
-    typeof record.diskRevision !== "string"
-  ) {
+  if (record.diskRevision !== null && typeof record.diskRevision !== "string") {
     return null;
   }
   if (typeof record.text !== "string") return null;
-  if (typeof record.bytes !== "number" || record.bytes !== textBytes(record.text)) {
+  if (
+    typeof record.bytes !== "number" ||
+    record.bytes !== textBytes(record.text)
+  ) {
     return null;
   }
   if (typeof record.updatedAt !== "number") return null;

@@ -24,13 +24,17 @@ describe("fork identity namespace", () => {
   it("is a provisional identity distinct from upstream", () => {
     expect(table.provisional).toBe(true);
     expect(table.appIdentifier).not.toBe(table.upstream.appIdentifier);
-    expect(table.appIdentifier.startsWith(table.upstream.appIdentifier)).toBe(false);
+    expect(table.appIdentifier.startsWith(table.upstream.appIdentifier)).toBe(
+      false,
+    );
     expect(table.namespace).not.toBe(table.upstream.namespace);
     expect(table.envPrefix).not.toBe(table.upstream.envPrefix);
   });
 
   it("matches the Tauri config literal", () => {
-    const config = readJson<{ identifier: string }>("src-tauri/tauri.conf.json");
+    const config = readJson<{ identifier: string }>(
+      "src-tauri/tauri.conf.json",
+    );
     expect(config.identifier).toBe(table.appIdentifier);
   });
 

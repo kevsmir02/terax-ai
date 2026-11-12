@@ -23,7 +23,9 @@ describe("createAgentNotificationGate", () => {
 
     expect(shouldDeliver(TARGET, 1_000)).toBe(true);
     expect(shouldDeliver({ ...TARGET, leafId: 12 }, 1_001)).toBe(true);
-    expect(shouldDeliver({ ...TARGET, kind: "turn-finished" }, 1_002)).toBe(true);
+    expect(shouldDeliver({ ...TARGET, kind: "turn-finished" }, 1_002)).toBe(
+      true,
+    );
   });
 
   it("recovers when the system clock moves backward", () => {

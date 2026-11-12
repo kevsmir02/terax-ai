@@ -16,9 +16,9 @@ export function startupTiming(): Record<string, unknown> {
   for (const entry of performance.getEntriesByType("paint")) {
     paints[entry.name] = entry.startTime;
   }
-  const navigation = performance.getEntriesByType(
-    "navigation",
-  )[0] as PerformanceNavigationTiming | undefined;
+  const navigation = performance.getEntriesByType("navigation")[0] as
+    | PerformanceNavigationTiming
+    | undefined;
   return {
     uptimeMs: performance.now(),
     timeOrigin: performance.timeOrigin,

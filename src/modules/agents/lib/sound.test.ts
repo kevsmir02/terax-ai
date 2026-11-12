@@ -70,9 +70,13 @@ describe("playAgentNotificationSound", () => {
     const { playAgentNotificationSound } = await import("./sound");
 
     playAgentNotificationSound();
-    await vi.waitFor(() => expect(mocks.sources[0]?.start).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(mocks.sources[0]?.start).toHaveBeenCalledOnce(),
+    );
     playAgentNotificationSound();
-    await vi.waitFor(() => expect(mocks.sources[1]?.start).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(mocks.sources[1]?.start).toHaveBeenCalledOnce(),
+    );
 
     expect(mocks.contexts).toHaveLength(1);
     expect(mocks.fetchMock).toHaveBeenCalledOnce();
@@ -91,7 +95,9 @@ describe("playAgentNotificationSound", () => {
 
     playAgentNotificationSound();
     playAgentNotificationSound();
-    await vi.waitFor(() => expect(mocks.sources[0]?.start).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(mocks.sources[0]?.start).toHaveBeenCalledOnce(),
+    );
 
     expect(mocks.sources).toHaveLength(1);
     expect(mocks.fetchMock).toHaveBeenCalledOnce();
@@ -102,7 +108,9 @@ describe("playAgentNotificationSound", () => {
     const { playAgentNotificationSound } = await import("./sound");
 
     playAgentNotificationSound();
-    await vi.waitFor(() => expect(mocks.sources[0]?.start).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(mocks.sources[0]?.start).toHaveBeenCalledOnce(),
+    );
 
     expect(mocks.contexts[0]?.resume).toHaveBeenCalledOnce();
   });

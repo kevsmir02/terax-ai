@@ -24,7 +24,9 @@ describe("scopeLabel", () => {
 
   it("shortens full shas but leaves branch names alone", () => {
     expect(scopeLabel({ kind: "commit", sha: SHA })).toBe("Commit 0123456");
-    expect(scopeLabel(taskScope("main", "feature/x"))).toBe("feature/x vs main");
+    expect(scopeLabel(taskScope("main", "feature/x"))).toBe(
+      "feature/x vs main",
+    );
     expect(scopeLabel(taskScope(SHA))).toBe("HEAD vs 0123456");
   });
 
@@ -192,6 +194,8 @@ describe("supportsHunkActions", () => {
 
 describe("checkpointRef", () => {
   it("builds the ref the backend uses", () => {
-    expect(checkpointRef("task-1", 12)).toBe("refs/terax/checkpoints/task-1/12");
+    expect(checkpointRef("task-1", 12)).toBe(
+      "refs/terax/checkpoints/task-1/12",
+    );
   });
 });

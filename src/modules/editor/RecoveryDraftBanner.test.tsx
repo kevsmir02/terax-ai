@@ -31,7 +31,9 @@ function render(
       onDiscard: () => {},
       onDismiss: () => {},
     }),
-  ).split("<!-- -->").join("");
+  )
+    .split("<!-- -->")
+    .join("");
 }
 
 describe("recovered draft is offered, never imposed", () => {

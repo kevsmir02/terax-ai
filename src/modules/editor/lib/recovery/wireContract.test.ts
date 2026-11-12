@@ -13,10 +13,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import {
-  createRecoveryManager,
-  type RecoveryStorage,
-} from "./manager";
+import { createRecoveryManager, type RecoveryStorage } from "./manager";
 import { RECOVERY_LIMITS, type RecoveryRecord } from "./model";
 
 const root = join(import.meta.dirname, "../../../../..");
@@ -82,7 +79,8 @@ class QuotaStorage implements RecoveryStorage {
   }
   async remove(bufferId: string, upToRevision: number) {
     const stored = this.records.get(bufferId);
-    const removed = stored !== undefined && stored.bufferRevision <= upToRevision;
+    const removed =
+      stored !== undefined && stored.bufferRevision <= upToRevision;
     if (removed) this.records.delete(bufferId);
     return { removed, totalBytes: 0 };
   }

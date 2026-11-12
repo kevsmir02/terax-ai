@@ -108,7 +108,9 @@ describe("activateTerminalLink", () => {
     });
     expect(ipc).toHaveBeenCalledTimes(3);
     for (const [, args] of ipc.mock.calls)
-      expect(args).toMatchObject({ workspace: { kind: "wsl", distro: "Ubuntu" } });
+      expect(args).toMatchObject({
+        workspace: { kind: "wsl", distro: "Ubuntu" },
+      });
   });
 
   it("opens web links natively and restores terminal focus", async () => {

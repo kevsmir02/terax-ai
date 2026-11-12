@@ -283,7 +283,9 @@ describe("built startup graph", () => {
   });
 
   const productIdentifier = (
-    JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8")) as {
+    JSON.parse(
+      readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8"),
+    ) as {
       identifier: string;
     }
   ).identifier;

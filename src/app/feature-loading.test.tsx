@@ -53,12 +53,7 @@ it("does not import unused features when rendering a terminal or cold restored t
 });
 
 it("loads each feature when its first live surface is needed", async () => {
-  const kinds = [
-    "editor",
-    "git-commit-file",
-    "markdown",
-    "git-history",
-  ];
+  const kinds = ["editor", "git-commit-file", "markdown", "git-history"];
   stacks.forEach((stack, index) => {
     render(stack, [{ id: 1, kind: kinds[index] }]);
   });

@@ -98,7 +98,13 @@ const RETAINED_NATIVE_ONLY: Record<string, string> = {
 };
 
 /** Dependencies only the removed AI transport, storage and keyring used. */
-const REMOVED_DEPENDENCIES = ["reqwest", "rustls", "bytes", "futures-util", "keyring"];
+const REMOVED_DEPENDENCIES = [
+  "reqwest",
+  "rustls",
+  "bytes",
+  "futures-util",
+  "keyring",
+];
 
 /** Dependencies retained by non-AI features; the removal must not take them. */
 const RETAINED_DEPENDENCIES = [
@@ -113,7 +119,11 @@ const RETAINED_DEPENDENCIES = [
   "notify",
 ];
 
-function filesUnder(dir: string, extensions: RegExp, skip: RegExp[] = []): string[] {
+function filesUnder(
+  dir: string,
+  extensions: RegExp,
+  skip: RegExp[] = [],
+): string[] {
   if (!existsSync(dir)) return [];
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const full = path.join(dir, entry.name);
@@ -128,10 +138,7 @@ function relative(file: string): string {
 }
 
 function rustFiles(): string[] {
-  return [
-    ...filesUnder(rustSrc, /\.rs$/),
-    ...filesUnder(rustCrates, /\.rs$/),
-  ];
+  return [...filesUnder(rustSrc, /\.rs$/), ...filesUnder(rustCrates, /\.rs$/)];
 }
 
 /** Production client and runner sources: removal guards name what is gone. */
@@ -156,7 +163,10 @@ function registeredCommands(): string[] {
 }
 
 function cargoDependencyNames(): string[] {
-  const manifest = readFileSync(path.join(repoRoot, "src-tauri/Cargo.toml"), "utf8");
+  const manifest = readFileSync(
+    path.join(repoRoot, "src-tauri/Cargo.toml"),
+    "utf8",
+  );
   return manifest
     .split("\n")
     .map((line) => /^\s*([A-Za-z0-9_-]+)\s*=/.exec(line)?.[1])
@@ -166,9 +176,9 @@ function cargoDependencyNames(): string[] {
 describe("removed built-in AI native commands", () => {
   it("registers none of them in the invocation handler", () => {
     const registered = registeredCommands();
-    expect(registered.filter((name) => REMOVED_COMMANDS.includes(name))).toEqual(
-      [],
-    );
+    expect(
+      registered.filter((name) => REMOVED_COMMANDS.includes(name)),
+    ).toEqual([]);
   });
 
   it("keeps the retained shared command surface registered", () => {
@@ -215,8 +225,7 @@ describe("removed built-in AI native commands", () => {
       .join("\n");
     const orphans = registeredCommands().filter(
       (name) =>
-        !corpus.includes(name) &&
-        RETAINED_NATIVE_ONLY[name] === undefined,
+        !corpus.includes(name) && RETAINED_NATIVE_ONLY[name] === undefined,
     );
     expect(orphans).toEqual([]);
   });
@@ -224,8 +233,9 @@ describe("removed built-in AI native commands", () => {
 
 describe("removed built-in AI native modules", () => {
   it("leaves no removed module file on disk", () => {
-    expect(REMOVED_PATHS.filter((file) => existsSync(path.join(repoRoot, file))))
-      .toEqual([]);
+    expect(
+      REMOVED_PATHS.filter((file) => existsSync(path.join(repoRoot, file))),
+    ).toEqual([]);
   });
 
   it("has no retained Rust source naming a removed module or state type", () => {
@@ -254,7 +264,10 @@ describe("removed built-in AI native modules", () => {
       "utf8",
     );
     expect(access).toContain("pub(super) fn opened_path");
-    const assets = readFileSync(path.join(rustSrc, "modules/fs/assets.rs"), "utf8");
+    const assets = readFileSync(
+      path.join(rustSrc, "modules/fs/assets.rs"),
+      "utf8",
+    );
     expect(assets).toContain("access::opened_path");
     const policy = readFileSync(
       path.join(rustSrc, "modules/fs/access_policy.rs"),
@@ -293,9 +306,14 @@ describe("architecture docs describe the retained contracts", () => {
   }
 
   it("drops the removed subsystem guide and its links", () => {
-    expect(existsSync(path.join(repoRoot, "docs/architecture/ai-subsystem.md")))
-      .toBe(false);
-    for (const file of ["docs/README.md", "docs/architecture/security-model.md", "TERAX.md"])
+    expect(
+      existsSync(path.join(repoRoot, "docs/architecture/ai-subsystem.md")),
+    ).toBe(false);
+    for (const file of [
+      "docs/README.md",
+      "docs/architecture/security-model.md",
+      "TERAX.md",
+    ])
       expect(doc(file), file).not.toContain("ai-subsystem.md");
   });
 

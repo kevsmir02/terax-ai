@@ -11,7 +11,8 @@ async function loadSound(ctx: AudioContext): Promise<AudioBuffer> {
 
 async function playLatest(sequence: number): Promise<void> {
   try {
-    if (typeof AudioContext === "undefined" || typeof fetch === "undefined") return;
+    if (typeof AudioContext === "undefined" || typeof fetch === "undefined")
+      return;
     context ??= new AudioContext();
     if (context.state === "suspended") await context.resume();
 

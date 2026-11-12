@@ -168,12 +168,12 @@ export async function evaluateCloseHazards(
   let checkedLeafIds = capture().leafIds;
   for (let pass = 0; pass < MAX_HAZARD_PASSES; pass += 1) {
     const checks = await Promise.all(
-    checkedLeafIds.map((leafId) =>
-      // An unavailable probe is not evidence that the pane is safe to kill:
-      // an uncertain process must still be resolved before close.
-      isBusy(leafId).catch(() => true),
-    ),
-  );
+      checkedLeafIds.map((leafId) =>
+        // An unavailable probe is not evidence that the pane is safe to kill:
+        // an uncertain process must still be resolved before close.
+        isBusy(leafId).catch(() => true),
+      ),
+    );
     const latest = capture();
     if (sameIds(checkedLeafIds, latest.leafIds)) {
       return {

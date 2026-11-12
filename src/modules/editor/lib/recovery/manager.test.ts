@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  isStaleCompletion,
-  planCleanup,
-  planRestore,
-} from "./cleanup";
+import { isStaleCompletion, planCleanup, planRestore } from "./cleanup";
 import { makeRecord, recordBytes, type RecoveryRecord } from "./model";
 import {
   createRecoveryManager,
@@ -461,9 +457,7 @@ describe("cleanup", () => {
     // The newer typing survived the cleanup, and it is already durable.
     expect(h.storage.records.get("buf-a")?.text).toBe("rev two");
     expect(h.status("buf-a").kind).toBe("durable");
-    expect(h.status("buf-a").durableRevision).toBe(
-      buf.revisionOf("rev two"),
-    );
+    expect(h.status("buf-a").durableRevision).toBe(buf.revisionOf("rev two"));
   });
 
   it("removes only the buffer's resolved revision, never another Space's draft", async () => {
@@ -496,7 +490,10 @@ describe("cleanup", () => {
     await h.advance(2000); // write is in flight
     const revision = buf.revisionOf("doomed") ?? 1;
     // The cleanup waits behind the in-flight write; resolve it after release.
-    const saving = buf.saved({ writtenText: "doomed", resolvedRevision: revision });
+    const saving = buf.saved({
+      writtenText: "doomed",
+      resolvedRevision: revision,
+    });
     h.storage.release?.();
     await saving;
     await h.advance(5000);
@@ -556,7 +553,10 @@ describe("cleanup", () => {
     buf.edit({ text: "kept", diskRevision: null });
     await h.advance(2000);
     const records = await h.manager.records();
-    const plan = planCleanup(records, { bufferId: "buf-a", resolvedRevision: 0 });
+    const plan = planCleanup(records, {
+      bufferId: "buf-a",
+      resolvedRevision: 0,
+    });
     expect(plan.remove).toHaveLength(0);
     expect(plan.keep).toHaveLength(1);
   });
@@ -727,7 +727,8 @@ describe("exclusions and shutdown", () => {
     expect(h.storage.writes).toHaveLength(0);
   });
 
-  it("exposes stale-completion and record helpers consistently", () => {    const record = makeRecord({
+  it("exposes stale-completion and record helpers consistently", () => {
+    const record = makeRecord({
       bufferId: "buf-a",
       spaceId: "sp-a",
       path: "/home/me/a.txt",

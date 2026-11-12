@@ -6,7 +6,10 @@ import {
   type CommandPaletteActionContext,
   createCommandItems,
 } from "@/modules/command-palette/commands";
-import { MAC_DEFAULTS, WIN_LINUX_DEFAULTS } from "@/modules/shortcuts/shortcutDefaults";
+import {
+  MAC_DEFAULTS,
+  WIN_LINUX_DEFAULTS,
+} from "@/modules/shortcuts/shortcutDefaults";
 import {
   type KeyBinding,
   matchBinding,

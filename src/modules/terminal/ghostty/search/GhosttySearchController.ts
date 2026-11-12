@@ -77,7 +77,11 @@ export class GhosttySearchController implements TerminalSearchController {
 
   refreshOverlay(): void {
     if (this.search) this.search.refreshOverlay();
-    else if (!this.disposed && !this.loading && this.model.blockSearchActive?.()) {
+    else if (
+      !this.disposed &&
+      !this.loading &&
+      this.model.blockSearchActive?.()
+    ) {
       this.load();
     }
   }

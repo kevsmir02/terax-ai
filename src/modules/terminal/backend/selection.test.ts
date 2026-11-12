@@ -50,7 +50,10 @@ describe("terminal backend selection", () => {
   });
 
   describe("renderer setting", () => {
-    const gpu = { userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", gpu: {} };
+    const gpu = {
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+      gpu: {},
+    };
     const noGpu = { userAgent: gpu.userAgent };
 
     it("is WebGPU under Automatic and WebGPU on every platform, with WebGL only by choice", () => {

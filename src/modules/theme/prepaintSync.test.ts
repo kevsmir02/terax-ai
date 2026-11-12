@@ -18,12 +18,10 @@ describe("pre-paint background colors", () => {
   const html = readFileSync(findIndexHtml(), "utf8");
 
   it("paints exactly the colors the vibrancy bridge repaints with", () => {
-    const hexLiterals = [...html.matchAll(/#(?:[0-9a-fA-F]{6})\b/g)].map(
-      (m) => m[0].toLowerCase(),
+    const hexLiterals = [...html.matchAll(/#(?:[0-9a-fA-F]{6})\b/g)].map((m) =>
+      m[0].toLowerCase(),
     );
-    expect(new Set(hexLiterals)).toEqual(
-      new Set(Object.values(PREPAINT_BG)),
-    );
+    expect(new Set(hexLiterals)).toEqual(new Set(Object.values(PREPAINT_BG)));
   });
 
   it("assigns dark to dark and light to light, matching the bridge keys", () => {

@@ -220,7 +220,7 @@ export const FileExplorer = memo(
       onRevealInTerminal,
       onOpenInSourceControl,
       onOpenGitHistory,
-          pathDropTarget,
+      pathDropTarget,
       gitStatus,
       visible = true,
     },

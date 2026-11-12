@@ -16,7 +16,11 @@ import {
 } from "./hunks";
 import type { DiffHunk, DiffLine, GitFileDiff } from "./types";
 
-function line(kind: DiffLine["kind"], text: string, noNewline = false): DiffLine {
+function line(
+  kind: DiffLine["kind"],
+  text: string,
+  noNewline = false,
+): DiffLine {
   return { kind, text, oldLine: null, newLine: null, noNewline };
 }
 
@@ -34,7 +38,10 @@ function hunk(id: string, lines: DiffLine[]): DiffHunk {
   };
 }
 
-function diff(hunks: DiffHunk[], overrides: Partial<GitFileDiff> = {}): GitFileDiff {
+function diff(
+  hunks: DiffHunk[],
+  overrides: Partial<GitFileDiff> = {},
+): GitFileDiff {
   return {
     path: "a.txt",
     oldPath: null,
@@ -202,7 +209,12 @@ describe("selectionCounts", () => {
 describe("whole-file and line-level eligibility", () => {
   it("allows hunk picks only for plain modified text files", () => {
     expect(isWholeFileOnly(file)).toBe(false);
-    for (const status of ["added", "deleted", "renamed", "untracked"] as const) {
+    for (const status of [
+      "added",
+      "deleted",
+      "renamed",
+      "untracked",
+    ] as const) {
       expect(isWholeFileOnly(diff([first], { status }))).toBe(true);
     }
     expect(isWholeFileOnly(diff([first], { binary: true }))).toBe(true);

@@ -165,6 +165,9 @@ describe("finishExplorerDrag", () => {
       undefined,
       onMove,
     );
-    expect(onMove).toHaveBeenCalledWith(["/repo/a.ts", "/repo/b.ts"], "/repo/dest");
+    expect(onMove).toHaveBeenCalledWith(
+      ["/repo/a.ts", "/repo/b.ts"],
+      "/repo/dest",
+    );
   });
 });

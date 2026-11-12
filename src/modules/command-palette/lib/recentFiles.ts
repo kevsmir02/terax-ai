@@ -62,7 +62,10 @@ export function recentFiles(root: string): string[] {
 
 export function recordRecentFile(root: string, path: string): void {
   try {
-    localStorage.setItem(KEY, JSON.stringify(recordInStore(read(), root, path)));
+    localStorage.setItem(
+      KEY,
+      JSON.stringify(recordInStore(read(), root, path)),
+    );
   } catch {
     /* ignore */
   }

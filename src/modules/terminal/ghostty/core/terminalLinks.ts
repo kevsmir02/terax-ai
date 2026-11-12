@@ -253,9 +253,7 @@ export function detectTerminalLinks(
   if (candidates.length === 0) return [];
   candidates.sort(
     (a, b) =>
-      a.rank - b.rank ||
-      a.link.start - b.link.start ||
-      b.link.end - a.link.end,
+      a.rank - b.rank || a.link.start - b.link.start || b.link.end - a.link.end,
   );
   const accepted: TerminalTextLink[] = [];
   for (const { link } of candidates) {
