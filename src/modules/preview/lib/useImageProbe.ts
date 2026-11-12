@@ -16,7 +16,10 @@ type ProbeState = {
  * a path change or unmount is dropped, so an old image cannot replace the
  * current one's state.
  */
-export function useImageProbe(path: string, enabled: boolean): {
+export function useImageProbe(
+  path: string,
+  enabled: boolean,
+): {
   probe: ImageProbeOutcome | null;
   retry: () => void;
 } {
