@@ -1434,6 +1434,7 @@ export default function App() {
               newAgentGroupTab={newAgentGroupTab}
               splitActivePane={splitActivePane}
               closeTab={closeTab}
+              openFileTab={(path, pin = true) => openFileTab(path, pin)}
               readBuffer={(leafId, maxLines) =>
                 terminalRefs.current.get(leafId)?.getBuffer(maxLines) ?? null
               }

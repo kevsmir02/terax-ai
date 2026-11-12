@@ -10,11 +10,15 @@ import ctypes
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 
-_libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
-_libsystem = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+# The module is imported by the shared report code on every platform (the Linux app-lab reuses
+# app_report); the macOS-only libproc/mach calls are bound only where they exist.
+_DARWIN = sys.platform == "darwin"
+_libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True) if _DARWIN else None
+_libsystem = ctypes.CDLL("/usr/lib/libSystem.B.dylib") if _DARWIN else None
 
 
 class _Timebase(ctypes.Structure):
@@ -22,7 +26,8 @@ class _Timebase(ctypes.Structure):
 
 
 _timebase = _Timebase()
-_libsystem.mach_timebase_info(ctypes.byref(_timebase))
+if _DARWIN:
+    _libsystem.mach_timebase_info(ctypes.byref(_timebase))
 
 _V4_FIELDS = (
     "ri_user_time ri_system_time ri_pkg_idle_wkups ri_interrupt_wkups ri_pageins ri_wired_size "
@@ -54,8 +59,9 @@ class _RusageV6(ctypes.Structure):
     )
 
 
-_libproc.proc_pid_rusage.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
-_libproc.proc_pid_rusage.restype = ctypes.c_int
+if _DARWIN:
+    _libproc.proc_pid_rusage.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
+    _libproc.proc_pid_rusage.restype = ctypes.c_int
 
 
 def ticks_to_ns(ticks: int) -> int:
@@ -65,6 +71,8 @@ def ticks_to_ns(ticks: int) -> int:
 
 def rusage(pid: int) -> dict | None:
     """Cumulative counters for `pid`, or None if it is gone or inaccessible."""
+    if not _DARWIN:
+        return None
     for flavor, structure in ((6, _RusageV6), (4, _RusageV4)):
         value = structure()
         if _libproc.proc_pid_rusage(pid, flavor, ctypes.byref(value)) != 0:

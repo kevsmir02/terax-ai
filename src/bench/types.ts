@@ -16,6 +16,8 @@ export type BenchAppApi = {
   ) => { tabId: number; leafIds: number[] };
   splitActivePane: (tabId: number, dir: "row" | "col") => number | null;
   closeTab: (id: number) => void;
+  /** Opens a file in an editor tab (the app's own planner); returns the tab id. */
+  openFileTab: (path: string, pin?: boolean) => number;
   readBuffer: (leafId: number, maxLines?: number) => string | null;
 };
 
@@ -29,7 +31,8 @@ export type BenchScenario = {
     | "agents-steady"
     | "idle"
     | "fs-churn"
-    | "input";
+    | "input"
+    | "workflow";
   /** tabs: "2" (shell + agent) or "4" (shell, agent, agent+shell split, shell). */
   variant?: string;
   /** Shell command that starts the synthetic agent (see scripts/app-lab/agent-sim.mjs). */
@@ -75,6 +78,10 @@ export type BenchScenario = {
   prefs?: { windowVibrancy?: boolean };
   /** localStorage entries to set (null removes) before the application starts. */
   localStorage?: Record<string, string | null>;
+  /** workflow: absolute path of the temp file the scenario opens and asserts. */
+  file?: string;
+  /** workflow: the file's distinctive first line, asserted in the rendered editor. */
+  fileText?: string;
 };
 
 export type BenchConfig = {

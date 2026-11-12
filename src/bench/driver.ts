@@ -1014,9 +1014,160 @@ async function inputScenario(run: ScenarioRun): Promise<void> {
   );
 }
 
+/** One observable step of the workflow scenario, as reported to the orchestrator. */
+type WorkflowStep = { name: string; ok: boolean; detail: string };
+
+/**
+ * The acceptance workflow through the real application: a shell spawns, a marker round-trips
+ * exactly, a second tab opens, the active pane splits, the app switches back and a temp file
+ * opens in an editor tab with its text rendered. POSIX-only shell constructs: tab-borne shells
+ * are the passwd login shell (bash on Fedora), not `$SHELL`. Pass/fail lines go to page.log and
+ * the summary travels in the final `done` sync.
+ */
+async function workflowScenario(
+  run: ScenarioRun,
+): Promise<Record<string, unknown>> {
+  const { scenario } = run;
+  const file = scenario.file;
+  const firstLine = scenario.fileText;
+  if (!file || !firstLine)
+    throw new Error(
+      "the workflow scenario needs a file and its text (scripts/app-lab/run.py creates both)",
+    );
+  const token = `wf-${Date.now().toString(36)}`;
+  const expectedEcho = `WF-ECHO:${token}`;
+  const steps: WorkflowStep[] = [];
+  const check = async (name: string, ok: boolean, detail: string) => {
+    steps.push({ name, ok, detail });
+    await run.log(`[workflow] ${ok ? "PASS" : "FAIL"} ${name}: ${detail}`);
+  };
+  const buffer = (leafId: number) => run.app().readBuffer(leafId, 400) ?? "";
+  /** Records a failing step and returns the message (the caller throws it). */
+  const failed = async (name: string, detail: string) => {
+    await check(name, false, detail);
+    return `workflow step failed: ${name}: ${detail}`;
+  };
+
+  const first = await run.booted();
+  await run.sync("workflow-shell", { token });
+  const booted = run.app().tabs.some(
+    (tab) => tab.id === first.tabId && tab.kind === "terminal",
+  );
+  await check(
+    "shell spawn",
+    booted,
+    `tab ${first.tabId} leaf ${first.leafId} in ${run.app().tabs.map((tab) => tab.kind).join(",")}`,
+  );
+
+  // 1. The written marker, echoed back by the real shell through the real PTY.
+  writeToSession(first.leafId, `printf '%s\\n' '${expectedEcho}'\r`);
+  try {
+    await run.waitFor(
+      () =>
+        buffer(first.leafId)
+          .split("\n")
+          .some((line) => line.trim() === expectedEcho),
+      "the echoed marker",
+      30_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("echo exactness", String(error)));
+  }
+  // The typed command line also contains the marker; only the output line equals it exactly.
+  const copies = buffer(first.leafId)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line === expectedEcho).length;
+  await check("echo exactness", copies === 1, `${copies} exact copies`);
+  await run.sync("workflow-echo", { token, copies });
+
+  // 2. A second terminal tab, with its own shell.
+  const second = await run.newShellTab();
+  await check(
+    "new tab",
+    second.tabId !== first.tabId &&
+      run.app().tabs.some(
+        (tab) => tab.id === second.tabId && tab.kind === "terminal",
+      ),
+    `tab ${second.tabId} leaf ${second.leafId}, ${run.app().tabs.length} tabs`,
+  );
+
+  // 3. Split the first tab's active pane; the new leaf must get a live session too.
+  run.select(first.tabId);
+  await pause(500);
+  const splitLeaf = run.app().splitActivePane(first.tabId, "row");
+  if (splitLeaf === null) {
+    throw new Error(await failed("split pane", "the application refused the split"));
+  }
+  try {
+    await run.sessionReady(splitLeaf);
+  } catch (error) {
+    throw new Error(await failed("split pane", `no session in the new leaf: ${String(error)}`));
+  }
+  const panes = document.querySelectorAll("[data-pane-leaf]").length;
+  await check("split pane", panes >= 2, `leaf ${splitLeaf}, ${panes} pane leaves`);
+  await run.sync("workflow-split", { token, leafId: splitLeaf, panes });
+
+  // 4. Switch away and back: the first tab still owns the split and its scrollback.
+  run.select(second.tabId);
+  await pause(600);
+  run.select(first.tabId);
+  await pause(600);
+  const returned =
+    run.app().activeId === first.tabId &&
+    buffer(first.leafId).includes(expectedEcho);
+  await check(
+    "switch back",
+    returned,
+    `active ${run.app().activeId}, marker ${returned ? "present" : "lost"}`,
+  );
+
+  // 5. Open the temp file through the app's own tab planner and read the editor's text.
+  const fileTabId = run.app().openFileTab(file);
+  const fileTab = () => run.app().tabs.find((tab) => tab.id === fileTabId);
+  try {
+    await run.waitFor(
+      () => run.app().activeId === fileTabId && fileTab()?.kind === "editor",
+      "the file tab",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("open file tab", String(error)));
+  }
+  const editorText = () =>
+    document.querySelector(".cm-content")?.textContent ?? "";
+  try {
+    await run.waitFor(
+      () => editorText().includes(firstLine),
+      "the opened file's text",
+      30_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("opened file text", `${String(error)}: ${editorText().slice(0, 120)}`));
+  }
+  const tab = fileTab();
+  await check(
+    "open file tab",
+    tab?.kind === "editor" && tab.path === file,
+    `tab ${fileTabId} kind ${tab?.kind} path ${tab?.kind === "editor" ? tab.path : "-"}`,
+  );
+  await check(
+    "opened file text",
+    editorText().includes(firstLine),
+    JSON.stringify(editorText().slice(0, 120)),
+  );
+  await run.sync("workflow-file", { token, file, fileTabId });
+
+  const pass = steps.every((step) => step.ok);
+  await run.log(
+    `[workflow] ${pass ? "PASS" : "FAIL"} summary: ${steps.filter((step) => !step.ok).length} failures of ${steps.length}`,
+  );
+  return { workflow: { token, pass, steps, fileTabId } };
+}
+
 const SCENARIOS: Record<
   BenchScenario["name"],
-  (run: ScenarioRun) => Promise<void>
+  (run: ScenarioRun) => Promise<unknown>
 > = {
   tabs: tabsScenario,
   resize: resizeScenario,
@@ -1026,6 +1177,7 @@ const SCENARIOS: Record<
   idle: idleScenario,
   "fs-churn": fsChurnScenario,
   input: inputScenario,
+  workflow: workflowScenario,
 };
 
 let started = false;
@@ -1041,8 +1193,12 @@ export async function startBenchDriver(app: () => BenchAppApi): Promise<void> {
   try {
     await pause(1500);
     await run.sync("blank", { identifier: config.identifier });
-    await SCENARIOS[config.scenario.name](run);
-    await run.sync("done");
+    const summary = (
+      (await SCENARIOS[config.scenario.name](run)) as
+        | Record<string, unknown>
+        | undefined
+    );
+    await run.sync("done", summary ?? {});
   } catch (error) {
     console.error("[bench] scenario failed:", error);
     await reportError(config.reportUrl, error);

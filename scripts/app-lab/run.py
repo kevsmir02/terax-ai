@@ -1,4 +1,5 @@
-"""App lab: ground-truth resource benchmark of the REAL Terax application (macOS).
+"""App lab: ground-truth resource benchmark of the REAL Terax application (macOS), plus the
+Linux/WebKitGTK acceptance workflow (`--scenario workflow`, ticket 01).
 
 Unlike scripts/renderer-profile (a synthetic renderer in a bare WKWebView) this builds the real
 app, with the full React shell, real PTYs, real tabs/splits and the real window, from a source
@@ -18,6 +19,12 @@ Scenarios (`--scenario`):
   agents-steady  1 visible + `--hidden-agents` hidden agent tabs for `--duration` s (CPU/energy)
   idle           one idle shell for `--duration` s
   input          native key events / input-method calls into a PTY reader (pass/fail in page.log)
+  workflow       Linux acceptance workflow: shell spawn, exact echo, new tab, split, switch back,
+                 open a temp file and assert the editor's text (pass/fail in page.log)
+
+Linux currently implements `workflow` only (WebKitGTK); the measured scenarios above stay
+macOS-only until ticket 02 (sampling) and ticket 32 (input/resize/layers). On Linux the app is
+built with `--no-bundle` into `<target>/<profile>/terax`.
 
 The app runs from an isolated bundle (identifier app.crynta.terax.app-lab, its own HOME), never
 the user's profile; the bench build refuses to start under the product identifier. Build once
@@ -45,16 +52,20 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 
 sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(REPO / "scripts"))
 sys.path.insert(0, str(REPO / "scripts/renderer-profile"))
 import app_report  # noqa: E402
+import linux_profile  # noqa: E402
 import procstats  # noqa: E402
 
+SYSTEM = platform.system()
 IDENTIFIER = "app.crynta.terax.app-lab"
 PRODUCT_NAME = "Terax App Lab"
 MAX_ATTEMPTS = 3
@@ -73,6 +84,8 @@ procstats.ROLE_LABEL["workload"] = "PTY-procs"
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter, allow_abbrev=False)
     p.add_argument("--scenario", choices=list(app_report.SCENARIOS))
+    p.add_argument("--self-test", action="store_true", help="prove the preflight refusal and the bench binary's isolation guard, then exit")
+    p.add_argument("--identifier", help="disposable app identifier (Linux default: app.crynta.terax.app-lab-<hex>)")
     p.add_argument("--variant", default=None, help="tabs: 2 (default) or 4")
     p.add_argument("--source", type=Path, help="source tree to build (default: this checkout; see export-tree.sh)")
     p.add_argument("--revision", help="label for a source tree without Git metadata")
@@ -174,6 +187,8 @@ def other_benchmarks() -> list[str]:
 
 
 def build(args, source: Path, output: Path, target_dir: Path) -> Path:
+    if SYSTEM == "Linux":
+        return build_linux(args, source, output, target_dir)
     """Frontend with TERAX_BENCH=1, then the Tauri bundle with the `bench` feature. Returns the .app."""
     dist = output / "dist"
     bundle_dir = target_dir / args.profile / "bundle/macos"
@@ -204,6 +219,48 @@ def build(args, source: Path, output: Path, target_dir: Path) -> Path:
     if not app.exists():
         raise RuntimeError(f"build produced no {app}")
     return app
+
+
+def build_linux(args, source: Path, output: Path, target_dir: Path) -> Path:
+    """Frontend with TERAX_BENCH=1, then the app binary with the `bench` feature (no bundle).
+
+    `--no-bundle` skips deb/rpm/appimage (and the CLI sidecar those would need); the binary is
+    `<target>/<profile>/terax`. The generated config maps onto src-tauri/tauri.conf.json and
+    overrides the identifier, the frontend location and the hidden main window.
+    """
+    dist = output / "dist"
+    binary = target_dir / args.profile / "terax"
+    config = output / "tauri.conf.json"
+    config.write_text(json.dumps({
+        "productName": PRODUCT_NAME,
+        "identifier": args.identifier,
+        "build": {"beforeBuildCommand": "", "frontendDist": str(dist)},
+        # The real config starts hidden and relies on the page to show the window; a page error
+        # would then leave an invisible app hanging the run.
+        "app": {"windows": [{
+            "label": "main", "title": PRODUCT_NAME, "width": 1280, "height": 820, "visible": True,
+        }]},
+        "bundle": {"active": False, "createUpdaterArtifacts": False},
+    }))
+    if args.reuse_build and binary.exists() and (dist / "index.html").exists():
+        print(f"Reusing {binary}", flush=True)
+        return binary
+    env = {**os.environ, "TERAX_BENCH": "1", "TERAX_BENCH_IDENTIFIER": args.identifier, "CARGO_TARGET_DIR": str(target_dir)}
+    started = time.monotonic()
+    with (output / "build.log").open("w") as log:
+        print("Building the frontend (TERAX_BENCH=1)...", flush=True)
+        subprocess.run([str(source / "node_modules/.bin/vite"), "build", "--outDir", str(dist), "--emptyOutDir"], cwd=source, env=env, stdout=log, stderr=log, check=True)
+        frontend_s = time.monotonic() - started
+        print("Building the app (cargo %s, feature bench)..." % args.profile, flush=True)
+        command = [str(source / "node_modules/.bin/tauri"), "build", "--no-bundle", "--features", "bench", "--config", str(config)]
+        if args.profile == "debug":
+            command.append("--debug")
+        subprocess.run(command, cwd=source, env=env, stdout=log, stderr=log, check=True)
+    print(f"Built in {time.monotonic() - started:.0f}s (frontend {frontend_s:.0f}s)", flush=True)
+    (output / "build-seconds.json").write_text(json.dumps({"frontend": frontend_s, "total": time.monotonic() - started}))
+    if not binary.exists():
+        raise RuntimeError(f"build produced no {binary}")
+    return binary
 
 
 # ---------------------------------------------------------------------------------------------
@@ -317,18 +374,38 @@ def main() -> int:
     if args.compare and args.candidate:
         print(app_report.compare([app_report.load(p) for p in args.compare], [app_report.load(p) for p in args.candidate]))
         return 0
-    if platform.system() != "Darwin":
-        raise SystemExit("The app lab requires macOS (footprint, vmmap, WKWebView).")
+    if SYSTEM not in ("Darwin", "Linux"):
+        raise SystemExit(f"The app lab requires macOS or Linux, not {SYSTEM}.")
     if not args.scenario and not args.build_only:
         raise SystemExit("--scenario is required")
+    if SYSTEM == "Linux" and not args.build_only and args.scenario != "workflow":
+        raise SystemExit(
+            "On Linux only the workflow scenario is implemented so far (ticket 02 owns the "
+            "measured scenarios, ticket 32 input/resize/layers)."
+        )
     source = (args.source or REPO).resolve()
     output = (args.output or Path(tempfile.mkdtemp(prefix="terax-app-lab-"))).resolve()
     output.mkdir(parents=True, exist_ok=True)
     target_dir = (args.target_dir or output.parent / f"app-lab-target-{args.profile}").resolve()
+    args.identifier = args.identifier or (
+        f"{IDENTIFIER}-{uuid.uuid4().hex[:8]}" if SYSTEM == "Linux" else IDENTIFIER
+    )
+    if SYSTEM == "Linux":
+        # Fail before the build: an unsafe identifier/profile never reaches the application.
+        linux_profile.preflight(
+            args.identifier,
+            {**linux_profile.profile_env(output / "home"), "TERAX_BENCH_ISOLATED": "1"},
+            output,
+            require_isolated=True,
+        )
     app = args.app.resolve() if args.app else build(args, source, output, target_dir)
     if args.build_only:
         print(f"Built {app}")
         return 0
+    if args.self_test:
+        if SYSTEM != "Linux":
+            raise SystemExit("--self-test proves the Linux disposable-profile preflight; run it on Linux")
+        return self_test(args, app, output)
     # Only one benchmark window at a time (building is fine alongside a run).
     lock = LOCK_PATH.open("w")
     try:
@@ -336,7 +413,7 @@ def main() -> int:
     except OSError:
         raise SystemExit(f"Another app-lab run holds {LOCK_PATH}")
 
-    if session_locked():
+    if SYSTEM == "Darwin" and session_locked():
         deadline = time.monotonic() + args.wait_unlocked
         while session_locked() and time.monotonic() < deadline:
             time.sleep(10)
@@ -397,6 +474,8 @@ def host_timeout(args, scenario: dict) -> float:
     if args.timeout is not None:
         return args.timeout
     name = args.scenario
+    if name == "workflow":
+        return 600
     if name == "tabs":
         return scenario["cycles"] * (scenario["dwellMs"] / 1000 + 12) + 240
     if name == "occlusion":
@@ -409,6 +488,8 @@ def host_timeout(args, scenario: dict) -> float:
 
 
 def run(args, app: Path, source: Path, output: Path) -> int:
+    if SYSTEM == "Linux":
+        return run_linux(args, app, source, output)
     home = output / "home"
     clean_profile(home)
     report_path = (args.report or output / "report.json").resolve()
@@ -658,6 +739,241 @@ def run(args, app: Path, source: Path, output: Path) -> int:
         print("Run failed qualification: keep the app window visible/focused and rerun.", file=sys.stderr)
         return 2
     return 0
+
+
+def scenario_json_linux(args, file: Path, first_line: str, workspace: Path) -> dict:
+    """The workflow scenario as the driver receives it (Linux; no synthetic agent)."""
+    local: dict[str, str | None] = {}
+    for entry in args.local_storage:
+        key, _, value = entry.partition("=")
+        local[key] = None if value == "null" else value
+    for entry in args.toggle:
+        key, _, value = entry.partition("=")
+        local[f"terax:bench:{key}"] = value or "1"
+    # The bench build mounts the real App, whose updater auto-checks on mount: on Linux that
+    # fetches api.github.com and can raise a dialog over the window. Preseed the throttle.
+    local.setdefault("terax:updater:last-check", str(int(time.time() * 1000)))
+    width, height = (float(value) for value in args.window.lower().split("x"))
+    return {
+        "name": "workflow",
+        "window": {"width": width, "height": height},
+        "file": str(file),
+        "fileText": first_line,
+        "cwds": {"shell": str(workspace)},
+        "localStorage": local,
+    }
+
+
+def run_linux(args, binary: Path, source: Path, output: Path) -> int:
+    """Launch the real WebKitGTK app in a disposable profile and collect the workflow evidence."""
+    home = output / "home"
+    linux_profile.prepare(home, output)
+    workspace = output / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    token = uuid.uuid4().hex[:10]
+    first_line = f"workflow-file {token}"
+    file = output / "workflow-file.txt"
+    file.write_text(f"{first_line}\nsecond line for the editor\n")
+    report_path = (args.report or output / "report.json").resolve()
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    scenario = scenario_json_linux(args, file, first_line, workspace)
+    timeout = host_timeout(args, scenario)
+    load_average = [round(value, 2) for value in os.getloadavg()]
+
+    server = ReportServer()
+    env = {**{key: value for key, value in os.environ.items() if not key.startswith(("TAURI_", "VITE_", "CARGO_"))}}
+    env.update(linux_profile.profile_env(home))
+    env.update(linux_profile.session_env())
+    env.update({
+        "TERAX_BENCH_ISOLATED": "1",
+        "TERAX_BENCH_SCENARIO": json.dumps(scenario),
+        "TERAX_BENCH_REPORT_URL": server.url,
+    })
+    linux_profile.preflight(args.identifier, env, output, require_isolated=True)
+
+    revision = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"], text=True, capture_output=True)
+    has_git = revision.returncode == 0 and (source / ".git").exists()
+    build_seconds = {}
+    if (output / "build-seconds.json").exists():
+        build_seconds = json.loads((output / "build-seconds.json").read_text())
+    manifest = {
+        "schema": "terax-app-lab/1",
+        "scope": (
+            "The real Linux/WebKitGTK application (bench build: full React shell, real PTYs, tabs, "
+            "splits and editor) in a disposable profile, driven by the in-app workflow scenario over "
+            "the local report server. Process sampling, metrics and the whole-app baseline are "
+            "macOS-only until ticket 02; this run records the host stack and the workflow evidence."
+        ),
+        "config": {
+            "scenario": args.scenario, "label": args.label, "profile": args.profile,
+            "hostTimeoutS": timeout, "scenarioJson": scenario, "buildSeconds": build_seconds,
+            "window": args.window,
+        },
+        "sourceRevision": revision.stdout.strip() if has_git else args.revision,
+        "sourceTree": str(source),
+        "platform": platform.platform(),
+        "environment": linux_profile.host_stack(),
+        "isolation": {
+            "identifier": args.identifier,
+            "home": str(home),
+            "profile": linux_profile.profile_env(home),
+            "session": linux_profile.session_env(env),
+            "benchIsolated": env.get("TERAX_BENCH_ISOLATED"),
+        },
+        "appBinarySha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+        "qualification": {"qualified": True, "failures": [], "advisories": []},
+        "warnings": [],
+        "samples": [],
+        "series": [],
+    }
+    manifest["environment"]["loadAverageStart"] = load_average
+    log = (output / "app.log").open("w")
+    process = subprocess.Popen(
+        [str(binary), str(workspace)],
+        cwd=home,
+        env=env,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    manifest["hostPid"] = process.pid
+    failed: BaseException | None = None
+    workflow: dict = {}
+    started = time.monotonic()
+    try:
+        deadline = started + timeout
+        first_event_by = started + 180
+        while True:
+            try:
+                event, done, _reply = server.events.get(timeout=1)
+            except queue.Empty:
+                if process.poll() is not None:
+                    raise RuntimeError(f"The app exited ({process.returncode}) before finishing; see {output / 'app.log'}")
+                if time.monotonic() > deadline:
+                    raise RuntimeError(f"Timed out after {timeout:.0f}s")
+                if not manifest["samples"] and time.monotonic() > first_event_by:
+                    raise RuntimeError(f"The scenario driver never reported (page log: {server.log[-3:]}); see {output / 'app.log'}")
+                continue
+            phase = event.get("phase")
+            try:
+                if phase == "error":
+                    raise RuntimeError(event)
+                if phase == "done":
+                    manifest["samples"].append({"phase": "done", "tMonoNs": time.monotonic_ns(), "event": app_report.slim_event(event)})
+                    workflow = event.get("workflow") or {}
+                    break
+                reasons = app_report.qualify(args.scenario, phase, event)
+                manifest["samples"].append({
+                    "phase": phase, "tMonoNs": time.monotonic_ns(),
+                    "elapsedS": time.monotonic() - started,
+                    "event": app_report.slim_event(event),
+                })
+                if reasons:
+                    manifest["qualification"]["qualified"] = False
+                    manifest["qualification"]["failures"].append({"phase": phase, "reasons": reasons})
+                print(json.dumps({"phase": phase}), flush=True)
+            finally:
+                done.set()
+    except BaseException as error:  # a partial report is still worth keeping
+        failed = error
+        manifest["incomplete"] = True
+        manifest["error"] = repr(error)
+    finally:
+        for kill in (signal.SIGTERM, signal.SIGKILL):
+            if process.poll() is not None:
+                break
+            try:
+                os.killpg(process.pid, kill)
+            except ProcessLookupError:
+                break
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
+        server.httpd.shutdown()
+        log.close()
+        if server.log:
+            (output / "page.log").write_text("\n".join(server.log))
+        manifest["workflow"] = workflow
+        manifest["environment"]["loadAverageEnd"] = [round(value, 2) for value in os.getloadavg()]
+        unfocused = [
+            sample["phase"] for sample in manifest["samples"]
+            if (sample["event"].get("native") or {}).get("appActive") is False
+        ]
+        if unfocused:
+            shown = ", ".join(unfocused[:6]) + ("..." if len(unfocused) > 6 else "")
+            manifest["qualification"]["advisories"].append(
+                f"focus is advisory on Wayland (the compositor decides): appActive=false in "
+                f"{len(unfocused)} of {len(manifest['samples'])} phases ({shown})"
+            )
+        for sample in reversed(manifest["samples"]):
+            diag = sample["event"].get("diag") or {}
+            if "devicePixelRatio" in diag:
+                manifest["environment"]["observedDevicePixelRatio"] = diag["devicePixelRatio"]
+                break
+        if workflow:
+            manifest["qualification"]["workflowPass"] = bool(workflow.get("pass"))
+        report_path.write_text(app_report.dump(manifest))
+        linux_profile.cleanup(home, output)
+    if failed is not None:
+        raise failed
+    steps = workflow.get("steps") or []
+    passed = sum(1 for step in steps if step.get("ok"))
+    print(f"workflow {'PASS' if workflow.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
+    print(f"\nSaved {report_path}")
+    if not workflow.get("pass"):
+        print("Run failed: the workflow reported a failing step (see page.log).", file=sys.stderr)
+        return 2
+    return 0
+
+
+def self_test(args, binary: Path, output: Path) -> int:
+    """Prove the two refusals: an unsafe profile is rejected, and the binary's own gate refuses.
+
+    The preflight cases are pure path/identity checks. The last case launches the real bench
+    binary without TERAX_BENCH_ISOLATED=1: `modules::bench::guard` fails in `setup`, so the app
+    exits nonzero with the reason instead of starting against an undeclared environment.
+    """
+    scratch = Path(tempfile.mkdtemp(prefix="terax-app-lab-selftest-"))
+    failures: list[str] = []
+    home = scratch / "home"
+    scratch.mkdir(parents=True, exist_ok=True)
+    try:
+        linux_profile.prepare(home, scratch)
+        safe = {**linux_profile.profile_env(home), "TERAX_BENCH_ISOLATED": "1"}
+        cases = [
+            ("product identifier", "app.crynta.terax", safe),
+            ("foreign identifier namespace", "com.example.other", safe),
+            ("HOME outside the run output", f"{IDENTIFIER}-test", {**safe, "HOME": str(Path.home())}),
+            ("control-descriptor cache dir", f"{IDENTIFIER}-test", {**safe, "XDG_CACHE_HOME": str(linux_profile.real_cache_dir())}),
+            ("missing isolation declaration", f"{IDENTIFIER}-test", {**safe, "TERAX_BENCH_ISOLATED": ""}),
+        ]
+        for name, identifier, env in cases:
+            found = linux_profile.problems(identifier, env, scratch, require_isolated=True)
+            print(f"[self-test] {'PASS' if found else 'FAIL'} {name}: {found or 'accepted'}")
+            if not found:
+                failures.append(name)
+        accepted = linux_profile.problems(f"{IDENTIFIER}-test", safe, scratch, require_isolated=True)
+        print(f"[self-test] {'PASS' if not accepted else 'FAIL'} disposable profile accepted: {accepted}")
+        if accepted:
+            failures.append("disposable profile accepted")
+
+        env = {**os.environ}
+        env.update(linux_profile.profile_env(home))
+        env.update(linux_profile.session_env())
+        env.pop("TERAX_BENCH_ISOLATED", None)
+        completed = subprocess.run(
+            [str(binary)], cwd=home, env=env, capture_output=True, text=True, timeout=180,
+        )
+        output_text = completed.stdout + completed.stderr
+        refused = completed.returncode != 0 and "TERAX_BENCH_ISOLATED" in output_text
+        print(f"[self-test] {'PASS' if refused else 'FAIL'} bench binary refuses an undeclared environment: exit {completed.returncode}")
+        if not refused:
+            failures.append("bench binary isolation guard")
+            print(output_text[-2000:])
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    return 1 if failures else 0
 
 
 def footprint_of(ids: list[int], path: Path, categories: bool) -> dict:
