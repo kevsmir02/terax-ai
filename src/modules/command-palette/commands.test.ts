@@ -43,7 +43,6 @@ function baseContext(
     toggleSidebar: noop,
     toggleHiddenFiles: noop,
     toggleAi: noop,
-    askAiSelection: noop,
     openSettings: noop,
     openKeyboardShortcuts: noop,
     openSpacesOverview: noop,

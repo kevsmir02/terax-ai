@@ -61,7 +61,6 @@ export const MAC_DEFAULTS: Readonly<Record<ShortcutId, readonly KeyBinding[]>> =
     "search.focus": [{ meta: true, key: "f" }],
     "ai.toggle": [{ meta: true, key: "i" }],
     "ai.toggleMini": [{ shift: true, meta: true, key: "i" }],
-    "ai.askSelection": [{ meta: true, key: "j" }],
     "agent.focusAttention": [{ shift: true, meta: true, key: "a" }],
     "sidebar.toggle": [
       { meta: true, key: "b" },
@@ -85,7 +84,6 @@ export const MAC_DEFAULTS: Readonly<Record<ShortcutId, readonly KeyBinding[]>> =
       { shift: true, meta: true, key: "z" },
     ],
     "editor.save": [{ meta: true, key: "s" }],
-    "editor.aiComplete": [{ alt: true, key: "\\" }],
     "editor.codeComplete": [{ ctrl: true, key: " " }],
   };
 
@@ -127,7 +125,6 @@ export const WIN_LINUX_DEFAULTS: Readonly<
   "search.focus": [{ ...CS, key: "f" }],
   "ai.toggle": [{ ...CS, key: "i" }],
   "ai.toggleMini": [{ ...CS, key: "," }],
-  "ai.askSelection": [{ ...CS, key: "j" }],
   "agent.focusAttention": [{ ...CS, key: "a" }],
   "sidebar.toggle": [{ ...CS, key: "b" }],
   "explorer.focus": [{ ...CS, key: "x" }],
@@ -145,6 +142,5 @@ export const WIN_LINUX_DEFAULTS: Readonly<
     { ...CS, key: "z" },
   ],
   "editor.save": [{ ctrl: true, key: "s" }],
-  "editor.aiComplete": [{ alt: true, key: "\\" }],
   "editor.codeComplete": [{ ctrl: true, key: " " }],
 };

@@ -29,7 +29,7 @@ describe("statusConsumers", () => {
     for (const kind of ["git-diff", "git-history", "git-commit-file"]) {
       expect(live({ activeTabKind: kind, sidebarCollapsed: true })).toBe(true);
     }
-    expect(isGitTabKind("ai-diff")).toBe(false);
+    expect(isGitTabKind("markdown")).toBe(false);
     expect(isGitTabKind("terminal")).toBe(false);
   });
 
