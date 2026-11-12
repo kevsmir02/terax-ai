@@ -84,7 +84,9 @@ Terax positions itself as **lightweight, fast, production-grade**. Every PR is r
 - `cargo fmt` applied before pushing
 - No perf regressions in known hot paths: terminal renderer, PTY stream, AI streaming, source control, file explorer
 - No new heavy dependencies (>50KB gzip in client bundle, >5MB compiled on Rust side) without justification
-- Platform parity preserved (macOS / Linux / Windows / WSL still work)
+- Platform scope respected: this fork distributes Linux x86-64 only, so the Linux build must stay
+  working. There is no macOS/Windows/WSL parity bar; the shared code paths for them are retained as
+  inert seams for upstream imports, not as supported targets
 - Security review for changes to AI tool surface, file system access, network paths, IPC commands
 
 If you're not sure how to measure perf or what counts as a hot path, ask in Discord or an issue. Better to confirm than get bounced.

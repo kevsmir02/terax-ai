@@ -20,23 +20,31 @@ If you do not have `cargo-nextest` installed, `cargo test --locked` is the local
 
 ## CI
 
-`.github/workflows/ci.yml` runs on pull requests and pushes to `main`:
+`.github/workflows/ci.yml` runs on pull requests and pushes to `main`. This fork builds and
+distributes Linux x86-64 only, so every job runs on a Linux runner and there is no per-platform
+matrix:
 
 | Job | What it runs |
 | --- | --- |
 | `frontend` | `pnpm lint`, `pnpm check-types`, `pnpm test`, `pnpm build`, `pnpm check:dist` (sourcemapped build into `dist-graph/`: startup dependency graph **and** duplicate-version packages), `pnpm size`, plus advisory `pnpm audit`/`react-compiler-healthcheck`/`pnpm knip` |
 | `rust` | `cargo check/clippy/nextest --locked` on Linux, a locked dependency-graph check, advisory `cargo fmt --check` and `cargo machete`, fish/bash/zsh shell integration |
-| `rust-platforms` | the same check/nextest pair on Windows, macOS and `ubuntu-24.04-arm` |
-| `terminal-platforms` | Vitest terminal suite on Windows/macOS, Playwright pixel parity on macOS |
+| `terminal-linux` | the whole terminal strategy on Linux: the Vitest terminal suite, the sustained-output soak, the adapted-core benchmark and the Playwright pixel parity gate against the WebGL fallback |
 | `coverage` | `cargo llvm-cov nextest --locked` |
 | `repo-guards` | `python3 -m unittest discover -s scripts/tests` |
+
+The Windows/macOS `terminal-platforms` and Windows/macOS/arm `rust-platforms` matrices were
+removed with the platform narrowing (ticket #34). Their Linux halves are `terminal-linux` and
+`rust`, which already ran the same commands, so no Linux coverage was dropped; the one check that
+did not move is the WebGPU half of the pixel gate, which is an existing named gap
+(`docs/architecture/terminal-checks.md`) rather than a removal.
 
 `repo-guards` is the contract job: `scripts/tests` holds the disposable-profile invariants of the
 real-app runners **and** `scripts/tests/test_ci_workflows.py`, which fails if a workflow stops
 pinning the Rust toolchain, reads a Node version from anywhere but `.nvmrc`, installs without
-`--frozen-lockfile`/`--locked`, adds an auto-merge or release publish step to `ci.yml`, drops the
-Windows/macOS jobs, or lets the Linux smoke job leave the disposable `app.crynta.terax.app-lab-*`
-profile. Run it locally before touching `.github/`:
+`--frozen-lockfile`/`--locked`, adds an auto-merge or release publish step to `ci.yml`, runs on a
+runner outside the supported Linux set, re-adds a removed platform's build or distribution step,
+lets the release workflow stage a format `tauri.conf.json` does not declare, or lets a README
+advertise a platform this fork does not build. Run it locally before touching `.github/`:
 
 ```bash
 python3 -m pip install -r scripts/tests/requirements.txt   # PyYAML: validates the workflow YAML
@@ -52,6 +60,12 @@ build with sourcemaps into the gitignored `dist-graph/` and checks both halves o
 the startup graph forbidden chunks/packages, and packages bundled in more than one version (which
 needs the sourcemaps). It exits non-zero if the build produced no sourcemaps, so the duplicate half
 cannot silently stop running.
+
+Dependency updates and upstream imports have their own contracts, both enforced inside
+`scripts/tests`: `docs/architecture/dependency-updates.md` (every manifest has a bounded,
+major-free bot; every required check names a real CI job; every exact pin has a monitor) and
+`docs/architecture/upstream-imports.md` (the two remotes stay distinct, only upstream commits are
+imported, an import runs its gates and never pushes).
 
 Toolchains are pinned in `rust-toolchain.toml` (exact `1.99.1`, with `clippy` and `rustfmt`) and
 `.nvmrc` (Node major, bare file — no comments, because `setup-node` reads the whole thing) for

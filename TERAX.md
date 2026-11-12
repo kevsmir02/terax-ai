@@ -11,7 +11,11 @@ Terax loads `TERAX.md` from the workspace root as agent memory (similar to AGENT
   `app.crynta.terax`; the two must coexist without sharing state — see
   `docs/architecture/namespace-isolation.md`.
 - Package manager: **pnpm**
-- Platforms: macOS, Linux, Windows
+- Platforms: **Linux x86-64 only** for build and distribution (RPM/DEB, plus an authored Arch
+  recipe). The Windows, macOS and WSL code paths upstream shares with Linux are retained in the
+  source as inert seams so upstream imports keep compiling; they are not supported
+  configurations, and their build/distribution workflows and platform bundle config were removed
+  in ticket #34. See `docs/architecture/linux-packages.md`.
 - Frontend checks: `pnpm lint`, `pnpm check-types`, `pnpm test`
 - Rust checks: `cd src-tauri && cargo clippy --all-targets --locked -- -D warnings`, `cd src-tauri && cargo nextest run --locked` (local fallback: `cargo test --locked`)
 
@@ -329,7 +333,9 @@ it is never started automatically. `pnpm soak:ghostty` exercises real WASM model
 without launching the application. `pnpm profile:ghostty` compares allocation
 and parsing workloads in a fresh process per artifact and optional baseline.
 `pnpm profile:renderer:macos` exercises the real renderer in an isolated native
-WKWebView, including optional four-pane layouts and live visual inspection.
+WKWebView, including optional four-pane layouts and live visual inspection; it is a
+macOS-only lab retained as upstream evidence tooling and runs on no supported
+platform, so it establishes nothing about the Linux build on its own.
 `scripts/terminal-visual` draws a fixed pattern through any source tree and reads
 the canvas back as exact pixels for comparison.
 The macOS-only IPC profile that exercised the built-in AI streaming and
@@ -449,9 +455,15 @@ Stored upstream conversations and credentials are never read, migrated or delete
 
 ### Window styling
 
-- macOS: `titleBarStyle: Overlay` + `hiddenTitle: true` in `tauri.conf.json` (native traffic lights via overlay). The main window is created opaque, because a non-opaque `NSWindow` makes WindowServer blend every terminal frame. `window_set_backdrop` makes the window and its `WKWebView` (`drawsBackground`) see-through only while vibrancy is on, and paints the opaque window with the theme's frame colour otherwise. `macOSPrivateApi: true` stays for that `WKWebView` key and the private `NSVisualEffectView` hosting, so the macOS build uses a private API and is not App Store eligible.
-- Linux: `decorations: false` + `transparent: true` from `tauri.linux.conf.json`; re-asserted post-realize for GNOME/Mutter CSD. Windows and Linux stay transparent from creation because the borderless chrome paints its own rounded corners.
-- Windows: same as Linux via `tauri.windows.conf.json`. React renders custom `WindowControls`.
+- Linux is the distributed target: `decorations: false` + `transparent: true` from
+  `tauri.linux.conf.json`; re-asserted post-realize for GNOME/Mutter CSD. React renders custom
+  `WindowControls` (`USE_CUSTOM_WINDOW_CONTROLS`).
+- The macOS/Windows window styling (overlay title bar and native traffic lights,
+  `macOSPrivateApi`, `NSVisualEffectView` hosting, transparent-from-creation on Windows) stays in
+  the Rust/React code as an inert upstream seam. `macOSPrivateApi`, `bundle.macOS`,
+  `bundle.windows`, `tauri.windows.conf.json`, `entitlements.plist`, `Info.plist` and the NSIS
+  `installer-hooks.nsh` were bundle/distribution config and were removed with the platform
+  narrowing (ticket #34); re-adding any of them is re-adding a platform commitment.
 
 ### Tauri capabilities
 
@@ -468,11 +480,16 @@ Stored upstream conversations and credentials are never read, migrated or delete
 
 ### Bundle config
 
-- `bundle.targets: "all"` plus per-platform sections in `tauri.conf.json`:
-  - **macOS**: `minimumSystemVersion: 13.0`.
-  - **Linux**: deb depends `libwebkit2gtk-4.1-0`, `libgtk-3-0`; rpm `webkit2gtk4.1`, `gtk3`; AppImage bundles its media framework.
-  - **Windows**: NSIS installer in `currentUser` mode (no admin required), WebView2 via `downloadBootstrapper`. Installing a missing WebView2 runtime requires internet access; there is no bundled offline runtime. Packaged and offline-install validation remains in the release-readiness gates.
-- Auto-updater configured with a public minisign key; release artifacts at `https://github.com/crynta/terax-ai/releases/latest/download/latest.json`.
+- `bundle.targets` is exactly `["rpm", "deb"]` (ticket #34 narrowed the release to Linux x86-64; the
+  candidate packaging path owns this and refuses anything broader):
+  - **Linux**: deb depends `libwebkit2gtk-4.1-0`, `libgtk-3-0`; rpm `webkit2gtk4.1`, `gtk3`.
+  - No AppImage, DMG, NSIS or MSI output is produced, and no aarch64 artifact. `scripts/packaging.py`
+    and `scripts/tests/test_packaging.py` refuse a broader target set.
+- `bundle.createUpdaterArtifacts` is `false` and the updater endpoints are the fork's non-live
+  `.invalid` contract values (`src/modules/updater/releaseContract.json`). The application never
+  downloads, installs or restarts itself: RPM/DEB upgrades go through the distribution's package
+  tool (the explicit package-tool handoff), and Arch stays package-tool managed. Signing, release
+  trust and publication gates belong to tickets #39/#40.
 - `bundle.resources` includes the upstream Ghostty, Restty, ghostty-web, and xterm.js license notices under `licenses/terminal/`. Repository documentation and test-only reference WASM cores are not packaged; the frontend includes only the adapted SIMD and scalar cores.
 
 ### Known gotchas
