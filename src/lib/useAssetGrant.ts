@@ -62,5 +62,10 @@ export function useAssetGrant(
         : undefined,
     [grant, key],
   );
-  return { urlFor, error: grant?.key === key ? grant.error : undefined, retry };
+  return {
+    urlFor,
+    token: grant?.key === key ? grant.token : undefined,
+    error: grant?.key === key ? grant.error : undefined,
+    retry,
+  };
 }

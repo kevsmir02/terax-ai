@@ -19,8 +19,10 @@
 //! them; `assetDelivery.test.ts` reads this file and fails if they drift.
 
 use std::collections::HashMap;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -221,7 +223,23 @@ struct GrantState {
     /// Deliveries currently reading; see `DeliveryLimits`.
     in_flight: usize,
     in_flight_bytes: u64,
+    /// Bounded record of served requests. Read by the bench scenario so
+    /// "the element requested ranges" is evidence, not an assumption.
+    deliveries: Vec<DeliveryRecord>,
 }
+
+/// One served request, as the app-lab scenario sees it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct DeliveryRecord {
+    pub start: u64,
+    pub length: u64,
+    pub size: u64,
+    pub status: u16,
+    pub ranged: bool,
+}
+
+/// Most recent deliveries kept; a sustained stream does not grow this list.
+const MAX_DELIVERY_RECORDS: usize = 64;
 
 impl GrantState {
     fn owner_generation(&self, owner: &str) -> u64 {
@@ -260,6 +278,8 @@ impl Drop for Delivery<'_> {
 pub struct AssetGrants {
     state: Mutex<GrantState>,
     released: Condvar,
+    /// The loopback media server's port, once it has been started.
+    media_port: Mutex<Option<u16>>,
 }
 
 impl AssetGrants {
@@ -393,6 +413,26 @@ impl AssetGrants {
         let state = self.state.lock().unwrap();
         (state.in_flight, state.in_flight_bytes)
     }
+
+    /// The served-request log, oldest first. Bench scenario only.
+    #[cfg_attr(not(feature = "bench"), allow(dead_code))]
+    pub fn delivery_log(&self) -> Vec<DeliveryRecord> {
+        self.state.lock().unwrap().deliveries.clone()
+    }
+
+    /// Drops the log; the bench scenario clears it between phases.
+    #[cfg_attr(not(feature = "bench"), allow(dead_code))]
+    pub fn clear_delivery_log(&self) {
+        self.state.lock().unwrap().deliveries.clear();
+    }
+
+    fn record_delivery(&self, record: DeliveryRecord) {
+        let mut state = self.state.lock().unwrap();
+        if state.deliveries.len() >= MAX_DELIVERY_RECORDS {
+            state.deliveries.remove(0);
+        }
+        state.deliveries.push(record);
+    }
 }
 
 #[tauri::command]
@@ -432,6 +472,354 @@ pub fn asset_revoke(state: tauri::State<AssetGrants>, webview: tauri::Webview, t
     }
 }
 
+/// Starts the loopback media server on first use and returns its port.
+///
+/// WebKitGTK's GStreamer media backend rejects any source outside the
+/// `http`/`https`/`blob` family (WebKit bug 146351, still open in 2.54.2):
+/// every container from the custom `asset:` scheme reports
+/// `MEDIA_ERR_SRC_NOT_SUPPORTED` even though the same bytes play from a blob
+/// URL. The media surface therefore receives an `http://127.0.0.1:<port>` URL
+/// served here, with the *same* token grants, range chunking, delivery bounds
+/// and revocation as the asset scheme. It is a transport for the existing
+/// policy, not a second, weaker one.
+impl AssetGrants {
+    fn ensure_media_server(&self, app: &tauri::AppHandle) -> Result<u16, String> {
+        let mut port = self.media_port.lock().unwrap();
+        if let Some(port) = *port {
+            return Ok(port);
+        }
+        let listener =
+            TcpListener::bind(("127.0.0.1", 0)).map_err(|error| error.to_string())?;
+        let bound = listener.local_addr().map_err(|error| error.to_string())?.port();
+        let app = app.clone();
+        std::thread::Builder::new()
+            .name("asset-media-server".into())
+            .spawn(move || media_accept_loop(listener, app))
+            .map_err(|error| error.to_string())?;
+        *port = Some(bound);
+        Ok(bound)
+    }
+
+    /// True while the token still names a live grant (revocation is removal).
+    fn token_current(&self, token: &str) -> bool {
+        self.state.lock().unwrap().grants.contains_key(token)
+    }
+}
+
+/// Returns the loopback URL the media element must use for a granted token.
+///
+/// The URL carries the same bearer token as the asset URL; it grants no new
+/// file access and stops working as soon as the tab scope revokes the grant.
+#[tauri::command]
+pub fn asset_media_url(
+    app: tauri::AppHandle,
+    state: tauri::State<AssetGrants>,
+    token: String,
+) -> Result<String, String> {
+    let port = state.ensure_media_server(&app)?;
+    Ok(format!("http://127.0.0.1:{port}/media?token={token}"))
+}
+
+/// Concurrent loopback media connections; a misbehaving local client cannot
+/// spawn unbounded handler threads.
+const MAX_MEDIA_CONNECTIONS: usize = 8;
+static MEDIA_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
+
+fn media_accept_loop(listener: TcpListener, app: tauri::AppHandle) {
+    for stream in listener.incoming() {
+        let Ok(stream) = stream else { continue };
+        if MEDIA_CONNECTIONS.fetch_add(1, Ordering::SeqCst) >= MAX_MEDIA_CONNECTIONS {
+            MEDIA_CONNECTIONS.fetch_sub(1, Ordering::SeqCst);
+            let mut stream = stream;
+            let _ = write_media_response(
+                &mut stream,
+                MediaResponse::error(AssetError::busy()),
+                false,
+            );
+            continue;
+        }
+        let app = app.clone();
+        let spawned = std::thread::Builder::new()
+            .name("asset-media-conn".into())
+            .spawn(move || {
+                let mut stream = stream;
+                let _ = handle_media_connection(&mut stream, &app);
+                MEDIA_CONNECTIONS.fetch_sub(1, Ordering::SeqCst);
+            });
+        if spawned.is_err() {
+            MEDIA_CONNECTIONS.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
+fn handle_media_connection(stream: &mut TcpStream, app: &tauri::AppHandle) -> std::io::Result<()> {
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(30)))?;
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 1024];
+    loop {
+        let read = stream.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+        if buffer.windows(4).any(|window| window == b"\r\n\r\n") || buffer.len() > 8192 {
+            break;
+        }
+    }
+    let text = String::from_utf8_lossy(&buffer);
+    let mut lines = text.split("\r\n");
+    let request = lines.next().unwrap_or_default();
+    let mut parts = request.split_whitespace();
+    let method = parts.next().unwrap_or_default();
+    let target = parts.next().unwrap_or_default();
+    let (path, query) = match target.split_once('?') {
+        Some((path, query)) => (path, query),
+        None => (target, ""),
+    };
+    let range = lines.find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        if name.eq_ignore_ascii_case("range") {
+            Some(value.trim().to_string())
+        } else {
+            None
+        }
+    });
+    if method == "OPTIONS" {
+        // The app page reads the delivery URL with a Range header; that is a
+        // non-simple CORS request, so answer the preflight. The token remains
+        // the capability; no origin gains file access without it.
+        let _ = stream.write_all(
+            b"HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\n\
+              Access-Control-Allow-Methods: GET, HEAD, OPTIONS\r\n\
+              Access-Control-Allow-Headers: Range\r\n\
+              Access-Control-Max-Age: 600\r\nConnection: close\r\n\r\n",
+        );
+        return stream.flush();
+    }
+    let response = if method != "GET" && method != "HEAD" {
+        MediaResponse::error(AssetError::new(
+            405,
+            "method-not-allowed",
+            "Only GET and HEAD are served for preview media.",
+        ))
+    } else if path != "/media" {
+        MediaResponse::error(AssetError::new(
+            404,
+            "not-found",
+            "Only /media is served by this preview endpoint.",
+        ))
+    } else {
+        match query_param(query, "token") {
+            Some(token) => deliver_media(
+                &app.state::<AssetGrants>(),
+                &token,
+                range.as_deref(),
+                &DeliveryLimits::approved(),
+            )
+            .unwrap_or_else(MediaResponse::error),
+            None => MediaResponse::error(AssetError::new(
+                403,
+                "missing-grant",
+                "This media URL has no grant token.",
+            )),
+        }
+    };
+    write_media_response(stream, response, method == "HEAD")
+}
+
+/// Serves one granted media file with the same bounds as the asset scheme.
+fn deliver_media(
+    grants: &AssetGrants,
+    token: &str,
+    range_header: Option<&str>,
+    limits: &DeliveryLimits,
+) -> Result<MediaResponse, AssetError> {
+    let grant = {
+        let state = grants.state.lock().unwrap();
+        state.grants.get(token).cloned().ok_or_else(|| {
+            AssetError::new(
+                403,
+                "invalid-grant",
+                "This media grant is unknown, expired or belongs to another view.",
+            )
+        })?
+    };
+    if grant.directory {
+        return Err(AssetError::new(
+            415,
+            "unsupported-media",
+            "This media grant is for a directory, not a media file.",
+        )
+        .with_alternative("open-externally"));
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let mut file = options.open(&grant.root).map_err(AssetError::io)?;
+    let actual = opened_path(&file).map_err(|error| AssetError::new(500, "unreadable", error))?;
+    if actual != grant.root {
+        return Err(AssetError::new(
+            403,
+            "outside-grant",
+            "The opened media escaped its grant boundary.",
+        ));
+    }
+    let mime = media_type(&actual).ok_or_else(|| {
+        AssetError::new(
+            415,
+            "unsupported-media",
+            "This file type is not a previewable media asset.",
+        )
+        .with_alternative("open-externally")
+    })?;
+    let meta = file.metadata().map_err(AssetError::io)?;
+    if !meta.is_file() {
+        return Err(AssetError::new(
+            415,
+            "unsupported-media",
+            "This asset is not a regular file.",
+        ));
+    }
+    let size = meta.len();
+    let range = match range_header {
+        Some(value) => {
+            let ranges = http_range::HttpRange::parse(value, size).map_err(|_| {
+                let mut error =
+                    AssetError::new(416, "invalid-range", "The requested range does not exist.");
+                error.size = Some(size);
+                error
+            })?;
+            if ranges.len() != 1 {
+                let mut error =
+                    AssetError::new(416, "invalid-range", "One media range is required.");
+                error.size = Some(size);
+                return Err(error);
+            }
+            let range = ranges[0];
+            Some((range.start, range.length.min(limits.chunk_bytes)))
+        }
+        None => None,
+    };
+    let planned = match range {
+        Some((_, length)) => length,
+        None if size > limits.override_bytes => return Err(AssetError::too_large(size, limits)),
+        None if size > limits.read_bytes => return Err(AssetError::too_large(size, limits)),
+        None => size,
+    };
+    let _delivery = grants.reserve(planned, limits)?;
+    if !grants.token_current(token) {
+        return Err(AssetError::revoked());
+    }
+    let (start, mut length) = range.unwrap_or((0, planned));
+    let mut body = Vec::new();
+    if planned > 0 {
+        file.seek(SeekFrom::Start(start)).map_err(AssetError::io)?;
+        file.take(planned)
+            .read_to_end(&mut body)
+            .map_err(AssetError::io)?;
+        length = body.len() as u64;
+    }
+    let status = if range.is_some() { 206 } else { 200 };
+    grants.record_delivery(DeliveryRecord {
+        start,
+        length,
+        size,
+        status,
+        ranged: range.is_some(),
+    });
+    Ok(MediaResponse {
+        status,
+        mime,
+        size,
+        start,
+        length,
+        ranged: range.is_some(),
+        body,
+    })
+}
+
+#[derive(Debug)]
+struct MediaResponse {
+    status: u16,
+    mime: &'static str,
+    size: u64,
+    start: u64,
+    length: u64,
+    ranged: bool,
+    body: Vec<u8>,
+}
+
+impl MediaResponse {
+    fn error(error: AssetError) -> Self {
+        Self {
+            status: error.status,
+            mime: "text/plain; charset=utf-8",
+            size: error.size.unwrap_or(0),
+            start: 0,
+            length: error.message.len() as u64,
+            ranged: false,
+            body: error.message.into_bytes(),
+        }
+    }
+}
+
+fn write_media_response(
+    stream: &mut TcpStream,
+    response: MediaResponse,
+    head_only: bool,
+) -> std::io::Result<()> {
+    let mut headers = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
+         Accept-Ranges: bytes\r\nCache-Control: no-store\r\n\
+         Access-Control-Allow-Origin: *\r\n\
+         Access-Control-Expose-Headers: Content-Range, Content-Length, Accept-Ranges\r\n\
+         X-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\n\
+         Connection: close\r\n",
+        response.status,
+        reason_phrase(response.status),
+        response.mime,
+        response.length,
+    );
+    if response.ranged {
+        if response.length > 0 {
+            headers.push_str(&format!(
+                "Content-Range: bytes {}-{}/{}\r\n",
+                response.start,
+                response.start + response.length - 1,
+                response.size
+            ));
+        } else {
+            headers.push_str(&format!("Content-Range: bytes */{}\r\n", response.size));
+        }
+    }
+    headers.push_str("\r\n");
+    stream.write_all(headers.as_bytes())?;
+    if !head_only {
+        stream.write_all(&response.body)?;
+    }
+    stream.flush()
+}
+
+fn reason_phrase(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        206 => "Partial Content",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        413 => "Payload Too Large",
+        415 => "Unsupported Media Type",
+        416 => "Range Not Satisfiable",
+        503 => "Service Unavailable",
+        _ => "Internal Server Error",
+    }
+}
+
 /// Revokes every grant a tab scope owns. A late `asset_grant` for the same
 /// scope cannot install: the scope generation already moved.
 #[tauri::command]
@@ -441,6 +829,22 @@ pub fn asset_revoke_scope(
     scope: String,
 ) {
     state.revoke_scope(webview.label(), &scope);
+}
+
+/// Served-request log for the app-lab media scenario. Bench builds only: it
+/// exists so "the element requested ranges" is observed evidence rather than an
+/// assumption from the extension or `canPlayType`.
+#[cfg(feature = "bench")]
+#[tauri::command]
+pub fn asset_delivery_log(
+    state: tauri::State<AssetGrants>,
+    clear: Option<bool>,
+) -> Vec<DeliveryRecord> {
+    let log = state.delivery_log();
+    if clear.unwrap_or(false) {
+        state.clear_delivery_log();
+    }
+    log
 }
 
 pub fn serve<R: Runtime>(
@@ -666,6 +1070,13 @@ fn deliver(
             headers.insert("Content-Range", header(format!("bytes */{size}")));
         }
     }
+    grants.record_delivery(DeliveryRecord {
+        start,
+        length,
+        size,
+        status,
+        ranged: range.is_some(),
+    });
     Ok(result)
 }
 
@@ -718,6 +1129,7 @@ fn media_type(path: &Path) -> Option<&'static str> {
             "webm" => "video/webm",
             "mov" => "video/quicktime",
             "ogg" => "video/ogg",
+            "mkv" => "video/x-matroska",
             "mp3" => "audio/mpeg",
             "wav" => "audio/wav",
             "flac" => "audio/flac",
@@ -1439,5 +1851,295 @@ mod tests {
         assert!(limits.outstanding > 0);
         assert_eq!(limits.outstanding, MAX_OUTSTANDING_DELIVERIES);
         assert_eq!(limits.outstanding_bytes, limits.override_bytes);
+    }
+
+    #[test]
+    fn media_seek_ranges_are_served_from_the_requested_offset() {
+        // A media element seeks by asking for a new range; the handler must
+        // serve from that offset in one bounded chunk, not restart at zero or
+        // allocate the rest of the file.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clip.mp4");
+        let body: Vec<u8> = (0..200u8).collect();
+        std::fs::write(&path, &body).unwrap();
+        let grants = AssetGrants::default();
+        let token = grants
+            .grant(
+                "main".into(),
+                Some("tab-media".into()),
+                &super::super::to_canon(&path),
+                WorkspaceEnv::Local,
+                0,
+                0,
+            )
+            .unwrap();
+        let limits = test_limits();
+
+        let seek = respond(
+            &grants,
+            "main",
+            &ranged(request(&path, &token), "bytes=100-"),
+            &limits,
+        );
+        assert_eq!(seek.status(), 206);
+        assert_eq!(seek.headers()["Content-Type"], "video/mp4");
+        assert_eq!(seek.headers()["Accept-Ranges"], "bytes");
+        assert_eq!(seek.headers()["Content-Range"], "bytes 100-131/200");
+        assert_eq!(seek.body(), &body[100..132]);
+
+        // The next chunk continues where the previous one stopped.
+        let next = respond(
+            &grants,
+            "main",
+            &ranged(request(&path, &token), "bytes=132-"),
+            &limits,
+        );
+        assert_eq!(next.headers()["Content-Range"], "bytes 132-163/200");
+        assert_eq!(next.body(), &body[132..164]);
+
+        // The tail of the file is short, not padded.
+        let tail = respond(
+            &grants,
+            "main",
+            &ranged(request(&path, &token), "bytes=190-"),
+            &limits,
+        );
+        assert_eq!(tail.status(), 206);
+        assert_eq!(tail.headers()["Content-Range"], "bytes 190-199/200");
+        assert_eq!(tail.body(), &body[190..200]);
+    }
+
+    #[test]
+    fn whole_file_media_reads_cannot_bypass_the_delivery_limits() {
+        // Audio/video are streamed through ranges, but a caller that omits
+        // `Range` must not get an unexamined whole-file allocation around the
+        // approved ceilings.
+        let dir = tempfile::tempdir().unwrap();
+        let grants = AssetGrants::default();
+        let limits = test_limits();
+
+        let medium = dir.path().join("clip.webm");
+        std::fs::write(&medium, vec![b'w'; 96]).unwrap();
+        let token = grants
+            .grant(
+                "main".into(),
+                None,
+                &super::super::to_canon(&medium),
+                WorkspaceEnv::Local,
+                0,
+                0,
+            )
+            .unwrap();
+        let refusal = respond(&grants, "main", &request(&medium, &token), &limits);
+        assert_eq!(refusal.status(), 413);
+        assert_eq!(code(&refusal), "too-large");
+        assert_eq!(refusal.headers()["X-Terax-Asset-Override"], "1");
+        assert!(!String::from_utf8_lossy(refusal.body()).contains("wwww"));
+
+        let huge = dir.path().join("clip.mov");
+        std::fs::write(&huge, vec![b'm'; 160]).unwrap();
+        let token = grants
+            .grant(
+                "main".into(),
+                None,
+                &super::super::to_canon(&huge),
+                WorkspaceEnv::Local,
+                0,
+                0,
+            )
+            .unwrap();
+        assert_eq!(
+            respond(&grants, "main", &request(&huge, &token), &limits).status(),
+            413
+        );
+        assert_eq!(
+            respond(&grants, "main", &overridden(request(&huge, &token)), &limits).status(),
+            413
+        );
+    }
+
+    #[test]
+    fn the_delivery_log_records_what_the_element_requested() {
+        // The real-app scenario reads this log to assert that playback and
+        // seeking actually issued ranged requests, instead of inferring range
+        // support from the file extension or from `canPlayType`.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clip.webm");
+        std::fs::write(&path, vec![b'x'; 200]).unwrap();
+        let grants = AssetGrants::default();
+        let token = grants
+            .grant(
+                "main".into(),
+                None,
+                &super::super::to_canon(&path),
+                WorkspaceEnv::Local,
+                0,
+                0,
+            )
+            .unwrap();
+        let limits = test_limits();
+
+        respond(
+            &grants,
+            "main",
+            &ranged(request(&path, &token), "bytes=0-"),
+            &limits,
+        );
+        respond(
+            &grants,
+            "main",
+            &ranged(request(&path, &token), "bytes=64-"),
+            &limits,
+        );
+        let log = grants.delivery_log();
+        assert_eq!(log.len(), 2);
+        assert_eq!(
+            log[0],
+            DeliveryRecord {
+                start: 0,
+                length: 32,
+                size: 200,
+                status: 206,
+                ranged: true,
+            }
+        );
+        assert_eq!(log[1].start, 64);
+        assert_eq!(log[1].length, 32);
+
+        grants.clear_delivery_log();
+        assert!(grants.delivery_log().is_empty());
+    }
+
+    #[test]
+    fn loopback_media_delivery_serves_ranges_under_the_same_bounds() {
+        // WebKitGTK's media backend is served over loopback HTTP because it
+        // rejects custom URI schemes. The policy must be the asset scheme's:
+        // one chunk per range, no whole-file allocation, revocation honoured.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clip.wav");
+        let body: Vec<u8> = (0..200u8).collect();
+        std::fs::write(&path, &body).unwrap();
+        let grants = AssetGrants::default();
+        let token = grants
+            .grant(
+                "main".into(),
+                Some("tab-media".into()),
+                &super::super::to_canon(&path),
+                WorkspaceEnv::Local,
+                0,
+                0,
+            )
+            .unwrap();
+        let limits = test_limits();
+
+        let seek = deliver_media(&grants, &token, Some("bytes=100-"), &limits).unwrap();
+        assert_eq!(seek.status, 206);
+        assert_eq!(seek.mime, "audio/wav");
+        assert_eq!(seek.start, 100);
+        assert_eq!(seek.length, 32);
+        assert_eq!(seek.size, 200);
+        assert_eq!(seek.body, body[100..132]);
+
+        // No range is still bounded: a 200-byte file over a 64-byte ceiling is
+        // refused. A file the explicit override can reach still offers it.
+        let refusal = deliver_media(&grants, &token, None, &limits).unwrap_err();
+        assert_eq!(refusal.status, 413);
+        let medium = dir.path().join("medium.wav");
+        std::fs::write(&medium, vec![b'm'; 96]).unwrap();
+        let medium_token = grants
+            .grant(
+                "main".into(),
+                None,
+                &super::super::to_canon(&medium),
+                WorkspaceEnv::Local,
+                0,
+                0,
+            )
+            .unwrap();
+        let overrideable = deliver_media(&grants, &medium_token, None, &limits).unwrap_err();
+        assert_eq!(overrideable.status, 413);
+        assert!(overrideable.override_allowed);
+        let bogus = deliver_media(&grants, &token, Some("bytes=999-"), &limits).unwrap_err();
+        assert_eq!(bogus.status, 416);
+        assert_eq!(bogus.size, Some(200));
+        let multi = deliver_media(&grants, &token, Some("bytes=0-1,4-5"), &limits).unwrap_err();
+        assert_eq!(multi.status, 416);
+
+        assert_eq!(
+            deliver_media(&grants, "unknown", None, &limits)
+                .unwrap_err()
+                .status,
+            403
+        );
+        // The same log powers the app-lab range evidence.
+        let log = grants.delivery_log();
+        assert!(log.iter().any(|record| record.ranged
+            && record.start == 100
+            && record.length == 32));
+        grants.revoke_scope("main", "tab-media");
+        assert_eq!(
+            deliver_media(&grants, &token, Some("bytes=0-"), &limits)
+                .unwrap_err()
+                .status,
+            403
+        );
+
+        // A directory grant is not a media source.
+        let directory = grants
+            .grant(
+                "main".into(),
+                None,
+                &super::super::to_canon(dir.path()),
+                WorkspaceEnv::Local,
+                0,
+                0,
+            )
+            .unwrap();
+        assert_eq!(
+            deliver_media(&grants, &directory, Some("bytes=0-"), &limits)
+                .unwrap_err()
+                .status,
+            415
+        );
+    }
+
+    #[test]
+    fn loopback_media_writes_a_valid_range_response() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let body = b"0123456789".to_vec();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request);
+            write_media_response(
+                &mut stream,
+                MediaResponse {
+                    status: 206,
+                    mime: "audio/wav",
+                    size: 10,
+                    start: 4,
+                    length: 4,
+                    ranged: true,
+                    body: body[4..8].to_vec(),
+                },
+                false,
+            )
+            .unwrap();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+        });
+        let mut client = TcpStream::connect(address).unwrap();
+        client
+            .write_all(b"GET /media?token=t HTTP/1.1\r\nRange: bytes=4-\r\n\r\n")
+            .unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).unwrap();
+        server.join().unwrap();
+        let text = String::from_utf8_lossy(&response);
+        assert!(text.starts_with("HTTP/1.1 206 Partial Content\r\n"));
+        assert!(text.contains("Content-Range: bytes 4-7/10\r\n"));
+        assert!(text.contains("Accept-Ranges: bytes\r\n"));
+        assert!(text.contains("Access-Control-Allow-Origin: *\r\n"));
+        assert!(text.ends_with("4567"));
     }
 }

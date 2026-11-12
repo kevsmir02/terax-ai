@@ -211,3 +211,20 @@ it("permits the Windows media origin in both CSP directives", () => {
     expect(policy?.split(/\s+/)).toContain("http://asset.localhost");
   }
 });
+
+it("permits the loopback origin the media element actually uses", () => {
+  // WebKitGTK cannot load media from the custom asset scheme (bug 146351), so
+  // the media surface points at the loopback delivery endpoint. Without this
+  // directive the element is blocked before any request reaches the server.
+  const config = JSON.parse(
+    readFileSync(
+      new URL("../../src-tauri/tauri.conf.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  const media = config.app.security.csp
+    .split(";")
+    .find((value: string) => value.trim().startsWith("media-src "));
+  expect(media?.split(/\s+/)).toContain("http://127.0.0.1:*");
+  expect(media?.split(/\s+/)).toContain("http://localhost:*");
+});

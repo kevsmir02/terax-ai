@@ -26,6 +26,9 @@ Scenarios (`--scenario`):
   images         Linux image seam: representative formats decode in the real WebKitGTK, oversized
                  and corrupt inputs are refused honestly, hidden tabs release, close cycles do not
                  retain decoded viewers or grants
+  media          Linux media seam: real container/codec support from the element's own events,
+                 bounded ranged delivery and seeking, hidden pause without auto-resume,
+                 unsupported/corrupt/interrupted inputs, close releases elements, slots and grants
 
 Linux currently implements `workflow` only (WebKitGTK); the measured scenarios above stay
 macOS-only until ticket 02 (sampling) and ticket 32 (input/resize/layers). On Linux the app is
@@ -48,6 +51,7 @@ import functools
 import hashlib
 import http.server
 import json
+import math
 import os
 import platform
 import queue
@@ -60,6 +64,7 @@ import tempfile
 import threading
 import time
 import uuid
+import wave
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -81,7 +86,7 @@ SYSTEM = platform.system()
 # measured scenarios (tabs, resize, split-drag, occlusion, agents-steady, idle, fs-churn, input)
 # stay unavailable here: WebKitGTK has no occlusion signal, no layer-tree mirror and no native
 # input hook (ticket 32).
-LINUX_SCENARIOS = ("workflow", "preview", "images", "resource", "stress", "startup")
+LINUX_SCENARIOS = ("workflow", "preview", "images", "media", "resource", "stress", "startup")
 SCENARIOS = list(dict.fromkeys([*app_report.SCENARIOS, *LINUX_SCENARIOS]))
 IDENTIFIER = linux_profile.disposable_identifier("app-lab", "stable")
 PRODUCT_NAME = "Terax App Lab"
@@ -604,6 +609,8 @@ def host_timeout(args, scenario: dict) -> float:
         return 600
     if name == "images":
         return 600
+    if name == "media":
+        return 600
     if name == "startup":
         return max(1, args.startup_repeats) * 150 + 120
     if name in ("resource", "stress"):
@@ -917,6 +924,101 @@ def prepare_image_fixtures(workspace: Path, source: Path) -> dict:
     return copied
 
 
+def prepare_media_fixtures(workspace: Path, source: Path) -> dict:
+    """Copy the committed media fixtures the `media` scenario opens.
+
+    The containers are real files generated once with ffmpeg and committed, so
+    the scenario measures this webview's demuxers/decoders rather than this
+    script's idea of a media file. `mismatch` is WebM bytes named `.mp4` (the
+    probe must win over the extension); `unsupported.mp4` is a valid MP4 whose
+    video sample entry names a codec (`zzzz`) no build can decode; and
+    `large.wav` is generated here at ~3.5 MiB so playback has to ask for more
+    than one bounded delivery chunk.
+    """
+    origin = source / "src-tauri/tests/fixtures/media"
+    if not origin.is_dir():
+        origin = REPO / "src-tauri/tests/fixtures/media"
+    names = {
+        "mp4": "sample.mp4",
+        "m4a": "sample.m4a",
+        "mov": "sample.mov",
+        "webm": "sample.webm",
+        "mkv": "sample.mkv",
+        "ogg": "sample.ogg",
+        "wav": "sample.wav",
+        "mp3": "sample.mp3",
+        "flac": "sample.flac",
+        "aac": "sample.aac",
+        "corrupt": "corrupt.webm",
+        "unsupportedCodec": "unsupported.wav",
+    }
+    workspace.mkdir(parents=True, exist_ok=True)
+    copied = {}
+    for key, name in names.items():
+        destination = workspace / name
+        shutil.copyfile(origin / name, destination)
+        copied[key] = str(destination)
+
+    # The bytes say WebM; the name says MP4. A preview that trusted the
+    # extension would mount the wrong demuxer.
+    mismatch = workspace / "mismatched-name.mp4"
+    shutil.copyfile(origin / "sample.webm", mismatch)
+    copied["mismatch"] = str(mismatch)
+
+    # 20 s of 440 Hz stereo PCM at 44.1 kHz: ~3.5 MiB, so seeking past the
+    # first 1 MiB delivery chunk must ask for another range.
+    large = workspace / "large.wav"
+    with wave.open(str(large), "wb") as audio:
+        audio.setnchannels(2)
+        audio.setsampwidth(2)
+        audio.setframerate(44_100)
+        frames = bytearray()
+        for index in range(44_100 * 20):
+            value = int(12_000 * math.sin(2 * math.pi * 440 * index / 44_100))
+            frames += value.to_bytes(2, "little", signed=True) * 2
+        audio.writeframes(bytes(frames))
+    copied["large"] = str(large)
+
+    # What this host was measured to play (see docs/architecture/resource-limits.md);
+    # Matroska is deliberately absent: it is routed only to explain the refusal.
+    # The next `--scenario media` run corrects this list from the element's own
+    # outcomes; a mismatch fails the run instead of being silently accepted.
+    copied["measured"] = [
+        "mp4",
+        "m4a",
+        "mov",
+        "webm",
+        "ogg",
+        "wav",
+        "mp3",
+        "flac",
+        "aac",
+    ]
+    copied["expectedSupported"] = [
+        "mp4",
+        "m4a",
+        "mov",
+        "webm",
+        "ogg",
+        "wav",
+        "mp3",
+        "flac",
+        "aac",
+    ]
+
+    (workspace / "media-README.md").write_text(
+        "# Media fixtures\n\n"
+        "Committed containers copied by `scripts/app-lab/run.py` for the `media` scenario.\n"
+        "`sample.mp4`/`sample.mov` are H.264 + AAC; `sample.webm` is VP9 + Opus; "
+        "`sample.mkv` is Matroska VP9 + Opus (not claimed as supported); `sample.ogg` is Ogg "
+        "Vorbis; `sample.mp3`/`sample.flac`/`sample.m4a`/`sample.aac` are the named audio "
+        "containers; `corrupt.webm` has an EBML signature but no DocType; "
+        "`unsupported.mp4` has a valid MP4 header whose video sample entry is `zzzz`; "
+        "`mismatched-name.mp4` contains WebM bytes; `large.wav` is generated from a sine wave.\n"
+    )
+    return copied
+
+
 def scenario_json_linux(
     args,
     file: Path | None,
@@ -924,6 +1026,7 @@ def scenario_json_linux(
     workspace: Path,
     fixtures: dict | None,
     images: dict | None = None,
+    media: dict | None = None,
 ) -> dict:
     """The scenario as the driver receives it (Linux; no synthetic agent)."""
     local: dict[str, str | None] = {}
@@ -949,6 +1052,8 @@ def scenario_json_linux(
         scenario.update({"file": str(file), "fileText": first_line})
     if args.scenario == "images" and images:
         scenario.update({"images": images})
+    if args.scenario == "media" and media:
+        scenario.update({"media": media})
     if args.scenario in ("resource", "stress") and fixtures:
         node = shutil.which("node")
         if not node:
@@ -1028,8 +1133,12 @@ LIMITATIONS_LINUX = [
     "measure the webview's private decoded-bitmap memory.",
     "PDF rendering is not exercised: fixture.pdf exists as a document fixture but the run never "
     "opens it, and no PDF capability is claimed for the preview pane.",
-    "Audio and video codecs are not exercised: the only media fixture is a 64x64 PNG decoded by "
-    "the HTML preview.",
+    "Audio and video codecs are measured only on this host's WebKitGTK/GStreamer build and only "
+    "for the committed fixtures; the scenario records the element's own loadedmetadata/error "
+    "outcome and cannot promise another distro or codec pack.",
+    "WebKitGTK offers no trusted input injection, so the media scenario starts playback "
+    "programmatically (muted). If the build requires a gesture, that step is reported as a "
+    "manual check instead of a pass.",
     "GPU/VRAM use is not per-process attributable on Linux: /proc exposes no per-process GPU "
     "figure, so dmabuf/shared pages appear only inside Pss/Rss where they are mapped.",
     "The app's own structures are not split by allocator: Linux has no footprint --categories "
@@ -1295,6 +1404,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     fixture_server = None
     fixtures = None
     image_fixtures = None
+    media_fixtures = None
     file = None
     first_line = ""
     if args.scenario in ("resource", "stress"):
@@ -1304,6 +1414,8 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         fixtures["workload"] = describe_workload(args, fixtures)
     elif args.scenario == "images":
         image_fixtures = prepare_image_fixtures(workspace, source)
+    elif args.scenario == "media":
+        media_fixtures = prepare_media_fixtures(workspace, source)
     else:
         token = uuid.uuid4().hex[:10]
         first_line = f"workflow-file {token}"
@@ -1311,7 +1423,9 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         file.write_text(f"{first_line}\nsecond line for the editor\n")
     report_path = (args.report or output / "report.json").resolve()
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    scenario = scenario_json_linux(args, file, first_line, workspace, fixtures, image_fixtures)
+    scenario = scenario_json_linux(
+        args, file, first_line, workspace, fixtures, image_fixtures, media_fixtures
+    )
     timeout = host_timeout(args, scenario)
     load_average = [round(value, 2) for value in os.getloadavg()]
 
@@ -1368,7 +1482,11 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             else (
                 "Linux image acceptance scenario (representative formats, oversized/corrupt refusal, hidden-tab release, open/close cycles)"
                 if args.scenario == "images"
-                else "Linux acceptance workflow only (no resource workload)"
+                else (
+                    "Linux media acceptance scenario (real container/codec support, ranged delivery and seek, hidden pause without auto-resume, unsupported/corrupt/interrupted inputs, close cleanup)"
+                    if args.scenario == "media"
+                    else "Linux acceptance workflow only (no resource workload)"
+                )
             )
         ),
         "limitations": list(LIMITATIONS_LINUX),
@@ -1391,6 +1509,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     failed: BaseException | None = None
     workflow: dict = {}
     images: dict = {}
+    media: dict = {}
     started = time.monotonic()
 
     def take_sample(phase: str, event: dict, elapsed: float) -> dict:
@@ -1432,6 +1551,8 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                     workflow = event.get("workflow") or {}
                     if event.get("images") is not None:
                         images = event["images"]
+                    if event.get("media") is not None:
+                        media = event["media"]
                     if event.get("preview") is not None:
                         # Scenario-specific evidence that is not a pass/fail step: how many
                         # frame instances were loaded, whether the blur was exercised, and what
@@ -1492,6 +1613,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             (output / "page.log").write_text("\n".join(server.log))
         manifest["workflow"] = workflow
         manifest["images"] = images
+        manifest["media"] = media
         # The fixture server is the independent process previews are served by; these counters
         # show it kept answering across every frame teardown.
         manifest["previewServer"] = {
@@ -1555,6 +1677,8 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             manifest["qualification"]["workflowPass"] = bool(workflow.get("pass"))
         if images:
             manifest["qualification"]["imagesPass"] = bool(images.get("pass"))
+        if media:
+            manifest["qualification"]["mediaPass"] = bool(media.get("pass"))
         completed = [sample for sample in manifest["samples"] if "memory" in sample]
         if completed:
             try:
@@ -1581,6 +1705,18 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             for step in steps:
                 if not step.get("ok"):
                     print(f"  failed: {step.get('name')}: {step.get('detail')}")
+    if args.scenario == "media":
+        steps = media.get("steps") or []
+        passed = sum(1 for step in steps if step.get("ok"))
+        print(f"media {'PASS' if media.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
+        for entry in media.get("formats", {}).items():
+            print(f"  format {entry[0]}: {json.dumps(entry[1])}")
+        for entry in media.get("manual") or []:
+            print(f"  manual check: {entry.get('name')}: {entry.get('detail')}")
+        if not media.get("pass"):
+            for step in steps:
+                if not step.get("ok"):
+                    print(f"  failed: {step.get('name')}: {step.get('detail')}")
     isolation = manifest["isolation"]
     print(
         f"coexistence {'PASS' if isolation['upstreamStateUnchanged'] else 'FAIL'}: "
@@ -1600,6 +1736,9 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         return 2
     if args.scenario == "images" and not images.get("pass"):
         print("Run failed: the images scenario reported a failing step (see page.log).", file=sys.stderr)
+        return 2
+    if args.scenario == "media" and not media.get("pass"):
+        print("Run failed: the media scenario reported a failing step (see page.log).", file=sys.stderr)
         return 2
     if not isolation["upstreamStateUnchanged"]:
         print(
