@@ -29,10 +29,12 @@ Build time on an M4 (10 cores): cold release build including every dependency 2 
 after a frontend or app change 88 to 90 s (the frontend itself 6 s). `--reuse-build` skips
 the build, `--build-only` stops after it, `--app` runs a prebuilt `.app`.
 
-### Linux (WebKitGTK): the workflow seam
+### Linux (WebKitGTK): the workflow and preview seams
 
-`--scenario workflow` is the one Linux scenario so far: it drives the real WebKitGTK app through
-the actions this program's acceptance seam needs and asserts what the page renders.
+`--scenario workflow` drives the real WebKitGTK app through the actions this program's acceptance
+seam needs and asserts what the page renders. `--scenario preview` does the same for a web preview
+frame: it serves a fixture page from the orchestrator's own HTTP server and drives the app's own
+tab, Space and window actions around it.
 
 ```sh
 # build (debug binary, private target dir, no bundle) and run the workflow
@@ -40,6 +42,10 @@ pnpm profile:app:linux
 # equivalent, with explicit paths
 python3 scripts/app-lab/run.py --scenario workflow --profile debug \
     --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run
+
+# the preview seam (tab/Space/window teardown, visible blur, frame boundaries)
+python3 scripts/app-lab/run.py --scenario preview --profile debug \
+    --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-preview
 
 # prove both refusals without running a scenario (preflight + the binary's isolation guard)
 python3 scripts/app-lab/run.py --scenario workflow --self-test
@@ -111,10 +117,41 @@ and the editor's rendered text is asserted. Each step emits `[workflow] PASS|FAI
 `page.log`; the structured summary (`token`, `pass`, `steps`) rides the final `done` sync, the
 report stores it under `workflow`, and the runner exits 2 when any step failed.
 
+**The preview** (`previewScenario`): a preview tab opens through the app's own planner
+(`openPreviewTab`) at `/preview-fixture?redirect=1`, which the orchestrator serves. The fixture page
+posts a 200 ms beat and a `pagehide` notice to the app page, so a teardown is observed as the
+frame's document really stopping rather than as an attribute change:
+
+- the server redirects the frame once; the frame follows it and the application's own document is
+  unchanged;
+- the frame is a separate untrusted document — `__TAURI__`/`__TAURI_INTERNALS__` are absent while
+  the app page has IPC, top-level navigation is refused, and a requested popup is refused (the app
+  installs no new-window handler);
+- switching to another tab, and switching to another Space, unloads the frame in the same turn (no
+  further beats) and returning re-mounts a fresh document that says why it reloaded and that
+  transient page state was lost (`[data-preview-reloaded]`). The Space cycle is repeated without
+  creating a tab, because creating one activates it and the cause is then legitimately the tab:
+  the plain switch asserts the notice names the Space, and that the intermediate render while the
+  app restores the Space's active tab does not rewrite the recorded cause;
+- the fixture server answers a ping after the tab teardown and after the tab closes, so frame
+  teardown never owns the dev server process;
+- `preview-blur` opens a separate application window (zenity/yad) so the app loses focus while its
+  window stays visible: the frame and its instance must survive, or the step is recorded as
+  skipped when no window could take focus;
+- `hide` unmaps the window: the frame unloads while `document.visibilityState` is not `visible`,
+  and showing the window reloads it; `minimize` records whatever signal this desktop reports and
+  asserts only that the frame's state agrees with it (Wayland compositors need not report
+  iconification, and WebKitGTK exposes no occlusion state);
+- closing the tab releases the frame and the fixture server still answers.
+
+The step list and the observed signals (`blurExercised`, minimize `visibility`, `reportedHidden`)
+ride the final `done` sync as `preview` next to `workflow`; the fixture server's counters
+(`fixtureLoads`, `redirectHits`, `pings`) are recorded as `previewServer`.
+
 **Focus is advisory on Linux.** Wayland lets the compositor decide focus (`set_focus` is a hint)
-and WebKitGTK exposes no occlusion state, so `qualify()` does not fail the workflow on focus:
-`native.appActive`/`key` are recorded per phase and summarised as a `qualification.advisories`
-entry. The snapshot's process ids come from a `/proc` scan of the app's descendants
+and WebKitGTK exposes no occlusion state, so `qualify()` does not fail the workflow or preview
+scenario on focus: `native.appActive`/`key` are recorded per phase and summarised as a
+`qualification.advisories` entry. The snapshot's process ids come from a `/proc` scan of the app's descendants
 (`bench.rs`, Linux `platform` module), not from WebKit private API.
 
 **Whole-application measurement (ticket 02).** The Linux runner samples the app from `/proc`, not
@@ -154,6 +191,8 @@ drags, the composited layer tree, forced GC and soak scenarios (ticket 32). Per-
 not attributable from `/proc`, WebKit malloc zones cannot be split out, and PDF/codec rendering is
 not claimed (see each report's `limitations`). `resize`, `split-drag`, `occlusion`, `input`, `tabs`,
 `idle`, `agents-steady` and `fs-churn` refuse to run on Linux rather than pretend to measure.
+
+The `preview` scenario is the only Linux user of `hide`/`show`: it switches tabs/Spaces and minimizes the window to prove frame teardown, and restores it to prove the reload disclosure.
 
 **Environment knobs:** `--window WxH` (logical size, default 1280x820), `--local-storage
 KEY=VALUE` (the updater throttle is preseeded automatically so no dialog covers the window),
@@ -275,6 +314,4 @@ macOS for the measured scenarios: one display (2048x1152 points at 100 Hz here),
 with default preferences (vibrancy off), no AI panel traffic, a synthetic agent instead of Codex.
 Footprint figures vary between runs because garbage collection timing decides when dead native
 objects are released; compare medians of repeats and prefer the timeline floor and the after-GC
-value. Linux has the `workflow` acceptance scenario plus the measured `resource`, `stress` and
-`startup` scenarios (WebKitGTK, Wayland): memory is Pss from `/proc`, workload processes are
-separate, and every report states its own `limitations` rather than claiming what was not sampled.
+value. Linux has the `workflow` and `preview` acceptance scenarios plus the measured `resource`, `stress` and `startup` scenarios (WebKitGTK, Wayland): memory is Pss from `/proc`, workload processes are separate, and every report states its own `limitations` rather than claiming what was not sampled. The preview scenario also records what the platform cannot report: WebKitGTK has no occlusion state, so a preview covered by another window keeps running, and minimize follows the compositor.

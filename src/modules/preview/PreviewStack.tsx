@@ -2,10 +2,19 @@ import { cn } from "@/lib/utils";
 import type { PreviewTab, Tab } from "@/modules/tabs";
 import { useEffect, useRef } from "react";
 import { PreviewPane, type PreviewPaneHandle } from "./PreviewPane";
+import { useWindowVisible } from "./lib/useWindowVisible";
+import type { PresentationSubscription } from "./lib/windowVisibility";
 
 type Props = {
   tabs: Tab[];
   activeId: number;
+  /** The Space whose tabs are on screen; previews in every other Space unload. */
+  activeSpaceId: string;
+  /**
+   * The shared native window-presentation feed (occlusion/sleep). Optional: the
+   * page-visibility signal alone covers the supported Linux states.
+   */
+  subscribePresentation?: PresentationSubscription;
   onUrlChange: (id: number, url: string) => void;
   registerHandle: (id: number, handle: PreviewPaneHandle | null) => void;
 };
@@ -13,12 +22,15 @@ type Props = {
 export function PreviewStack({
   tabs,
   activeId,
+  activeSpaceId,
+  subscribePresentation,
   onUrlChange,
   registerHandle,
 }: Props) {
   const previews = tabs.filter(
     (t): t is PreviewTab => t.kind === "preview" && !t.cold,
   );
+  const windowVisible = useWindowVisible(subscribePresentation);
 
   const registerRef = useRef(registerHandle);
   const urlChangeRef = useRef(onUrlChange);
@@ -65,20 +77,26 @@ export function PreviewStack({
   return (
     <div className="relative h-full w-full">
       {previews.map((t) => {
-        const visible = t.id === activeId;
+        // Two independent reasons a frame is not on screen; the pane decides what to do with
+        // each, and the stack only hides the layer.
+        const tabActive = t.id === activeId;
+        const spaceActive = t.spaceId === activeSpaceId;
+        const onScreen = tabActive && spaceActive;
         return (
           <div
             key={t.id}
             className={cn(
               "absolute inset-0",
-              !visible && "invisible pointer-events-none",
+              !onScreen && "invisible pointer-events-none",
             )}
-            aria-hidden={!visible}
+            aria-hidden={!onScreen}
           >
             <PreviewPane
               ref={getRefCallback(t.id)}
               url={t.url}
-              visible={visible}
+              tabActive={tabActive}
+              spaceActive={spaceActive}
+              windowVisible={windowVisible}
               onUrlChange={getUrlCallback(t.id)}
             />
           </div>
