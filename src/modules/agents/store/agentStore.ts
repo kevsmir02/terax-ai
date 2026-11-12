@@ -36,7 +36,7 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
             leafId,
             tabId,
             agent,
-            status: "working",
+            status: "running",
             startedAt: now,
             lastActivityAt: now,
             attentionSince: null,
@@ -57,7 +57,7 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
             ...prev,
             status,
             lastActivityAt: now,
-            attentionSince: status === "waiting" ? now : null,
+            attentionSince: status === "attention" ? now : null,
           },
         },
       };
@@ -82,17 +82,22 @@ export const useAgentStore = create<AgentStoreState>((set) => ({
   markAllRead: () =>
     set((s) => {
       if (!s.notifications.some((n) => !n.read)) return s;
-      return { notifications: s.notifications.map((n) => ({ ...n, read: true })) };
+      return {
+        notifications: s.notifications.map((n) => ({ ...n, read: true })),
+      };
     }),
 
   clearNotifications: () => set({ notifications: [] }),
 }));
 
-/** The tab/leaf of the agent that most recently entered the waiting state, for
- *  the keyboard jump-to-attention shortcut. Null when none is waiting. */
-export function nextAttentionTarget(): { tabId: number; leafId: number } | null {
+/** The tab/leaf of the agent that most recently entered the attention state,
+ *  for the keyboard jump-to-attention shortcut. Null when none needs the user. */
+export function nextAttentionTarget(): {
+  tabId: number;
+  leafId: number;
+} | null {
   const waiting = Object.values(useAgentStore.getState().sessions)
-    .filter((s) => s.status === "waiting")
+    .filter((s) => s.status === "attention")
     .sort((a, b) => (b.attentionSince ?? 0) - (a.attentionSince ?? 0));
   const t = waiting[0];
   return t ? { tabId: t.tabId, leafId: t.leafId } : null;

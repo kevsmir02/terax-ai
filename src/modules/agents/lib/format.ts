@@ -5,6 +5,8 @@ const LABELS: Record<string, string> = {
   pi: "Pi",
   opencode: "OpenCode",
   grok: "Grok",
+  // The terminal CLI, not the separate Antigravity desktop application.
+  antigravity: "Antigravity CLI",
   terax: "Terax",
 };
 
