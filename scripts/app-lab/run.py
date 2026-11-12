@@ -85,7 +85,7 @@ SYSTEM = platform.system()
 # measured scenarios (tabs, resize, split-drag, occlusion, agents-steady, idle, fs-churn, input)
 # stay unavailable here: WebKitGTK has no occlusion signal, no layer-tree mirror and no native
 # input hook (ticket 32).
-LINUX_SCENARIOS = ("workflow", "spaces", "preview", "images", "resource", "stress", "startup")
+LINUX_SCENARIOS = ("workflow", "spaces", "git", "preview", "images", "resource", "stress", "startup")
 SCENARIOS = list(dict.fromkeys([*app_report.SCENARIOS, *LINUX_SCENARIOS]))
 IDENTIFIER = linux_profile.disposable_identifier("app-lab", "stable")
 PRODUCT_NAME = "Terax App Lab"
@@ -888,6 +888,48 @@ def run(args, app: Path, source: Path, output: Path) -> int:
     return 0
 
 
+def prepare_git_fixture(workspace: Path) -> dict:
+    """A scratch repository with one clean base commit and two unstaged edits.
+
+    The scenario discards `src/a.ts` while a dirty buffer protects it and
+    `src/b.ts` without one. Nothing here touches a real project: the directory
+    lives under the run's disposable output.
+    """
+    repo = workspace / "repo"
+    # The output directory can be reused across runs; start from a clean fixture.
+    shutil.rmtree(repo, ignore_errors=True)
+    (repo / "src").mkdir(parents=True, exist_ok=True)
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Terax App Lab",
+        "GIT_AUTHOR_EMAIL": "app-lab@example.invalid",
+        "GIT_COMMITTER_NAME": "Terax App Lab",
+        "GIT_COMMITTER_EMAIL": "app-lab@example.invalid",
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
+    base_a = "export const a = 'base';"
+    base_b = "export const b = 'base';"
+    edited_a = "export const a = 'edited on disk';"
+    edited_b = "export const b = 'edited on disk';"
+    (repo / "src/a.ts").write_text(f"{base_a}\n")
+    (repo / "src/b.ts").write_text(f"{base_b}\n")
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, env=env, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=repo, env=env, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "fixture base"], cwd=repo, env=env, check=True)
+    # Working-tree edits after the commit: what a discard has to restore.
+    (repo / "src/a.ts").write_text(f"{edited_a}\n")
+    (repo / "src/b.ts").write_text(f"{edited_b}\n")
+    return {
+        "repo": str(repo),
+        "fileA": str(repo / "src/a.ts"),
+        "fileB": str(repo / "src/b.ts"),
+        "baseA": base_a,
+        "baseB": base_b,
+        "editedA": edited_a,
+        "editedB": edited_b,
+    }
+
+
 def prepare_image_fixtures(workspace: Path, source: Path) -> dict:
     """Copy the committed image fixtures the `images` scenario opens.
 
@@ -934,6 +976,7 @@ def scenario_json_linux(
     fixtures: dict | None,
     pdf: dict | None = None,
     images: dict | None = None,
+    git_fixture: dict | None = None,
 ) -> dict:
     """The scenario as the driver receives it (Linux; no synthetic agent)."""
     local: dict[str, str | None] = {}
@@ -980,6 +1023,8 @@ def scenario_json_linux(
             scenario["pdf"]["holdMs"] = args.pdf_hold_ms
     if args.scenario == "images" and images:
         scenario.update({"images": images})
+    if args.scenario == "git" and git_fixture:
+        scenario.update({"git": git_fixture})
     if args.scenario in ("resource", "stress") and fixtures:
         node = shutil.which("node")
         if not node:
@@ -1358,6 +1403,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     fixtures = None
     pdf = None
     image_fixtures = None
+    git_fixture = None
     file = None
     first_line = ""
     if args.scenario in ("resource", "stress"):
@@ -1369,6 +1415,8 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         pdf = prepare_pdf_fixtures(workspace)
     elif args.scenario == "images":
         image_fixtures = prepare_image_fixtures(workspace, source)
+    elif args.scenario == "git":
+        git_fixture = prepare_git_fixture(workspace)
     else:
         token = uuid.uuid4().hex[:10]
         first_line = f"workflow-file {token}"
@@ -1380,7 +1428,9 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             )
     report_path = (args.report or output / "report.json").resolve()
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    scenario = scenario_json_linux(args, file, first_line, workspace, fixtures, pdf, image_fixtures)
+    scenario = scenario_json_linux(
+        args, file, first_line, workspace, fixtures, pdf, image_fixtures, git_fixture
+    )
     timeout = host_timeout(args, scenario)
     load_average = [round(value, 2) for value in os.getloadavg()]
 
@@ -1579,6 +1629,15 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                 manifest["qualification"]["failures"].append({
                     "phase": "spaces-delete",
                     "reasons": ["Space deletion changed the project directory"],
+                })
+        if args.scenario == "git":
+            git_report = (workflow or {}).get("git") if isinstance(workflow, dict) else None
+            manifest["gitScenario"] = git_report
+            if not git_report or not git_report.get("pass"):
+                manifest["qualification"]["qualified"] = False
+                manifest["qualification"]["failures"].append({
+                    "phase": "git-guard",
+                    "reasons": ["destructive Git guard scenario failed"],
                 })
         manifest["images"] = images
         # The fixture server is the independent process previews are served by; these counters

@@ -59,7 +59,9 @@ import {
   SidebarRail,
   useSidebarPanel,
 } from "@/modules/sidebar";
+import { destructiveGitBridge } from "@/modules/source-control/destructiveGitBridge";
 import {
+  type DestructiveGitSupport,
   SourceControlPanel,
   useRepositoryTargeting,
   useSourceControlContext,
@@ -86,6 +88,7 @@ import {
   findLeafCwd,
   hasLeaf,
   isTerminalSurfaceTarget,
+  leafHasForegroundProcess,
   leafIds,
   navigateFocusedBlocks,
   type PaneBounds,
@@ -423,6 +426,51 @@ export default function App() {
     if (tab?.kind !== "editor") return false;
     return editorRefs.current.get(id)?.isDirty() ?? tab.dirty;
   }, []);
+
+  /**
+   * Every buffer and terminal the destructive-Git guard may need to see, read
+   * at request time. Space names and roots come from the live Spaces store so a
+   * rename does not need to re-register this provider.
+   */
+  const destructiveSupport = useMemo<DestructiveGitSupport>(
+    () => ({
+      usage: () => {
+        const spaces = useSpaces.getState().spaces;
+        const nameOf = (id: string) =>
+          spaces.find((space) => space.id === id)?.name ?? "Space";
+        const rootOf = (id: string) =>
+          spaces.find((space) => space.id === id)?.root ?? null;
+        const current = tabsRef.current;
+        return {
+          buffers: current
+            .filter((tab) => tab.kind === "editor")
+            .map((tab) => ({
+              tabId: tab.id,
+              spaceId: tab.spaceId,
+              spaceName: nameOf(tab.spaceId),
+              spaceRoot: rootOf(tab.spaceId),
+              path: tab.path,
+              dirty: isTabDirty(tab.id),
+            })),
+          terminals: current
+            .filter((tab) => tab.kind === "terminal")
+            .flatMap((tab) =>
+              leafIds(tab.paneTree).map((leafId) => ({
+                tabId: tab.id,
+                leafId,
+                spaceId: tab.spaceId,
+                spaceName: nameOf(tab.spaceId),
+                cwd: findLeafCwd(tab.paneTree, leafId) ?? tab.cwd ?? "",
+              })),
+            ),
+          isBusy: (leafId: number) => leafHasForegroundProcess(leafId),
+        };
+      },
+      canonicalize: (path: string) =>
+        native.canonicalize(path).catch(() => null),
+    }),
+    [isTabDirty],
+  );
 
   const saveTab = useCallback(async (id: number): Promise<boolean> => {
     const handle = editorRefs.current.get(id);
@@ -1097,13 +1145,10 @@ export default function App() {
     [removeTabsForSpace],
   );
 
-  const prepareDiscard = useCallback(
-    (id: number): (() => void) | null => {
-      const handle = editorRefs.current.get(id);
-      return handle ? () => handle.discardRecovery() : null;
-    },
-    [],
-  );
+  const prepareDiscard = useCallback((id: number): (() => void) | null => {
+    const handle = editorRefs.current.get(id);
+    return handle ? () => handle.discardRecovery() : null;
+  }, []);
 
   const {
     pendingSpaceDelete,
@@ -1338,7 +1383,9 @@ export default function App() {
               readBuffer={(leafId, maxLines) =>
                 terminalRefs.current.get(leafId)?.getBuffer(maxLines) ?? null
               }
-              spaces={useSpaces.getState().spaces.map(({ id, name }) => ({ id, name }))}
+              spaces={useSpaces
+                .getState()
+                .spaces.map(({ id, name }) => ({ id, name }))}
               activeSpaceId={activeSpaceId}
               createSpace={(name, root) =>
                 useSpaces.getState().create({ name, root }).id
@@ -1370,6 +1417,21 @@ export default function App() {
               editEditor={(tabId, text) =>
                 editorRefs.current.get(tabId)?.insertText(text)
               }
+              openSourceControl={openSourceControl}
+              destructiveGit={() => {
+                const bridge = destructiveGitBridge();
+                return {
+                  mounted: bridge !== null,
+                  ready: bridge?.ready() ?? false,
+                  busy: bridge?.busy() ?? false,
+                  pending: bridge?.pending() ?? null,
+                  requestDiscard: (paths) =>
+                    bridge?.requestDiscard(paths) ?? Promise.resolve(),
+                  confirm: (confirmation) =>
+                    bridge?.confirm(confirmation) ?? Promise.resolve(),
+                  cancel: () => bridge?.cancel(),
+                };
+              }}
             />
           </Suspense>
         )}
@@ -1465,6 +1527,7 @@ export default function App() {
                           onFollowRepositoryContext={
                             handleFollowRepositoryContext
                           }
+                          destructive={destructiveSupport}
                         />
                       )}
                     </div>

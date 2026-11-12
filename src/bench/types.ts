@@ -1,3 +1,4 @@
+import type { DestructiveGitBridgePending } from "@/modules/source-control/destructiveGitBridge";
 import type { Tab } from "@/modules/tabs";
 
 /** What the scenario driver may do to the running application: the app's own tab actions. */
@@ -46,6 +47,22 @@ export type BenchAppApi = {
   };
   /** Inserts text through the editor's real editing path (dirty buffer, drafts, saves). */
   editEditor: (tabId: number, text: string) => void;
+  /** Shows the Source Control panel so its real destructive-action guard mounts. */
+  openSourceControl: () => void;
+  /** Drives the panel's own destructive-action guard (never a second implementation). */
+  destructiveGit: () => {
+    mounted: boolean;
+    ready: boolean;
+    busy: boolean;
+    pending: DestructiveGitBridgePending | null;
+    requestDiscard: (paths: string[]) => Promise<void>;
+    confirm: (confirmation: {
+      unsavedBuffers: number[];
+      activeWork: number[];
+      force: boolean;
+    }) => Promise<void>;
+    cancel: () => void;
+  };
 };
 
 /** One scenario, as written by scripts/app-lab/run.py into TERAX_BENCH_SCENARIO. */
@@ -61,6 +78,7 @@ export type BenchScenario = {
     | "input"
     | "workflow"
     | "spaces"
+    | "git"
     | "preview"
     | "images"
     | "resource"
@@ -78,6 +96,16 @@ export type BenchScenario = {
   durationS?: number;
   warmupS?: number;
   hiddenAgents?: number;
+  /** git: an isolated scratch repository the scenario mutates and inspects. */
+  git?: {
+    repo: string;
+    fileA: string;
+    fileB: string;
+    baseA: string;
+    baseB: string;
+    editedA: string;
+    editedB: string;
+  };
   /** split-drag: seconds of divider motion per drag, and its amplitude as a share of the pane area. */
   dragS?: number;
   dragAmplitude?: number;

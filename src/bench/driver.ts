@@ -2,7 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { assetScopes } from "@/lib/assetScopes";
 import { setWindowVibrancy } from "@/modules/settings/store";
 import { ASSET_DELIVERY } from "@/modules/preview/lib/assetDelivery";
-import { PDF_PAGE_LIMIT_BYTES, pdfPageDecision } from "@/modules/preview/lib/limits";
+import {
+  PDF_PAGE_LIMIT_BYTES,
+  pdfPageDecision,
+} from "@/modules/preview/lib/limits";
 import { useViewerAdmissionStore } from "@/modules/preview/lib/viewerAdmission";
 import { whenSessionReady, writeToSession } from "@/modules/terminal";
 import type { Tab } from "@/modules/tabs";
@@ -13,7 +16,12 @@ import {
 import { collectDiagnostics } from "./diagnostics";
 import { nativeWindow, reportError, reportPhase } from "./report";
 import { installSmoothProbe, type SmoothSummary } from "./smoothProbe";
-import type { BenchAppApi, BenchConfig, BenchScenario, PdfFixtures } from "./types";
+import type {
+  BenchAppApi,
+  BenchConfig,
+  BenchScenario,
+  PdfFixtures,
+} from "./types";
 
 const pause = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -1192,7 +1200,8 @@ async function resourceScenario(
   // Back to Space A with the one active preview (the app's own preview pane).
   app().setActiveSpace(spaceA);
   await pause(900);
-  if (!scenario.previewUrl) throw new Error("the resource scenario needs `previewUrl`");
+  if (!scenario.previewUrl)
+    throw new Error("the resource scenario needs `previewUrl`");
   const previewTab = app().openPreview(scenario.previewUrl);
   await pause(1500);
   if (app().activeId !== previewTab)
@@ -1225,10 +1234,7 @@ async function resourceScenario(
   );
   if (streamCommand) {
     for (const leafId of streamLeaves)
-      writeToSession(
-        leafId,
-        `${streamCommand} --seconds ${streamSeconds}\r`,
-      );
+      writeToSession(leafId, `${streamCommand} --seconds ${streamSeconds}\r`);
   }
   await step("stream-start", { ...layout, streamLeaves });
   await pause(streamSeconds * 1000);
@@ -1245,14 +1251,17 @@ async function resourceScenario(
         15_000,
       );
       await pause(600);
-      await step(`close-cycle-${cycle}-open`, { cycle, tabId, file: closeFile });
+      await step(`close-cycle-${cycle}-open`, {
+        cycle,
+        tabId,
+        file: closeFile,
+      });
       app().closeTab(tabId);
       await pause(800);
       await step(`close-cycle-${cycle}-closed`, { cycle, tabId });
     }
     // Leave the preview active again, like the baseline.
-    if (app().tabs.some((tab) => tab.id === previewTab))
-      run.select(previewTab);
+    if (app().tabs.some((tab) => tab.id === previewTab)) run.select(previewTab);
     else app().openPreview(scenario.previewUrl);
     await pause(600);
   }
@@ -1988,7 +1997,9 @@ function memorySummary(report: Record<string, unknown>): MemorySummary {
     appPss: Number((report.app as { pss?: number } | undefined)?.pss ?? 0),
     webContentPss: pss("web_content"),
     hostPss: pss("host"),
-    processes: Number((report.total as { processes?: number } | undefined)?.processes ?? 0),
+    processes: Number(
+      (report.total as { processes?: number } | undefined)?.processes ?? 0,
+    ),
   };
 }
 
@@ -2080,8 +2091,7 @@ async function pdfDocuments(
       };
     }
   };
-  const mib = (bytes: number) =>
-    Math.round((bytes / (1024 * 1024)) * 10) / 10;
+  const mib = (bytes: number) => Math.round((bytes / (1024 * 1024)) * 10) / 10;
   const notes: string[] = [];
 
   // The fixture geometry must map onto the approved per-page ceiling exactly as the generator
@@ -2135,9 +2145,7 @@ async function pdfDocuments(
       element.addEventListener("load", () => finish(true), { once: true });
     });
 
-  const openTab = async (
-    key: keyof PdfFixtures["files"],
-  ): Promise<PdfTab> => {
+  const openTab = async (key: keyof PdfFixtures["files"]): Promise<PdfTab> => {
     const path = facts.files[key];
     const name = nameOf(key);
     await run.log(`[preview] pdf: requesting a tab for ${name} (${path})`);
@@ -2164,7 +2172,10 @@ async function pdfDocuments(
       throw new Error(await failed(`pdf ${opened.name} frame`, String(error)));
     }
     await run.log(`[preview] pdf: the ${opened.name} frame exists`);
-    return { ...opened, loaded: watchLoad(opened.frame() as HTMLIFrameElement) };
+    return {
+      ...opened,
+      loaded: watchLoad(opened.frame() as HTMLIFrameElement),
+    };
   };
 
   const closeTab = async (opened: PdfTab) => {
@@ -2227,7 +2238,9 @@ async function pdfDocuments(
     let location = "";
     try {
       const view = opened.frame() as
-        | (HTMLIFrameElement & { contentWindow?: { location?: { href?: string } } })
+        | (HTMLIFrameElement & {
+            contentWindow?: { location?: { href?: string } };
+          })
         | null;
       location = String(view?.contentWindow?.location?.href ?? "");
     } catch (error) {
@@ -2297,7 +2310,9 @@ async function pdfDocuments(
   const scriptedRead = await fetch(textSrc)
     .then((response) => `resolved status=${response.status}`)
     .catch((error: unknown) => `refused (${String(error).slice(0, 120)})`);
-  notes.push(`scripted fetch of the granted PDF from the app page: ${scriptedRead}`);
+  notes.push(
+    `scripted fetch of the granted PDF from the app page: ${scriptedRead}`,
+  );
   served.text = servedFor((await assetLog()).entries, text.name);
   memories.text = await memory();
   frames.text = textEvidence;
@@ -2442,10 +2457,11 @@ async function pdfDocuments(
   // Nothing reaches the viewer until the explicit choice, and the refusal has to explain itself.
   const oversized = await openTab("oversized");
   const gate = () =>
-    Array.from(
-      document.querySelectorAll<HTMLElement>('[role="alert"]'),
-    ).find((node) =>
-      (node.textContent ?? "").includes("Large file needs an explicit choice"),
+    Array.from(document.querySelectorAll<HTMLElement>('[role="alert"]')).find(
+      (node) =>
+        (node.textContent ?? "").includes(
+          "Large file needs an explicit choice",
+        ),
     ) ?? null;
   try {
     await run.waitFor(
@@ -2455,7 +2471,10 @@ async function pdfDocuments(
     );
   } catch (error) {
     throw new Error(
-      await failed("pdf above the read ceiling needs an explicit choice", String(error)),
+      await failed(
+        "pdf above the read ceiling needs an explicit choice",
+        String(error),
+      ),
     );
   }
   const notice = gate() as HTMLElement;
@@ -2573,7 +2592,9 @@ async function pdfDocuments(
       30_000,
     );
   } catch (error) {
-    throw new Error(await failed("pdf-named text opens as text", String(error)));
+    throw new Error(
+      await failed("pdf-named text opens as text", String(error)),
+    );
   }
   const misnamedFrame = frameFor(misnamed.name);
   errors["not-a-pdf"] = {
@@ -2603,7 +2624,10 @@ async function pdfDocuments(
     `grants ${start.activeGrants} -> ${afterAll.activeGrants}`,
   );
   await run.sync("pdf-closed", {
-    pdf: { activeGrants: afterAll.activeGrants, baselineGrants: start.activeGrants },
+    pdf: {
+      activeGrants: afterAll.activeGrants,
+      baselineGrants: start.activeGrants,
+    },
   });
 
   const servedSummary: Record<string, unknown> = {};
@@ -2676,7 +2700,7 @@ async function spacesScenario(run: ScenarioRun): Promise<unknown> {
       path,
       workspace: { kind: "local" },
       force: false,
-    }).then((result) => (result.kind === "text" ? result.content ?? "" : ""));
+    }).then((result) => (result.kind === "text" ? (result.content ?? "") : ""));
   const statOk = (path: string) =>
     invoke("fs_stat", { path, workspace: { kind: "local" } }).then(
       () => true,
@@ -2705,7 +2729,10 @@ async function spacesScenario(run: ScenarioRun): Promise<unknown> {
   await check(
     "shared checkout indication",
     badge !== null && badgeRoot === workspace.replace(/\/+$/, ""),
-    `badge ${badge ? badgeRoot : "missing"}; spaces ${run.app().spaces.map((s) => s.id).join(",")}`,
+    `badge ${badge ? badgeRoot : "missing"}; spaces ${run
+      .app()
+      .spaces.map((s) => s.id)
+      .join(",")}`,
   );
   await run.sync("spaces-shared", { spaceA, spaceB, shared: badge !== null });
 
@@ -2726,8 +2753,9 @@ async function spacesScenario(run: ScenarioRun): Promise<unknown> {
   await run.switchSpace(spaceA);
   run.select(first.tabId);
   await pause(700);
-  const seen = (buffer(first.leafId).match(new RegExp(`${marker}-[0-9]`, "g")) ?? [])
-    .length;
+  const seen = (
+    buffer(first.leafId).match(new RegExp(`${marker}-[0-9]`, "g")) ?? []
+  ).length;
   await check(
     "switch keeps hidden output flowing",
     seen >= 5 && presentationHidden,
@@ -2752,7 +2780,9 @@ async function spacesScenario(run: ScenarioRun): Promise<unknown> {
       10_000,
     );
   } catch (error) {
-    throw new Error(await failed("tab close with a running process", String(error)));
+    throw new Error(
+      await failed("tab close with a running process", String(error)),
+    );
   }
   const terminalPrompt = pageText();
   await check(
@@ -2763,7 +2793,10 @@ async function spacesScenario(run: ScenarioRun): Promise<unknown> {
     `dialog: ${terminalPrompt.includes("Close Terminal?")}`,
   );
   run.app().cancelPendingClose();
-  await run.waitFor(() => guards().terminalTabId === null, "the canceled guard");
+  await run.waitFor(
+    () => guards().terminalTabId === null,
+    "the canceled guard",
+  );
   await check(
     "cancel keeps the running terminal",
     run.app().tabs.some((tab) => tab.id === busyTab.tabId),
@@ -2805,7 +2838,10 @@ async function spacesScenario(run: ScenarioRun): Promise<unknown> {
     `dialog: ${dirtyPrompt.includes("Save & Close")}`,
   );
   run.app().cancelPendingClose();
-  await run.waitFor(() => guards().closeTabId === null, "the canceled close guard");
+  await run.waitFor(
+    () => guards().closeTabId === null,
+    "the canceled close guard",
+  );
   await check(
     "cancel keeps the dirty buffer",
     dirty(),
@@ -2894,7 +2930,15 @@ async function spacesScenario(run: ScenarioRun): Promise<unknown> {
   await check(
     "cancel keeps the Space, its tabs and its dirty buffer",
     run.app().spaces.some((space) => space.id === spaceC) &&
-      run.app().tabs.some((tab) => tab.spaceId === spaceC && tab.id === deletedDirtyTab && tab.kind === "editor" && tab.dirty),
+      run
+        .app()
+        .tabs.some(
+          (tab) =>
+            tab.spaceId === spaceC &&
+            tab.id === deletedDirtyTab &&
+            tab.kind === "editor" &&
+            tab.dirty,
+        ),
     `spaces ${run.app().spaces.length}, tabs ${run.app().tabs.length}`,
   );
   await run.sync("spaces-delete-canceled", { spaceC });
@@ -3003,7 +3047,15 @@ async function imagesScenario(
       return tabId;
     };
 
-    for (const name of ["png", "jpeg", "gif", "webp", "bmp", "ico", "avif"] as const) {
+    for (const name of [
+      "png",
+      "jpeg",
+      "gif",
+      "webp",
+      "bmp",
+      "ico",
+      "avif",
+    ] as const) {
       const tabId = await open(fixtures[name]);
       try {
         await waitForState("ready", `the ${name} image surface`);
@@ -3029,7 +3081,8 @@ async function imagesScenario(
       });
       run.app().closeTab(tabId);
       await run.waitFor(
-        () => viewers().every((viewer) => !viewer.id.startsWith(`image:${tabId}:`)),
+        () =>
+          viewers().every((viewer) => !viewer.id.startsWith(`image:${tabId}:`)),
         `the ${name} viewer slot to be released`,
         8000,
       );
@@ -3054,7 +3107,8 @@ async function imagesScenario(
       const tab = run.app().tabs.find((entry) => entry.id === tabId);
       await check(
         "svg stays an editable text tab",
-        tab?.kind === "editor" && !document.querySelector("[data-image-viewer]"),
+        tab?.kind === "editor" &&
+          !document.querySelector("[data-image-viewer]"),
         `tab ${tabId} kind ${tab?.kind}`,
       );
       run.app().closeTab(tabId);
@@ -3171,7 +3225,9 @@ async function imagesScenario(
       try {
         await waitForDecoded(`cycle ${cycle + 1}'s raster`);
       } catch (error) {
-        throw new Error(await failed(`cycle ${cycle + 1} opens`, String(error)));
+        throw new Error(
+          await failed(`cycle ${cycle + 1} opens`, String(error)),
+        );
       }
       run.app().closeTab(tabId);
       try {
@@ -3223,6 +3279,260 @@ async function imagesScenario(
   }
 }
 
+/**
+ * Destructive Git across Spaces, through the panel's own guard.
+ *
+ * A dirty buffer in one Space must block a discard requested from the panel;
+ * an unacknowledged confirmation and a plan whose Git state changed after the
+ * dialog opened are both refused, and every refusal is observed to leave the
+ * file and the index unchanged. The successful discard at the end is the
+ * control: the same path still mutates when it is deliberately confirmed.
+ */
+async function gitScenario(run: ScenarioRun): Promise<unknown> {
+  const fixture = run.scenario.git;
+  if (!fixture)
+    throw new Error(
+      "the git scenario needs a scratch repository (scripts/app-lab/run.py creates it)",
+    );
+  const steps: WorkflowStep[] = [];
+  const check = async (name: string, ok: boolean, detail: string) => {
+    steps.push({ name, ok, detail });
+    await run.log(`[git] ${ok ? "PASS" : "FAIL"} ${name}: ${detail}`);
+  };
+  const failed = async (name: string, detail: string) => {
+    await check(name, false, detail);
+    return `git step failed: ${name}: ${detail}`;
+  };
+  const app = () => run.app();
+  const pending = () => app().destructiveGit().pending;
+  const gitStatus = () =>
+    invoke<{
+      changedFiles: {
+        path: string;
+        staged: boolean;
+        unstaged: boolean;
+        untracked: boolean;
+      }[];
+    }>("git_status", {
+      repoRoot: fixture.repo,
+      workspace: { kind: "local" },
+    });
+  const fileStatus = async (path: string) =>
+    (await gitStatus()).changedFiles.find((file) => file.path === path) ?? null;
+  const readFile = (path: string) =>
+    invoke<{ kind: string; content?: string }>("fs_read_file", {
+      path,
+      workspace: { kind: "local" },
+      force: false,
+    }).then((result) => (result.kind === "text" ? (result.content ?? "") : ""));
+  const editorText = () =>
+    document.querySelector(".cm-content")?.textContent ?? "";
+  const dirty = (tabId: number) => {
+    const tab = app().tabs.find((candidate) => candidate.id === tabId);
+    return tab?.kind === "editor" && tab.dirty;
+  };
+  const requestDiscard = async (path: string) => {
+    for (let attempt = 0; attempt < 60; attempt++) {
+      if (pending()) app().destructiveGit().cancel();
+      await app().destructiveGit().requestDiscard([path]);
+      const plan = pending();
+      if (plan?.affected.includes(path)) return plan;
+      app().destructiveGit().cancel();
+      await pause(250);
+    }
+    throw new Error(`no destructive plan was built for ${path}`);
+  };
+
+  try {
+    await run.booted();
+
+    const space = app().createSpace("Git guard", fixture.repo);
+    app().newTabInSpace(space, fixture.repo);
+    await run.switchSpace(space);
+    // The scratch repository is a fresh root: open its terminal so the shell
+    // authorizes the directory before the editor asks for the file.
+    const gitTerminal = app().tabs.find(
+      (tab) => tab.spaceId === space && tab.kind === "terminal",
+    );
+    if (gitTerminal?.kind !== "terminal")
+      throw new Error("the Git-lab Space did not get a terminal tab");
+    await run.sessionReady(gitTerminal.activeLeafId);
+    await invoke("workspace_authorize", {
+      path: fixture.repo,
+      workspace: { kind: "local" },
+    });
+    const fileATab = app().openFileTab(fixture.fileA, true, space);
+    await run.waitFor(
+      () => app().tabs.some((tab) => tab.id === fileATab),
+      "the file tab",
+      20_000,
+    );
+    run.select(fileATab);
+    await pause(1500);
+    await run.log(
+      `[git] tab ${fileATab}; tabs ${app()
+        .tabs.map((tab) => `${tab.id}:${tab.kind}:${tab.spaceId}`)
+        .join("|")}; active ${app().activeId}; editors ${
+        document.querySelectorAll(".cm-content").length
+      }; body ${(document.body.textContent ?? "").slice(0, 240)}`,
+    );
+    await run.waitFor(
+      () => editorText().includes(fixture.baseA),
+      "the tracked file in the editor",
+      20_000,
+    );
+
+    // The panel follows the active file's repository, so mount it only once
+    // the Git-lab Space is the context.
+    app().openSourceControl();
+    await run.waitFor(
+      () => app().destructiveGit().mounted && app().destructiveGit().ready,
+      "the Source Control destructive guard",
+      30_000,
+    );
+    await check(
+      "the Source Control guard mounts",
+      app().destructiveGit().mounted,
+      "bridge mounted and repository status ready",
+    );
+    app().editEditor(fileATab, "unsaved in the buffer\n");
+    await run.waitFor(() => dirty(fileATab), "the dirty buffer");
+
+    // 1. A dirty buffer in another pane of the same checkout blocks the discard.
+    const firstPlan = await requestDiscard("src/a.ts");
+    await run.waitFor(() => pending() !== null, "the discard dialog");
+    const dialogText = document.body.textContent ?? "";
+    await check(
+      "the discard dialog names the unsaved buffer and its Space",
+      firstPlan.blockers.some(
+        (blocker) =>
+          blocker.kind === "unsavedBuffer" &&
+          blocker.tabId === fileATab &&
+          blocker.spaceName === "Git guard",
+      ) &&
+        dialogText.includes("Discard changes?") &&
+        dialogText.includes("unsaved changes") &&
+        dialogText.includes("src/a.ts"),
+      `blockers ${firstPlan.blockers.length}; dialog ${dialogText.includes("Discard changes?")}`,
+    );
+
+    // 2. Confirming without the acknowledgement is refused, and nothing moves.
+    await app().destructiveGit().confirm({
+      unsavedBuffers: [],
+      activeWork: [],
+      force: false,
+    });
+    await run.waitFor(
+      () => typeof pending()?.stale === "string",
+      "the unacknowledged refusal",
+      10_000,
+    );
+    const afterRefusalStatus = await fileStatus("src/a.ts");
+    const afterRefusalDisk = await readFile(fixture.fileA);
+    await check(
+      "an unacknowledged confirmation leaves the file and index unchanged",
+      pending()?.stale?.includes("Acknowledge") === true &&
+        afterRefusalDisk.includes(fixture.editedA) &&
+        afterRefusalStatus?.staged === false &&
+        afterRefusalStatus?.unstaged === true &&
+        dirty(fileATab) &&
+        editorText().includes("unsaved in the buffer"),
+      `stale ${pending()?.stale ?? "none"}; disk edited ${afterRefusalDisk.includes(fixture.editedA)}; staged ${afterRefusalStatus?.staged}`,
+    );
+    await run.sync("git-refused-unacknowledged", {
+      stale: pending()?.stale ?? null,
+      disk: afterRefusalDisk.length,
+    });
+
+    // 3. Work started after the dialog opened makes the confirmation stale.
+    const secondPlan = await requestDiscard("src/a.ts");
+    await invoke("git_stage", {
+      repoRoot: fixture.repo,
+      paths: ["src/a.ts"],
+      workspace: { kind: "local" },
+    });
+    await app()
+      .destructiveGit()
+      .confirm({
+        unsavedBuffers: [fileATab],
+        activeWork: [],
+        force: false,
+      });
+    await run.waitFor(
+      () => pending()?.stale?.includes("changed since") === true,
+      "the stale-plan refusal",
+      10_000,
+    );
+    const staleStatus = await fileStatus("src/a.ts");
+    const staleDisk = await readFile(fixture.fileA);
+    await check(
+      "a plan that went stale is refused and performs no discard",
+      secondPlan.fingerprint !== pending()?.fingerprint &&
+        staleDisk.includes(fixture.editedA) &&
+        staleStatus?.staged === true &&
+        dirty(fileATab),
+      `new fingerprint ${pending()?.fingerprint !== secondPlan.fingerprint}; disk edited ${staleDisk.includes(fixture.editedA)}; staged ${staleStatus?.staged}`,
+    );
+    await run.sync("git-refused-stale", {
+      stale: pending()?.stale ?? null,
+      staged: staleStatus?.staged ?? null,
+    });
+
+    app().destructiveGit().cancel();
+    await run.waitFor(() => pending() === null, "the canceled dialog");
+    await check(
+      "cancel leaves the dialog closed and the buffer intact",
+      pending() === null &&
+        dirty(fileATab) &&
+        (await readFile(fixture.fileA)).includes(fixture.editedA),
+      "no pending plan, buffer still dirty",
+    );
+
+    // 4. The same action still works when it is deliberately confirmed.
+    const bPlan = await requestDiscard("src/b.ts");
+    await check(
+      "a clean-buffer discard has no blockers",
+      bPlan.blockers.length === 0,
+      `blockers ${bPlan.blockers.length}`,
+    );
+    await app().destructiveGit().confirm({
+      unsavedBuffers: [],
+      activeWork: [],
+      force: false,
+    });
+    await run.waitFor(
+      () =>
+        pending() === null &&
+        (document.body.textContent ?? "").includes("Discarded"),
+      "the confirmed discard",
+      15_000,
+    );
+    const deadline = performance.now() + 10_000;
+    let bDisk = await readFile(fixture.fileB);
+    while (!bDisk.startsWith(fixture.baseB) && performance.now() < deadline) {
+      await pause(150);
+      bDisk = await readFile(fixture.fileB);
+    }
+    const bStatus = await fileStatus("src/b.ts");
+    await check(
+      "a confirmed discard restores the working file and keeps the index",
+      bDisk.startsWith(fixture.baseB) && bStatus === null,
+      `disk restored ${bDisk.startsWith(fixture.baseB)}; status ${JSON.stringify(bStatus)}`,
+    );
+    await run.sync("git-confirmed", {
+      restored: bDisk.startsWith(fixture.baseB),
+    });
+  } catch (error) {
+    throw new Error(await failed("scenario completed", String(error)));
+  }
+
+  const pass = steps.every((step) => step.ok);
+  await run.log(
+    `[git] ${pass ? "PASS" : "FAIL"} summary: ${steps.filter((step) => !step.ok).length} failures of ${steps.length}`,
+  );
+  return { git: { pass, steps } };
+}
+
 const SCENARIOS: Record<
   BenchScenario["name"],
   (run: ScenarioRun) => Promise<unknown>
@@ -3237,6 +3547,7 @@ const SCENARIOS: Record<
   input: inputScenario,
   workflow: workflowScenario,
   spaces: spacesScenario,
+  git: gitScenario,
   preview: previewScenario,
   images: imagesScenario,
   resource: resourceScenario,
