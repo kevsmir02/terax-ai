@@ -7,7 +7,7 @@ import { EDITOR_THEME_EXT } from "./themes";
 
 describe("resolveDisplayName", () => {
   it.each(["/project/script.luau", "C:\\project\\SCRIPT.LUAU"])(
-    "loads Luau highlighting without changing its LSP identity: %s",
+    "loads Luau highlighting without changing its canonical id: %s",
     async (path) => {
       expect(resolveDisplayName(path)).toBe("Luau");
       const result = await resolveLanguage(path);
@@ -154,4 +154,73 @@ describe("JavaScript and TypeScript highlighting", () => {
       },
     );
   }
+});
+
+// Removing language servers must leave configuration and prose files with
+// their own mode: CodeMirror highlighting is the whole editor for them now.
+describe("representative editing languages", () => {
+  const samples = [
+    {
+      file: "/project/notes.md",
+      code: "# Title\n\n- item\n",
+      tokens: ["# Title"],
+    },
+    {
+      file: "/project/data.json",
+      code: '{\n  "key": true\n}\n',
+      tokens: ['"key"'],
+    },
+    {
+      file: "/project/config.yaml",
+      code: "service:\n  port: 8080\n",
+      tokens: ["service"],
+    },
+    {
+      file: "/project/Cargo.toml",
+      code: '[package]\nname = "terax"\n',
+      tokens: ["[package]", '"terax"'],
+    },
+    {
+      file: "/project/main.rs",
+      code: 'fn main() {\n    let answer = "hello";\n}\n',
+      tokens: ["fn", '"hello"'],
+    },
+  ];
+
+  for (const [theme, themeExt] of Object.entries(EDITOR_THEME_EXT)) {
+    it.each(samples)(
+      `highlights $file with ${theme}`,
+      async ({ file, code, tokens }) => {
+        const result = await resolveLanguage(file);
+        if (!result) throw new Error(`Missing language for ${file}`);
+
+        const state = EditorState.create({
+          doc: code,
+          extensions: [result.ext, themeExt],
+        });
+        const spans: { from: number; to: number; classes: string }[] = [];
+        highlightTree(
+          syntaxTree(state),
+          { style: (tags) => highlightingFor(state, tags) },
+          (from, to, classes) => spans.push({ from, to, classes }),
+        );
+        const styleAt = (token: string): string | undefined => {
+          const pos = code.indexOf(token);
+          return spans.find((span) => span.from <= pos && span.to > pos)
+            ?.classes;
+        };
+        for (const token of tokens) {
+          expect(styleAt(token), `${token} in ${file}`).toBeTruthy();
+        }
+      },
+    );
+  }
+
+  it("edits plain text with no syntax mode and no server identity", async () => {
+    // A `.txt` buffer is plain CodeMirror text: no language mode is required,
+    // and there is no language-server identity to resolve for it.
+    expect(await resolveLanguage("/project/notes.txt")).toBeNull();
+    expect(resolveDisplayName("/project/notes.txt")).toBe("Notes.txt");
+    expect(await resolveLanguage("/project/extensionless")).toBeNull();
+  });
 });

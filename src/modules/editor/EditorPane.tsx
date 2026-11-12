@@ -1,8 +1,4 @@
-import { endpointIdFromCompatModel } from "@/modules/ai/config";
-import { getCustomEndpointKey, getKey } from "@/modules/ai/lib/keyring";
-import { lspFormatDocument, useLspExtension } from "@/modules/lsp";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { onKeysChanged } from "@/modules/settings/store";
 import { acceptCompletion, startCompletion } from "@codemirror/autocomplete";
 import { redo, undo } from "@codemirror/commands";
 import {
@@ -27,13 +23,8 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
-  useState,
 } from "react";
 import { toast } from "sonner";
-import {
-  inlineCompletion,
-  triggerInlineCompletion,
-} from "./lib/autocomplete/inlineExtension";
 import { diagnosticsReporter } from "./lib/diagnosticsReporter";
 import { useDiagnosticsStore } from "./lib/diagnosticsStore";
 import {
@@ -42,7 +33,6 @@ import {
   indentCompartment,
   indentExtension,
   languageCompartment,
-  lspCompartment,
   vimCompartment,
   wordWrapExtension,
   wrapCompartment,
@@ -82,8 +72,6 @@ export type EditorPaneHandle = {
   redo: () => void;
   /** Persist the buffer (format-on-save + write), same as Mod+S / :w. */
   save: () => Promise<void>;
-  /** Request an AI ghost suggestion at the cursor. */
-  triggerAiComplete: () => void;
   /** Open CodeMirror's completion popup. */
   triggerCodeComplete: () => void;
 };
@@ -97,8 +85,8 @@ type Props = {
   mediaActive?: boolean;
 };
 
-// Above this, syntax highlighting and LSP are disabled: a multi-MB lezer
-// parse tree and a didOpen of that size cost far more than they give.
+// Above this, syntax highlighting is disabled: a multi-MB lezer parse tree
+// costs far more than it gives.
 const SYNTAX_MAX_BYTES = 4 * 1024 * 1024;
 
 function formatBytes(n: number): string {
@@ -137,52 +125,7 @@ export const EditorPane = memo(
       s.editorWordWrap ? s.editorWordWrapColumn : null,
     );
     const languageRef = useRef<string | null>(null);
-    const [langId, setLangId] = useState<string | null>(null);
-    const apiKeyRef = useRef<string | null>(null);
 
-    useEffect(() => {
-      let cancelled = false;
-      const refresh = async () => {
-        const s = usePreferencesStore.getState();
-        const provider = s.autocompleteProvider;
-        if (
-          provider === "lmstudio" ||
-          provider === "mlx" ||
-          provider === "ollama"
-        ) {
-          apiKeyRef.current = null;
-          return;
-        }
-        // OpenAI-compatible keys live in a per-endpoint keyring slot.
-        if (provider === "openai-compatible") {
-          const eid = endpointIdFromCompatModel(s.autocompleteModelId);
-          const k = eid ? await getCustomEndpointKey(eid) : null;
-          if (!cancelled) apiKeyRef.current = k;
-          return;
-        }
-        const k = await getKey(provider);
-        if (!cancelled) apiKeyRef.current = k;
-      };
-      void refresh();
-      let unlistenKeys: (() => void) | undefined;
-      void onKeysChanged(() => void refresh()).then((un) => {
-        if (cancelled) un();
-        else unlistenKeys = un;
-      });
-      const unsubPrefs = usePreferencesStore.subscribe((state, prev) => {
-        if (
-          state.autocompleteProvider !== prev.autocompleteProvider ||
-          state.autocompleteModelId !== prev.autocompleteModelId
-        ) {
-          void refresh();
-        }
-      });
-      return () => {
-        cancelled = true;
-        unlistenKeys?.();
-        unsubPrefs();
-      };
-    }, []);
     // Stabilize save + onSaved via refs so the extensions array never changes
     // identity — a new identity makes @uiw/react-codemirror reconfigure the
     // whole state, wiping the language compartment.
@@ -192,45 +135,17 @@ export const EditorPane = memo(
     onSavedRef.current = onSaved;
     const onCloseRef = useRef(onClose);
     onCloseRef.current = onClose;
-    const lspActiveRef = useRef(false);
-    const warnedNoLspRef = useRef(false);
-    const warnedNoFormatRef = useRef(false);
-
     const performSave = useCallback(async () => {
       const view = cmRef.current?.view;
       const prefs = usePreferencesStore.getState();
+      // Null when no configured formatter applies to this language.
       const formatter = resolveFormatter(languageRef.current, prefs);
-      if (prefs.editorFormatOnSave && formatter === "lsp" && view) {
-        if (lspActiveRef.current) {
-          let res: "done" | "unsupported" = "done";
-          try {
-            res = await lspFormatDocument(view);
-          } catch (e) {
-            toast.error("Language server format failed", {
-              description: String(e),
-            });
-          }
-          if (res === "unsupported" && !warnedNoFormatRef.current) {
-            warnedNoFormatRef.current = true;
-            toast.warning("Format on save skipped", {
-              description:
-                "The active language server has no formatter. Pick an external one in Settings (Ruff for Python, Prettier, rustfmt, ...).",
-            });
-          }
-        } else if (!warnedNoLspRef.current) {
-          warnedNoLspRef.current = true;
-          toast.warning("Format on save skipped", {
-            description:
-              "No active language server for this file. Enable one in the statusbar, or pick an external formatter in Settings.",
-          });
-        }
-      }
       // Snapshot before save: edits typed during the formatter round-trip
       // must not be clobbered by the disk read-back.
       const docAtSave = view?.state.doc;
       const saved = await saveRef.current();
       if (!saved) return;
-      if (prefs.editorFormatOnSave && formatter !== "lsp") {
+      if (prefs.editorFormatOnSave && formatter) {
         const error = await runExternalFormatter(
           formatter,
           pathRef.current,
@@ -343,50 +258,9 @@ export const EditorPane = memo(
         ...buildSharedExtensions(),
         indentCompartment.of(DEFAULT_INDENT),
         languageCompartment.of([]),
-        lspCompartment.of([]),
         diagnosticsReporter(() => pathRef.current),
-        // Before inlineCompletion so an open popup wins Tab over the ghost.
+        // Let an open completion popup claim Tab.
         Prec.highest(keymap.of([{ key: "Tab", run: acceptCompletion }])),
-        inlineCompletion({
-          getPrefs: () => {
-            const s = usePreferencesStore.getState();
-            const p = s.autocompleteProvider;
-            // autocompleteModelId holds the compat- id of the chosen endpoint.
-            const compatEp =
-              p === "openai-compatible"
-                ? s.customEndpoints.find(
-                    (e) =>
-                      e.id === endpointIdFromCompatModel(s.autocompleteModelId),
-                  )
-                : undefined;
-            const modelId =
-              p === "lmstudio"
-                ? s.lmstudioModelId
-                : p === "mlx"
-                  ? s.mlxModelId
-                  : p === "ollama"
-                    ? s.ollamaModelId
-                    : p === "openai-compatible"
-                      ? (compatEp?.modelId ?? "")
-                      : p === "openrouter"
-                        ? s.openrouterModelId
-                        : s.autocompleteModelId;
-            return {
-              enabled: s.autocompleteEnabled,
-              trigger: s.autocompleteTrigger,
-              provider: p,
-              modelId,
-              apiKey: apiKeyRef.current,
-              lmstudioBaseURL: s.lmstudioBaseURL,
-              mlxBaseURL: s.mlxBaseURL,
-              ollamaBaseURL: s.ollamaBaseURL,
-              openaiCompatibleBaseURL:
-                compatEp?.baseURL ?? s.openaiCompatibleBaseURL,
-            };
-          },
-          getPath: () => pathRef.current,
-          getLanguage: () => languageRef.current,
-        }),
         keymap.of([
           {
             key: "Mod-s",
@@ -429,16 +303,6 @@ export const EditorPane = memo(
       });
     }, [doc]);
 
-    const lspExt = useLspExtension(path, langId, doc.status === "ready");
-    useEffect(() => {
-      lspActiveRef.current = lspExt !== null;
-      const view = cmRef.current?.view;
-      if (!view) return;
-      view.dispatch({
-        effects: lspCompartment.reconfigure(lspExt ?? []),
-      });
-    }, [lspExt]);
-
     useEffect(
       () => () => useDiagnosticsStore.getState().report(pathRef.current, null),
       [],
@@ -457,7 +321,6 @@ export const EditorPane = memo(
       languageRef.current = ext;
       if (doc.status !== "ready") return;
       if (doc.size > SYNTAX_MAX_BYTES) {
-        setLangId(null);
         const view = cmRef.current?.view;
         view?.dispatch({ effects: languageCompartment.reconfigure([]) });
         return;
@@ -474,7 +337,6 @@ export const EditorPane = memo(
       void resolve().then((result) => {
         if (cancelled) return;
         if (result.id) languageRef.current = result.id;
-        setLangId(result.id || ext);
         const view = cmRef.current?.view;
         if (!view) return;
         view.dispatch({
@@ -548,10 +410,6 @@ export const EditorPane = memo(
           if (view) redo(view);
         },
         save: () => performSaveRef.current(),
-        triggerAiComplete: () => {
-          const view = cmRef.current?.view;
-          if (view) triggerInlineCompletion(view);
-        },
         triggerCodeComplete: () => {
           const view = cmRef.current?.view;
           if (!view) return;

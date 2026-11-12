@@ -37,6 +37,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 import { SectionHeader } from "../components/SectionHeader";
+import { AgentHooksGroup } from "../components/AgentHooksGroup";
 
 const ICON_OPTIONS: AgentIconId[] = [
   "coder",
@@ -201,6 +202,8 @@ export function AgentsSection() {
           </ul>
         )}
       </section>
+
+      <AgentHooksGroup />
 
       <AgentEditorDialog
         agent={editingAgent}

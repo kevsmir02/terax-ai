@@ -249,6 +249,73 @@ mod tests {
     }
 
     #[test]
+    fn the_update_endpoint_is_fork_owned_and_not_upstreams_release_feed() {
+        // Release identity is part of the fork identity: a build tool forces the updater
+        // endpoint into tauri.conf.json, so it is compared against the contract table in
+        // src/modules/updater/releaseContract.json instead of being trusted as a literal.
+        let contract = parse(include_str!("../../../src/modules/updater/releaseContract.json"));
+        let config = parse(include_str!("../../tauri.conf.json"));
+
+        assert_eq!(contract["provisional"], serde_json::json!(true));
+        assert_eq!(contract["channel"], serde_json::json!("stable"));
+
+        let endpoints = contract["endpoints"]
+            .as_array()
+            .expect("endpoints array")
+            .iter()
+            .map(|value| value.as_str().expect("endpoint string").to_string())
+            .collect::<Vec<_>>();
+        assert!(!endpoints.is_empty(), "a release endpoint is configured");
+
+        let upstream = contract["upstream"]["endpoints"]
+            .as_array()
+            .expect("upstream endpoints array")
+            .iter()
+            .map(|value| value.as_str().expect("endpoint string").to_string())
+            .collect::<Vec<_>>();
+        assert!(
+            !upstream.is_empty(),
+            "the contract records upstream's feed so it can be refused"
+        );
+        for endpoint in &endpoints {
+            assert!(
+                !upstream.contains(endpoint),
+                "{endpoint} is upstream's release feed"
+            );
+            assert!(
+                !endpoint.contains("crynta"),
+                "{endpoint} names the upstream release owner"
+            );
+            let host = endpoint
+                .split("://")
+                .nth(1)
+                .and_then(|rest| rest.split('/').next())
+                .unwrap_or_default();
+            assert!(
+                host.ends_with(".invalid"),
+                "the default endpoint must not be live until #39/#40 provision one: {endpoint}"
+            );
+        }
+
+        let configured = config["plugins"]["updater"]["endpoints"]
+            .as_array()
+            .expect("tauri updater endpoints array")
+            .iter()
+            .map(|value| value.as_str().expect("endpoint string").to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            configured, endpoints,
+            "tauri.conf.json must mirror the fork release contract"
+        );
+        // No fork trust root exists yet; upstream's embedded key must not be reused.
+        assert_eq!(config["plugins"]["updater"]["pubkey"], serde_json::json!(""));
+        assert!(
+            !include_str!("../../tauri.conf.json").contains("3BABFD8AB60E3469"),
+            "the upstream signing key must not remain in the fork config"
+        );
+    }
+
+    #[test]
     fn the_upstream_identity_is_recognised_so_it_can_be_refused() {
         assert!(is_upstream_identifier("app.crynta.terax"));
         assert!(is_upstream_identifier("app.crynta.terax.app-lab-abc123"));

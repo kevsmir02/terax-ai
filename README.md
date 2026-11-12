@@ -77,8 +77,6 @@ Terax is a lightweight open-source terminal-first AI-native development environm
 ### Code editor
 
 - CodeMirror 6 (supports all popular languages - TS/JS, Rust, Python, Go, C/C++, Java, HTML/CSS, JSON, Markdown, etc.)
-- Inline AI autocomplete with local model support
-- AI edit diffs, accept or reject hunk by hunk
 - Opt-in language server support with diagnostics, navigation, completion, formatting, and custom servers
 - Rendered Markdown plus image, video, audio, and PDF viewing
 - Vim mode
@@ -122,7 +120,7 @@ Terax is a lightweight open-source terminal-first AI-native development environm
 
 ## Install
 
-Latest installers are on the [Releases](https://github.com/crynta/terax-ai/releases/latest) page. Terax auto-updates from there.
+Latest installers are on the [Releases](https://github.com/crynta/terax-ai/releases/latest) page (the upstream project's page until this fork publishes its own release channel). The app checks for a stable update in the background and never downloads, installs or restarts itself: updates are installed with your package tool (pacman/AUR on Arch, apt/dnf for the DEB/RPM packages).
 
 ### Windows notes
 

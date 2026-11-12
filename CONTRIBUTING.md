@@ -206,7 +206,7 @@ src/                        React frontend
     agents/                 Agent notifications and management
     ai/                     Agents, sessions, tools, providers, composer
     command-palette/        Modal command palette and actions
-    editor/                 CodeMirror stack, AI autocomplete
+    editor/                 CodeMirror stack, editor themes, formatting
     explorer/               File tree
     git-history/            Git graph and history pane
     header/                 Top bar, search, window controls
