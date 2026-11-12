@@ -685,9 +685,12 @@ fn recover_removed(
             &repo.workspace,
         )?;
         if !removal.removed {
+            // With `force` set, the only refusal left is an owned checkpoint or
+            // pre-restore safety ref: dropping this registration would leave
+            // that ref with no owner to list, restore or clean it.
             return Err(GitError::command(
                 "task recovery",
-                "missing worktree registration could not be removed",
+                "this worktree registration still owns checkpoints or pre-restore safety refs",
             ));
         }
     }

@@ -1387,9 +1387,10 @@ pub(crate) fn inspect_removal(
 }
 
 /// Removal on behalf of the retained task archive, which captures a snapshot
-/// and then removes the worktree it came from. Its retention contract is the
-/// archive ref, not the worktree's own recovery points, so it keeps the
-/// pre-recovery-ref policy.
+/// and then removes the worktree it came from. That snapshot is a task archive
+/// ref, not one of the owned recovery refs, so it never blocks; a checkpoint or
+/// pre-restore safety ref the user still has is refused here exactly like the
+/// product command, so archiving cannot be the thing that strands it.
 pub(crate) fn remove_for_archive(
     registry: &WorkspaceRegistry,
     repo_root: &str,
@@ -1405,7 +1406,7 @@ pub(crate) fn remove_for_archive(
         RemoveLimits::default(),
         RemovalPolicy {
             force,
-            enforce_recovery_refs: false,
+            enforce_recovery_refs: true,
             inspect: false,
         },
         None,
