@@ -32,13 +32,60 @@ The legacy AI-owned wrapper that re-exported these guards and owned `checkShellC
 
 Three tiers exist and must stay distinct:
 
-1. **Explicit user editing**: `fs_read_file`, `fs_write_file`, `fs_stat`, `fs_canonicalize`, `fs_create_*`, `fs_rename`, `fs_delete`, explorer search/read. No registry, no secret policy. Editing `key.pem`, `.env`, `~/.ssh/config` or any file outside the project root works by design (the editor uses these commands, not an automatic reader).
+1. **Explicit user editing**: `fs_read_file`, `fs_write_file`, `fs_stat`, `fs_canonicalize`, `fs_create_*`, `fs_rename`, `fs_delete`, explorer search/read. No registry, no secret policy. Editing `key.pem`, `.env`, `~/.ssh/config` or any file outside the project root works by design (the editor uses these commands, not an automatic reader). `fs_write_file` does take an *expected disk revision* when the caller read the file first; that is coordination, not authorization (see "Save coordination").
 2. **Root-confined structural mutation**: `fs_move`, `fs_delete_batch`, `fs_copy`, control `open`, shell cwd. Canonicalize + `WorkspaceRegistry::is_authorized` only. Control `open` of a target outside every authorized root is still refused (retained-but-strict; a deliberate `terax open` outside the roots needs an explicit grant in a later change).
 3. **Automatic preview assets**: grant token + canonical containment + secret policy + media type + range + descriptor identity, in `src-tauri/src/modules/fs/assets.rs`.
 
 The fourth tier, automatic agent reads (`fs::access::authorize_read` plus the `fs::ai` reader commands), was removed with the built-in AI stack (ticket #14). Nothing now reads a file on the user's behalf: an external agent reads files in its own process, and the application reads only what the user opened or the preview policy explicitly serves.
 
 Known limitation (RS-3, ticket #5): the external formatter runs `shell_run_command` with `cwd = dirname(edited file)` and that cwd is authorized through tier 2, so formatting a file outside every authorized root is refused even though that file can be edited. Widening it needs an explicit user grant for the formatter cwd; until then do not replace the registry check with a path-only check.
+
+## Save coordination
+
+Two independently dirty buffers of one canonical file must not both overwrite
+the revision they were edited from, in one Space or across Spaces. The editor
+reads an opaque **disk revision** with its content and sends it back on save;
+`src-tauri/src/modules/fs/save.rs` recomputes the current one inside the write
+critical section and refuses the write when they disagree.
+
+- A revision is a SHA-256 content digest plus size plus file identity
+  (device/inode, volume/file index). Mtime is deliberately not part of it: a
+  same-size edit that keeps the timestamp must still conflict, and a replaced
+  inode (checkout, rename, `cp`) is a conflict even when the bytes match,
+  because the file the user reviewed no longer exists.
+- A refusal is structured (`{kind:"conflict", reason, current}`) and the
+  reasons are `changed`, `replaced`, `missing`, `unreadable`. A missing,
+  unreadable or replaced target is never recreated by a save.
+- The four conflict outcomes in `src/modules/editor/lib/diskSync.ts` are
+  compare, Save As, reload/discard, and an explicit overwrite **bound to the
+  revision the user reviewed**: the overwrite resends that revision, so a change
+  after the review is refused and starts a fresh round. Save As refuses an
+  existing destination and never writes the conflicting path.
+- An app-owned save+format sequence uses the same coordination: the external
+  formatter only runs while the file is still the revision the buffer just
+  saved (`fs_file_revision`), and the formatter's read-back becomes the new
+  baseline.
+- The editor serialises the app-owned saves of one document (`createSaveQueue`).
+  A save requested while an older one is in flight runs afterwards and reads its
+  text and expected revision at that point, so newer typing is written against
+  the revision the older save left instead of racing it with a stale baseline.
+  Results of older completions are never adopted over the newer buffer.
+
+Validated support (not a release-only gate): `src-tauri/tests/save_revision.rs`
+covers two buffers from one baseline (including a concurrent two-thread race),
+same-mtime content changes, stale overwrite consent, and missing/replaced/
+non-regular targets; `src/modules/editor/lib/diskSync.test.ts` covers the editor
+protocol, conflict outcomes, newer typing during a pending save, reload/discard,
+and format-baseline checks. Not exercised here: a packaged two-Space UI race and
+two independently running app instances.
+
+Limitation, deliberately not claimed otherwise: this coordinates **app-owned**
+writes only. An independent external writer is not locked out, and a change that
+lands between the revision check and the rename is indistinguishable from one
+that lands immediately after. Atomic exclusion of other programs is not
+provided. Save As refuses a destination that exists at check time, but a file an
+external program creates between that check and the write is outside the same
+guarantee. Durable unsaved-text recovery is a separate ticket (#16).
 
 ## Retained native consumers of shared contracts
 

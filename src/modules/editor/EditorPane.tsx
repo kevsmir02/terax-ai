@@ -50,6 +50,7 @@ import { useEditorThemeExt } from "./lib/useEditorThemeExt";
 import { initVimGlobals, vimHandlersExtension } from "./lib/vim";
 import { mediaPreviewKind } from "./lib/mediaPreview";
 import { MediaPreview } from "./MediaPreview";
+import { SaveConflictDialog } from "./SaveConflictDialog";
 
 initVimGlobals();
 
@@ -82,6 +83,8 @@ type Props = {
   onDirtyChange?: (dirty: boolean) => void;
   onSaved?: () => void;
   onClose?: () => void;
+  /** Active tab in its stack: only a visible buffer rereads the disk. */
+  visible?: boolean;
   mediaActive?: boolean;
 };
 
@@ -105,19 +108,34 @@ export const EditorPane = memo(
       onDirtyChange,
       onSaved,
       onClose,
+      visible = true,
       mediaActive = true,
     } = props;
 
-    const { doc, onChange, save, reload, adoptDiskText, openAnyway } =
-      useDocument({
-        path,
-        onDirtyChange,
-      });
+    const {
+      doc,
+      onChange,
+      save,
+      reload,
+      adoptDiskText,
+      openAnyway,
+      canFormatOnDisk,
+      runFormatStep,
+      conflict,
+      overwriteConflict,
+      reloadConflict,
+      saveConflictCopy,
+      dismissConflict,
+    } = useDocument({ path, visible, onDirtyChange });
     const assetGrant = useAssetGrant((doc.status === "binary" || doc.status === "toolarge") && mediaPreviewKind(path) ? path : null);
     const reloadRef = useRef(reload);
     reloadRef.current = reload;
     const adoptDiskTextRef = useRef(adoptDiskText);
     adoptDiskTextRef.current = adoptDiskText;
+    const canFormatOnDiskRef = useRef(canFormatOnDisk);
+    canFormatOnDiskRef.current = canFormatOnDisk;
+    const runFormatStepRef = useRef(runFormatStep);
+    runFormatStepRef.current = runFormatStep;
     const cmRef = useRef<ReactCodeMirrorRef>(null);
     const themeExt = useEditorThemeExt();
     const vimMode = usePreferencesStore((s) => s.vimMode);
@@ -145,21 +163,44 @@ export const EditorPane = memo(
       const docAtSave = view?.state.doc;
       const saved = await saveRef.current();
       if (!saved) return;
+      // A null formatter means no formatter is configured: save unformatted.
       if (prefs.editorFormatOnSave && formatter) {
-        const error = await runExternalFormatter(
-          formatter,
-          pathRef.current,
-          prefs.editorCustomFormatCommand,
-        );
-        if (error) {
-          toast.error(`${formatter} format failed`, { description: error });
-        } else {
+        // The formatter rewrites the file itself, so it must start from the
+        // revision this buffer just saved: a change in between becomes the same
+        // conflict round as a save instead of a blind rewrite. Holding the save
+        // queue for the check, the formatter and the read-back also keeps an
+        // autosave from interleaving its own app-owned write with the
+        // formatter's; a save requested meanwhile runs after the read-back
+        // adopts the formatter's revision. The formatter process is still an
+        // independent writer nothing here can lock out.
+        const outcome = await runFormatStepRef.current(async () => {
+          if (!(await canFormatOnDiskRef.current())) {
+            return { status: "blocked" as const };
+          }
+          const error = await runExternalFormatter(
+            formatter,
+            pathRef.current,
+            prefs.editorCustomFormatCommand,
+          );
+          if (error) return { status: "failed" as const, error };
           const readBack = await readFileText(pathRef.current);
-          if (readBack !== null && view && view.state.doc === docAtSave) {
-            applyFormattedContent(
-              view,
-              adoptDiskTextRef.current(readBack.text, readBack.mtime),
-            );
+          if (readBack === null) return { status: "unreadable" as const };
+          return {
+            status: "formatted" as const,
+            text: adoptDiskTextRef.current(readBack),
+          };
+        });
+        if (outcome.status === "failed") {
+          toast.error(`${formatter} format failed`, {
+            description: outcome.error,
+          });
+        } else if (outcome.status === "unreadable") {
+          toast.error(`${formatter} format could not be read back`, {
+            description: "The file changed while it was being formatted.",
+          });
+        } else if (outcome.status === "formatted") {
+          if (view && view.state.doc === docAtSave) {
+            applyFormattedContent(view, outcome.text);
           }
         }
       }
@@ -504,6 +545,16 @@ export const EditorPane = memo(
 
     return (
       <div className="flex h-full min-h-0 flex-col zoom-exempt">
+        {conflict && (
+          <SaveConflictDialog
+            key={`${conflict.path}:${conflict.currentRevision}`}
+            conflict={conflict}
+            onOverwrite={overwriteConflict}
+            onReload={reloadConflict}
+            onSaveCopy={saveConflictCopy}
+            onCancel={dismissConflict}
+          />
+        )}
         <CodeMirror
           ref={cmRef}
           value={doc.content}
