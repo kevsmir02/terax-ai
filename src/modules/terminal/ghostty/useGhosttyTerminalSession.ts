@@ -449,7 +449,9 @@ export async function ghosttyLeafHasForegroundProcess(
       leafId,
       error,
     );
-    return false;
+    // Not evidence that the pane is safe to terminate: an unavailable probe is
+    // an uncertain process, and close guards must still resolve it.
+    return true;
   }
 }
 

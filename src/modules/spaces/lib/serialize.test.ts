@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { PaneNode } from "@/modules/terminal/lib/panes";
 import type { Tab } from "@/modules/tabs/lib/useTabs";
 import { hydrateTabs, serializeTabs, type SerializedTab } from "./serialize";
+import { sharedRoots } from "./sharedRoots";
+import type { SpaceMeta } from "./store";
 
 function counter(start = 100): () => number {
   let n = start;
@@ -155,5 +157,104 @@ describe("hydrateTabs", () => {
       "localhost:5173",
       "README.md",
     ]);
+  });
+});
+
+describe("restart restoration", () => {
+  it("restores layout and cwd without any agent command to rerun", () => {
+    const tree: PaneNode = {
+      kind: "split",
+      id: 10,
+      dir: "row",
+      children: [
+        { kind: "leaf", id: 11, cwd: "/work/terax" },
+        { kind: "leaf", id: 12, cwd: "/work/terax/docs" },
+      ],
+    };
+    const saved = serializeTabs([
+      term({ id: 1, paneTree: tree, activeLeafId: 12, customTitle: "agent" }),
+    ]);
+
+    // What a terminal tab remembers is a directory, never the command a user
+    // or an agent typed there.
+    expect(JSON.stringify(saved)).not.toMatch(/command|agentCommand|pty|pid/);
+
+    const [restored] = hydrateTabs(saved, "space-a", counter());
+    expect(restored.kind).toBe("terminal");
+    expect(restored.cold).toBe(true);
+    if (restored.kind !== "terminal") return;
+    expect(restored.cwd).toBe("/work/terax/docs");
+    expect(restored.paneTree).toEqual({
+      kind: "split",
+      id: expect.any(Number),
+      dir: "row",
+      children: [
+        { kind: "leaf", id: expect.any(Number), cwd: "/work/terax" },
+        { kind: "leaf", id: expect.any(Number), cwd: "/work/terax/docs" },
+      ],
+    });
+  });
+
+  it("restores file locations whether or not the files still exist", () => {
+    const saved: SerializedTab[] = [
+      { kind: "editor", path: "/work/terax/changed.ts" },
+      { kind: "markdown", path: "/work/terax/removed.md" },
+    ];
+
+    const restored = hydrateTabs(saved, "space-a", counter());
+    expect(restored.map((tab) => tab.kind)).toEqual(["editor", "markdown"]);
+    expect(restored.every((tab) => tab.cold === true)).toBe(true);
+    expect(
+      restored.map((tab) =>
+        tab.kind === "editor" || tab.kind === "markdown" ? tab.path : null,
+      ),
+    ).toEqual(["/work/terax/changed.ts", "/work/terax/removed.md"]);
+  });
+
+  it("keeps two Spaces on one checkout restoring as separate saved layouts", () => {
+    const spaces: SpaceMeta[] = [
+      {
+        id: "a",
+        name: "Terax",
+        root: "/work/terax",
+        env: { kind: "local" },
+        createdAt: 0,
+        updatedAt: 0,
+      },
+      {
+        id: "b",
+        name: "Terax review",
+        root: "/work/terax",
+        env: { kind: "local" },
+        createdAt: 0,
+        updatedAt: 0,
+      },
+    ];
+    const savedBySpace = new Map([
+      ["a", serializeTabs([term({ id: 1, spaceId: "a" })])],
+      [
+        "b",
+        serializeTabs([
+          {
+            kind: "editor",
+            spaceId: "b",
+            id: 3,
+            title: "notes.md",
+            path: "/work/terax/notes.md",
+            dirty: false,
+            preview: false,
+          } as Tab,
+        ]),
+      ],
+    ]);
+
+    const restored = [...savedBySpace].flatMap(([spaceId, saved]) =>
+      hydrateTabs(saved, spaceId, counter()),
+    );
+    expect(restored.map((tab) => [tab.spaceId, tab.kind])).toEqual([
+      ["a", "terminal"],
+      ["b", "editor"],
+    ]);
+    expect(sharedRoots(spaces)[0].spaceIds).toEqual(["a", "b"]);
   });
 });

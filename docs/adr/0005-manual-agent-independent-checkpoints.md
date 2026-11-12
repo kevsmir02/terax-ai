@@ -1,0 +1,3 @@
+# Make checkpoint use independent of agent events
+
+The existing checkpoint backend is expressed in agent task/turn terms, but the fork removes built-in AI supervision and cannot assume equivalent turn events across external agents. The user chose manual, optionally named checkpoints for version one over automatic per-turn snapshots, preserving Git recovery without hook coupling or atomic/full-backup claims. Planned: checkpoint controls communicate capture limits and block worktree removal while its checkpoints or restore-safety refs remain, requiring explicit cleanup instead of adding archival restoration after worktree deletion.

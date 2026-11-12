@@ -6,7 +6,7 @@ const harness = vi.hoisted(() => ({
   cursor: 0,
   effectDeps: [] as unknown[],
   cleanup: undefined as (() => void) | undefined,
-  effect: undefined as (() => void | (() => void)) | undefined,
+  effect: undefined as (() => (() => void) | undefined) | undefined,
   invoke: vi.fn(),
   workspace: { kind: "local" },
 }));
@@ -35,7 +35,7 @@ vi.mock("react", () => ({
   },
   useCallback: (callback: unknown) => callback,
   useMemo: (compute: () => unknown) => compute(),
-  useEffect: (effect: () => void | (() => void), deps: unknown[]) => {
+  useEffect: (effect: () => (() => void) | undefined, deps: unknown[]) => {
     if (
       deps.some((value, index) => !Object.is(value, harness.effectDeps[index]))
     ) {
@@ -51,6 +51,7 @@ function render(
   tabId: number | null = 1,
 ) {
   harness.cursor = 0;
+  // biome-ignore lint/correctness/useHookAtTopLevel: the harness calls the hook directly; this test has no React renderer.
   const result = useAssetGrant(path, tabId);
   if (harness.effect) {
     harness.cleanup?.();
@@ -63,6 +64,7 @@ function render(
 
 function renderMany(paths: Array<string | null>, tabId: number | null = 1) {
   harness.cursor = 0;
+  // biome-ignore lint/correctness/useHookAtTopLevel: the harness calls the hook directly; this test has no React renderer.
   const result = useAssetGrants(paths, tabId);
   if (harness.effect) {
     harness.cleanup?.();

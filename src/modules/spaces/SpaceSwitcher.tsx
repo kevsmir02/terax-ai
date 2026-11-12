@@ -20,8 +20,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { InlineRename } from "./components/InlineRename";
 import { accentFor } from "./lib/spaceColor";
+import { sharedRoots, type SharedRoot } from "./lib/sharedRoots";
 import type { SpaceMeta } from "./lib/store";
 import { useSpaces } from "./lib/useSpaces";
+import { SharedFolderBadge } from "./SharedFolderBadge";
 import { SpaceAvatar } from "./SpaceAvatar";
 
 type Props = {
@@ -104,6 +106,9 @@ export function SpaceSwitcher({
   const [overlay, setOverlay] = useState<{ x: number; y: number } | null>(null);
 
   const current = spaces.find((s) => s.id === activeId);
+  const shared = useMemo(() => sharedRoots(spaces), [spaces]);
+  const sharedFor = (id: string): SharedRoot | null =>
+    shared.find((group) => group.spaceIds.includes(id)) ?? null;
 
   const tabsBySpace = useMemo(() => {
     const m = new Map<string, Tab[]>();
@@ -235,6 +240,8 @@ export function SpaceSwitcher({
 
   if (!current) return null;
 
+  const currentShared = sharedFor(current.id);
+
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>
@@ -246,6 +253,7 @@ export function SpaceSwitcher({
           <span className="max-w-36 truncate text-xs font-medium">
             {current.name}
           </span>
+          {currentShared && <SharedFolderBadge group={currentShared} />}
           <HugeiconsIcon
             icon={ArrowRight01Icon}
             size={14}
@@ -269,6 +277,7 @@ export function SpaceSwitcher({
               tabs={tabsBySpace.get(sp.id) ?? []}
               isActive={sp.id === activeId}
               canDelete={spaces.length > 1}
+              sharedGroup={sharedFor(sp.id)}
               expanded={expanded.has(sp.id)}
               editing={editingId === sp.id}
               dragging={dragging}
@@ -299,6 +308,14 @@ export function SpaceSwitcher({
           ))}
         </div>
         <div className="mt-1.5 border-t border-border/60 pt-1.5">
+          {shared.length > 0 && (
+            <p
+              data-shared-note
+              className="px-2 pb-1.5 text-[10px] leading-snug text-muted-foreground/70"
+            >
+              Spaces organize tabs only; files and processes are shared.
+            </p>
+          )}
           <button
             type="button"
             onClick={onNewSpace}
@@ -336,6 +353,7 @@ type SpaceRowProps = {
   tabs: Tab[];
   isActive: boolean;
   canDelete: boolean;
+  sharedGroup: SharedRoot | null;
   expanded: boolean;
   editing: boolean;
   dragging: { kind: "space" | "tab"; id: string | number } | null;
@@ -364,6 +382,7 @@ function SpaceRow({
   tabs,
   isActive,
   canDelete,
+  sharedGroup,
   expanded,
   editing,
   dragging,
@@ -447,6 +466,7 @@ function SpaceRow({
         )}
         {!editing && (
           <>
+            {sharedGroup && <SharedFolderBadge group={sharedGroup} />}
             <span className="shrink-0 px-1 text-[10px] tabular-nums text-muted-foreground/50 group-hover:hidden">
               {tabs.length}
             </span>

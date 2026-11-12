@@ -6,7 +6,10 @@ import type { ImageViewerState } from "./lib/imageViewer";
 
 const noop = () => {};
 
-function render(state: ImageViewerState, url = "asset://localhost/a.png?token=t") {
+function render(
+  state: ImageViewerState,
+  url = "asset://localhost/a.png?token=t",
+) {
   return renderToStaticMarkup(
     createElement(ImagePreviewView, {
       state,
@@ -82,7 +85,8 @@ describe("ImagePreviewView", () => {
   it("names the webview format support instead of showing a blank pane", () => {
     const html = render({
       kind: "unsupported-format",
-      reason: "This build's WebKitGTK has not verified decode support for TIFF.",
+      reason:
+        "This build's WebKitGTK has not verified decode support for TIFF.",
       alternatives: ["open-externally"],
     });
     expect(html).toContain("Image format not supported");

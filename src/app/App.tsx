@@ -134,6 +134,7 @@ import {
   spacesEmptiedByTabs,
 } from "./hooks/tabCloseGuards";
 import { useTabCloseGuards } from "./hooks/useTabCloseGuards";
+import { useSpaceDeleteGuard } from "./hooks/useSpaceDeleteGuard";
 import { useWorkspaceSwitcher } from "./hooks/useWorkspaceSwitcher";
 
 // Real-application benchmark driver (scripts/app-lab). `__TERAX_BENCH__` is the literal `false`
@@ -423,22 +424,44 @@ export default function App() {
     [disposeTab, newTabInSpace],
   );
 
+  const isTabDirty = useCallback((id: number): boolean => {
+    const tab = tabsRef.current.find((t) => t.id === id);
+    if (tab?.kind !== "editor") return false;
+    return editorRefs.current.get(id)?.isDirty() ?? tab.dirty;
+  }, []);
+
+  const saveTab = useCallback(async (id: number): Promise<boolean> => {
+    const handle = editorRefs.current.get(id);
+    if (!handle) return false;
+    try {
+      const complete = await handle.save();
+      return complete && !handle.isDirty();
+    } catch (error) {
+      console.error("[terax] save before close failed:", error);
+      return false;
+    }
+  }, []);
+
   const {
     pendingCloseTab,
     pendingTerminalCloseTab,
     pendingDeleteTabs,
     pendingCloseMany,
     closeManyConfirming,
+    closeManyIncomplete,
+    closeSaveState,
     handleClose,
     handleCloseTabsToRight,
     handleCloseOtherTabs,
     confirmClose,
     cancelClose,
+    saveAndClose,
     confirmTerminalClose,
     cancelTerminalClose,
     confirmDeleteClose,
     cancelDeleteClose,
     confirmCloseMany,
+    saveAndCloseMany,
     cancelCloseMany,
     handlePathsDeleted,
   } = useTabCloseGuards({
@@ -447,6 +470,8 @@ export default function App() {
     disposeTab,
     disposeDeletedTabs,
     disposeTabs,
+    saveTab,
+    isTabDirty,
   });
 
   const { pendingAppClose, confirmAppClose, cancelAppClose } =
@@ -583,7 +608,7 @@ export default function App() {
       const tabId = newTab(path);
       setTimeout(() => {
         const tab = tabsRef.current.find((x) => x.id === tabId);
-        if (!tab || tab.kind !== "terminal") return;
+        if (tab?.kind !== "terminal") return;
         const t = terminalRefs.current.get(tab.activeLeafId);
         if (!t) return;
         t.write(`cd ${quoteShellArg(path)}\r`);
@@ -1066,7 +1091,7 @@ export default function App() {
     return meta.id;
   }, [activeCwd, home, workspaceEnv, newTab, setActiveSpaceForNewTabs]);
 
-  const handleDeleteSpace = useCallback(
+  const commitDeleteSpace = useCallback(
     (id: string) => {
       const nextSpaceId = useSpaces.getState().remove(id);
       if (!nextSpaceId) return;
@@ -1077,6 +1102,30 @@ export default function App() {
     },
     [removeTabsForSpace],
   );
+
+  const prepareDiscard = useCallback(
+    (id: number): (() => void) | null => {
+      const handle = editorRefs.current.get(id);
+      return handle ? () => handle.discardRecovery() : null;
+    },
+    [],
+  );
+
+  const {
+    pendingSpaceDelete,
+    spaceDeleteSaving,
+    spaceDeleteIncomplete,
+    requestSpaceDelete,
+    confirmSpaceDelete,
+    saveAndDeleteSpace,
+    cancelSpaceDelete,
+  } = useSpaceDeleteGuard({
+    tabs,
+    deleteSpace: commitDeleteSpace,
+    saveTab,
+    isTabDirty,
+    prepareDiscard,
+  });
 
   const handleMoveTab = useCallback(
     (tabId: number, targetSpaceId: string) => {
@@ -1124,7 +1173,7 @@ export default function App() {
       onOpenChange={setSwitcherOpen}
       tabs={tabs}
       onNewSpace={() => void handleNewSpace()}
-      onDeleteSpace={handleDeleteSpace}
+      onDeleteSpace={requestSpaceDelete}
       onNewTabInSpace={handleNewTabInSpace}
       onJumpTab={jumpToTab}
       onCloseTab={handleClose}
@@ -1305,6 +1354,30 @@ export default function App() {
               setActiveSpace={(id) => useSpaces.getState().setActive(id)}
               newTabInSpace={(spaceId, cwd) => newTabInSpace(spaceId, cwd)}
               openPreview={(url) => openPreviewTab(url)}
+              requestCloseTab={(id) => void handleClose(id)}
+              cancelPendingClose={() => {
+                cancelClose();
+                cancelTerminalClose();
+              }}
+              confirmDiscardTab={() => {
+                confirmClose();
+                confirmTerminalClose();
+              }}
+              saveAndCloseTab={() => void saveAndClose()}
+              requestDeleteSpace={(id) => void requestSpaceDelete(id)}
+              cancelDeleteSpace={cancelSpaceDelete}
+              confirmDeleteSpace={() => void confirmSpaceDelete()}
+              saveAndDeleteSpace={() => void saveAndDeleteSpace()}
+              pendingGuards={() => ({
+                closeTabId: pendingCloseTab,
+                terminalTabId: pendingTerminalCloseTab,
+                spaceDeleteId: pendingSpaceDelete?.spaceId ?? null,
+                closeSaveState,
+                spaceDeleteIncomplete,
+              })}
+              editEditor={(tabId, text) =>
+                editorRefs.current.get(tabId)?.insertText(text)
+              }
             />
           </Suspense>
         )}
@@ -1503,8 +1576,10 @@ export default function App() {
           <CloseDialogs
             tabs={tabs}
             pendingCloseTab={pendingCloseTab}
+            closeSaveState={closeSaveState}
             onCancelClose={cancelClose}
             onConfirmClose={confirmClose}
+            onSaveAndClose={saveAndClose}
             pendingTerminalCloseTab={pendingTerminalCloseTab}
             onCancelTerminalClose={cancelTerminalClose}
             onConfirmTerminalClose={confirmTerminalClose}
@@ -1513,8 +1588,20 @@ export default function App() {
             onConfirmDeleteClose={confirmDeleteClose}
             pendingCloseMany={pendingCloseMany}
             closeManyConfirming={closeManyConfirming}
+            closeManyIncomplete={closeManyIncomplete}
             onCancelCloseMany={cancelCloseMany}
             onConfirmCloseMany={confirmCloseMany}
+            onSaveAndCloseMany={saveAndCloseMany}
+            pendingSpaceDelete={pendingSpaceDelete}
+            spaceName={
+              spaceList.find((s) => s.id === pendingSpaceDelete?.spaceId)
+                ?.name ?? "this Space"
+            }
+            spaceDeleteSaving={spaceDeleteSaving}
+            spaceDeleteIncomplete={spaceDeleteIncomplete}
+            onCancelSpaceDelete={cancelSpaceDelete}
+            onConfirmSpaceDelete={() => void confirmSpaceDelete()}
+            onSaveAndDeleteSpace={() => void saveAndDeleteSpace()}
             pendingAppClose={pendingAppClose}
             onCancelAppClose={cancelAppClose}
             onConfirmAppClose={confirmAppClose}

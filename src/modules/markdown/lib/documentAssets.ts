@@ -41,7 +41,7 @@ function withoutFencedCode(content: string): string {
   for (const line of lines) {
     const marker = line.match(/^\s*(`{3,}|~{3,})/);
     if (fence !== null) {
-      if (marker && marker[1].startsWith(fence[0])) fence = null;
+      if (marker?.[1].startsWith(fence[0])) fence = null;
       continue;
     }
     if (marker) {

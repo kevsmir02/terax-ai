@@ -203,3 +203,47 @@ describe("notification bridge dependencies", () => {
     ).toEqual([]);
   });
 });
+
+describe("space switching", () => {
+  it("keeps routing attention from a Space that is no longer on screen", () => {
+    const leafId = 9;
+    const agentTab = tab(leafId);
+    const otherSpaceTab = {
+      ...tab(leafId + 1),
+      id: leafId + 200,
+      spaceId: "sp-other",
+      title: "other shell",
+    } as Tab;
+    const switched = {
+      tabs: [agentTab, otherSpaceTab],
+      // The user switched to another Space; the agent's tab is no longer active.
+      activeId: otherSpaceTab.id,
+      focused: true,
+      onActivate: vi.fn(),
+      spaceNames: { [SPACE_ID]: "api workspace", "sp-other": "other" },
+    };
+
+    handleAgentSignal(signal("started", leafId), switched);
+    handleAgentSignal(signal("attention", leafId), switched);
+
+    // Output and session accounting continue while the Space is hidden.
+    expect(useAgentStore.getState().sessions[leafId]).toMatchObject({
+      tabId: agentTab.id,
+      status: "attention",
+    });
+    expect(useAgentStore.getState().notifications).toMatchObject([
+      {
+        kind: "attention",
+        tabId: agentTab.id,
+      },
+    ]);
+    expect(seams.showToast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Claude Code needs attention",
+        body: "Space: api workspace",
+      }),
+    );
+    // Attention never steals focus from the Space being worked in.
+    expect(switched.onActivate).not.toHaveBeenCalled();
+  });
+});

@@ -155,9 +155,7 @@ export function imageFormatForPath(path: string): ImageFormat | null {
 
 /** The table entry for a canonical format id, or null when unmeasured. */
 export function imageFormatInfo(format: string): ImageFormatInfo | null {
-  return format in IMAGE_FORMATS
-    ? IMAGE_FORMATS[format as ImageFormat]
-    : null;
+  return format in IMAGE_FORMATS ? IMAGE_FORMATS[format as ImageFormat] : null;
 }
 
 /**

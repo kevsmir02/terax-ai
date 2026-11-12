@@ -1,0 +1,3 @@
+# Coordinate app-owned mutations across shared project contexts
+
+Spaces organize work and can share a checkout, so Space-local guards and frontend-only timestamp checks cannot protect competing saves or destructive Git operations. Planned: coordinate writes by canonical file identity with native expected-revision checks, and coordinate destructive worktree/file operations against affected usage across all Spaces, revalidating before mutation and preventing new app-owned conflicts during it. The user accepted shared coordination over independent per-Space safety decisions while retaining the limitation that independently writing external programs cannot be atomically excluded.

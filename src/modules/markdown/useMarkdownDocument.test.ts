@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 type Effect = {
-  effect: () => void | (() => void);
+  effect: () => (() => void) | undefined;
   deps: unknown[];
   cleanup?: () => void;
 };
@@ -39,7 +39,7 @@ vi.mock("react", () => ({
     return harness.refs[index];
   },
   useCallback: (callback: unknown) => callback,
-  useEffect: (effect: () => void | (() => void), deps: unknown[]) => {
+  useEffect: (effect: () => (() => void) | undefined, deps: unknown[]) => {
     const index = harness.cursor++;
     const previous = harness.effects[index];
     if (
@@ -77,6 +77,7 @@ import { useMarkdownDocument } from "./useMarkdownDocument";
 function render(path = "/proj/docs/readme.md", visible = true) {
   harness.cursor = 0;
   harness.pending = [];
+  // biome-ignore lint/correctness/useHookAtTopLevel: the harness calls the hook directly; this test has no React renderer.
   const result = useMarkdownDocument(path, visible);
   for (const entry of harness.pending) {
     const previous = harness.effects[entry.index];

@@ -51,6 +51,10 @@ python3 scripts/app-lab/run.py --scenario preview --profile debug \
 python3 scripts/app-lab/run.py --scenario markdown --profile debug \
     --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-markdown
 
+# the Spaces lifecycle seam (shared checkout, switch, close guards, Space deletion)
+python3 scripts/app-lab/run.py --scenario spaces --profile debug \
+    --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-spaces
+
 # the image seam (real decode per format, oversized/corrupt refusal, hidden-tab and
 # close-cycle release of decoded viewers and grants)
 python3 scripts/app-lab/run.py --scenario images --profile debug \
@@ -138,6 +142,20 @@ the large document renders with `data-syntax="off"`, and that closing the tab ma
 fail while no content resurfaces. Pass/fail steps and the remote hit counters are in the report's
 `markdown` and `markdownServer` blocks.
 
+**The Spaces lifecycle** (`--scenario spaces`): two Spaces are created on one real checkout and the
+rendered `[data-shared-root]` badge is asserted; a shell in the first Space streams five lines
+while the app switches to the second Space, and after switching back the scrollback holds all five
+while the hidden terminal tab reported `visibility: hidden` (presentation off, output processing
+on). The scenario then drives the app's own close guards: a tab whose shell runs `sleep 30` opens
+the running-process dialog and cancel keeps it; an editor buffer edited through the real CodeMirror
+path opens the unsaved-changes dialog, cancel keeps it dirty, and Save & Close reads the persisted
+text back from disk before the tab disappears. A third Space with a dirty buffer and a running
+process is asked about and canceled first (Space, tabs and dirty text still there), then saved and
+deleted; the report records that the project directory and its `spaces-keep.txt` still exist under
+`spaceDeletion`. The runner exits 2 when any step failed. The scenario does not relaunch the app:
+restart restoration (layout, cwd and file locations cold, no command replay) is verified at the
+planning seam in `src/modules/spaces/lib/restore.test.ts`.
+
 **The preview** (`previewScenario`): a preview tab opens through the app's own planner
 (`openPreviewTab`) at `/preview-fixture?redirect=1`, which the orchestrator serves. The fixture page
 posts a 200 ms beat and a `pagehide` notice to the app page, so a teardown is observed as the
@@ -168,6 +186,29 @@ frame's document really stopping rather than as an attribute change:
 The step list and the observed signals (`blurExercised`, minimize `visibility`, `reportedHidden`)
 ride the final `done` sync as `preview` next to `workflow`; the fixture server's counters
 (`fixtureLoads`, `redirectHits`, `pings`) are recorded as `previewServer`.
+
+**PDF documents** (`pdfDocuments` in `src/bench/driver.ts`, issue #30). The same preview
+scenario opens five generated documents through the app's file planner and asserts what the
+application can actually own:
+
+- the app's delivery gate: a 12 MiB document above the 10 MiB whole-file read ceiling shows the
+  explicit-choice notice, mounts no frame and sends no request until "Load anyway" is used; then
+  exactly one `200` response carries the whole file with `override=1`;
+- the transport, recorded natively by `fs::bench_probe`/`bench_asset_log` (bench-only): method,
+  content type, status, bytes, the client's `Range`, advertised `Accept-Ranges` and the live grant
+  count — the app page cannot read the document, so the request log is the honest witness;
+- the document boundary: the frame commits a cross-origin document (`contentDocument` null, its
+  location refused), which is also why no reader function can be asserted from the page;
+- the error paths (`corrupt.pdf` is served and must not destabilise the app; `not-a-pdf.pdf` opens
+  as text because classification is by content) and the lifecycle (a hidden tab, tab close and
+  grant release).
+
+Fixtures are written and re-verified by `scripts/app-lab/pdf_fixtures.py` (poppler as the
+independent check) into the run's workspace, never the repository, and the manifest travels in the
+report with its verification. `--pdf-hold-ms N` keeps `text.pdf` on screen for `N` milliseconds
+after its sample so the named manual reader checks in `docs/architecture/pdf-reader.md` can be run
+against the real window; the reader functions themselves are not automated (WebKitGTK offers no
+input or screenshot seam, and the viewer's document is cross-origin).
 
 **The images** (`imagesScenario`): committed containers from
 `src-tauri/tests/fixtures/images/` are copied into the run's workspace and opened through the
@@ -251,6 +292,7 @@ not.
 | `idle` | one idle shell for 30 s |
 | `input` | real key events and input-method calls into a raw-mode PTY reader; pass/fail lines in `page.log` (no measurements) |
 | `workflow` (Linux) | acceptance workflow: shell spawn, exact echo, new tab, split, switch back, open a file and assert its rendered text; now sampled like the measured scenarios |
+| `spaces` (Linux) | Space lifecycle: one checkout shared by two Spaces and its rendered indication, a switch that keeps hidden terminal output flowing while presentation stops, the running-process and unsaved-buffer close guards, and Space deletion that resolves dirty buffers/processes, leaves the project directory intact, and cancel leaving everything as it was |
 | `resource` (Linux) | idle terminal for `--idle-seconds` (5), then 2 Spaces, 4 terminal panes, `--agents` (2) busy synthetic agents, several text files, one active local preview; `--streams` (2) streaming panes for `--stream-seconds`, `--close-cycles` editor open/close cycles, `--cycles` hide/show cycles, then +10/+30 s settle |
 | `stress` (Linux) | the same shape with 4 agents, 4 streaming panes and the 4 MiB close-cycle file; a separate, clearly described workload |
 | `startup` (Linux) | boot only; `--startup-repeats` (3) launches — the first cold (fresh profile), the rest warm (same profile) |

@@ -1,0 +1,3 @@
+# Recovery drafts belong to buffer revisions
+
+Separate Spaces can hold independent unsaved buffers for the same file, and a save can finish after newer text has been typed. Planned: recovery belongs to stable buffer identities and distinguished revisions rather than pathname alone, so stale persistence or cleanup cannot delete another buffer's text, discard newer drafts or resurrect discarded content. The user chose independent recovery with explicit durable acknowledgement over path-only cleanup or silently sharing buffers; actual crashes can lose text newer than the last acknowledged revision.
