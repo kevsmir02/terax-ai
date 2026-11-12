@@ -32,10 +32,13 @@ pub struct WorktreeConfig {
 impl Default for WorktreeConfig {
     fn default() -> Self {
         Self {
-            dir: "~/.terax/worktrees/{project}/{task}".into(),
+            dir: format!(
+                "~/{}/worktrees/{{project}}/{{task}}",
+                crate::modules::identity::home_dir_name()
+            ),
             include: vec![".env".into(), ".env.local".into()],
             shared: vec!["node_modules/.cache".into()],
-            branch_prefix: "terax/".into(),
+            branch_prefix: format!("{}/", crate::modules::identity::namespace()),
         }
     }
 }
@@ -352,7 +355,9 @@ fn resolved_destination(path: &Path) -> std::io::Result<PathBuf> {
 pub(crate) fn validate_location(path: &Path, repo: &Path, home: &Path) -> Result<()> {
     let target = resolved_destination(path)?;
     let repo = std::fs::canonicalize(repo)?;
-    let default_root = std::fs::canonicalize(home)?.join(".terax/worktrees");
+    let default_root = std::fs::canonicalize(home)?
+        .join(crate::modules::identity::home_dir_name())
+        .join("worktrees");
     let siblings = repo
         .parent()
         .ok_or_else(|| GitError::InvalidPath("repository has no parent".into()))?;

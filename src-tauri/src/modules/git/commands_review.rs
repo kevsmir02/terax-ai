@@ -118,7 +118,7 @@ pub async fn git_worktree_add(
 ) -> Result<WorktreeAdded, String> {
     let workspace = WorkspaceEnv::from_option(workspace);
     let base = dirs::home_dir()
-        .map(|home| home.join(".terax").join("worktrees"))
+        .map(|home| crate::modules::identity::home_state_dir(&home).join("worktrees"))
         .ok_or_else(|| "could not resolve the home directory".to_string())?;
     blocking(app, move |r| {
         worktree::add(r, &repo_root, &request, &base, &workspace).map_err(Into::into)

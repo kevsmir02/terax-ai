@@ -7,10 +7,10 @@ from pathlib import Path
 import platform
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
-import uuid
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--output", type=Path)
@@ -19,6 +19,8 @@ if platform.system() != "Darwin":
     raise SystemExit("This smoke runner currently supports macOS only.")
 root = Path(__file__).resolve().parent
 repo = root.parent.parent
+sys.path.insert(0, str(repo / "scripts"))
+import linux_profile  # noqa: E402
 output = (args.output or Path(tempfile.mkdtemp(prefix="terax-ipc-profile-"))).resolve()
 output.mkdir(parents=True, exist_ok=True)
 finished = threading.Event()
@@ -69,7 +71,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
 threading.Thread(target=server.serve_forever, daemon=True).start()
-identifier = f"app.crynta.terax.ipc-lab-{uuid.uuid4().hex[:12]}"
+identifier = linux_profile.disposable_identifier("ipc-lab")
 config = output / "tauri.conf.json"
 config.write_text(json.dumps({
     "productName": "Terax IPC Lab", "identifier": identifier,

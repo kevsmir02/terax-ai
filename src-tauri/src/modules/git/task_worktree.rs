@@ -715,7 +715,7 @@ pub fn restore(
         ));
     }
     if let Some(reference) = reference {
-        let prefix = format!("refs/terax/tasks/{id}/archive/");
+        let prefix = super::refs::task_archive_prefix(id);
         let suffix = reference
             .strip_prefix(&prefix)
             .ok_or_else(|| GitError::InvalidRef(reference.into()))?;

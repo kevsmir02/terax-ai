@@ -26,7 +26,8 @@ Linux currently implements `workflow` only (WebKitGTK); the measured scenarios a
 macOS-only until ticket 02 (sampling) and ticket 32 (input/resize/layers). On Linux the app is
 built with `--no-bundle` into `<target>/<profile>/terax`.
 
-The app runs from an isolated bundle (identifier app.crynta.terax.app-lab, its own HOME), never
+The app runs from an isolated bundle (an identifier inside the fork product namespace, its own
+HOME), never
 the user's profile; the bench build refuses to start under the product identifier. Build once
 (`--build-only`, release with the feature, a separate cargo target dir) and reuse with
 `--reuse-build`. To measure a pristine revision rather than the working tree use
@@ -63,10 +64,11 @@ sys.path.insert(0, str(REPO / "scripts"))
 sys.path.insert(0, str(REPO / "scripts/renderer-profile"))
 import app_report  # noqa: E402
 import linux_profile  # noqa: E402
+import namespace_sentinels  # noqa: E402
 import procstats  # noqa: E402
 
 SYSTEM = platform.system()
-IDENTIFIER = "app.crynta.terax.app-lab"
+IDENTIFIER = linux_profile.disposable_identifier("app-lab", "stable")
 PRODUCT_NAME = "Terax App Lab"
 MAX_ATTEMPTS = 3
 LOCK_PATH = Path(tempfile.gettempdir()) / "terax-app-lab.lock"
@@ -85,7 +87,10 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter, allow_abbrev=False)
     p.add_argument("--scenario", choices=list(app_report.SCENARIOS))
     p.add_argument("--self-test", action="store_true", help="prove the preflight refusal and the bench binary's isolation guard, then exit")
-    p.add_argument("--identifier", help="disposable app identifier (Linux default: app.crynta.terax.app-lab-<hex>)")
+    p.add_argument(
+        "--identifier",
+        help="disposable app identifier (Linux default: <fork product identifier>.app-lab-<hex>)",
+    )
     p.add_argument("--variant", default=None, help="tabs: 2 (default) or 4")
     p.add_argument("--source", type=Path, help="source tree to build (default: this checkout; see export-tree.sh)")
     p.add_argument("--revision", help="label for a source tree without Git metadata")
@@ -270,7 +275,9 @@ def build_linux(args, source: Path, output: Path, target_dir: Path) -> Path:
 
 def clean_profile(home: Path) -> None:
     """Removes everything a previous run left for the bench identifier (never the product's)."""
-    assert IDENTIFIER != "app.crynta.terax"
+    assert IDENTIFIER != linux_profile.PRODUCT_IDENTIFIER
+    assert IDENTIFIER.startswith(f"{linux_profile.PRODUCT_IDENTIFIER}.")
+    assert linux_profile.UPSTREAM_IDENTIFIER not in IDENTIFIER
     shutil.rmtree(home, ignore_errors=True)
     # WebKit, Tauri and cfprefsd may resolve the user's real library even with HOME overridden.
     import pwd
@@ -875,6 +882,9 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     """Launch the real WebKitGTK app in a disposable profile and collect the workflow evidence."""
     home = output / "home"
     linux_profile.prepare(home, output)
+    # Coexistence: a synthetic installed upstream Terax owns state in this same profile. The
+    # run must create only fork-namespaced state and leave every upstream byte untouched.
+    sentinels = namespace_sentinels.seed(home)
     workspace = output / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
     token = uuid.uuid4().hex[:10]
@@ -926,6 +936,11 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             "profile": linux_profile.profile_env(home),
             "session": linux_profile.session_env(env),
             "benchIsolated": env.get("TERAX_BENCH_ISOLATED"),
+            "upstreamSentinels": {
+                "upstreamIdentifier": sentinels["upstreamIdentifier"],
+                "files": len(sentinels["files"]),
+                "trees": sorted(sentinels["trees"]),
+            },
         },
         "appBinarySha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
         "qualification": {"qualified": True, "failures": [], "advisories": []},
@@ -1024,6 +1039,44 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             "redirectHits": server.redirect_hits,
             "pings": server.pings,
         }
+        # Coexistence evidence: the hashes of the upstream installation's files, taken before
+        # the launch, must still match now that the application has run and exited.
+        unchanged = namespace_sentinels.verify(home, sentinels)
+        fork_state = namespace_sentinels.fork_state(home)
+        upstream_cache = home / ".cache" / linux_profile.UPSTREAM_NAMESPACE
+        descriptor = Path(fork_state["controlDescriptor"])
+        if descriptor.is_file():
+            published = json.loads(descriptor.read_text())
+            fork_state["descriptorPid"] = published.get("pid")
+            fork_state["descriptorIsInsideProfile"] = descriptor.is_relative_to(home)
+        isolation = manifest["isolation"]
+        isolation["upstreamStateUnchanged"] = not unchanged
+        isolation["upstreamStateChanges"] = unchanged
+        isolation["upstreamCacheDirUntouched"] = (upstream_cache / "control.json").is_file()
+        isolation["fork"] = fork_state
+        isolation["forkRuntimeDirIsNotUpstream"] = descriptor.parent != upstream_cache
+        # WebKit storage (localStorage, CacheStorage, HSTS, logs) lives in the identifier-keyed
+        # app data dir. The built bench identifier is `<fork product identifier>.app-lab-<hex>`,
+        # so every directory this run created under XDG_DATA_HOME is inside the fork's product
+        # namespace; the upstream identifier is present only because the run seeded it.
+        own_data = [
+            entry
+            for entry in fork_state["dataDirEntries"]
+            if entry != linux_profile.UPSTREAM_IDENTIFIER
+        ]
+        isolation["forkAppDataDirs"] = own_data
+        isolation["forkDataDirIsIdentifierKeyed"] = bool(own_data) and all(
+            entry.startswith(f"{linux_profile.PRODUCT_IDENTIFIER}.") for entry in own_data
+        )
+        isolation["forkDataDirIsNotUpstream"] = all(
+            not entry.startswith(linux_profile.UPSTREAM_IDENTIFIER) for entry in own_data
+        )
+        isolation["controlDescriptorPublished"] = fork_state["controlDescriptorExists"]
+        if unchanged:
+            manifest["qualification"]["qualified"] = False
+            manifest["qualification"]["failures"].append(
+                {"phase": "coexistence", "reasons": unchanged}
+            )
         manifest["environment"]["loadAverageEnd"] = [round(value, 2) for value in os.getloadavg()]
         unfocused = [
             sample["phase"] for sample in manifest["samples"]
@@ -1048,11 +1101,25 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         raise failed
     steps = workflow.get("steps") or []
     passed = sum(1 for step in steps if step.get("ok"))
+    isolation = manifest["isolation"]
     print(f"workflow {'PASS' if workflow.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
+    print(
+        f"coexistence {'PASS' if isolation['upstreamStateUnchanged'] else 'FAIL'}: "
+        f"{isolation['upstreamSentinels']['files']} upstream files unchanged; "
+        f"descriptor {'published' if isolation['controlDescriptorPublished'] else 'MISSING'} at "
+        f"{isolation['fork']['controlDescriptor']}"
+    )
     print(f"\nSaved {report_path}")
     if not workflow.get("pass"):
         print("Run failed: the workflow reported a failing step (see page.log).", file=sys.stderr)
         return 2
+    if not isolation["upstreamStateUnchanged"]:
+        print(
+            "Run failed: the run changed upstream state: "
+            + "; ".join(isolation["upstreamStateChanges"]),
+            file=sys.stderr,
+        )
+        return 3
     return 0
 
 
@@ -1071,7 +1138,8 @@ def self_test(args, binary: Path, output: Path) -> int:
         linux_profile.prepare(home, scratch)
         safe = {**linux_profile.profile_env(home), "TERAX_BENCH_ISOLATED": "1"}
         cases = [
-            ("product identifier", "app.crynta.terax", safe),
+            ("product identifier", linux_profile.PRODUCT_IDENTIFIER, safe),
+            ("upstream identifier", linux_profile.UPSTREAM_IDENTIFIER, safe),
             ("foreign identifier namespace", "com.example.other", safe),
             ("HOME outside the run output", f"{IDENTIFIER}-test", {**safe, "HOME": str(Path.home())}),
             ("control-descriptor cache dir", f"{IDENTIFIER}-test", {**safe, "XDG_CACHE_HOME": str(linux_profile.real_cache_dir())}),
@@ -1086,6 +1154,20 @@ def self_test(args, binary: Path, output: Path) -> int:
         print(f"[self-test] {'PASS' if not accepted else 'FAIL'} disposable profile accepted: {accepted}")
         if accepted:
             failures.append("disposable profile accepted")
+
+        # The coexistence checker must be able to fail: an untouched upstream tree passes, and
+        # one modified upstream file is reported.
+        sentinels = namespace_sentinels.seed(home)
+        untouched = namespace_sentinels.verify(home, sentinels)
+        print(f"[self-test] {'PASS' if not untouched else 'FAIL'} upstream sentinels untouched: {untouched}")
+        if untouched:
+            failures.append("upstream sentinels untouched")
+        tampered = home / ".cache" / linux_profile.UPSTREAM_NAMESPACE / "control.json"
+        tampered.write_text("{}\n")
+        detected = namespace_sentinels.verify(home, sentinels)
+        print(f"[self-test] {'PASS' if detected else 'FAIL'} a changed upstream sentinel is detected: {detected}")
+        if not detected:
+            failures.append("a changed upstream sentinel is detected")
 
         env = {**os.environ}
         env.update(linux_profile.profile_env(home))

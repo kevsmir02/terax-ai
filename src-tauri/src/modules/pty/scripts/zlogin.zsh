@@ -11,7 +11,7 @@
 # show a red error indicator on a clean shell start.
 {
   _terax_zdotdir="$ZDOTDIR"
-  _terax_user_zdotdir="${TERAX_USER_ZDOTDIR:-$HOME}"
+  _terax_user_zdotdir="${TERAX_WORKSPACE_FORK_USER_ZDOTDIR:-$HOME}"
   ZDOTDIR="$_terax_user_zdotdir"
   [ -f "$_terax_user_zdotdir/.zlogin" ] && source "$_terax_user_zdotdir/.zlogin"
   ZDOTDIR="$_terax_zdotdir"

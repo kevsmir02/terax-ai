@@ -24,7 +24,7 @@ If you do not have `cargo-nextest` installed, `cargo test --locked` is the local
 
 | Job | What it runs |
 | --- | --- |
-| `frontend` | `pnpm lint`, `pnpm check-types`, `pnpm test`, `pnpm build`, `pnpm check:dist` (startup dependency graph of the real `dist/`), `pnpm size`, plus advisory `pnpm audit`/`react-compiler-healthcheck`/`pnpm knip` |
+| `frontend` | `pnpm lint`, `pnpm check-types`, `pnpm test`, `pnpm build`, `pnpm check:dist` (sourcemapped build into `dist-graph/`: startup dependency graph **and** duplicate-version packages), `pnpm size`, plus advisory `pnpm audit`/`react-compiler-healthcheck`/`pnpm knip` |
 | `rust` | `cargo check/clippy/nextest --locked` on Linux, a locked dependency-graph check, advisory `cargo fmt --check` and `cargo machete`, fish/bash/zsh shell integration |
 | `rust-platforms` | the same check/nextest pair on Windows, macOS and `ubuntu-24.04-arm` |
 | `terminal-platforms` | Vitest terminal suite on Windows/macOS, Playwright pixel parity on macOS |
@@ -39,8 +39,19 @@ Windows/macOS jobs, or lets the Linux smoke job leave the disposable `app.crynta
 profile. Run it locally before touching `.github/`:
 
 ```bash
+python3 -m pip install -r scripts/tests/requirements.txt   # PyYAML: validates the workflow YAML
 python3 -m unittest discover -s scripts/tests -v
 ```
+
+The YAML validation fails rather than skips when PyYAML is missing, and both workflows that run
+these tests install `scripts/tests/requirements.txt` first, so a green run always means the workflow
+files were actually parsed.
+
+`pnpm check:dist` is not a pass over whatever `dist/` happens to exist: it builds a production
+build with sourcemaps into the gitignored `dist-graph/` and checks both halves of the built graph -
+the startup graph forbidden chunks/packages, and packages bundled in more than one version (which
+needs the sourcemaps). It exits non-zero if the build produced no sourcemaps, so the duplicate half
+cannot silently stop running.
 
 Toolchains are pinned in `rust-toolchain.toml` (exact `1.99.1`, with `clippy` and `rustfmt`) and
 `.nvmrc` (Node major, bare file — no comments, because `setup-node` reads the whole thing) for

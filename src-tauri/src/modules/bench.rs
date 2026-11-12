@@ -5,16 +5,19 @@
 //! helper process ids that belong to this webview, window state, and native window actions
 //! (stepped live resizes, order out/front, miniaturize). Nothing here exists in a normal build.
 //!
-//! Safety: a bench binary refuses to start under the product identifier, so it can never run
-//! against the profile of an installed Terax. The orchestrator (`scripts/app-lab/run.py`)
-//! gives every run its own identifier and `HOME`.
+//! Safety: a bench binary refuses to start under this fork's product identifier *or* under an
+//! upstream Terax identifier, so it can never run against the profile of an installed
+//! application. The orchestrator (`scripts/app-lab/run.py`) gives every run its own identifier
+//! and `HOME`.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, WebviewWindow};
 
-/// Identifier of the shipped application; a bench build must not run under it.
-const PRODUCT_IDENTIFIER: &str = "app.crynta.terax";
+/// Identifier of this fork's application (provisional; `modules::identity`).
+fn product_identifier() -> &'static str {
+    crate::modules::identity::app_identifier()
+}
 
 /// Called from `setup` and by every bench command. A bench build must not run under the
 /// product identifier (it would share the installed app's profile), and only starts when the
@@ -28,10 +31,17 @@ pub fn guard(app: &AppHandle) -> Result<(), String> {
 }
 
 fn guard_environment(identifier: &str, isolated: Option<&str>) -> Result<(), String> {
-    if identifier == PRODUCT_IDENTIFIER {
+    let product = product_identifier();
+    if identifier == product {
         return Err(format!(
-            "bench build refuses to run under the product identifier {PRODUCT_IDENTIFIER}; \
+            "bench build refuses to run under the product identifier {product}; \
              launch it through scripts/app-lab/run.py (isolated identifier and HOME)"
+        ));
+    }
+    if crate::modules::identity::is_upstream_identifier(identifier) {
+        return Err(format!(
+            "bench build refuses to run under the upstream Terax identifier {identifier}; \
+             it would share the installed application's profile"
         ));
     }
     if isolated != Some("1") {
@@ -1034,14 +1044,20 @@ mod tests {
 
     #[test]
     fn product_identifier_is_refused() {
+        assert!(guard_environment(product_identifier(), Some("1")).is_err());
+        assert!(guard_environment("dev.terax-lab-abc123", Some("1")).is_ok());
+    }
+
+    #[test]
+    fn an_upstream_identifier_is_refused_too() {
         assert!(guard_environment("app.crynta.terax", Some("1")).is_err());
-        assert!(guard_environment("app.crynta.terax.app-lab", Some("1")).is_ok());
+        assert!(guard_environment("app.crynta.terax.app-lab", Some("1")).is_err());
     }
 
     #[test]
     fn isolation_must_be_declared() {
-        assert!(guard_environment("app.crynta.terax.app-lab", None).is_err());
-        assert!(guard_environment("app.crynta.terax.app-lab", Some("0")).is_err());
+        assert!(guard_environment("dev.terax-lab-abc123", None).is_err());
+        assert!(guard_environment("dev.terax-lab-abc123", Some("0")).is_err());
     }
 
     #[test]

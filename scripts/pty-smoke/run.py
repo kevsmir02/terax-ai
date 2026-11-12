@@ -47,11 +47,20 @@ def self_test() -> int:
         outside = {**safe, "HOME": str(Path.home())}
         no_cache = {name: value for name, value in safe.items() if name != "XDG_CACHE_HOME"}
         cases = [
-            ("product identifier", "app.crynta.terax", safe),
+            (
+                "product identifier",
+                linux_profile.PRODUCT_IDENTIFIER,
+                safe,
+            ),
+            (
+                "upstream identifier",
+                linux_profile.UPSTREAM_IDENTIFIER,
+                safe,
+            ),
             ("foreign identifier namespace", "com.example.other", safe),
-            ("HOME outside the run output", "app.crynta.terax.pty-smoke-test", outside),
-            ("missing XDG_CACHE_HOME", "app.crynta.terax.pty-smoke-test", no_cache),
-            ("missing XDG_DATA_HOME", "app.crynta.terax.pty-smoke-test", {**safe, "XDG_DATA_HOME": ""}),
+            ("HOME outside the run output", linux_profile.disposable_identifier("pty-smoke", "test"), outside),
+            ("missing XDG_CACHE_HOME", linux_profile.disposable_identifier("pty-smoke", "test"), no_cache),
+            ("missing XDG_DATA_HOME", linux_profile.disposable_identifier("pty-smoke", "test"), {**safe, "XDG_DATA_HOME": ""}),
         ]
         failures = []
         for name, identifier, env in cases:
@@ -61,7 +70,7 @@ def self_test() -> int:
             if not ok:
                 failures.append(name)
         accepted = linux_profile.problems(
-            "app.crynta.terax.pty-smoke-test", safe, scratch, require_isolated=False
+            linux_profile.disposable_identifier("pty-smoke", "test"), safe, scratch, require_isolated=False
         )
         print(f"[self-test] {'PASS' if not accepted else 'FAIL'} disposable profile accepted: {accepted}")
         if accepted:
@@ -139,7 +148,7 @@ def check_gate(gate):
 
 server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
 threading.Thread(target=server.serve_forever, daemon=True).start()
-identifier = f"app.crynta.terax.pty-smoke-{uuid.uuid4().hex[:12]}"
+identifier = linux_profile.disposable_identifier("pty-smoke")
 real = json.loads((repo / "src-tauri/tauri.conf.json").read_text())
 config = output / "tauri.conf.json"
 dev_port = None
