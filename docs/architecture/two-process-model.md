@@ -112,7 +112,11 @@ Three distinct surfaces:
 
 ### Agent hooks (`src-tauri/src/modules/agent.rs`)
 
-- `agent_enable_hooks` / `agent_hooks_status` - install/status terminal coding-agent hooks (Claude Code, Codex, Gemini CLI)
+- `agent_hooks_plan` - read-only before/after preview, the observed file revision, foreign group count and activation instructions
+- `agent_hooks_apply` - applies a reviewed plan against that revision; a changed file returns `stale` and is not written
+- `agent_hooks_status` - configured/partial/not-installed/invalid/conflict/unsupported state plus per-agent trust requirements
+
+See `docs/architecture/agent-hooks.md` for ownership markers, the review state machine and the per-agent capability table.
 
 ### History (`src-tauri/src/modules/history/`)
 
