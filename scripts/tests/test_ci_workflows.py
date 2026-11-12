@@ -13,6 +13,7 @@ Windows, macOS, Nix or non-x86-64 target that this fork does not build or distri
 
 import json
 import re
+import sys
 import unittest
 from pathlib import Path
 
@@ -25,6 +26,10 @@ except ImportError:  # pragma: no cover - exercised only on an environment missi
     yaml = None
 
 REPO = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(REPO / "scripts"))
+
+import packaging  # noqa: E402  (the candidate identity table lives in scripts/packaging.py)
+
 WORKFLOWS = REPO / ".github/workflows"
 CI = WORKFLOWS / "ci.yml"
 RELEASE = WORKFLOWS / "release.yml"
@@ -306,26 +311,16 @@ class ReleaseWorkflowTest(unittest.TestCase):
         self.assertIn("build-candidate", self.jobs, "the release build keeps its job identity")
         return self.jobs["build-candidate"]
 
-    def bundle_dir(self) -> str:
-        """Where a `--target` build writes its bundles, from the producer's own constant."""
-        triple = re.search(
-            r'^TARGET_TRIPLE = "([^"]+)"',
-            text(REPO / "scripts/packaging.py"),
-            re.MULTILINE,
-        )
-        self.assertIsNotNone(triple, "scripts/packaging.py must pin the released target triple")
-        return f"src-tauri/target/{triple.group(1)}/release/bundle/"
+    def run_commands(self) -> list[str]:
+        return [step.get("run", "") for step in self.candidate_job()["steps"] if "run" in step]
 
     def staged_packages(self) -> list[str]:
-        staged = [
-            line
-            for line in lines(RELEASE)
-            if line.startswith(f"for package in {self.bundle_dir()}")
-        ]
+        staged = [line for line in lines(RELEASE) if line.startswith("for package in ")]
         self.assertTrue(
             staged,
-            f"the candidate must be staged from {self.bundle_dir()}: a `--target {SUPPORTED_RELEASE_TARGET}` "
-            "build writes under the target triple, so `src-tauri/target/release/bundle/` never exists",
+            "the candidate artifacts must be staged from the packaging runner's output "
+            f"({packaging.OUTPUT_ROOT.relative_to(REPO).as_posix()}/): that is where the "
+            "candidate identity is applied",
         )
         return staged
 
@@ -338,7 +333,70 @@ class ReleaseWorkflowTest(unittest.TestCase):
             self.body,
             "the toolchain must install the only released target",
         )
-        self.assertIn(f"--target {SUPPORTED_RELEASE_TARGET}", self.body)
+
+    def test_the_workflow_builds_the_candidate_the_packaging_runner_describes(self) -> None:
+        # A bare `pnpm tauri build` uses `src-tauri/tauri.conf.json`: upstream's product name,
+        # binary name and descriptions. The fork identity is a generated overlay
+        # (`scripts/packaging.py: candidate_config()`), written and applied by the packaging
+        # runner, so the workflow must go through that one code path.
+        commands = " ".join(self.run_commands())
+        self.assertIn(
+            "python3 scripts/package-candidate/run.py",
+            commands,
+            "the candidate job must build with the packaging runner, not the base config",
+        )
+        self.assertNotIn(
+            "pnpm tauri build",
+            workflow_code(RELEASE),
+            "a direct `pnpm tauri build` here would ship upstream's identity instead of the "
+            "candidate identity the runner generates",
+        )
+
+    def test_the_candidate_identity_is_not_restated_in_the_workflow(self) -> None:
+        # The identity table is the single source (`src/modules/identity/namespace.json`, read
+        # by `scripts/packaging.py`). A literal here is a second place that can drift, and it is
+        # how the base identity survived in this workflow before.
+        identity = packaging.candidate()
+        upstream = packaging.identity_table()["upstream"]
+        code = workflow_code(RELEASE)
+        for literal in (
+            identity.product_name,
+            identity.package_name,
+            identity.cli_binary_name,
+            identity.vendor,
+            upstream["productName"],
+            upstream["publisher"],
+        ):
+            self.assertNotIn(
+                literal,
+                code,
+                f"release.yml restates {literal!r}: derive it from scripts/packaging.py",
+            )
+
+    def test_the_workflow_refuses_an_upstream_install_path(self) -> None:
+        # The concrete symptom of a build without the overlay: the deb installs upstream's
+        # `/usr/bin/terax` instead of the candidate binary. Naming the forbidden path is the
+        # point (like the removed-platform markers), not a second source of the candidate name.
+        upstream = packaging.identity_table()["upstream"]
+        self.assertIn(
+            f"test ! -e unpacked-deb/usr/bin/{upstream['namespace']}",
+            workflow_code(RELEASE),
+            "the staged deb must be proven not to install upstream's binary path",
+        )
+
+    def test_the_staged_artifacts_come_from_the_runners_candidate_directory(self) -> None:
+        output_root = packaging.OUTPUT_ROOT.relative_to(REPO).as_posix()
+        self.assertIn(f"{output_root}/*/manifest.json", self.body)
+        self.assertIn("sha256sum -c SHA256SUMS", self.body, "the runner's own hashes are checked")
+
+    def test_the_candidate_job_installs_what_the_runner_reads_back(self) -> None:
+        # `scripts/package-candidate/run.py` verifies the built packages with `rpm`/`rpm2cpio`
+        # and `cpio`; a runner image without them fails the job after a full build.
+        commands = " ".join(self.run_commands())
+        self.assertIn("sudo apt-get install", commands)
+        for tool in ("rpm", "cpio"):
+            # `rpm2cpio`, which reads the rpm payload back, ships in the `rpm` package.
+            self.assertIn(tool, commands, f"the candidate job needs {tool}")
 
     def test_the_release_only_stages_the_package_formats_the_config_declares(self) -> None:
         configured = json.loads(text(REPO / "src-tauri/tauri.conf.json"))["bundle"]["targets"]
@@ -349,24 +407,26 @@ class ReleaseWorkflowTest(unittest.TestCase):
         for unsupported in ("appimage", "nsis", "msi", "dmg"):
             self.assertNotIn(unsupported, " ".join(staged).lower())
 
-    def test_the_workflow_reads_the_bundle_directory_a_target_build_writes(self) -> None:
-        # `scripts/package-candidate/run.py` reads the artifacts of a real `--target` build from
-        # this exact directory. Tauri creates `src-tauri/target/release/bundle/` only for a build
-        # without `--target`, which this fork never does, so staging from there would fail at the
-        # first `test -s` on a run that produced perfect packages.
+    def test_the_runner_builds_for_the_one_released_target(self) -> None:
+        # A `--target` build writes under the target triple; `src-tauri/target/release/bundle/`
+        # only exists for a build without it. The runner is where that lives now that the
+        # workflow does not call `pnpm tauri build` itself.
         run_py = text(REPO / "scripts/package-candidate/run.py")
+        self.assertIn('"--target"', run_py)
+        self.assertIn("packaging.TARGET_TRIPLE", run_py)
         self.assertIn(
             'REPO_ROOT / "src-tauri" / "target" / packaging.TARGET_TRIPLE / PROFILE / "bundle"',
             run_py,
-            "the packaging runner is the proven producer; the workflow must follow it",
+            "the packaging runner is the proven producer; the workflow must follow its output",
         )
-        self.assertIn(f"--target {SUPPORTED_RELEASE_TARGET}", self.body)
+        self.assertEqual(packaging.TARGET_TRIPLE, SUPPORTED_RELEASE_TARGET)
 
     def test_the_candidate_checks_the_architecture_it_stages(self) -> None:
         # A package for another architecture is refused rather than staged: this is the
-        # release-output half of "no non-x86-64 initial release outputs".
-        self.assertIn('"amd64"', self.body, "the deb must be checked as amd64")
-        self.assertIn('"x86_64"', self.body, "the rpm must be checked as x86_64")
+        # release-output half of "no non-x86-64 initial release outputs". The architectures
+        # come from the packaging module, not a second literal pair.
+        self.assertIn(f'"{packaging.DEB_ARCH}"', self.body, "the deb must be checked as amd64")
+        self.assertIn(f'"{packaging.RPM_ARCH}"', self.body, "the rpm must be checked as x86_64")
         self.assertIn("sha256sum", self.body, "staged artifacts keep their hashes")
 
     def test_a_version_tag_cannot_start_the_workflow(self) -> None:

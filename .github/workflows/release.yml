@@ -14,8 +14,8 @@ jobs:
   build-candidate:
     # Linux x86-64 is the only platform this fork builds or distributes (ticket #34). The package
     # formats come from `bundle.targets` in `src-tauri/tauri.conf.json` (`rpm`, `deb`), and the
-    # build command names the same two explicitly, so there is no AppImage, no macOS leg, no
-    # Windows leg and no aarch64 leg to keep in step. This job produces and inspects candidates;
+    # packaging runner builds exactly those two, so there is no AppImage, no macOS leg, no Windows
+    # leg and no aarch64 leg to keep in step. This job produces and inspects candidates;
     # publishing them is issue #41.
     name: build-candidate (linux x86-64, no publication)
     runs-on: ubuntu-22.04
@@ -27,7 +27,10 @@ jobs:
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
+          # `cpio` (with `rpm`'s `rpm2cpio`) is what `scripts/package-candidate/run.py` uses to
+          # read an rpm payload back; without it the job fails after a full build.
           sudo apt-get install -y \
+            cpio \
             libwebkit2gtk-4.1-dev \
             libgtk-3-dev \
             librsvg2-dev \
@@ -61,26 +64,40 @@ jobs:
           # `scripts/build-cli.mjs` names the sidecar with this triple, so the external binary
           # Tauri bundles is the one built for the released architecture.
           TERAX_CLI_TARGET: x86_64-unknown-linux-gnu
-        run: pnpm tauri build --target x86_64-unknown-linux-gnu --bundles rpm,deb
+        # The packaging runner, not a bare `pnpm tauri build`: it writes
+        # `inputs/tauri.candidate.conf.json` from the shared identity table
+        # (`src/modules/identity/namespace.json` via `scripts/packaging.py`) and passes it with
+        # `--config`. A base-config build would ship upstream's product name, description and
+        # `/usr/bin/terax` instead of the candidate identity.
+        run: python3 scripts/package-candidate/run.py
 
-      - name: Verify the x86-64 RPM and DEB and stage the artifacts
+      - name: Verify the candidate identity and stage the artifacts
         run: |
           set -euo pipefail
-          mkdir linux-packages
+          # The runner writes one directory per revision and refuses to overwrite a completed
+          # one, so exactly one candidate may exist after the build.
+          manifests=(dist-packages/*/manifest.json)
+          test "${#manifests[@]}" -eq 1
+          candidate="$(dirname "${manifests[0]}")"
+          test -f "$candidate/manifest.json"
           # Exactly the two configured bundle formats: a third format appearing here would be a
-          # platform commitment this fork did not make. `--target` makes Tauri write under the
-          # target triple (`scripts/package-candidate/run.py` reads the same directory), so a bare
-          # `target/release/bundle` would not exist.
-          for package in src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/{deb/*.deb,rpm/*.rpm}; do
+          # platform commitment this fork did not make. The runner copies the artifacts under
+          # stable names and records their hashes.
+          mkdir linux-packages
+          for package in "$candidate"/*.deb "$candidate"/*.rpm; do
             test -s "$package"
             cp "$package" linux-packages/
           done
           test "$(dpkg-deb -f linux-packages/*.deb Architecture)" = "amd64"
           test "$(rpm -qp --queryformat '%{ARCH}' linux-packages/*.rpm)" = "x86_64"
           dpkg-deb -x linux-packages/*.deb unpacked-deb
-          unpacked-deb/usr/bin/terax-workspace-cli --help
-          file unpacked-deb/usr/bin/terax
-          (cd linux-packages && sha256sum * > SHA256SUMS)
+          # The candidate installs this fork's workspace binaries. Upstream's `/usr/bin/terax`
+          # here would mean the overlay was not applied, which the packaging runner refuses.
+          test ! -e unpacked-deb/usr/bin/terax
+          unpacked-deb/usr/bin/*-cli --help
+          file unpacked-deb/usr/bin/*
+          cp "$candidate/SHA256SUMS" "$candidate/manifest.json" linux-packages/
+          (cd linux-packages && sha256sum -c SHA256SUMS)
           stat --printf='%n %s bytes\n' linux-packages/* >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the candidate artifact set

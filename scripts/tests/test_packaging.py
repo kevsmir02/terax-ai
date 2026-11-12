@@ -79,6 +79,7 @@ def sample_deb() -> bytes:
 
 
 def fake_artifact(fmt: str) -> dict:
+    identity = packaging.candidate()
     return {
         "format": fmt,
         "arch": "x86_64" if fmt == "rpm" else "amd64",
@@ -86,11 +87,14 @@ def fake_artifact(fmt: str) -> dict:
         "path": f"dist-packages/candidate.{fmt}",
         "sizeBytes": 1024,
         "sha256": "0" * 64,
-        "packageName": "terax-workspace",
+        "packageName": identity.package_name,
         "version": "0.9.0",
         "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"],
         "files": [],
-        "binaries": [],
+        "binaries": [
+            {"path": f"/usr/bin/{identity.package_name}", "kind": "binary"},
+            {"path": f"/usr/bin/{identity.cli_binary_name}", "kind": "cli"},
+        ],
         "licenses": [{"path": "/usr/lib/x/licenses/a.txt", "kind": "license"}],
     }
 
@@ -275,6 +279,28 @@ class ManifestTest(unittest.TestCase):
         document["artifacts"][0]["arch"] = "aarch64"
         problems = packaging.manifest_problems(document)
         self.assertTrue(any("x86-64" in problem for problem in problems), problems)
+
+    def test_a_build_without_the_overlay_is_refused(self) -> None:
+        """The package must install the candidate binaries, not the base config's `terax`."""
+        document = sample_manifest()
+        upstream = packaging.identity_table()["upstream"]
+        for artifact in document["artifacts"]:
+            artifact["binaries"] = [{"path": f"/usr/bin/{upstream['namespace']}", "kind": "binary"}]
+        problems = packaging.manifest_problems(document)
+        self.assertTrue(
+            any("candidate binary" in problem for problem in problems),
+            problems,
+        )
+
+    def test_an_artifact_installing_an_upstream_path_is_refused(self) -> None:
+        document = sample_manifest()
+        upstream = packaging.identity_table()["upstream"]
+        for artifact in document["artifacts"]:
+            artifact["binaries"].append(
+                {"path": f"/usr/bin/{upstream['namespace']}-cli", "kind": "cli"}
+            )
+        problems = packaging.manifest_problems(document)
+        self.assertTrue(any("upstream" in problem for problem in problems), problems)
 
     def test_a_built_candidate_manifest_is_consistent(self) -> None:
         """When the runner has produced candidates, their own manifest must satisfy the schema."""
