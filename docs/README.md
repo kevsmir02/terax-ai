@@ -17,6 +17,8 @@ If a guide conflicts with `TERAX.md`, `TERAX.md` wins.
 - [Terminal renderer pool](architecture/terminal-renderer-pool.md) - persistent Ghostty models, bounded presentation leases, and renderer recovery.
 - [Ghostty WebGL renderer](architecture/ghostty-webgl-renderer.md) - adapted xterm.js renderer, Ghostty model boundary, renderer pooling, and rollout gates.
 - [CLI control plane](architecture/cli-control.md) - bundled CLI, authenticated local protocol, caller targeting, packaging, and current platform limits.
+- [Agent hooks: review, apply and fork ownership](architecture/agent-hooks.md) - opt-in hook installation, the review/apply state machine, and which configuration entries this fork may touch.
+- [Agent capabilities](architecture/agent-capabilities.md) - launch, process status, structured events, notifications and control documented separately per agent, and what is not vendor-certified.
 - [Rendered Markdown ownership](architecture/markdown-rendering.md) - the retained Markdown/code renderer, its local-image policy, the AI-named compatibility entry points, and what must survive the AI removal.
 
 ## Terminal migration and validation

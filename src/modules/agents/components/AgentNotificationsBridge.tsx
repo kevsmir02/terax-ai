@@ -5,9 +5,9 @@ import {
   subscribeAgentSignals,
 } from "@/modules/terminal";
 import { useEffect, useRef } from "react";
-import { displayAgent } from "../lib/format";
 import { routeAgentNotification } from "../lib/route";
-import type { AgentSession, AgentSignal } from "../lib/types";
+import { signalStatus } from "../lib/status";
+import type { AgentSession, AgentSignal, NotificationKind } from "../lib/types";
 import { useWindowFocus } from "../lib/useWindowFocus";
 import { useAgentStore } from "../store/agentStore";
 
@@ -17,39 +17,34 @@ type Ctx = {
   activeId: number;
   focused: boolean;
   onActivate: Activate;
+  /** Space id -> Space name, for Space identity in notifications. */
+  spaceNames: Record<string, string>;
 };
 
 function tabInfo(
   tabs: Tab[],
   leafId: number,
-): { tabId: number; title: string } | null {
+): { tabId: number; spaceId: string } | null {
   for (const t of tabs) {
     if (t.kind === "terminal" && hasLeaf(t.paneTree, leafId)) {
-      return { tabId: t.id, title: t.title };
+      return { tabId: t.id, spaceId: t.spaceId };
     }
   }
   return null;
 }
 
-function route(
-  session: AgentSession,
-  kind: "attention" | "finished",
-  ctx: Ctx,
-): void {
+function route(session: AgentSession, kind: NotificationKind, ctx: Ctx): void {
   const info = tabInfo(ctx.tabs, session.leafId);
-  const name = displayAgent(session.agent);
-  const heading =
-    kind === "attention" ? `${name} needs your input` : `${name} finished`;
 
   routeAgentNotification({
     source: "terminal",
     agent: session.agent,
     kind,
-    title: heading,
-    body: info?.title,
+    spaceName: info ? ctx.spaceNames[info.spaceId] : undefined,
     focused: ctx.focused,
     visible: ctx.activeId === session.tabId,
-    // Stop fires every turn, so finished only updates the bell; attention toasts.
+    // Stop fires every turn, so a finished turn only updates the bell; attention
+    // toasts. Neither path moves focus.
     allowToast: kind === "attention",
     tabId: session.tabId,
     leafId: session.leafId,
@@ -62,6 +57,7 @@ export function handleAgentSignal(sig: AgentSignal, ctx: Ctx): void {
   const leafId = leafIdForPty(sig.id);
   if (leafId === null) return;
   const store = useAgentStore.getState();
+  const verdict = signalStatus(sig.kind);
 
   switch (sig.kind) {
     case "started": {
@@ -71,18 +67,17 @@ export function handleAgentSignal(sig: AgentSignal, ctx: Ctx): void {
       return;
     }
     case "working":
-      store.setStatus(leafId, "working");
+      if (verdict.status) store.setStatus(leafId, verdict.status);
       return;
-    case "attention": {
-      store.setStatus(leafId, "waiting");
-      const session = store.sessions[leafId];
-      if (session) route(session, "attention", ctx);
-      return;
-    }
+    case "attention":
     case "finished": {
-      store.setStatus(leafId, "waiting");
+      // The process keeps the pane after a finished turn, so the session stays
+      // running; only an event can produce the notification.
+      if (verdict.status) store.setStatus(leafId, verdict.status);
       const session = store.sessions[leafId];
-      if (session) route(session, "finished", ctx);
+      if (!session) return;
+      if (verdict.event === "attention") route(session, "attention", ctx);
+      else if (verdict.turnEnded) route(session, "turn-finished", ctx);
       return;
     }
     case "exited":
@@ -95,14 +90,28 @@ export function AgentNotificationsBridge({
   tabs,
   activeId,
   onActivate,
+  spaceNames,
 }: {
   tabs: Tab[];
   activeId: number;
   onActivate: Activate;
+  spaceNames?: Record<string, string>;
 }) {
   const focused = useWindowFocus();
-  const ctxRef = useRef<Ctx>({ tabs, activeId, focused, onActivate });
-  ctxRef.current = { tabs, activeId, focused, onActivate };
+  const ctxRef = useRef<Ctx>({
+    tabs,
+    activeId,
+    focused,
+    onActivate,
+    spaceNames: spaceNames ?? {},
+  });
+  ctxRef.current = {
+    tabs,
+    activeId,
+    focused,
+    onActivate,
+    spaceNames: spaceNames ?? {},
+  };
 
   // Shares the terminal module's single `terax:agent-signal` listener.
   useEffect(

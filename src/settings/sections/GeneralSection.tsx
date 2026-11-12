@@ -563,7 +563,7 @@ export function GeneralSection() {
         <Label>Agents</Label>
         <SettingRow
           title="Coding agent notifications"
-          description="Alert when a coding agent needs your input or finishes. Native notification when Terax is unfocused, in-app otherwise."
+          description="Alert when a coding agent needs attention or a turn finishes. Names the agent and Space only — no prompt, transcript or file text. Native notification when Terax is unfocused, in-app otherwise, and it never takes focus."
         >
           <div className="flex items-center gap-2">
             <Button
@@ -588,7 +588,7 @@ export function GeneralSection() {
         </SettingRow>
         <SettingRow
           title="Notification sound"
-          description="Play a sound with agent notifications and in-app alerts."
+          description="Play a sound with agent notifications and in-app alerts. Off by default."
         >
           <Switch
             checked={agentNotificationSound}

@@ -15,6 +15,7 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { AgentIcon } from "@/modules/agents/lib/agentIcon";
+import { processStatusLabel } from "@/modules/agents/lib/status";
 import type { AgentLaunchRequest } from "@/modules/agents/lib/launcher";
 import {
   ALL_LANGUAGES,
@@ -626,22 +627,28 @@ function TerminalTabIcon({ tab }: { tab: TerminalTab }) {
   );
   if (agentStatus.state === "attention") {
     return (
-      <HugeiconsIcon
-        icon={Message02Icon}
-        size={14}
-        strokeWidth={2}
-        className="shrink-0"
-      />
+      <span
+        role="img"
+        aria-label={`Agent ${processStatusLabel("attention", "event")}`}
+        title={`Agent ${processStatusLabel("attention", "event")}`}
+        className="flex shrink-0 items-center"
+      >
+        <HugeiconsIcon icon={Message02Icon} size={14} strokeWidth={2} />
+      </span>
     );
   }
   if (agentStatus.state === "finished") {
+    // A turn-finished event, not a completed agent: the process can still be
+    // running in this pane and may start another turn.
     return (
-      <HugeiconsIcon
-        icon={CheckmarkCircle01Icon}
-        size={14}
-        strokeWidth={2}
-        className="shrink-0"
-      />
+      <span
+        role="img"
+        aria-label={`Agent ${processStatusLabel("turn-finished", "event")}`}
+        title={`Agent ${processStatusLabel("turn-finished", "event")}`}
+        className="flex shrink-0 items-center"
+      >
+        <HugeiconsIcon icon={CheckmarkCircle01Icon} size={14} strokeWidth={2} />
+      </span>
     );
   }
   if (

@@ -16,7 +16,7 @@ import {
   AgentNotificationsBridge,
   findAgentLauncher,
   nextAttentionTarget,
-  validateAgentLaunchCommand,
+  resolveAgentLaunchCommand,
 } from "@/modules/agents";
 import { native } from "@/modules/workspace/native";
 import {
@@ -242,6 +242,13 @@ export default function App() {
 
   const activeSpaceId = useSpaces((s) => s.activeId);
   const spacesHydrated = useSpaces((s) => s.hydrated);
+  // Space identity by name only: agent notifications carry the Space's own
+  // name, never a path, cwd or open file.
+  const spaceList = useSpaces((s) => s.spaces);
+  const spaceNames = useMemo(
+    () => Object.fromEntries(spaceList.map((space) => [space.id, space.name])),
+    [spaceList],
+  );
   const activeSpaceIdRef = useRef(activeSpaceId);
   useLayoutEffect(() => {
     tabsRef.current = tabs;
@@ -516,7 +523,7 @@ export default function App() {
 
   const launchAgentGroup = useCallback(
     (request: AgentLaunchRequest) => {
-      const command = validateAgentLaunchCommand(request.command);
+      const command = resolveAgentLaunchCommand(request.agent, request.command);
       if (!command.ok) return;
       const launcher = findAgentLauncher(request.agent);
       const title =
@@ -557,7 +564,8 @@ export default function App() {
           return;
         }
         toast("Terminal is busy", {
-          description: "Open a new tab to go there, or exit the running program.",
+          description:
+            "Open a new tab to go there, or exit the running program.",
         });
       });
     },
@@ -1441,6 +1449,7 @@ export default function App() {
             tabs={tabs}
             activeId={activeId}
             onActivate={onActivateAgent}
+            spaceNames={spaceNames}
           />
           <Toaster position="bottom-right" />
 

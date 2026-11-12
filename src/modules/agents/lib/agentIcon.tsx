@@ -36,6 +36,8 @@ function iconFor(agent: string): IconSvgElement {
   if (a.includes("grok")) return Grok02Icon;
   if (a.includes("codex") || a.includes("gpt") || a.includes("openai"))
     return ChatGptIcon;
+  // Includes the Antigravity CLI: this fork does not ship a vendor mark it has
+  // not verified, so an unlisted agent gets the generic agent icon.
   return AiBrowserIcon;
 }
 
