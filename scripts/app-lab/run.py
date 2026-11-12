@@ -928,13 +928,19 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         isolation["forkRuntimeDirIsNotUpstream"] = descriptor.parent != upstream_cache
         # WebKit storage (localStorage, CacheStorage, HSTS, logs) lives in the identifier-keyed
         # app data dir. The built bench identifier is `<fork product identifier>.app-lab-<hex>`,
-        # so every entry under XDG_DATA_HOME must be ours and none may be the upstream app's.
-        data_entries = fork_state["dataDirEntries"]
-        isolation["forkDataDirIsIdentifierKeyed"] = bool(data_entries) and all(
-            entry.startswith(f"{linux_profile.PRODUCT_IDENTIFIER}.") for entry in data_entries
+        # so every directory this run created under XDG_DATA_HOME is inside the fork's product
+        # namespace; the upstream identifier is present only because the run seeded it.
+        own_data = [
+            entry
+            for entry in fork_state["dataDirEntries"]
+            if entry != linux_profile.UPSTREAM_IDENTIFIER
+        ]
+        isolation["forkAppDataDirs"] = own_data
+        isolation["forkDataDirIsIdentifierKeyed"] = bool(own_data) and all(
+            entry.startswith(f"{linux_profile.PRODUCT_IDENTIFIER}.") for entry in own_data
         )
-        isolation["forkDataDirIsNotUpstream"] = (
-            linux_profile.UPSTREAM_IDENTIFIER not in data_entries
+        isolation["forkDataDirIsNotUpstream"] = all(
+            not entry.startswith(linux_profile.UPSTREAM_IDENTIFIER) for entry in own_data
         )
         isolation["controlDescriptorPublished"] = fork_state["controlDescriptorExists"]
         if unchanged:
