@@ -7,13 +7,16 @@ import { toast } from "sonner";
 import {
   checkFormatBaseline,
   commitBuffer,
+  createSaveQueue,
   type DiskIo,
   type DiskTextRead,
   overwriteReviewed,
   planReload,
+  reloadDiscard,
   reviewConflict,
   type SaveConflict,
   saveCopy,
+  type SaveQueue,
   type SaveResult,
 } from "./diskSync";
 import { detectEol, type Eol, normalizeToLf, restoreEol } from "./eol";
@@ -54,9 +57,12 @@ export function useDocument({ path, visible, onDirtyChange }: Options) {
   const [dirty, setDirty] = useState(false);
   const [conflict, setConflict] = useState<SaveConflict | null>(null);
   const conflictRef = useRef<SaveConflict | null>(null);
-  useEffect(() => {
-    conflictRef.current = conflict;
-  }, [conflict]);
+  // Keep the ref in step synchronously: a queued save must see the conflict the
+  // moment it is opened, not one render later.
+  const setConflictNow = useCallback((next: SaveConflict | null) => {
+    conflictRef.current = next;
+    setConflict(next);
+  }, []);
 
   const autoSave = usePreferencesStore((s) => s.editorAutoSave);
   const autoSaveDelay = usePreferencesStore((s) => s.editorAutoSaveDelay);
@@ -91,6 +97,10 @@ export function useDocument({ path, visible, onDirtyChange }: Options) {
   // native coordination can refuse a write that would drop someone else's.
   const diskRevisionRef = useRef<string | null>(null);
 
+  // "Open anyway" is a per-file decision; every read of this document (including
+  // the compare/reload reads of a conflict) honours it.
+  const forceRef = useRef(false);
+
   // Explicit-user file access (tier A): no path policy, no workspace registry.
   const ioRef = useRef<DiskIo>({
     write: async (target, content, expectedRevision) =>
@@ -105,9 +115,15 @@ export function useDocument({ path, visible, onDirtyChange }: Options) {
       const res = await invoke<ReadResult>("fs_read_file", {
         path: target,
         workspace: currentWorkspaceEnv(),
+        force: forceRef.current,
       });
       if (res.kind !== "text") throw new Error("not a text file");
-      return { content: res.content, revision: res.revision, mtime: res.mtime };
+      return {
+        content: res.content,
+        revision: res.revision,
+        mtime: res.mtime,
+        size: res.size,
+      };
     },
     exists: (target) =>
       invoke<FileStat>("fs_stat", {
@@ -144,33 +160,46 @@ export function useDocument({ path, visible, onDirtyChange }: Options) {
   const applySaveResult = useCallback(
     async (result: SaveResult): Promise<boolean> => {
       if (result.status === "saved") {
-        setConflict(null);
+        setConflictNow(null);
         return adoptSaved(result);
       }
       if (result.status === "conflict") {
-        setConflict(await reviewConflict(io, result.conflict));
+        setConflictNow(await reviewConflict(io, result.conflict));
         return false;
       }
       toast.error("Could not save file", { description: result.message });
       return false;
     },
-    [adoptSaved, io],
+    [adoptSaved, io, setConflictNow],
   );
+
+  // One app-owned save at a time per document: the next save reads its text and
+  // its expected revision only when it runs, after the previous save adopted the
+  // revision it left behind. Otherwise newer typing during a slow save could
+  // start a second write against the stale baseline and conflict with our own
+  // commit.
+  const saveQueueRef = useRef<SaveQueue | null>(null);
+  if (saveQueueRef.current === null) saveQueueRef.current = createSaveQueue();
+  const saveQueue = saveQueueRef.current;
 
   // False when the buffer was not fully persisted: a conflicting save, an I/O
   // failure, or edits typed while the write was in flight.
-  const saveNow = useCallback(async (): Promise<boolean> => {
-    // While a conflict round is open the dialog owns the outcome; retrying the
-    // write behind it would just re-detect the same conflict (autosave would
-    // otherwise loop on every tick).
-    if (conflictRef.current !== null) return false;
-    const result = await commitBuffer(io, {
-      path,
-      expectedRevision: diskRevisionRef.current,
-      buffer: () => bufferRef.current,
-    });
-    return applySaveResult(result);
-  }, [applySaveResult, io, path]);
+  const saveNow = useCallback(
+    (): Promise<boolean> =>
+      saveQueue.run(async () => {
+        // While a conflict round is open the dialog owns the outcome; retrying
+        // the write behind it would just re-detect the same conflict (autosave
+        // would otherwise loop on every tick).
+        if (conflictRef.current !== null) return false;
+        const result = await commitBuffer(io, {
+          path,
+          expectedRevision: diskRevisionRef.current,
+          buffer: () => bufferRef.current,
+        });
+        return applySaveResult(result);
+      }),
+    [applySaveResult, io, path, saveQueue],
+  );
 
   // Notify parent of dirty transitions.
   const onDirtyChangeRef = useRef(onDirtyChange);
@@ -180,8 +209,6 @@ export function useDocument({ path, visible, onDirtyChange }: Options) {
   useEffect(() => {
     onDirtyChangeRef.current?.(dirty);
   }, [dirty]);
-
-  const forceRef = useRef(false);
 
   // Adopts a read result as the new saved baseline. `skipIfUnchanged` avoids
   // the re-render when disk already matches the buffer (self-save / duplicate
@@ -220,7 +247,7 @@ export function useDocument({ path, visible, onDirtyChange }: Options) {
     forceRef.current = false;
     setDoc({ status: "loading" });
     setDirty(false);
-    setConflict(null);
+    setConflictNow(null);
     diskRevisionRef.current = null;
 
     readFromDisk(forceRef.current)
@@ -234,7 +261,7 @@ export function useDocument({ path, visible, onDirtyChange }: Options) {
     return () => {
       cancelled = true;
     };
-  }, [readFromDisk, adoptRead]);
+  }, [readFromDisk, adoptRead, setConflictNow]);
 
   const openAnyway = useCallback(() => {
     forceRef.current = true;
@@ -299,9 +326,9 @@ export function useDocument({ path, visible, onDirtyChange }: Options) {
       bufferText: bufferRef.current,
     });
     if (state.ok) return true;
-    setConflict(await reviewConflict(io, state.conflict));
+    setConflictNow(await reviewConflict(io, state.conflict));
     return false;
-  }, [io, path]);
+  }, [io, path, setConflictNow]);
 
   // Adopt externally formatted disk content as the saved baseline before the
   // matching editor dispatch lands, so the buffer never flashes dirty. The
@@ -320,21 +347,24 @@ export function useDocument({ path, visible, onDirtyChange }: Options) {
   /** Explicit overwrite of the reviewed revision. */
   const overwriteConflict = useCallback(async (): Promise<boolean> => {
     if (conflict === null) return false;
-    return applySaveResult(await overwriteReviewed(io, conflict, bufferRef.current));
+    return applySaveResult(
+      await overwriteReviewed(io, conflict, () => bufferRef.current),
+    );
   }, [applySaveResult, conflict, io]);
 
   /** Explicit reload/discard: the buffer text is thrown away by choice. */
   const reloadConflict = useCallback(async (): Promise<boolean> => {
-    try {
-      const res = await readFromDisk(forceRef.current);
-      adoptRead(res);
-      setConflict(null);
-      return true;
-    } catch (e) {
-      toast.error("Could not reload file", { description: String(e) });
+    // Read-only: discarding never writes the abandoned buffer, and a file that
+    // disappeared stays missing instead of being recreated.
+    const result = await reloadDiscard(io, path);
+    if (result.status === "failed") {
+      toast.error("Could not reload file", { description: result.message });
       return false;
     }
-  }, [readFromDisk, adoptRead]);
+    adoptRead({ kind: "text", ...result.disk });
+    setConflictNow(null);
+    return true;
+  }, [adoptRead, io, path, setConflictNow]);
 
   /** Explicit Save As: the conflict is left on disk untouched. */
   const saveConflictCopy = useCallback(
@@ -347,7 +377,7 @@ export function useDocument({ path, visible, onDirtyChange }: Options) {
       if (result.status === "saved") {
         // The buffer stays dirty against its own file: nothing was resolved
         // about the original, only a copy was made.
-        setConflict(null);
+        setConflictNow(null);
         toast.success("Saved a copy", { description: targetPath });
         return true;
       }
@@ -356,10 +386,13 @@ export function useDocument({ path, visible, onDirtyChange }: Options) {
       });
       return false;
     },
-    [io, path],
+    [io, path, setConflictNow],
   );
 
-  const dismissConflict = useCallback(() => setConflict(null), []);
+  const dismissConflict = useCallback(
+    () => setConflictNow(null),
+    [setConflictNow],
+  );
 
   const onChange = useCallback(
     (next: string) => {

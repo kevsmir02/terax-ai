@@ -66,12 +66,27 @@ critical section and refuses the write when they disagree.
   formatter only runs while the file is still the revision the buffer just
   saved (`fs_file_revision`), and the formatter's read-back becomes the new
   baseline.
+- The editor serialises the app-owned saves of one document (`createSaveQueue`).
+  A save requested while an older one is in flight runs afterwards and reads its
+  text and expected revision at that point, so newer typing is written against
+  the revision the older save left instead of racing it with a stale baseline.
+  Results of older completions are never adopted over the newer buffer.
+
+Validated support (not a release-only gate): `src-tauri/tests/save_revision.rs`
+covers two buffers from one baseline (including a concurrent two-thread race),
+same-mtime content changes, stale overwrite consent, and missing/replaced/
+non-regular targets; `src/modules/editor/lib/diskSync.test.ts` covers the editor
+protocol, conflict outcomes, newer typing during a pending save, reload/discard,
+and format-baseline checks. Not exercised here: a packaged two-Space UI race and
+two independently running app instances.
 
 Limitation, deliberately not claimed otherwise: this coordinates **app-owned**
 writes only. An independent external writer is not locked out, and a change that
 lands between the revision check and the rename is indistinguishable from one
 that lands immediately after. Atomic exclusion of other programs is not
-provided. Durable unsaved-text recovery is a separate ticket (#16).
+provided. Save As refuses a destination that exists at check time, but a file an
+external program creates between that check and the write is outside the same
+guarantee. Durable unsaved-text recovery is a separate ticket (#16).
 
 ## Legacy AI-owned consumers of shared contracts
 

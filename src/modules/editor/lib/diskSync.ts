@@ -14,15 +14,14 @@
  *    is indistinguishable from one landing immediately after.
  *  - Consent is bound to the revision, not to a timer: nothing here may assume
  *    a reviewed revision is still current.
+ *  - Save As refuses a destination that exists when it is checked. A file an
+ *    external program creates between that check and the write is outside the
+ *    same guarantee (there is no atomic no-clobber create in this protocol).
  *  - Durable unsaved-text recovery (drafts) is not part of this module.
  */
 
 /** Why a save was refused. Mirrors `ConflictReason` in `fs/save.rs`. */
-type SaveConflictReason =
-  | "changed"
-  | "replaced"
-  | "missing"
-  | "unreadable";
+type SaveConflictReason = "changed" | "replaced" | "missing" | "unreadable";
 
 export type SaveConflict = {
   path: string;
@@ -40,7 +39,12 @@ export type SaveConflict = {
 };
 
 type DiskWriteResult = { mtime: number; revision: string };
-export type DiskTextRead = { content: string; revision: string; mtime: number };
+export type DiskTextRead = {
+  content: string;
+  revision: string;
+  mtime: number;
+  size: number;
+};
 
 /** The native surface this module needs; `useDocument` binds it to Tauri. */
 export type DiskIo = {
@@ -112,6 +116,34 @@ function failureMessage(error: unknown): string {
   return String(error);
 }
 
+export type SaveQueue = {
+  /** Runs `task` once every previously queued save has settled. */
+  run<T>(task: () => Promise<T>): Promise<T>;
+};
+
+const settled = () => undefined;
+
+/**
+ * Serialises the app-owned saves of one document.
+ *
+ * Both the expected revision and the text are read when a save's turn comes, so
+ * a save requested while an older one is in flight writes the newer text
+ * against the revision the older save left behind. Without this, typing during
+ * a slow save can make autosave race the in-flight write with a stale baseline
+ * and manufacture a conflict against our own commit. A failed save does not
+ * stall the queue; the caller still sees its rejection.
+ */
+export function createSaveQueue(): SaveQueue {
+  let tail: Promise<unknown> = Promise.resolve();
+  return {
+    run<T>(task: () => Promise<T>): Promise<T> {
+      const run = tail.then(task, task);
+      tail = run.then(settled, settled);
+      return run;
+    },
+  };
+}
+
 /**
  * Writes the current buffer, validating `expectedRevision` in native
  * coordination.
@@ -176,7 +208,8 @@ export async function reviewConflict(
   } catch {
     return {
       ...conflict,
-      reason: conflict.currentRevision === null ? conflict.reason : "unreadable",
+      reason:
+        conflict.currentRevision === null ? conflict.reason : "unreadable",
       reviewedRevision: null,
       reviewedText: null,
     };
@@ -191,7 +224,7 @@ export async function reviewConflict(
 export async function overwriteReviewed(
   io: DiskIo,
   conflict: SaveConflict,
-  text: string,
+  buffer: () => string,
 ): Promise<SaveResult> {
   if (conflict.reviewedRevision === null) {
     return {
@@ -199,6 +232,7 @@ export async function overwriteReviewed(
       message: "There is no reviewed disk revision to overwrite.",
     };
   }
+  const text = buffer();
   try {
     const written = await io.write(
       conflict.path,
@@ -210,7 +244,9 @@ export async function overwriteReviewed(
       revision: written.revision,
       mtime: written.mtime,
       writtenText: text,
-      complete: true,
+      // Typing during the overwrite keeps the buffer dirty: this completion
+      // persisted the snapshot, not whatever the user has now.
+      complete: buffer() === text,
     };
   } catch (error) {
     const next = asConflict(conflict.path, error);
@@ -223,6 +259,25 @@ export async function overwriteReviewed(
         bufferText: text,
       },
     };
+  }
+}
+
+/**
+ * The reload/discard outcome: adopt whatever is on disk now. Reads only — the
+ * user's buffer text is abandoned by choice, never written, and a file that
+ * disappeared stays gone instead of being recreated from the buffer.
+ */
+export async function reloadDiscard(
+  io: DiskIo,
+  path: string,
+): Promise<
+  | { status: "reloaded"; disk: DiskTextRead }
+  | { status: "failed"; message: string }
+> {
+  try {
+    return { status: "reloaded", disk: await io.read(path) };
+  } catch (error) {
+    return { status: "failed", message: failureMessage(error) };
   }
 }
 

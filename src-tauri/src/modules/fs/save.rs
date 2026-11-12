@@ -22,8 +22,8 @@ use std::io::Read;
 use std::path::Path;
 use std::sync::Mutex;
 
-use serde::Serialize;
 use serde::ser::{SerializeStruct, Serializer};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 
@@ -397,6 +397,60 @@ mod tests {
         }
         let same = format!("{REVISION_PREFIX}:{}:4:1-2", "07".repeat(32));
         assert!(check_expected(&current, &same).is_ok());
+    }
+
+    /// The refusal shape is a contract with `diskSync.ts`
+    /// (`{kind, reason, current}` / `{kind, message}`): assert it here so a
+    /// serialization change cannot silently turn a conflict into a generic
+    /// error the dialog does not recognise.
+    #[test]
+    fn refusals_serialize_to_the_frontend_contract() {
+        let current = format!("{REVISION_PREFIX}:{}:4:8-9", "ab".repeat(32));
+        for (reason, reason_name) in [
+            (ConflictReason::Changed, "changed"),
+            (ConflictReason::Replaced, "replaced"),
+            (ConflictReason::Missing, "missing"),
+            (ConflictReason::Unreadable, "unreadable"),
+        ] {
+            let error = SaveError::Conflict(Conflict {
+                reason,
+                current: Some(current.clone()),
+            });
+            assert_eq!(
+                serde_json::to_value(&error).unwrap(),
+                serde_json::json!({
+                    "kind": "conflict",
+                    "reason": reason_name,
+                    "current": current,
+                })
+            );
+        }
+
+        let failed = SaveError::Failed("disk full".into());
+        assert_eq!(
+            serde_json::to_value(&failed).unwrap(),
+            serde_json::json!({ "kind": "failed", "message": "disk full" })
+        );
+    }
+
+    #[test]
+    fn an_unknown_expected_revision_never_authorises_a_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("note.txt");
+        std::fs::write(&target, b"baseline\n").unwrap();
+
+        for expected in [
+            "not-a-revision".to_string(),
+            format!("r1:{}:8:0-0", "00".repeat(32)),
+        ] {
+            match save(&target, b"mine\n", Some(&expected)).unwrap_err() {
+                SaveError::Conflict(conflict) => {
+                    assert_eq!(conflict.reason, ConflictReason::Changed)
+                }
+                other => panic!("expected a conflict, got {other:?}"),
+            }
+            assert_eq!(std::fs::read(&target).unwrap(), b"baseline\n");
+        }
     }
 
     #[test]

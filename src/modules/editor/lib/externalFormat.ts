@@ -137,15 +137,23 @@ export async function runExternalFormatter(
  * the formatter's write as the new baseline instead of treating it as an
  * external change.
  */
-export async function readFileText(
-  path: string,
-): Promise<{ content: string; revision: string; mtime: number } | null> {
+export async function readFileText(path: string): Promise<{
+  content: string;
+  revision: string;
+  mtime: number;
+  size: number;
+} | null> {
   // Explicit-user read (tier A): no secret policy, no registry.
   const res = await native.readFile(path).catch(() => null);
   if (res?.kind !== "text" || res.content == null || res.revision == null) {
     return null;
   }
-  return { content: res.content, revision: res.revision, mtime: res.mtime ?? 0 };
+  return {
+    content: res.content,
+    revision: res.revision,
+    mtime: res.mtime ?? 0,
+    size: res.size,
+  };
 }
 
 // Minimal change dispatch: trimming the common prefix/suffix keeps the
