@@ -4,6 +4,7 @@ import { EditorStack, GitDiffStack } from "@/modules/editor";
 import { GitHistoryStack } from "@/modules/git-history";
 import { MarkdownStack } from "@/modules/markdown";
 import { PreviewStack } from "@/modules/preview";
+import type { PresentationSubscription } from "@/modules/preview/lib/windowVisibility";
 import type { Tab } from "@/modules/tabs";
 import { TerminalStack } from "@/modules/terminal";
 
@@ -16,6 +17,10 @@ type Props = {
   tabs: Tab[];
   activeId: number;
   activeTab: Tab | undefined;
+  /** The Space on screen; previews in every other Space unload their frames. */
+  activeSpaceId: string;
+  /** Shared native window-presentation feed (occlusion/sleep), optional. */
+  subscribeWindowPresentation?: PresentationSubscription;
   registerTerminalHandle: TerminalStackProps["registerHandle"];
   onSearchReady: TerminalStackProps["onSearchReady"];
   onCwd: TerminalStackProps["onCwd"];
@@ -38,6 +43,10 @@ const LAYER = "absolute inset-0";
  * visibility off the active tab, so panes keep their mounted state (terminal
  * buffers, editor scroll, ...) when switching tabs.
  *
+ * The preview stack is the exception: its frames are untrusted web content that
+ * must not keep working off screen, so {@link PreviewStack} unloads a frame
+ * whenever its tab, its Space or the window is not on screen.
+ *
  * Layers sit flush inside the workspace pane; only the terminal layer is inset,
  * because the terminal draws glyphs right up to its container edge.
  */
@@ -45,6 +54,8 @@ export function WorkspaceSurface({
   tabs,
   activeId,
   activeTab,
+  activeSpaceId,
+  subscribeWindowPresentation,
   registerTerminalHandle,
   onSearchReady,
   onCwd,
@@ -107,6 +118,8 @@ export function WorkspaceSurface({
         <PreviewStack
           tabs={tabs}
           activeId={activeId}
+          activeSpaceId={activeSpaceId}
+          subscribePresentation={subscribeWindowPresentation}
           registerHandle={registerPreviewHandle}
           onUrlChange={onPreviewUrlChange}
         />

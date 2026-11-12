@@ -771,12 +771,39 @@ mod platform {
                 Ok(json!({"ok": true}))
             }
             WindowAction::Hide { mode } => {
-                window.hide().map_err(|error| format!("hide: {error}"))?;
+                if !matches!(mode.as_str(), "orderout" | "miniaturize") {
+                    return Ok(json!({"ok": false, "error": format!("unknown mode {mode}")}));
+                }
+                if mode == "miniaturize" {
+                    window
+                        .minimize()
+                        .map_err(|error| format!("minimize: {error}"))?;
+                } else {
+                    window.hide().map_err(|error| format!("hide: {error}"))?;
+                }
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 let state = snapshot(&window);
-                Ok(json!({"ok": !state["windowVisible"].as_bool().unwrap_or(true), "mode": mode, "state": state}))
+                // Hiding unmaps the window, which the application can always see. Wayland
+                // compositors do not report iconification back to the client, so a requested
+                // minimize may stay unreported: say what was observed instead of assuming it.
+                let visible = state["windowVisible"].as_bool().unwrap_or(true);
+                let miniaturized = state["miniaturized"].as_bool().unwrap_or(false);
+                let ok = if mode == "miniaturize" {
+                    miniaturized || !visible
+                } else {
+                    !visible
+                };
+                Ok(json!({"ok": ok, "mode": mode, "state": state}))
             }
             WindowAction::Show { mode } => {
+                if !matches!(mode.as_str(), "orderout" | "miniaturize") {
+                    return Ok(json!({"ok": false, "error": format!("unknown mode {mode}")}));
+                }
+                if mode == "miniaturize" {
+                    window
+                        .unminimize()
+                        .map_err(|error| format!("unminimize: {error}"))?;
+                }
                 window.show().map_err(|error| format!("show: {error}"))?;
                 let _ = window.set_focus();
                 tokio::time::sleep(Duration::from_millis(200)).await;

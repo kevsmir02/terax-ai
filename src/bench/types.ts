@@ -42,6 +42,7 @@ export type BenchScenario = {
     | "fs-churn"
     | "input"
     | "workflow"
+    | "preview"
     | "resource"
     | "stress"
     | "startup";
