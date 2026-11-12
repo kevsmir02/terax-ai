@@ -191,6 +191,16 @@ export function findDuplicatePackagesInDist(distDir) {
 }
 
 /**
+ * JavaScript chunks that emitted a sourcemap: the input the duplicate-package
+ * check reads. Zero means that check cannot run at all.
+ */
+export function sourcemapCount(distDir) {
+  const assets = join(distDir, "assets");
+  if (!existsSync(assets)) return 0;
+  return readdirSync(assets).filter((f) => f.endsWith(".js.map")).length;
+}
+
+/**
  * Walk the startup graph of one HTML document.
  * `readChunk(distRelativePath)` returns source text (or null if missing), which
  * keeps the walk pure and testable without touching the filesystem.
@@ -318,11 +328,17 @@ if (isCli) {
     process.exit(1);
   }
   const duplicates = findDuplicatePackagesInDist(distDir);
-  if (duplicates === null) {
-    console.log(
-      "\n  - duplicate-package check skipped: no sourcemaps (build with `vite build --sourcemap`; dist-budget.test.ts always runs it)",
+  const maps = sourcemapCount(distDir);
+  if (duplicates === null || maps === 0) {
+    // Not a skip: the duplicate check is half of what this script is for, so a build
+    // without sourcemaps must be a failure, not a green run that quietly checked less.
+    console.error(
+      `\nNo sourcemaps in ${distDir}/assets: the duplicate-package check cannot run. ` +
+        "Use `pnpm check:dist` (it builds sourcemaps itself) or `vite build --sourcemap`.",
     );
-  } else if (duplicates.length) {
+    process.exit(1);
+  }
+  if (duplicates.length) {
     for (const { name, versions } of duplicates) {
       console.log(`  x ${name} bundled in ${versions.join(", ")}`);
     }
@@ -331,5 +347,8 @@ if (isCli) {
     );
     process.exit(1);
   }
+  console.log(
+    `\n  ${maps} sourcemapped chunks: no package is bundled in more than one version`,
+  );
   console.log("\nstartup graph clean");
 }

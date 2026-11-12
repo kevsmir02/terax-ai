@@ -10,13 +10,17 @@ a `stable` toolchain, a `node-version` literal, a `pnpm install` without `--froz
 at the product identifier or has no bounded timeout.
 """
 
+import json
 import re
 import unittest
 from pathlib import Path
 
-try:  # PyYAML is present on GitHub's ubuntu runners and in most local venvs; the text checks
-    import yaml  # noqa: F401  # below do not need it, so its absence only skips the parse test.
-except ImportError:  # pragma: no cover
+# Tests fail (not skip) when this is missing: a silent skip would report "all green" while the
+# only workflow-YAML validation in the repository never ran. The workflows install
+# `scripts/tests/requirements.txt`; locally: `python3 -m pip install -r scripts/tests/requirements.txt`.
+try:
+    import yaml
+except ImportError:  # pragma: no cover - exercised only on an environment missing the dependency
     yaml = None
 
 REPO = Path(__file__).resolve().parent.parent.parent
@@ -158,12 +162,43 @@ class OrdinaryCiTest(unittest.TestCase):
     def test_ci_runs_the_repository_guards(self) -> None:
         self.assertIn("python3 -m unittest discover -s scripts/tests", text(CI))
 
+    def test_the_dist_graph_check_builds_the_sourcemaps_it_needs(self) -> None:
+        # The duplicate-package half only runs with sourcemaps, so the command must produce them
+        # rather than analysing whatever `dist/` happens to hold (CI's `pnpm build` has none).
+        scripts = json.loads(text(REPO / "package.json"))["scripts"]
+        self.assertIn("--sourcemap", scripts["check:dist"])
+        self.assertIn("--outDir", scripts["check:dist"])
+        self.assertIn("scripts/dist-graph.mjs", scripts["check:dist"])
+        self.assertIn("pnpm check:dist", text(CI), "CI must run the sourcemapped graph check")
+
+
+class WorkflowYamlTest(unittest.TestCase):
+    """Every workflow must parse. Nothing else in the repository would catch a YAML typo."""
+
+    def setUp(self) -> None:
+        if yaml is None:
+            self.fail(
+                "PyYAML is not installed, so workflow YAML validation cannot run. Install the "
+                "guard tests' dependency: python3 -m pip install -r scripts/tests/requirements.txt"
+            )
+
     def test_every_workflow_is_valid_yaml(self) -> None:
-        if yaml is None:  # pragma: no cover
-            self.skipTest("PyYAML is not installed")
         for path in workflow_files():
             with self.subTest(path.name):
                 self.assertIsInstance(yaml.safe_load(text(path)), dict)
+
+    def test_the_workflows_install_the_dependency_they_use(self) -> None:
+        self.assertRegex(
+            text(REPO / "scripts/tests/requirements.txt"),
+            r"(?m)^PyYAML==",
+            "scripts/tests/requirements.txt must pin PyYAML",
+        )
+        for path in (CI, SMOKE):
+            self.assertIn(
+                "scripts/tests/requirements.txt",
+                text(path),
+                f"{path.name} runs scripts/tests, so it must install their dependencies first",
+            )
 
 
 class LinuxSmokeWorkflowTest(unittest.TestCase):

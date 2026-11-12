@@ -86,6 +86,13 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install the runner tests' dependency (PyYAML)
+        run: python3 -m pip install --disable-pip-version-check -r scripts/tests/requirements.txt
+
       - name: Disposable-profile invariants (no build, no launch)
         run: python3 -m unittest discover -s scripts/tests -v
 
