@@ -18,6 +18,30 @@ pub fn checkpoint_prefix() -> String {
 pub fn task_archive_prefix(task_id: &str) -> String {
     format!("{}/tasks/{task_id}/archive/", ref_root())
 }
+
+/// Manual checkpoint refs of this fork, deliberately a separate root instead of
+/// a `<task>` directory under `checkpoints/`: a task literally named `manual`
+/// can then never collide with a manual checkpoint id.
+pub fn manual_checkpoint_prefix() -> String {
+    format!("{}/manual-checkpoints/", ref_root())
+}
+
+/// A manual checkpoint id is 16 random bytes in lowercase hex: opaque, stable
+/// and independent of task ids, turn numbers or the user's optional name.
+pub fn is_valid_manual_checkpoint_id(id: &str) -> bool {
+    id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+pub fn manual_checkpoint_ref(id: &str) -> String {
+    format!("{}{id}", manual_checkpoint_prefix())
+}
+
+/// The id of a manual checkpoint ref, or `None` for anything else.
+pub fn parse_manual_checkpoint_ref(name: &str) -> Option<&str> {
+    let id = name.strip_prefix(&manual_checkpoint_prefix())?;
+    is_valid_manual_checkpoint_id(id).then_some(id)
+}
+
 const MAX_REF_BYTES: usize = 255;
 
 /// Characters git forbids anywhere in a ref name, plus whitespace and control
@@ -265,6 +289,37 @@ mod tests {
             None
         );
         assert!(!task_archive_prefix("task-1").starts_with("refs/terax/"));
+        assert_eq!(
+            parse_manual_checkpoint_ref("refs/terax/manual-checkpoints/0123456789abcdef0123456789abcdef"),
+            None
+        );
+    }
+
+    #[test]
+    fn manual_checkpoint_refs_round_trip_and_never_collide_with_tasks() {
+        let id = "0123456789abcdef0123456789abcdef";
+        let name = manual_checkpoint_ref(id);
+        assert_eq!(
+            name,
+            format!("{}/manual-checkpoints/{id}", ref_root())
+        );
+        assert_eq!(parse_manual_checkpoint_ref(&name), Some(id));
+        // A task named `manual` cannot shadow a manual checkpoint, and a turn
+        // ref is not a manual checkpoint.
+        assert_eq!(
+            parse_manual_checkpoint_ref(&checkpoint_ref("manual", 1)),
+            None
+        );
+        assert_eq!(parse_checkpoint_ref(&name), None);
+        for bad in [
+            "".to_string(),
+            manual_checkpoint_prefix(),
+            format!("{}{id}/extra", manual_checkpoint_prefix()),
+            format!("{}{}", manual_checkpoint_prefix(), "a".repeat(31)),
+            format!("{}{}", manual_checkpoint_prefix(), "g".repeat(32)),
+        ] {
+            assert_eq!(parse_manual_checkpoint_ref(&bad), None, "{bad}");
+        }
     }
 
     #[test]

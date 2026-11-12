@@ -104,6 +104,11 @@ export function useAssetGrants(
     };
   }, [listKey, workspace, key, tabId]);
 
+  /**
+   * The grant token an asset would be served with, or undefined while the
+   * scope is not live. `urlFor` is this plus `convertFileSrc`; a surface that
+   * reads the bytes through IPC (the PDF reader) needs the capability itself.
+   */
   const tokenFor = useMemo(
     () => (asset: string) => {
       if (
@@ -127,7 +132,6 @@ export function useAssetGrants(
     },
     [grant, key],
   );
-
   const urlFor = useMemo(
     () => (asset: string) => {
       const token = tokenFor(asset);

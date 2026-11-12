@@ -120,6 +120,7 @@ export type BenchScenario = {
     | "markdown"
     | "spaces"
     | "git"
+    | "checkpoints"
     | "preview"
     | "images"
     | "media"
@@ -139,7 +140,7 @@ export type BenchScenario = {
   durationS?: number;
   warmupS?: number;
   hiddenAgents?: number;
-  /** git: an isolated scratch repository the scenario mutates and inspects. */
+  /** git/checkpoints: an isolated scratch repository the scenario mutates and inspects. */
   git?: {
     repo: string;
     fileA: string;
@@ -148,6 +149,11 @@ export type BenchScenario = {
     baseB: string;
     editedA: string;
     editedB: string;
+    /** checkpoints: captured-free files the manual capture must disclose. */
+    ignoredFile?: string;
+    ignoredCount?: number;
+    stagedFile?: string;
+    stagedCount?: number;
   };
   /** split-drag: seconds of divider motion per drag, and its amplitude as a share of the pane area. */
   dragS?: number;

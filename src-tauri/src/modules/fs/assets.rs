@@ -26,6 +26,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
 use tauri::http::{Request, Response};
 use tauri::{Manager, Runtime, UriSchemeContext, UriSchemeResponder};
 
@@ -853,6 +854,117 @@ pub fn asset_delivery_log(
     log
 }
 
+/// Builds the request the asset handler answers for one granted file.
+///
+/// The reader's IPC path (`asset_read_bytes`) and the `asset:` protocol path
+/// therefore share one request shape, one grant check and one delivery bound;
+/// this is not a second way to read a file.
+pub(crate) fn asset_request(
+    path: &Path,
+    token: &str,
+    override_requested: bool,
+) -> Request<Vec<u8>> {
+    let encoded = percent_encoding::utf8_percent_encode(
+        &super::to_canon(path),
+        percent_encoding::NON_ALPHANUMERIC,
+    )
+    .to_string();
+    let mut uri = format!("https://asset.localhost/{encoded}?token={token}");
+    if override_requested {
+        uri.push_str("&override=1");
+    }
+    Request::builder()
+        .method("GET")
+        .uri(uri)
+        .body(Vec::new())
+        .expect("static asset request")
+}
+
+/// A delivery refusal as structured data for the IPC caller: the reader shows
+/// the same reason, size and alternatives the protocol handler's headers carry.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetReadError {
+    pub status: u16,
+    pub code: &'static str,
+    pub message: String,
+    pub alternatives: Vec<&'static str>,
+    pub override_allowed: bool,
+    pub size: Option<u64>,
+}
+
+impl From<AssetError> for AssetReadError {
+    fn from(error: AssetError) -> Self {
+        Self {
+            status: error.status,
+            code: error.code,
+            message: error.message,
+            alternatives: error.alternatives,
+            override_allowed: error.override_allowed,
+            size: error.size,
+        }
+    }
+}
+
+impl AssetReadError {
+    fn internal(message: impl Into<String>) -> Self {
+        Self {
+            status: 500,
+            code: "unreadable",
+            message: message.into(),
+            alternatives: vec!["open-externally"],
+            override_allowed: false,
+            size: None,
+        }
+    }
+}
+
+/// Returns one granted asset's bytes to the app page.
+///
+/// The PDF reader is app DOM (the decision in `docs/architecture/pdf-reader.md`
+/// requires it), so it needs the document's bytes in the page. This command is
+/// that one way in: it is the same `deliver` the `asset:` scheme handler runs,
+/// with the same grant, path/descriptor checks and `DeliveryLimits`, and it is
+/// recorded by the bench probe like a protocol request. It never serves more
+/// than the approved whole-file ceiling, so it cannot become the "whole-file
+/// non-range allocation" the resource contract forbids.
+#[tauri::command]
+pub async fn asset_read_bytes(
+    app: tauri::AppHandle,
+    webview: tauri::Webview,
+    path: String,
+    token: String,
+    allow_override: Option<bool>,
+) -> Result<tauri::ipc::Response, AssetReadError> {
+    let owner = webview.label().to_owned();
+    let request = asset_request(Path::new(&path), &token, allow_override.unwrap_or(false));
+    let delivered = tauri::async_runtime::spawn_blocking(move || {
+        let grants = app.state::<AssetGrants>();
+        let result = deliver(
+            &grants,
+            &owner,
+            &request,
+            &DeliveryLimits::approved(),
+            &mut |_| {},
+        );
+        #[cfg(feature = "bench")]
+        super::bench_probe::record(
+            &owner,
+            &request,
+            &result
+                .as_ref()
+                .map_err(|error| (error.status, error.message.clone())),
+        );
+        result
+    })
+    .await
+    .map_err(|error| AssetReadError::internal(error.to_string()))?;
+
+    delivered
+        .map(|response| tauri::ipc::Response::new(response.into_body()))
+        .map_err(AssetReadError::from)
+}
+
 pub fn serve<R: Runtime>(
     context: UriSchemeContext<'_, R>,
     request: Request<Vec<u8>>,
@@ -1586,6 +1698,85 @@ mod tests {
         assert_eq!(
             tail.headers()["Content-Range"],
             "bytes 1048576-2097151/3145728"
+        );
+    }
+
+    /// The PDF reader's one sanctioned way to get the document into the app's
+    /// own page: the same grant, the same path checks and the same
+    /// `DeliveryLimits` as the `asset:` protocol, so it is not a second,
+    /// unbounded read path. It never asks for a range; the whole file is the
+    /// unit the delivery gate already bounds (10 MiB, 50 MiB with the explicit
+    /// choice), and above that it refuses with the code the UI can explain.
+    #[test]
+    fn a_granted_document_is_read_whole_within_the_delivery_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("document.pdf");
+        std::fs::write(&path, vec![b'x'; 96]).unwrap();
+        let grants = AssetGrants::default();
+        let token = grants
+            .grant(
+                "main".into(),
+                Some("tab-1".into()),
+                &super::super::to_canon(&path),
+                WorkspaceEnv::Local,
+                grants.generation("main"),
+                grants.scope_generation("main", Some("tab-1")),
+            )
+            .unwrap();
+        let limits = test_limits();
+
+        // A granted document inside the read ceiling is returned whole.
+        let request = asset_request(&path, &token, false);
+        let body = deliver(&grants, "main", &request, &DeliveryLimits::approved(), &mut |_| {})
+            .unwrap()
+            .into_body();
+        assert_eq!(body.len(), 96);
+
+        // Above the normal ceiling it is refused, and the refusal says an
+        // explicit choice could reach it.
+        let size = std::fs::metadata(&path).unwrap().len();
+        assert_eq!(size, 96);
+        let small = DeliveryLimits {
+            read_bytes: 64,
+            ..limits
+        };
+        let request = asset_request(&path, &token, false);
+        let refusal = deliver(&grants, "main", &request, &small, &mut |_| {}).unwrap_err();
+        assert_eq!(refusal.status, 413);
+        assert_eq!(refusal.code, "too-large");
+        assert!(refusal.override_allowed);
+
+        // The explicit choice reaches it, and only inside the hard ceiling.
+        let request = asset_request(&path, &token, true);
+        assert_eq!(
+            deliver(&grants, "main", &request, &small, &mut |_| {})
+                .unwrap()
+                .into_body()
+                .len(),
+            96
+        );
+        let hard = DeliveryLimits {
+            read_bytes: 32,
+            override_bytes: 64,
+            ..limits
+        };
+        let request = asset_request(&path, &token, true);
+        assert_eq!(
+            deliver(&grants, "main", &request, &hard, &mut |_| {})
+                .unwrap_err()
+                .status,
+            413
+        );
+
+        // A token revoked by its tab scope cannot be read, so closing the tab
+        // releases the document even if a lazy loader asks afterwards.
+        grants.revoke_scope("main", "tab-1");
+        let request = asset_request(&path, &token, false);
+        assert_eq!(
+            deliver(&grants, "main", &request, &limits, &mut |_| {})
+                .unwrap_err()
+                .code,
+            "invalid-grant"
         );
     }
 

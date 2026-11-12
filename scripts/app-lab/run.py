@@ -38,9 +38,14 @@ Scenarios (`--scenario`):
   quit           Linux quit: the survey across Spaces, a repeated close that is not consent, cancel,
                  save-then-quit, graceful termination, the survivor prompt, a confirmed force, and a
                  reload that restores the layout without replaying commands (pass/fail in page.log)
+  git            Linux destructive-Git seam: a dirty buffer blocks a panel discard, stale and
+                 unacknowledged plans are refused, a confirmed discard still restores its file
+  checkpoints    Linux manual-checkpoint seam: two same-named captures keep distinct identities,
+                 limits/exclusions are disclosed, inspection lists captured paths, explicit cleanup
+                 removes only the named ref, and HEAD/the index/working files never move
 
-Linux currently implements `workflow`, `spaces`, `markdown`, `preview`, `images`, `resource`,
-`stress` and `startup` (WebKitGTK); the measured scenarios above stay
+Linux currently implements `workflow`, `spaces`, `quit`, `markdown`, `git`, `checkpoints`,
+`preview`, `images`, `resource`, `stress` and `startup` (WebKitGTK); the measured scenarios above stay
 macOS-only until ticket 02 (sampling) and ticket 32 (input/resize/layers). On Linux the app is
 built with `--no-bundle` into `<target>/<profile>/terax`.
 
@@ -97,7 +102,20 @@ SYSTEM = platform.system()
 # measured scenarios (tabs, resize, split-drag, occlusion, agents-steady, idle, fs-churn, input)
 # stay unavailable here: WebKitGTK has no occlusion signal, no layer-tree mirror and no native
 # input hook (ticket 32).
-LINUX_SCENARIOS = ("workflow", "spaces", "quit", "markdown", "git", "preview", "images", "media", "resource", "stress", "startup")
+LINUX_SCENARIOS = (
+    "workflow",
+    "spaces",
+    "quit",
+    "markdown",
+    "git",
+    "checkpoints",
+    "media",
+    "preview",
+    "images",
+    "resource",
+    "stress",
+    "startup",
+)
 SCENARIOS = list(dict.fromkeys([*app_report.SCENARIOS, *LINUX_SCENARIOS]))
 IDENTIFIER = linux_profile.disposable_identifier("app-lab", "stable")
 PRODUCT_NAME = "Terax App Lab"
@@ -637,6 +655,9 @@ def host_timeout(args, scenario: dict) -> float:
         return 600
     if name == "media":
         return 600
+    if name == "checkpoints":
+        # A few native Git commands in a scratch repository: no rendering cycles.
+        return 300
     if name == "quit":
         # Two Spaces, the survey, save-then-quit, a 2 s grace pass, the survivor
         # prompt and a reload pass with a fresh boot.
@@ -958,6 +979,39 @@ def prepare_git_fixture(workspace: Path) -> dict:
     }
 
 
+def prepare_checkpoint_fixture(workspace: Path) -> dict:
+    """The Git fixture plus what a manual capture must disclose.
+
+    Two unstaged edits stay in the working tree, one file is staged in the real
+    index and two entries are ignored. A checkpoint may capture the tracked and
+    non-ignored contents, but it must report those exclusions and leave HEAD,
+    the index and the files where they are. Nothing here touches a real project.
+    """
+    fixture = prepare_git_fixture(workspace)
+    repo = Path(fixture["repo"])
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Terax App Lab",
+        "GIT_AUTHOR_EMAIL": "app-lab@example.invalid",
+        "GIT_COMMITTER_NAME": "Terax App Lab",
+        "GIT_COMMITTER_EMAIL": "app-lab@example.invalid",
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
+    (repo / ".gitignore").write_text("build/\n*.log\n")
+    (repo / "build").mkdir(parents=True, exist_ok=True)
+    (repo / "build/ignored.txt").write_text("never captured\n")
+    (repo / "notes.log").write_text("never captured\n")
+    (repo / "src/staged.ts").write_text("export const staged = true;\n")
+    subprocess.run(["git", "add", "src/staged.ts"], cwd=repo, env=env, check=True)
+    fixture.update({
+        "ignoredFile": str(repo / "build/ignored.txt"),
+        "ignoredCount": 2,
+        "stagedFile": str(repo / "src/staged.ts"),
+        "stagedCount": 1,
+    })
+    return fixture
+
+
 def prepare_image_fixtures(workspace: Path, source: Path) -> dict:
     """Copy the committed image fixtures the `images` scenario opens.
 
@@ -1149,7 +1203,7 @@ def scenario_json_linux(
         scenario.update({"images": images})
     if args.scenario == "media" and media:
         scenario.update({"media": media})
-    if args.scenario == "git" and git_fixture:
+    if args.scenario in ("git", "checkpoints") and git_fixture:
         scenario.update({"git": git_fixture})
     if args.scenario in ("resource", "stress") and fixtures:
         node = shutil.which("node")
@@ -1224,14 +1278,16 @@ def build_startup_entry(kind: str, launch: int, event: dict, spawned_wall_s: flo
 # ---------------------------------------------------------------------------------------------
 
 LIMITATIONS_LINUX = [
-    "PDF: the fixtures are generated and verified by scripts/app-lab/pdf_fixtures.py, and the "
-    "phase exercises the app's own delivery gate, the bytes the asset server served (recorded "
-    "natively), the document boundary and the tab lifecycle. The reader functions (navigation, "
-    "zoom, search, text selection inside the page) cannot be driven from this harness: WebKitGTK "
-    "hands the PDF to its own separate document (the built-in PDF.js viewer at "
-    "webkit-pdfjs-viewer://), which the app page cannot script or even read, and WebKitGTK "
-    "exposes no screenshot/input seam. Those checks are named manual checks in "
-    "docs/architecture/pdf-reader.md, not automated passes.",
+    "PDF: the fixtures are generated and verified by scripts/app-lab/pdf_fixtures.py. Since issue "
+    "#31 the reader is the app's own DOM, so the phase drives and asserts navigation, zoom (with "
+    "the 32 MiB per-page refusal and its suggested zoom), search, selectable text, the raster "
+    "cache's byte counts, the corrupt state, the whole-file gate, hidden-tab unloading and "
+    "tab-close grant release. It still cannot inject native input: physical keys, a real drag and "
+    "the OS clipboard round-trip, the visual crispness of a re-render, a network capture, a "
+    "password/unsupported-feature fixture and the 4-viewer admission refusal remain named manual "
+    "checks in docs/architecture/pdf-reader.md. Display renders need animation frames, which this "
+    "host suspends for an occluded window; the reader's print-intent fallback and "
+    "`data-pdf-render-fallback` report which path painted a page.",
     "Image format support is measured only on this host's WebKitGTK build and only for the "
     "committed fixtures; a different distro/WebKit version needs its own run.",
     "The images scenario observes the rendered element and the decoded-viewer table; it does not "
@@ -1643,6 +1699,8 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         media_fixtures = prepare_media_fixtures(workspace, source)
     elif args.scenario == "git":
         git_fixture = prepare_git_fixture(workspace)
+    elif args.scenario == "checkpoints":
+        git_fixture = prepare_checkpoint_fixture(workspace)
     else:
         token = uuid.uuid4().hex[:10]
         first_line = f"workflow-file {token}"
@@ -1770,6 +1828,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     failed: BaseException | None = None
     workflow: dict = {}
     git_scenario: dict = {}
+    checkpoint_scenario: dict = {}
     markdown: dict = {}
     images: dict = {}
     media: dict = {}
@@ -1813,6 +1872,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                     manifest["samples"].append({"phase": "done", "tMonoNs": time.monotonic_ns(), "event": app_report.slim_event(event)})
                     workflow = event.get("workflow") or {}
                     git_scenario = event.get("git") or {}
+                    checkpoint_scenario = event.get("checkpoints") or {}
                     markdown = event.get("markdown") or {}
                     if event.get("images") is not None:
                         images = event["images"]
@@ -1899,6 +1959,15 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                 manifest["qualification"]["failures"].append({
                     "phase": "git-guard",
                     "reasons": ["destructive Git guard scenario failed"],
+                })
+        if args.scenario == "checkpoints":
+            checkpoint_report = checkpoint_scenario
+            manifest["checkpointScenario"] = checkpoint_report
+            if not checkpoint_report or not checkpoint_report.get("pass"):
+                manifest["qualification"]["qualified"] = False
+                manifest["qualification"]["failures"].append({
+                    "phase": "checkpoints",
+                    "reasons": ["manual checkpoint scenario failed"],
                 })
         manifest["images"] = images
         manifest["media"] = media
@@ -2021,6 +2090,14 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             for step in steps:
                 if not step.get("ok"):
                     print(f"  failed: {step.get('name')}: {step.get('detail')}")
+    if args.scenario == "checkpoints":
+        steps = checkpoint_scenario.get("steps") or []
+        passed = sum(1 for step in steps if step.get("ok"))
+        print(f"checkpoints {'PASS' if checkpoint_scenario.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
+        if not checkpoint_scenario.get("pass"):
+            for step in steps:
+                if not step.get("ok"):
+                    print(f"  failed: {step.get('name')}: {step.get('detail')}")
     isolation = manifest["isolation"]
     print(
         f"coexistence {'PASS' if isolation['upstreamStateUnchanged'] else 'FAIL'}: "
@@ -2049,6 +2126,12 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         return 2
     if args.scenario == "media" and not media.get("pass"):
         print("Run failed: the media scenario reported a failing step (see page.log).", file=sys.stderr)
+        return 2
+    if args.scenario == "checkpoints" and not checkpoint_scenario.get("pass"):
+        print(
+            "Run failed: the manual checkpoint scenario reported a failing step (see page.log).",
+            file=sys.stderr,
+        )
         return 2
     if not isolation["upstreamStateUnchanged"]:
         print(
