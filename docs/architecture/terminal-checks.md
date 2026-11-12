@@ -16,7 +16,7 @@ instead of disappearing. Ticket #34 narrows platforms; it does not narrow this l
 | --- | --- | --- | --- |
 | Adapted core (models, input, blocks, transport) | terminal model and protocol behaviour: writes, modes, queries, key encoding, blocks, PTY transport, renderer lifecycle | `pnpm exec vitest run src/modules/terminal` | `frontend`, `terminal-linux`, `terminal-platforms` |
 | PTY exactness and backpressure | byte-exact wire frames, credit accounting, forged/duplicate acknowledgements grant nothing, a stalled frontend ends with the drain deadline, credit-blocked PTYs nudge once per state | `cargo test --manifest-path src-tauri/Cargo.toml --lib modules::pty` | `rust`, `rust-platforms` |
-| Shell integration: bash | prompt marks (133 A/B/C/D), `7;file://` cwd report, `ble.sh` entry forks nothing, frameworks that rebuild `PS1` display correctly | `bash src-tauri/src/modules/pty/scripts/bashrc.test.bash` | `rust` |
+| Shell integration: bash | prompt marks (133 A/B/C/D), `7;file://` cwd report, `ble.sh` entry forks nothing, frameworks that rebuild `PS1` display correctly | `bash src-tauri/src/modules/pty/scripts/bashrc.test.bash` | `rust` (green on Ubuntu; fails on a Fedora host, see below) |
 | Shell integration: zsh | marks through `zshrc`/`zshenv`/`zprofile`/`zlogin`, 200 KB command lines stay cheap, `exec zsh` restarts the sequence | `python3 src-tauri/src/modules/pty/scripts/zshrc.test.py` | `rust` |
 | Shell integration: fish | prompt rewrapping preserves a Conda prompt and replacement functions, marks present exactly once | `fish --no-config src-tauri/src/modules/pty/scripts/init.test.fish` | `rust` |
 | Search and selection | find next/previous over the model, tracked selections that survive streaming and reflow, rectangular selection, clamped pruning | `pnpm exec vitest run src/modules/terminal/ghostty/search src/modules/terminal/backend` | `frontend`, `terminal-linux`, `terminal-platforms` |
@@ -35,7 +35,9 @@ instead of disappearing. Ticket #34 narrows platforms; it does not narrow this l
 | --- | --- |
 | `pnpm exec vitest run src/modules/terminal` | 124 files, 3034 passed, 34 skipped |
 | `cargo test --lib modules::pty` | 242 passed, 0 failed, 1 ignored |
-| bash / zsh / fish shell integration | all three exit 0 |
+| zsh shell integration | exit 0 |
+| fish shell integration | exit 0 |
+| bash shell integration | **4 failures on this Fedora host** — see "Bash integration is not host-hermetic" below; green on the Ubuntu CI runner |
 | `pnpm soak:ghostty` | both artifacts, structure-of-arrays format: plateau growth 0 bytes, final linear memory 78,708,736 bytes, peak stack 35,200 and 35,184 bytes of the 96 KiB shadow stack (35.8%) |
 | `pnpm test:terminal-scaling` (WebGL) | DPR 1: 570,000 px, 1.25: 891,000 px, 1.5: 1,282,500 px, 2: 2,280,000 px; 0 differing pixels at both origins, max channel delta 0 |
 | `pnpm bench:ghostty` | 20 tasks across both artifacts |
@@ -44,6 +46,24 @@ instead of disappearing. Ticket #34 narrows platforms; it does not narrow this l
 The soak measurement is committed as `docs/architecture/terminal-linux-soak-2026-11-12.json`; it
 is the baseline `pnpm ghostty:update` compares a new revision against, so the gate works without
 anyone remembering a flag.
+
+### Bash integration is not host-hermetic (recorded 2026-11-12, Fedora 44 KDE)
+
+`bashrc.bash` emulates login-shell init, so it sources `/etc/profile` and `/etc/bashrc`. On this
+host `/etc/profile.d/80-systemd-osc-context.sh` appends `__systemd_osc_context_precmdline` to
+`PROMPT_COMMAND`, and four assertions in `bashrc.test.bash` compare the whole chain:
+
+- `scalar PROMPT_COMMAND is kept after the hook`
+- `the prompt end is the last PROMPT_COMMAND entry`
+- `an array PROMPT_COMMAND gets the hooks as elements`
+- `the ble.sh entry puts the prompt end back last`
+
+The check is identical at the pre-ticket commit `a657b3c`, so this ticket did not introduce it, and
+it passes on the `rust` job's `ubuntu-22.04` runner, whose `/etc/profile` installs no such hook.
+It is recorded rather than silenced: the primary validation target is Fedora 44 on Wayland, so the
+bash chain has to be correct with a system hook appended, and today that is unproven. Reproduce
+with `bash src-tauri/src/modules/pty/scripts/bashrc.test.bash`; the zsh and fish equivalents pass
+here.
 
 ## Checks that are still not Linux, and why
 
