@@ -321,30 +321,57 @@ fn removal_revokes_only_the_derived_grant_and_keeps_a_stronger_one() {
 }
 
 #[test]
-fn the_retained_archive_path_keeps_its_own_removal_policy() {
-    // Task archiving snapshots the worktree and then removes it; its snapshot
-    // is a task archive ref, not an owned recovery ref. The product command
-    // refuses while an owned ref remains, and the archive helper stays
-    // distinguishable instead of inheriting that refusal.
+fn the_archive_path_refuses_while_a_manual_checkpoint_exists() {
+    // Task archiving snapshots the worktree and then removes it. That snapshot is a task archive
+    // ref, so it is not an owned recovery ref and never blocks the archive (`task_worktree`'s own
+    // tests take a clean worktree through the whole path). A manual checkpoint the user still has
+    // is different: the removal it enables would delete the only owner of that ref, so the archive
+    // helper refuses exactly like the product command, force included.
     let repo = TestRepo::new();
     let (_keep, base) = scratch();
     let path = add(&repo, &base, "archive");
-    checkpoint::create_manual(
+    let created = checkpoint::create_manual(
         &repo.registry,
         &path.to_string_lossy(),
         Some("kept"),
         &repo.ws,
     )
     .unwrap();
-    assert!(!remove(&repo, &path, true).removed);
-    let archived = worktree::remove_for_archive(
-        &repo.registry,
-        &repo.path(),
-        &path.to_string_lossy(),
-        true,
-        &repo.ws,
-    )
-    .unwrap();
+    let reference = created.checkpoint.ref_name.clone();
+    let path_text = path.to_string_lossy().to_string();
+
+    let archived =
+        worktree::remove_for_archive(&repo.registry, &repo.path(), &path_text, true, &repo.ws)
+            .unwrap();
+    assert!(!archived.removed, "{archived:?}");
+    assert!(
+        archived.blockers.contains(&RemoveBlocker::RecoveryRefs),
+        "{archived:?}"
+    );
+    assert_eq!(archived.recovery.manual, 1, "{archived:?}");
+    assert_eq!(archived.recovery.sample, vec![reference.clone()]);
+
+    // Nothing was deleted: the directory, its registration, the ref and the grant all survive.
+    assert!(path.is_dir(), "nothing was deleted");
+    assert!(
+        repo.git(&["for-each-ref", &reference]).contains(&reference),
+        "the checkpoint ref still exists"
+    );
+    let registered = worktree::list(&repo.registry, &repo.path(), &repo.ws)
+        .unwrap()
+        .into_iter()
+        .any(|entry| !entry.is_main && entry.path == path_text);
+    assert!(registered, "the worktree registration survives");
+    assert!(authorized(&repo.registry, &path));
+    assert_eq!(groups(&repo, &path).manual.len(), 1);
+
+    // The explicit, scoped cleanup is what unblocks the archive.
+    let cleaned = cleanup(&repo, &path, std::slice::from_ref(&reference));
+    assert_eq!(cleaned.removed.len(), 1, "{cleaned:?}");
+    let archived =
+        worktree::remove_for_archive(&repo.registry, &repo.path(), &path_text, true, &repo.ws)
+            .unwrap();
     assert!(archived.removed, "{archived:?}");
     assert!(!path.exists());
 }
+

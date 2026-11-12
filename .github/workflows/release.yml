@@ -1,26 +1,26 @@
-name: Release
+name: Release candidate
 
 on:
-  push:
-    tags:
-      - "v*"
-  # Manual runs build the same Linux x86-64 artifact set without publishing: the upload steps
-  # require a tag push, so a dispatch never touches a release.
+  # Nothing here publishes, and nothing triggers it automatically. The gate that would make a
+  # version tag safe — tag/application-version agreement, required CI green for that exact commit,
+  # authenticated artifacts and install/upgrade evidence — is ticket #40 (GitHub issue #41) and is
+  # on an execution hold. Until that gate exists a tag must produce no artifact set at all, so this
+  # workflow only builds, verifies and hands out a candidate set when a maintainer asks for one.
+  # `scripts/tests/test_ci_workflows.py` fails if a tag trigger or any release upload comes back
+  # without the gate.
   workflow_dispatch:
 
 jobs:
-  publish-tauri:
+  build-candidate:
     # Linux x86-64 is the only platform this fork builds or distributes (ticket #34). The package
-    # formats come from `bundle.targets` in `src-tauri/tauri.conf.json` (`rpm`, `deb`), so there is
-    # no AppImage, no macOS leg, no Windows leg and no aarch64 leg to keep in step. Packaging,
-    # signing and publication gates are tickets #39/#40; this job produces and inspects candidates.
-    name: publish-tauri (linux x86-64)
+    # formats come from `bundle.targets` in `src-tauri/tauri.conf.json` (`rpm`, `deb`), and the
+    # build command names the same two explicitly, so there is no AppImage, no macOS leg, no
+    # Windows leg and no aarch64 leg to keep in step. This job produces and inspects candidates;
+    # publishing them is issue #41.
+    name: build-candidate (linux x86-64, no publication)
     runs-on: ubuntu-22.04
-    outputs:
-      app-version: ${{ steps.tauri.outputs.appVersion }}
     permissions:
-      actions: read
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@v7
 
@@ -56,30 +56,22 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      - id: tauri
-        uses: tauri-apps/tauri-action@v1
+      - name: Build the x86-64 RPM and DEB candidate set
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # `scripts/build-cli.mjs` names the sidecar with this triple, so the external binary
           # Tauri bundles is the one built for the released architecture.
           TERAX_CLI_TARGET: x86_64-unknown-linux-gnu
-        with:
-          tagName: ${{ github.event_name == 'push' && github.ref_name || '' }}
-          releaseName: ${{ github.event_name == 'push' && format('Terax {0}', github.ref_name) || '' }}
-          # Updates are installed with the distribution's package tool, never by the application,
-          # so the release text must not promise a built-in updater.
-          releaseBody: "Linux x86-64 only. Install the RPM (dnf) or DEB (apt) with your package manager; the application never downloads, installs or restarts itself."
-          releaseDraft: true
-          prerelease: false
-          args: --target x86_64-unknown-linux-gnu
+        run: pnpm tauri build --target x86_64-unknown-linux-gnu --bundles rpm,deb
 
       - name: Verify the x86-64 RPM and DEB and stage the artifacts
         run: |
           set -euo pipefail
           mkdir linux-packages
           # Exactly the two configured bundle formats: a third format appearing here would be a
-          # platform commitment this fork did not make.
-          for package in src-tauri/target/release/bundle/{deb/*.deb,rpm/*.rpm}; do
+          # platform commitment this fork did not make. `--target` makes Tauri write under the
+          # target triple (`scripts/package-candidate/run.py` reads the same directory), so a bare
+          # `target/release/bundle` would not exist.
+          for package in src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/{deb/*.deb,rpm/*.rpm}; do
             test -s "$package"
             cp "$package" linux-packages/
           done
@@ -91,17 +83,9 @@ jobs:
           (cd linux-packages && sha256sum * > SHA256SUMS)
           stat --printf='%n %s bytes\n' linux-packages/* >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload the release artifact set
+      - name: Upload the candidate artifact set
         uses: actions/upload-artifact@v7
         with:
           name: linux-x86_64-packages
           path: linux-packages/
           if-no-files-found: error
-
-      - name: Upload the packages and their hashes to the draft release
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload "$GITHUB_REF_NAME" linux-packages/* --clobber \
-            --repo "$GITHUB_REPOSITORY"

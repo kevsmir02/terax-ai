@@ -51,6 +51,7 @@ import {
 } from "./lib/externalFormat";
 import { detectIndentUnit } from "./lib/indent";
 import { type LanguageResult, resolveLanguage } from "./lib/languageResolver";
+import { warmLanguage } from "./lib/languageWarm";
 import { useDocument } from "./lib/useDocument";
 import { useEditorThemeExt } from "./lib/useEditorThemeExt";
 import { initVimGlobals, vimHandlersExtension } from "./lib/vim";
@@ -399,12 +400,13 @@ export const EditorPane = memo(
       [],
     );
 
-    // Warm the language chunk while the file is still being read; the
-    // ready-gated effect below then resolves from cache.
+    // Warm the language chunk as soon as the size is known; the ready-gated
+    // effect below then resolves from cache. A document above the 4 MiB syntax
+    // ceiling, or one the native reader refused, imports no chunk at all —
+    // `planLanguageWarm` owns that decision, the ceiling stays in `limits.ts`.
     useEffect(() => {
-      const resolvePath = overrideLanguage ? `dummy.${overrideLanguage}` : path;
-      void resolveLanguage(resolvePath).catch(() => {});
-    }, [path, overrideLanguage]);
+      void warmLanguage(resolveLanguage, { path, overrideLanguage, doc });
+    }, [doc, path, overrideLanguage]);
 
     useEffect(() => {
       const ext =

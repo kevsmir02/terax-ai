@@ -5,6 +5,33 @@ plus an authored Arch recipe, so the updater evaluation (#37) and graphical/pack
 (#44) have something concrete to install. A candidate is not a release and this document never
 claims package-manager or graphical validation.
 
+## What publishes today: nothing
+
+Publication is gated by ticket #40 (GitHub issue #41, "Gate tagged stable releases on checked
+immutable artifacts"), which is on an execution hold and needs #40's identity and signing trust
+first. Until then the half-built path fails closed:
+
+- `.github/workflows/release.yml` has **no tag trigger**. Pushing a `v*` tag builds nothing,
+  uploads nothing and creates no release. It runs only on `workflow_dispatch`, and a manual run
+  builds, verifies and hashes the x86-64 RPM/DEB set and attaches it to that workflow run as the
+  `linux-x86_64-packages` artifact.
+- No job creates or uploads a GitHub release, and the workflow asks for `contents: read` only, so
+  there is no token with which a manual run could publish.
+- `scripts/tests/test_ci_workflows.py` fails if a tag trigger, `tauri-action` release inputs,
+  `gh release` or `contents: write` come back to the workflow without the #41 gate.
+
+This is deliberate: the spec's "a version tag triggers stable release publication *subject to*
+passing checks and tag/application-version agreement" and "a tag alone is not successful
+validation" cannot be honoured by a workflow that publishes because a tag exists. When #41 is
+authorized it owns the tag/application-version comparison, the green-CI prerequisite, artifact
+authentication and the evidence gate; this document then gains a real publication section instead
+of this one.
+
+Updates are never installed by the application. A user installs or upgrades the RPM/DEB with
+their package manager (`dnf`, `apt`); the application never downloads, installs or restarts
+itself, and no workflow here promises otherwise.
+
+
 ## Private candidate identity
 
 The fork's working identity lives in one table, `src/modules/identity/namespace.json`
@@ -22,7 +49,7 @@ of the candidate identity; the Tauri bundle metadata is generated from it:
 The names deliberately differ from upstream `Terax` / `Crynta` / `app.crynta.terax` and from the
 upstream package paths `/usr/bin/terax`, `/usr/bin/terax-cli`, so a candidate can be installed
 next to an upstream build without owning the same files. Final branding, release owner and keys
-remain tickets #39/#40; the table is marked `provisional`.
+remain tickets #40/#41; the table is marked `provisional`.
 
 The *CLI command* exposed inside terminal sessions is still `terax`
 (documented deferral in [namespace isolation](namespace-isolation.md)); only the installed
@@ -105,10 +132,10 @@ environment that records package versions. The packaging runner writes a revisio
 
 - Update discovery is issue #37: a candidate inherits the fork-owned release contract — a
   non-live `.invalid` endpoint and no provisioned trust root — so it cannot query or install an
-  upstream release. Candidates are built with `createUpdaterArtifacts=false`. Until #39/#40
+  upstream release. Candidates are built with `createUpdaterArtifacts=false`. Until #40/#41
   provision the real endpoint and key, no update can be verified and nothing may be published.
 - The deb `Maintainer` field is derived by the bundler from the Cargo authors (upstream credit),
-  not from the candidate vendor; final maintainer identity belongs to #39/#40.
+  not from the candidate vendor; final maintainer identity belongs to #40.
 
 ## Evidence and checks
 
