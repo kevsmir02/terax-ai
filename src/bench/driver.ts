@@ -5619,7 +5619,7 @@ type CreatedCheckpoint = ListedCheckpoint & {
 type CheckpointGroupsReply = {
   manual: ListedCheckpoint[];
   turns: unknown[];
-  safety: unknown[];
+  safety: { ref: string }[];
   storage: { ownedRefs: number; sharedObjects: boolean; looseObjects: number };
 };
 
@@ -5651,6 +5651,7 @@ async function checkpointsScenario(run: ScenarioRun): Promise<unknown> {
     await run.log(`[checkpoints] ${ok ? "PASS" : "FAIL"} ${name}: ${detail}`);
   };
   const workspace = { kind: "local" } as const;
+  const app = () => run.app();
   const call = <T>(command: string, args: Record<string, unknown>) =>
     invoke<T>(command, { ...args, workspace });
   const readFile = (path: string) =>
@@ -5823,6 +5824,275 @@ async function checkpointsScenario(run: ScenarioRun): Promise<unknown> {
     );
     await run.sync("checkpoints-cleaned", {
       remaining: cleanup.remaining.manual.length,
+    });
+
+    // 5. The visible panel: the same native commands and the shared destructive
+    //    guard, driven through the app's own UI seam. Nothing here is a second
+    //    implementation of the guard or the preflight.
+    const space = app().createSpace("Checkpoints panel", fixture.repo);
+    app().newTabInSpace(space, fixture.repo);
+    await run.switchSpace(space);
+    const panelTerminal = app().tabs.find(
+      (tab) => tab.spaceId === space && tab.kind === "terminal",
+    );
+    if (panelTerminal?.kind !== "terminal")
+      throw new Error("the checkpoint panel Space did not get a terminal tab");
+    await run.sessionReady(panelTerminal.activeLeafId);
+    await call("workspace_authorize", { path: fixture.repo });
+    app().openSourceControl();
+    await run.waitFor(
+      () => app().checkpoints().mounted,
+      "the Checkpoints panel",
+      30_000,
+    );
+    app().checkpoints().open();
+    await run.waitFor(
+      () => app().checkpoints().ready,
+      "the checkpoint listing",
+      30_000,
+    );
+    const panelBody = () => document.body.textContent ?? "";
+    await check(
+      "the visible panel lists this worktree's recovery points",
+      (app().checkpoints().groups?.manual ?? 0) === 1 &&
+        panelBody().includes("Checkpoints") &&
+        panelBody().includes("app-lab checkpoint"),
+      `manual ${app().checkpoints().groups?.manual ?? 0}; dialog ${panelBody().includes("Checkpoints")}`,
+    );
+
+    await app().checkpoints().create("panel checkpoint");
+    await run.waitFor(
+      () => (app().checkpoints().groups?.manual ?? 0) === 2,
+      "the panel-created checkpoint",
+      20_000,
+    );
+    const panelGroups = await call<CheckpointGroupsReply>(
+      "git_checkpoint_groups",
+      { worktree: fixture.repo },
+    );
+    const panelCheckpoint = panelGroups.manual.find(
+      (checkpoint) => checkpoint.name === "panel checkpoint",
+    );
+    if (!panelCheckpoint)
+      throw new Error("the panel created no inspectable checkpoint");
+    const inspectButton = [...document.querySelectorAll("button")].find(
+      (button) =>
+        button.getAttribute("aria-label") ===
+        `Inspect checkpoint ${panelCheckpoint.ref}`,
+    );
+    inspectButton?.click();
+    await run.waitFor(
+      () => panelBody().includes("captured paths"),
+      "the panel inspection details",
+      10_000,
+    );
+    await check(
+      "the panel creates and inspects the checkpoint it shows",
+      inspectButton !== undefined &&
+        panelBody().includes("src/a.ts") &&
+        panelBody().includes("panel checkpoint"),
+      `inspection rendered ${panelBody().includes("captured paths")}`,
+    );
+    await run.sync("checkpoints-panel-created", {
+      manual: app().checkpoints().groups?.manual ?? null,
+    });
+
+    // 6. An external writer changes the file, and a dirty editor buffer works in
+    //    the same checkout. The preflight names the affected path and the guard
+    //    requires the buffer to be acknowledged before the restore.
+    const externalEdit = "export const a = 'external edit before restore';";
+    writeToSession(
+      panelTerminal.activeLeafId,
+      `printf "%s\\n" "${externalEdit}" > src/a.ts\r`,
+    );
+    let diskAfterWrite = await readFile(fixture.fileA);
+    const writeDeadline = performance.now() + 15_000;
+    while (
+      !diskAfterWrite.startsWith(externalEdit) &&
+      performance.now() < writeDeadline
+    ) {
+      await pause(150);
+      diskAfterWrite = await readFile(fixture.fileA);
+    }
+    const fileATab = app().openFileTab(fixture.fileA, true, space);
+    await run.waitFor(
+      () => app().tabs.some((tab) => tab.id === fileATab),
+      "the checkpoint file tab",
+      20_000,
+    );
+    run.select(fileATab);
+    await pause(1200);
+    const editorText = () =>
+      document.querySelector(".cm-content")?.textContent ?? "";
+    await run.waitFor(
+      () => editorText().includes("external edit before restore"),
+      "the externally edited file in the editor",
+      20_000,
+    );
+    app().editEditor(fileATab, "unsaved panel buffer\n");
+    const dirty = () => {
+      const tab = app().tabs.find((candidate) => candidate.id === fileATab);
+      return tab?.kind === "editor" && tab.dirty;
+    };
+    await run.waitFor(dirty, "the dirty buffer");
+
+    await app().checkpoints().requestRestore(panelCheckpoint.ref);
+    await run.waitFor(
+      () => app().checkpoints().pending !== null,
+      "the restore preflight dialog",
+      20_000,
+    );
+    const restorePlan = app().checkpoints().pending;
+    await check(
+      "the restore preflight names affected paths, staging and the safety requirement",
+      restorePlan?.affected.includes("src/a.ts") === true &&
+        restorePlan?.requiresSafetyCapture === true &&
+        restorePlan?.headMoved === false &&
+        restorePlan?.blockers.some(
+          (blocker) =>
+            blocker.kind === "unsavedBuffer" && blocker.tabId === fileATab,
+        ) === true &&
+        panelBody().includes("Restore captured content?") &&
+        panelBody().includes("required safety ref"),
+      `affected ${restorePlan?.affected.join(",") ?? "none"}; blockers ${restorePlan?.blockers.length ?? 0}`,
+    );
+    await run.sync("checkpoints-panel-preflight", {
+      affected: restorePlan?.affected ?? [],
+      blockers: restorePlan?.blockers.length ?? 0,
+    });
+
+    await app().checkpoints().confirm({
+      unsavedBuffers: [],
+      activeWork: [],
+      force: false,
+    });
+    await run.waitFor(
+      () => typeof app().checkpoints().pending?.stale === "string",
+      "the unacknowledged restore refusal",
+      10_000,
+    );
+    const refusedStatus = await status();
+    const refusedDisk = await readFile(fixture.fileA);
+    await check(
+      "an unacknowledged restore changes no file and no index entry",
+      app().checkpoints().pending?.stale?.includes("Acknowledge") === true &&
+        refusedDisk.startsWith(externalEdit) &&
+        refusedStatus.changedFiles.some(
+          (file) => file.path === "src/a.ts" && file.unstaged,
+        ) &&
+        dirty(),
+      `stale ${app().checkpoints().pending?.stale ?? "none"}; disk external ${refusedDisk.startsWith(externalEdit)}`,
+    );
+    await run.sync("checkpoints-panel-refused", {
+      stale: app().checkpoints().pending?.stale ?? null,
+    });
+
+    await app()
+      .checkpoints()
+      .confirm({
+        unsavedBuffers: [fileATab],
+        activeWork: [],
+        force: false,
+      });
+    await run.waitFor(
+      () =>
+        app().checkpoints().pending === null &&
+        (app().checkpoints().message ?? "").includes("Restored"),
+      "the confirmed restore",
+      20_000,
+    );
+    let restoredDisk = await readFile(fixture.fileA);
+    const restoreDeadline = performance.now() + 10_000;
+    while (
+      !restoredDisk.startsWith(fixture.editedA) &&
+      performance.now() < restoreDeadline
+    ) {
+      await pause(150);
+      restoredDisk = await readFile(fixture.fileA);
+    }
+    const afterRestoreGroups = await call<CheckpointGroupsReply>(
+      "git_checkpoint_groups",
+      { worktree: fixture.repo },
+    );
+    const restoreMessage = app().checkpoints().message ?? "";
+    await check(
+      "a confirmed restore recovers captured content and keeps a safety ref",
+      restoredDisk.startsWith(fixture.editedA) &&
+        afterRestoreGroups.safety.length === 1 &&
+        restoreMessage.includes("safety ref") &&
+        restoreMessage.includes("not a Git-state undo"),
+      `disk recovered ${restoredDisk.startsWith(fixture.editedA)}; safety ${afterRestoreGroups.safety.length}; message ${restoreMessage.slice(0, 80)}`,
+    );
+    await run.sync("checkpoints-panel-restored", {
+      safety: afterRestoreGroups.safety.length,
+      disk: restoredDisk.length,
+    });
+
+    // 7. The safety ref recovers the content the restore overwrote, and says so
+    //    without claiming a Git-state undo.
+    const safetyRef = afterRestoreGroups.safety[0]?.ref;
+    if (!safetyRef) throw new Error("the restore kept no safety ref");
+    await app().checkpoints().requestRestore(safetyRef);
+    await run.waitFor(
+      () => app().checkpoints().pending !== null,
+      "the safety-ref preflight",
+      20_000,
+    );
+    await app()
+      .checkpoints()
+      .confirm({
+        unsavedBuffers: [fileATab],
+        activeWork: [],
+        force: false,
+      });
+    await run.waitFor(
+      () =>
+        app().checkpoints().pending === null &&
+        (app().checkpoints().message ?? "").includes("content was recovered"),
+      "the content recovery",
+      20_000,
+    );
+    let recoveredDisk = await readFile(fixture.fileA);
+    const recoveryDeadline = performance.now() + 10_000;
+    while (
+      !recoveredDisk.startsWith(externalEdit) &&
+      performance.now() < recoveryDeadline
+    ) {
+      await pause(150);
+      recoveredDisk = await readFile(fixture.fileA);
+    }
+    await check(
+      "the safety ref recovers content without claiming a Git-state undo",
+      recoveredDisk.startsWith(externalEdit) &&
+        (app().checkpoints().message ?? "").includes(
+          "staging is not restored",
+        ) &&
+        (await headSha()) === headBefore,
+      `content recovered ${recoveredDisk.startsWith(externalEdit)}; head ${(await headSha()) === headBefore}`,
+    );
+    await run.sync("checkpoints-panel-recovered", {
+      staged: (await status()).changedFiles
+        .filter((file) => file.staged)
+        .map((file) => file.path),
+    });
+
+    // 8. Explicit deletion through the panel removes only the named ref and
+    //    never promises reclaimed bytes.
+    await app().checkpoints().cleanup(panelCheckpoint.ref);
+    await run.waitFor(
+      () => (app().checkpoints().groups?.manual ?? 0) === 1,
+      "the panel cleanup",
+      20_000,
+    );
+    await check(
+      "panel cleanup deletes the named ref and keeps the shared-object caution",
+      (app().checkpoints().groups?.manual ?? 0) === 1 &&
+        (app().checkpoints().message ?? "").includes("shared") &&
+        (await headSha()) === headBefore,
+      `manual ${app().checkpoints().groups?.manual ?? 0}; message ${(app().checkpoints().message ?? "").slice(0, 60)}`,
+    );
+    await run.sync("checkpoints-panel-cleaned", {
+      remaining: app().checkpoints().groups?.manual ?? null,
     });
 
     const pass = steps.every((step) => step.ok);

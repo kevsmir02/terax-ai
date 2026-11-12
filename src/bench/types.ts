@@ -1,4 +1,5 @@
 import type { QuitPhase } from "@/modules/shutdown";
+import type { CheckpointBridgePending } from "@/modules/source-control/checkpointBridge";
 import type { DestructiveGitBridgePending } from "@/modules/source-control/destructiveGitBridge";
 import type { Tab } from "@/modules/tabs";
 import type { WorktreeBridge } from "@/modules/worktrees/worktreeBridge";
@@ -66,6 +67,27 @@ export type BenchAppApi = {
     busy: boolean;
     pending: DestructiveGitBridgePending | null;
     requestDiscard: (paths: string[]) => Promise<void>;
+    confirm: (confirmation: {
+      unsavedBuffers: number[];
+      activeWork: number[];
+      force: boolean;
+    }) => Promise<void>;
+    cancel: () => void;
+  };
+  /** Drives the Checkpoints panel, its native preflight and shared restore guard. */
+  checkpoints: () => {
+    mounted: boolean;
+    ready: boolean;
+    busy: boolean;
+    groups: { manual: number; safety: number; turns: number } | null;
+    pending: CheckpointBridgePending | null;
+    error: string | null;
+    message: string | null;
+    open: () => void;
+    close: () => void;
+    create: (name: string | null) => Promise<void>;
+    requestRestore: (ref: string) => Promise<void>;
+    cleanup: (ref: string) => Promise<void>;
     confirm: (confirmation: {
       unsavedBuffers: number[];
       activeWork: number[];

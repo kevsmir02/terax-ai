@@ -479,3 +479,59 @@ describe("destructive Git guard", () => {
     await first;
   });
 });
+
+describe("checkpoint restore through the shared guard", () => {
+  const previewFingerprint = "native-preview";
+  const restore: DestructiveAction = {
+    kind: "restore",
+    repoRoot: REPO,
+    worktreeRoot: WT,
+    ref: "refs/terax-workspace/manual-checkpoints/abc",
+    paths: ["src/a.ts"],
+    previewFingerprint,
+  };
+
+  it("names only the paths the native preflight will change", async () => {
+    const plan = await assess(restore, {
+      status: status([
+        { path: "src/a.ts", staged: true, unstaged: true },
+        { path: "src/unrelated.ts", unstaged: true },
+      ]),
+    });
+    expect(plan.affected.map((path) => path.path)).toEqual(["src/a.ts"]);
+    expect(plan.fingerprint).toContain(previewFingerprint);
+    expect(destructivePlanMessage(plan)).toContain("src/a.ts");
+    expect(destructivePlanMessage(plan)).not.toContain("src/unrelated.ts");
+  });
+
+  it("still blocks a dirty buffer anywhere in the worktree a restore can reach", async () => {
+    const plan = await assess(restore, {
+      status: status([{ path: "src/a.ts", unstaged: true }]),
+      usage: usage({
+        buffers: [buffer({ path: `${WT}/src/other.ts` })],
+      }),
+    });
+    expect(plan.blockers).toHaveLength(1);
+    expect(plan.blockers[0]?.kind).toBe("unsavedBuffer");
+    expect(plan.requiresAcknowledgement.unsavedBuffers).toBe(true);
+  });
+
+  it("binds the confirmation to the native preview fingerprint", async () => {
+    let current = restore;
+    const guard = createDestructiveGitGuard({
+      inspect: async () =>
+        assess(current, {
+          status: status([{ path: "src/a.ts", unstaged: true }]),
+        }),
+      mutate: async () => {},
+    });
+    const plan = await guard.request(restore);
+    // A native re-preview that changed the fingerprint is a different plan:
+    // the old confirmation is stale instead of silently restoring.
+    current = { ...restore, previewFingerprint: "new" };
+    const result = await guard.confirm({
+      fingerprint: plan?.fingerprint ?? "",
+    });
+    expect(result.status).toBe("stale");
+  });
+});

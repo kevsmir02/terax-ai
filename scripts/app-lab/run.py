@@ -42,7 +42,9 @@ Scenarios (`--scenario`):
                  unacknowledged plans are refused, a confirmed discard still restores its file
   checkpoints    Linux manual-checkpoint seam: two same-named captures keep distinct identities,
                  limits/exclusions are disclosed, inspection lists captured paths, explicit cleanup
-                 removes only the named ref, and HEAD/the index/working files never move
+                 removes only the named ref, and HEAD/the index/working files never move; then the
+                 visible panel preflights, refuses an unacknowledged restore, restores captured
+                 content, recovers it from the safety ref and deletes one named ref
   worktree       Linux worktree seam: the Source Control dialog creates a worktree with a new
                  branch and an ignored file, checks derived access, opens it as its own Space, and
                  refuses an unknown start point, a file target, a non-empty target and a branch

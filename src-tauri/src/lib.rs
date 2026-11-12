@@ -360,6 +360,8 @@ pub fn run() {
             git::commands_review::git_checkpoint_groups,
             git::commands_review::git_checkpoint_inspect,
             git::commands_review::git_checkpoint_cleanup,
+            git::commands_review::git_checkpoint_manual_restore_preview,
+            git::commands_review::git_checkpoint_manual_restore,
             git::commands_review::git_branch_create,
             git::commands_review::git_branch_rename,
             git::commands_review::git_upstream_info,

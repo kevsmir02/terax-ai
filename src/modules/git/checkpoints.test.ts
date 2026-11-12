@@ -64,6 +64,38 @@ describe("manual checkpoint api", () => {
       workspace,
     });
   });
+
+  it("previews a restore and binds the confirmation to its fingerprint", async () => {
+    await git.checkpointRestorePreview(
+      "/wt",
+      "refs/terax-workspace/manual-checkpoints/abc",
+    );
+    expect(mocks.invoke).toHaveBeenLastCalledWith(
+      "git_checkpoint_manual_restore_preview",
+      {
+        worktree: "/wt",
+        reference: "refs/terax-workspace/manual-checkpoints/abc",
+        workspace,
+      },
+    );
+
+    await git.checkpointRestoreManual(
+      "/wt",
+      "refs/terax-workspace/manual-checkpoints/abc",
+      "fingerprint",
+      true,
+    );
+    expect(mocks.invoke).toHaveBeenLastCalledWith(
+      "git_checkpoint_manual_restore",
+      {
+        worktree: "/wt",
+        reference: "refs/terax-workspace/manual-checkpoints/abc",
+        fingerprint: "fingerprint",
+        force: true,
+        workspace,
+      },
+    );
+  });
 });
 
 describe("cross-language checkpoint contracts", () => {
