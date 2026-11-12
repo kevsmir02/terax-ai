@@ -393,7 +393,8 @@ def main() -> int:
     if args.recompute:
         for path in args.recompute:
             stored = app_report.load(path)
-            if is_linux_report(stored):
+            stored.pop("metricsError", None)
+            if linux_report.is_linux_report(stored):
                 stored["metrics"] = linux_report.round_metrics(linux_report.compute_metrics(stored))
                 stored["humanSummary"] = linux_report.summarize(stored)
             else:
@@ -405,7 +406,7 @@ def main() -> int:
     if args.compare and args.candidate:
         reports = [app_report.load(p) for p in args.compare]
         candidates = [app_report.load(p) for p in args.candidate]
-        if is_linux_report(reports[0]):
+        if linux_report.is_linux_report(reports[0]):
             print(linux_report.compare(reports, candidates, args.compare_format))
         else:
             print(app_report.compare(reports, candidates))
@@ -815,6 +816,7 @@ def scenario_json_linux(args, file: Path | None, first_line: str | None, workspa
             raise SystemExit("node is required for the streaming terminal fixture")
         stress = args.scenario == "stress"
         scenario.update({
+            "agentCommand": f"exec {node} {HERE / 'agent-sim.mjs'}",
             "workspace": str(workspace),
             "files": fixtures["files"],
             "closeFile": fixtures["closeFile"],
@@ -998,12 +1000,23 @@ def prepare_fixtures(workspace: Path, stress: bool) -> dict:
 
 
 class FixtureServer:
-    """Serves the fixture directory on 127.0.0.1 (the active preview loads a local URL)."""
+    """Serves the fixture directory on 127.0.0.1 and records what was actually fetched.
+
+    The request log is evidence that the active preview loaded the local HTML and decoded the
+    PNG; the runner does not pretend to inspect the rendered pixels.
+    """
 
     def __init__(self, directory: Path):
+        self.requests: list[str] = []
+        outer = self
+
         class Handler(http.server.SimpleHTTPRequestHandler):
             def log_message(self, *_args):  # keep the run log clean
                 pass
+
+            def do_GET(self):  # noqa: N802 - http.server's spelling
+                outer.requests.append(self.path)
+                super().do_GET()
 
         handler = functools.partial(Handler, directory=str(directory))
         self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -1016,6 +1029,26 @@ class FixtureServer:
     def close(self) -> None:
         self.httpd.shutdown()
         self.httpd.server_close()
+
+
+def toolchains() -> dict:
+    """The compilers/runtimes a report was built with (recorded, never asserted)."""
+    def version(*command: str) -> str:
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        return (result.stdout or result.stderr).strip().splitlines()[0] if result.returncode == 0 and (result.stdout or result.stderr) else ""
+
+    return {
+        "rustc": version("rustc", "-V"),
+        "cargo": version("cargo", "-V"),
+        "node": version("node", "--version"),
+        "pnpm": version("pnpm", "--version"),
+        "python": platform.python_version(),
+        "vite": version("node", "node_modules/vite/bin/vite.js", "--version"),
+        "cc": version("cc", "--version"),
+    }
 
 
 def package_sizes(binary: Path, output: Path) -> dict:
@@ -1132,7 +1165,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         "sourceRevision": revision.stdout.strip() if has_git else args.revision,
         "sourceTree": str(source),
         "platform": platform.platform(),
-        "environment": linux_profile.host_stack(),
+        "environment": {**linux_profile.host_stack(), "toolchains": toolchains()},
         "isolation": {
             "identifier": args.identifier,
             "home": str(home),
@@ -1242,6 +1275,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             except subprocess.TimeoutExpired:
                 pass
         if fixture_server is not None:
+            manifest["environment"]["fixtureRequests"] = sorted(set(fixture_server.requests))
             fixture_server.close()
         server.httpd.shutdown()
         log.close()
@@ -1398,7 +1432,7 @@ def run_linux_startup(args, binary: Path, source: Path, output: Path) -> int:
         "sourceRevision": revision.stdout.strip() if has_git else args.revision,
         "sourceTree": str(source),
         "platform": platform.platform(),
-        "environment": linux_profile.host_stack(),
+        "environment": {**linux_profile.host_stack(), "toolchains": toolchains()},
         "appBinarySha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
         "qualification": {"qualified": True, "failures": [], "advisories": []},
         "warnings": [],

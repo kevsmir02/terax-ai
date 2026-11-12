@@ -1147,7 +1147,8 @@ async function resourceScenario(
 
   const panes = app().tabs.reduce((sum, tab) => sum + paneLeaves(tab), 0);
   const layout = {
-    spaces: app().spaces.length,
+    spaces: new Set(app().tabs.map((tab) => tab.spaceId)).size,
+    knownSpaces: app().spaces.length,
     panes,
     editors: editorTabs.length,
     agents: agentsBuilt.length,

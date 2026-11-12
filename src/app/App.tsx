@@ -1289,7 +1289,7 @@ export default function App() {
               readBuffer={(leafId, maxLines) =>
                 terminalRefs.current.get(leafId)?.getBuffer(maxLines) ?? null
               }
-              spaces={spaceList.map(({ id, name }) => ({ id, name }))}
+              spaces={useSpaces.getState().spaces.map(({ id, name }) => ({ id, name }))}
               activeSpaceId={activeSpaceId}
               createSpace={(name, root) =>
                 useSpaces.getState().create({ name, root }).id

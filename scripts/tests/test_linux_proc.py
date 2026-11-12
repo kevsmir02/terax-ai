@@ -234,6 +234,26 @@ class SampleTest(unittest.TestCase):
         self.assertEqual(found["cpu_pct_app_total"], 25.0)
         self.assertEqual(found["cpu_pct_total"], 75.0)
 
+    def test_cpu_percent_is_a_mean_over_the_timeline_not_a_sum_of_intervals(self):
+        # host used 1 CPU-second over 3 s in two intervals: 33.3% of one core, not 2 x 50%.
+        series = [
+            {"tMonoNs": 0, "byRole": {"host": {"cpuSeconds": 0.0}}},
+            {"tMonoNs": 2_000_000_000, "byRole": {"host": {"cpuSeconds": 1.0}}},
+            {"tMonoNs": 3_000_000_000, "byRole": {"host": {"cpuSeconds": 1.0}}},
+        ]
+        found = linux_proc.rates(series)
+        self.assertAlmostEqual(found["cpu_pct"]["host"], 100 / 3, places=3)
+        self.assertEqual(found["seconds"], 3.0)
+
+    def test_a_process_that_exits_between_entries_does_not_subtract_cpu(self):
+        series = [
+            {"tMonoNs": 0, "byRole": {"host": {"cpuSeconds": 0.0}, "gpu": {"cpuSeconds": 0.5}}},
+            {"tMonoNs": 1_000_000_000, "byRole": {"host": {"cpuSeconds": 1.0}}},
+        ]
+        found = linux_proc.rates(series)
+        self.assertEqual(found["cpu_pct"]["host"], 100.0)
+        self.assertNotIn("gpu", found["cpu_pct"])
+
 
 class PollerTest(unittest.TestCase):
     def test_one_sample_entry_has_no_pid_lists_and_keeps_roles(self):

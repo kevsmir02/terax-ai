@@ -457,7 +457,7 @@ def rates(series: list[dict]) -> dict:
     `cpu_pct` is percent of one core (the app-lab convention); `app_total` excludes workload, so
     an external agent's CPU is never charged to the application.
     """
-    cpu: dict[str, float] = {}
+    cpu_seconds: dict[str, float] = {}
     spans: list[float] = []
     for before, after in zip(series, series[1:]):
         seconds = (after["tMonoNs"] - before["tMonoNs"]) / 1e9
@@ -469,8 +469,14 @@ def rates(series: list[dict]) -> dict:
             first = (before.get("byRole") or {}).get(role) or {}
             second = (after.get("byRole") or {}).get(role) or {}
             delta = float(second.get("cpuSeconds", 0)) - float(first.get("cpuSeconds", 0))
-            if delta:
-                cpu[role] = cpu.get(role, 0.0) + 100.0 * delta / seconds
+            # A process that exited between two entries has no second value; its last delta was
+            # already counted. Never treat a missing role as zero CPU going backwards.
+            if delta > 0:
+                cpu_seconds[role] = cpu_seconds.get(role, 0.0) + delta
+    span = sum(spans)
+    # Percent of one core averaged over the whole timeline (100 x seconds of CPU / seconds of
+    # wall time), not the sum of per-interval percentages.
+    cpu = {role: (100.0 * seconds / span if span else 0.0) for role, seconds in cpu_seconds.items()}
     total = sum(cpu.get(role, 0.0) for role in APP_ROLES)
     return {
         "seconds": round(sum(spans), 3),

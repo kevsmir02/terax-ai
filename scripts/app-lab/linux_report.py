@@ -40,7 +40,7 @@ MIB = linux_proc.MIB
 
 # Phases every summary prints, in order (after them, any phase present in the report).
 KEY_PHASES = (
-    "booted", "setup", "space-a", "space-b", "baseline", "measure-start", "stream-start",
+    "blank", "booted", "setup", "space-a", "space-b", "baseline", "measure-start", "stream-start",
     "stream-end", "measure-end", "cycles-complete", "end+10s", "end+30s",
 )
 # Roles summarised as columns; unknown roles are appended by the table helper.
@@ -332,9 +332,14 @@ def summarize(report: dict) -> str:
         f"  source {str(report.get('sourceRevision'))[:12]}  profile {config.get('profile')}  "
         f"qualified: {(report.get('qualification') or {}).get('qualified', 'n/a')}"
     )
-    workload = report.get("workload") or internals(report).get("workload") or {}
+    workload = report.get("workload") or internals(report).get("workload") or ""
+    if isinstance(workload, dict):
+        workload = workload.get("description", "")
     if workload:
-        out.append(f"  workload: {workload.get('description', '-')}")
+        out.append(f"  workload: {workload}")
+    roles = report.get("linux", {}).get("roles") or []
+    if roles:
+        out.append(f"  process roles the sampler knows: {', '.join(roles)}")
     if internals(report).get("workloadFiles"):
         out.append(f"  fixtures: {', '.join(internals(report)['workloadFiles'])}")
     out.append("")
