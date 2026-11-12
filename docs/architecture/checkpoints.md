@@ -15,7 +15,7 @@ workspace ticket is the manual path below.
 | --- | --- | --- |
 | Manual | `refs/<namespace>/manual-checkpoints/<id>` | 32 random hex digits |
 | Turn (retained) | `refs/<namespace>/checkpoints/<task>/<turn>` | task id + turn |
-| Safety | `refs/<namespace>/checkpoints/<task>/prerestore-<millis>` | task id + millis |
+| Safety | `refs/<namespace>/checkpoints/<id>/prerestore-<millis>` | manual id or task id + millis |
 
 `<namespace>` is the fork namespace (`terax-workspace`), never upstream's `refs/terax`: refs live
 in the user's repository and a shared namespace would let one installation list, restore or
@@ -117,6 +117,55 @@ dialog can still list and delete this worktree's refs after the directory itself
 never infers "clean everything": the caller passes the exact refs the preflight attributed to the
 worktree it is removing, and another worktree's refs stay refused (`another-worktree`).
 
+## Restore with preflight and a required safety capture
+
+`git_checkpoint_manual_restore_preview` is the read-only preflight. It names:
+
+- every affected path with its effect (`written` or `removed`), its status against the working
+  tree, and whether the real index has a staged entry for it;
+- the staging effect: restoring resets the index entries of touched paths to HEAD, so a staged
+  copy is not preserved by the safety capture; affected staged paths refuse an unforced restore;
+- the HEAD effect: restoring never moves HEAD, and `headMoved` says whether HEAD moved since the
+  capture (commits are never undone);
+- ignored-file protection: a path the checkpoint holds but the snapshot excludes stays untouched
+  and is reported as `ignored-file-in-the-way`;
+- the exclusions and the non-atomic nature of the capture, and that an independent writer is
+  outside the application's control;
+- a fingerprint of the target, the current snapshot, HEAD, every affected path and the staged
+  sample of them. The restore is bound to it.
+
+`git_checkpoint_manual_restore` takes that fingerprint and requires a fresh decision. It refuses
+before changing anything when:
+
+- the fingerprint no longer matches the working tree (`stalePreview`; retry from a fresh preview);
+- affected paths are staged (`stagedAffectedPaths`) unless `force` explicitly accepts that the
+  index state is not captured;
+- the staged-path probe was truncated, so staging cannot be judged;
+- the required safety capture failed, was inconsistent, or could not read an affected path;
+- the safety ref could not be published.
+
+The last two refusals apply **even with `force`**: the safety capture is a precondition, not a
+best-effort extra. The capture is the working tree as it is immediately before mutation, published
+under `refs/<namespace>/checkpoints/<manual id>/prerestore-<millis>`, and it stays until an explicit
+deletion. Restoring that safety ref later recovers content; it does not recreate the index,
+branches or HEAD, and the result says `contentOnly` instead of claiming a Git-state undo.
+
+Mutation is sequential and disclosed as non-atomic. A failure after it starts (a write step, or the
+index sync) returns a partial report: what was removed and written is listed, the safety ref is
+still present, the result says `partial`, and `retryRequiresFreshPreview` is true. Repeating the old
+fingerprint is refused, so a retry always starts from a fresh preflight. Files are written from a
+private index; HEAD is never moved.
+
+## The visible panel
+
+The Source Control header opens the Checkpoints panel: create with an optional name, list manual,
+safety and retained turn groups, inspect captured paths and the stored capture record, restore a
+manual checkpoint or a safety ref through the shared destructive-Git guard, and delete exactly the
+named ref. The panel shows capture incompleteness, ignored/staged counts and storage pressure, and
+repeats that a deleted ref removes reachability, not a promised number of bytes. Retained per-turn
+checkpoints are listed with their count and keep their own retained restore path; they are not
+restored from this panel.
+
 ## Seams and tests
 
 - `src-tauri/src/modules/git/manual_checkpoint_tests.rs` — real scratch repositories: capture
@@ -124,16 +173,27 @@ worktree it is removing, and another worktree's refs stay refused (`another-work
   refusals, inspection and head movement, explicit cleanup with unrelated-ref preservation and no
   object collection, submodule/ignored/staged disclosure, concurrent-writer instability, storage
   shape and name validation.
+- `src-tauri/src/modules/git/manual_restore_tests.rs` — real scratch repositories: the preview
+  (including staging and HEAD effects and ignored-file protection), a staged-only refusal before
+  mutation, a forced staged effect with its safety ref, failed/incomplete required capture and
+  failed ref publication with no file or index change, a later partial failure with a retained
+  safety ref and a fresh-preview retry, content recovery from the safety ref without a Git-state
+  undo claim, and another worktree's ref being refused.
 - `src/modules/git/checkpoints.test.ts` — command argument shapes, the Rust `RecoveryKind` enum
   parsed from its source, command registration, and the absence of a reclaimed-bytes field.
-- `python3 scripts/app-lab/run.py --scenario checkpoints` — the real Linux app: create twice with
-  the same name, list, inspect, clean up, and observe HEAD/index/files unchanged through the
-  native commands.
+- `src/modules/git/restore.test.ts` — the preflight/result copy: staged resolution, stale preview,
+  partial failure with the safety ref and fresh-preview rule, and content-only recovery wording.
+- `python3 scripts/app-lab/run.py --scenario checkpoints` — the real Linux app: native
+  create/list/inspect/cleanup with HEAD/index/files unchanged, then the visible panel's create,
+  inspect, preflight, unacknowledged refusal, confirmed restore, safety-ref content recovery and
+  explicit deletion.
 
 ## Not claimed
 
-- No UI panel is added here; the commands and types are the seam the checkpoint controls use. The
-  restore preflight and its safety refs are issue #24.
+- Restore is not atomic and is not a full Git-state undo: ignored files, submodule contents and
+  staging are not captured, HEAD is never moved, and an independent writer is not excluded.
+- A continuously changing working tree can make the required safety capture fail, in which case the
+  restore refuses rather than taking a snapshot it cannot trust.
 - No automatic per-turn checkpoints, no automatic retention deletion, no archival restoration after
   a worktree is deleted (deferred). Deleting the refs is the only way past the removal refusal.
 - No full-backup or atomic-snapshot claim: ignored files, submodule contents and staging state are

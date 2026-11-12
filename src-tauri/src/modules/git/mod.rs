@@ -2,6 +2,8 @@ pub mod branch;
 pub mod checkpoint;
 #[cfg(test)]
 mod manual_checkpoint_tests;
+#[cfg(test)]
+mod manual_restore_tests;
 pub mod commands;
 pub mod commands_review;
 pub mod diff;

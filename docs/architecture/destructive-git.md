@@ -7,17 +7,20 @@ mutates anything, and what it deliberately cannot promise.
 
 ## Retained actions and their contract
 
-The Source Control panel performs two destructive actions today:
+The Source Control panel performs three destructive actions today:
 
 - discarding working-tree changes (`git_discard` via `Discard`),
-- switching branches (`git_checkout_branch` via the branch dropdown).
+- switching branches (`git_checkout_branch` via the branch dropdown),
+- restoring captured checkpoint content (`git_checkpoint_manual_restore` via the Checkpoints panel).
 
-The same plan/guard types cover `restore` (checkpoint restore), `worktreeRemove` and `revert`
-(hunk revert). `worktreeRemove` is wired to `createDestructiveGitGuard` by the worktree removal
-dialog (see [`worktrees.md`](worktrees.md)): the dialog supplies the plan (dirty buffers and
-terminals in every Space), the guard rechecks the fingerprint and holds the mutation scope, and
-the native removal decides the on-disk blockers. Nothing here adds automatic commits or pushes,
-and the diff/history/hunk review surface is unchanged.
+The same plan/guard types also cover `worktreeRemove` and `revert` (hunk revert). `worktreeRemove`
+is wired to `createDestructiveGitGuard` by the worktree removal dialog (see
+[`worktrees.md`](worktrees.md)): the dialog supplies the plan (dirty buffers and terminals in
+every Space), the guard rechecks the fingerprint and holds the mutation scope, and the native
+removal decides the on-disk blockers. Nothing here adds automatic commits or pushes, and the
+diff/history/hunk review surface is unchanged. A restore plan names only the paths the native
+preflight says it will change, while a dirty buffer anywhere in the worktree remains a blocker
+because the checkpoint's diff can reach any captured path.
 
 ## Before mutation
 
@@ -68,9 +71,11 @@ The scope ends in `finally`, so a failed native command does not leave the app f
   active work, not as idle.
 - The plan uses the app's own view of open buffers. A dirty file that no app buffer holds is an
   on-disk change, and native blockers (dirty/untracked/ignored) cover what Git itself would drop.
-- Force on checkpoint restore still cannot bypass the native "files changed since the latest
-  checkpoint" refusal or skip its safety ref; force on worktree removal still cannot remove a
-  locked worktree.
+- Force on checkpoint restore accepts the staged-index effect and the guard's on-disk blockers, but
+  it cannot skip the required safety capture or its ref publication, and it never clears a dirty
+  buffer acknowledgement. The native restore also refuses a preview whose fingerprint no longer
+  matches the working tree, so a partial failure is retried only from a fresh preview. Force on
+  worktree removal still cannot remove a locked worktree.
 
 ## Test seams
 
@@ -84,6 +89,13 @@ The scope ends in `finally`, so a failed native command does not leave the app f
   unchanged; force does not remove a locked worktree.
 - `src/modules/worktrees/WorktreeRemoveDialog.test.tsx` — the removal dialog's cross-Space
   acknowledgements and stale/refusal states, sharing the same plan and guard.
+- `src-tauri/src/modules/git/manual_restore_tests.rs` — real scratch repositories: restore preview,
+  staged-only refusal, forced staged effect, failed/incomplete safety capture, failed ref
+  publication, partial failure with retained safety ref and fresh-preview retry, and content
+  recovery from the safety ref.
 - `python3 scripts/app-lab/run.py --scenario git` — the real Linux app: a dirty buffer blocks a
   panel discard, an unacknowledged confirmation and a plan that went stale are refused with the
   file/index unchanged, and a deliberately confirmed discard still restores its file.
+- `python3 scripts/app-lab/run.py --scenario checkpoints` — the real Linux app: the visible
+  Checkpoints panel creates, lists, inspects, preflights, restores, recovers content from its safety
+  ref and deletes one named ref through the same guard.

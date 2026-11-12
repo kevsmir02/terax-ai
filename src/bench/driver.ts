@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { assetScopes } from "@/lib/assetScopes";
 import { setWindowVibrancy } from "@/modules/settings/store";
+import { mediaKind, mediaMime } from "@/modules/preview/lib/mediaFormats";
+import { useMediaPlaybackStore } from "@/modules/preview/lib/mediaPlayback";
 import {
   PDF_PAGE_LIMIT_BYTES,
   pdfPageDecision,
@@ -4356,6 +4358,676 @@ async function imagesScenario(
 }
 
 /**
+ * The media acceptance scenario through the real application.
+ *
+ * Files are opened through the app's own file-tab planner; the surface probes
+ * the real container and mounts a native media element over the bounded
+ * `asset:` delivery. Support is recorded from the element's own
+ * `loadedmetadata` / `error` events, never from the extension, and
+ * `canPlayType` is recorded beside the real outcome as the hint it is.
+ *
+ * The scenario also:
+ * - reads the native delivery log, so "playback and seeking issued ranged
+ *   requests" is observed instead of assumed;
+ * - plays (muted; WebKitGTK has no input injection), hides and returns to the
+ *   tab, and asserts hidden playback stopped without auto-resuming;
+ * - closes while playing and asserts the element, playback slot and tab-owned
+ *   grant are gone;
+ * - refuses a disabled/unmeasured container, a corrupt header, a name/container
+ *   mismatch and a codec the element cannot decode, each with an actionable
+ *   state rather than a blank player.
+ */
+async function mediaScenario(
+  run: ScenarioRun,
+): Promise<Record<string, unknown>> {
+  const { scenario } = run;
+  const fixtures = scenario.media;
+  if (!fixtures)
+    throw new Error(
+      "the media scenario needs fixture paths (scripts/app-lab/run.py creates them)",
+    );
+  const steps: WorkflowStep[] = [];
+  const manual: { name: string; detail: string }[] = [];
+  const formats: Record<string, unknown> = {};
+  const check = async (name: string, ok: boolean, detail: string) => {
+    steps.push({ name, ok, detail });
+    await run.log(`[media] ${ok ? "PASS" : "FAIL"} ${name}: ${detail}`);
+  };
+  const failed = async (name: string, detail: string) => {
+    await check(name, false, detail);
+    return `media step failed: ${name}: ${detail}`;
+  };
+
+  /** The visible media surface, skipping the aria-hidden wrapper of an inactive tab. */
+  const surface = () =>
+    [...document.querySelectorAll<HTMLElement>("[data-media-viewer]")].find(
+      (element) => !element.closest('[aria-hidden="true"]'),
+    ) ?? null;
+  const surfaceState = () => surface()?.dataset.mediaState ?? null;
+  const player = () =>
+    surface()?.querySelector<HTMLMediaElement>("[data-media-player]") ??
+    document.querySelector<HTMLMediaElement>("[data-media-player]");
+  const sessions = () => useMediaPlaybackStore.getState().sessions;
+  const waitForState = async (
+    state: string,
+    what: string,
+    timeoutMs = 30_000,
+  ) => {
+    try {
+      await run.waitFor(() => surfaceState() === state, what, timeoutMs);
+    } catch (error) {
+      const text = surface()?.textContent ?? "(no media surface)";
+      throw new Error(
+        `${String(error)}; state=${surfaceState() ?? "none"}; surface=${text.slice(0, 240)}`,
+      );
+    }
+  };
+  const deliveryLog = (clear = false) =>
+    invoke<DeliveryRecord[]>("asset_delivery_log", { clear });
+
+  const CONTAINERS = {
+    mp4: "mp4",
+    m4a: "m4a",
+    mov: "mov",
+    webm: "webm",
+    ogg: "ogg",
+    wav: "wav",
+    mp3: "mp3",
+    flac: "flac",
+    aac: "aac",
+  } as const;
+  type FixtureKey = keyof typeof CONTAINERS;
+
+  try {
+    const first = await run.booted();
+
+    // Diagnostic evidence for the report: whether the element or the delivery
+    // is what failed, and what the engine says it can play (a hint only).
+    const recordMediaEvent = (event: Event) => {
+      const target = event.target as HTMLMediaElement | null;
+      if (target?.tagName !== "VIDEO" && target?.tagName !== "AUDIO") return;
+      const detail =
+        event.type === "error"
+          ? `error code=${target.error?.code ?? "none"} message=${target.error?.message ?? "none"}`
+          : event.type;
+      void run.log(
+        `[media] element ${target.tagName} ${detail} src=${target.currentSrc || target.src}`,
+      );
+    };
+    for (const type of [
+      "loadedmetadata",
+      "error",
+      "play",
+      "pause",
+      "emptied",
+      "abort",
+    ]) {
+      document.addEventListener(type, recordMediaEvent, true);
+    }
+
+    const canPlay = [
+      "audio/wav",
+      "audio/mpeg",
+      "audio/flac",
+      "video/webm",
+      "video/mp4",
+    ]
+      .map((type) => {
+        const element = document.createElement(
+          type.startsWith("audio") ? "audio" : "video",
+        );
+        return `${type}=${JSON.stringify(element.canPlayType(type))}`;
+      })
+      .join(" ");
+    // A Blob-backed WAV isolates the decoder from the asset delivery path.
+    const blobWav = await (async () => {
+      const samples = 800;
+      const buffer = new ArrayBuffer(44 + samples * 2);
+      const view = new DataView(buffer);
+      const write = (offset: number, text: string) => {
+        for (let index = 0; index < text.length; index += 1)
+          view.setUint8(offset + index, text.charCodeAt(index));
+      };
+      write(0, "RIFF");
+      view.setUint32(4, 36 + samples * 2, true);
+      write(8, "WAVEfmt ");
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, 1, true);
+      view.setUint32(24, 8000, true);
+      view.setUint32(28, 16000, true);
+      view.setUint16(32, 2, true);
+      view.setUint16(34, 16, true);
+      write(36, "data");
+      view.setUint32(40, samples * 2, true);
+      const url = URL.createObjectURL(
+        new Blob([buffer], { type: "audio/wav" }),
+      );
+      const audio = document.createElement("audio");
+      audio.src = url;
+      audio.preload = "metadata";
+      const outcome = await new Promise<string>((resolve) => {
+        const timer = setTimeout(() => resolve("timeout"), 5000);
+        audio.onloadedmetadata = () => {
+          clearTimeout(timer);
+          resolve(`loaded duration=${audio.duration}`);
+        };
+        audio.onerror = () => {
+          clearTimeout(timer);
+          resolve(`error code=${audio.error?.code ?? "none"}`);
+        };
+      });
+      URL.revokeObjectURL(url);
+      return outcome;
+    })();
+    await run.log(`[media] canPlayType hints: ${canPlay}`);
+    await run.log(`[media] blob-backed WAV: ${blobWav}`);
+
+    const open = async (path: string) => {
+      const tabId = run.app().openFileTab(path);
+      run.select(tabId);
+      await run
+        .waitFor(
+          () => run.app().tabs.some((tab) => tab.id === tabId),
+          `the ${path.split("/").pop()} tab`,
+          8000,
+        )
+        .catch(() => {});
+      run.select(tabId);
+      await pause(120);
+      await run.log(
+        `[media] opened ${path.split("/").pop()} as tab ${tabId}; tabs=${run
+          .app()
+          .tabs.map((tab) => `${tab.id}:${tab.kind}`)
+          .join(",")}`,
+      );
+      return tabId;
+    };
+
+    const expectedSupported = new Set(fixtures.expectedSupported);
+    for (const key of fixtures.measured) {
+      const container = CONTAINERS[key as FixtureKey];
+      if (!container)
+        throw new Error(`the media scenario does not know fixture ${key}`);
+      const path = fixtures[key as FixtureKey];
+      const tabId = await open(path);
+      try {
+        await run.waitFor(
+          () => ["ready", "load-error"].includes(surfaceState() ?? ""),
+          `the ${key} playback outcome`,
+          60_000,
+        );
+      } catch (error) {
+        throw new Error(await failed(`${key} measured`, String(error)));
+      }
+      const state = surfaceState();
+      const media = player();
+      // The hint is recorded, never trusted: the element's real outcome is
+      // what decided support (and where it disagrees, the report shows it).
+      const hint = document
+        .createElement(mediaKind(container) === "audio" ? "audio" : "video")
+        .canPlayType(mediaMime(container) ?? "");
+      const duration = media?.duration ?? 0;
+      // ADTS AAC carries no duration header; the element reports 0 while still
+      // loading and playing it. Every other measured container reports one.
+      const durationOk =
+        Number.isFinite(duration) && (duration > 0 || container === "aac");
+      const errorCode = Number(surface()?.dataset.mediaErrorCode ?? Number.NaN);
+      const loaded =
+        state === "ready" &&
+        Boolean(media) &&
+        (media?.readyState ?? 0) >= 1 &&
+        durationOk &&
+        media?.dataset.mediaFormat === container;
+      const failedHonestly =
+        state === "load-error" &&
+        [3, 4].includes(errorCode) &&
+        (surface()?.textContent ?? "").includes("Open externally");
+      const expected = expectedSupported.has(key);
+      const deliveries = (await deliveryLog(false)).filter(
+        (record) => record.ranged,
+      ).length;
+      await check(
+        `${key} measured playback outcome`,
+        expected ? loaded : failedHonestly,
+        `state=${state} expected=${expected ? "playable" : "honest codec error"} ` +
+          `readyState=${media?.readyState} duration=${duration} format=${media?.dataset.mediaFormat} ` +
+          `errorCode=${Number.isNaN(errorCode) ? "none" : errorCode} canPlayType=${JSON.stringify(hint)} ` +
+          `rangedDeliveries=${deliveries} src=${surface()?.dataset.mediaSrc ?? "none"}`,
+      );
+      formats[key] = {
+        container,
+        duration,
+        canPlayType: hint,
+        errorCode: Number.isNaN(errorCode) ? null : errorCode,
+        state,
+      };
+      run.app().closeTab(tabId);
+      await run.waitFor(
+        () => !run.app().tabs.some((tab) => tab.id === tabId),
+        `the ${key} tab to close`,
+        8000,
+      );
+    }
+
+    // Bytes that are WebM but named `.mp4`: the native header probe must win
+    // over the extension.
+    {
+      const tabId = await open(fixtures.mismatch);
+      try {
+        await waitForState("mismatch", "the name/container mismatch notice");
+      } catch (error) {
+        throw new Error(await failed("mismatch reports", String(error)));
+      }
+      const text = surface()?.textContent ?? "";
+      await check(
+        "extension/container mismatch is refused",
+        !player() && text.includes("WebM") && text.includes("MP4"),
+        `${surfaceState()}: ${text.slice(0, 160)}`,
+      );
+      run.app().closeTab(tabId);
+      await run.waitFor(
+        () => !run.app().tabs.some((tab) => tab.id === tabId),
+        "the mismatch tab to close",
+        8000,
+      );
+    }
+
+    // Matroska is routed but this build records no measured playback; the
+    // refusal must explain that instead of mounting a player.
+    {
+      const tabId = await open(fixtures.mkv);
+      await pause(500);
+      const pane = [
+        ...document.querySelectorAll<HTMLElement>(
+          ".cm-editor, [data-media-viewer], [data-image-viewer]",
+        ),
+      ]
+        .map(
+          (element) =>
+            element.dataset.mediaState ??
+            element.dataset.imageState ??
+            element.className.slice(0, 40),
+        )
+        .join("|");
+      const probe = await invoke("fs_media_probe", {
+        path: fixtures.mkv,
+      }).catch((error) => String(error));
+      await run.log(
+        `[media] mkv tab ${tabId}: pane=${pane} probe=${JSON.stringify(probe)}`,
+      );
+      try {
+        await waitForState(
+          "unsupported-format",
+          "the unmeasured-container notice",
+        );
+      } catch (error) {
+        throw new Error(await failed("mkv refused", String(error)));
+      }
+      const text = surface()?.textContent ?? "";
+      await check(
+        "unmeasured container is refused with an explanation",
+        !player() && text.includes("Matroska") && text.includes("not verified"),
+        `${surfaceState()}: ${text.slice(0, 160)}`,
+      );
+      run.app().closeTab(tabId);
+      await run.waitFor(
+        () => !run.app().tabs.some((tab) => tab.id === tabId),
+        "the mkv tab to close",
+        8000,
+      );
+    }
+
+    // A recognized, measured container with a codec this build cannot decode:
+    // the element's own error is the evidence, not the extension. The WAV
+    // container is playable, so this isolates the codec (an unknown format
+    // tag in a valid RIFF header).
+    {
+      const tabId = await open(fixtures.unsupportedCodec);
+      const hint = document.createElement("audio").canPlayType("audio/wav");
+      try {
+        await waitForState("load-error", "the unsupported-codec notice");
+      } catch (error) {
+        throw new Error(
+          await failed("unsupported codec reports", String(error)),
+        );
+      }
+      const text = surface()?.textContent ?? "";
+      await check(
+        "unsupported codec reports an honest error",
+        text.includes("WAV") &&
+          text.toUpperCase().includes("UNKNOWN") &&
+          (text.includes("codec") || text.includes("decode")) &&
+          text.includes("Open externally"),
+        `state=${surfaceState()} canPlayType=${JSON.stringify(hint)} text=${text.slice(0, 200)}`,
+      );
+      formats.unsupportedCodec = {
+        container: "wav",
+        canPlayType: hint,
+        errorCode: Number(surface()?.dataset.mediaErrorCode ?? Number.NaN),
+        state: surfaceState(),
+      };
+      run.app().closeTab(tabId);
+      await run.waitFor(
+        () => !run.app().tabs.some((tab) => tab.id === tabId),
+        "the unsupported-codec tab to close",
+        8000,
+      );
+    }
+
+    // A corrupt container header is refused before an element is mounted.
+    {
+      const tabId = await open(fixtures.corrupt);
+      try {
+        await waitForState("corrupt", "the corrupt-media notice");
+      } catch (error) {
+        throw new Error(await failed("corrupt reports", String(error)));
+      }
+      const text = surface()?.textContent ?? "";
+      await check(
+        "corrupt container reports an honest state",
+        !player() &&
+          text.includes("could not be read") &&
+          text.includes("Retry") &&
+          text.includes("Open externally"),
+        `${surfaceState()}: ${text.slice(0, 160)}`,
+      );
+      run.app().closeTab(tabId);
+      await run.waitFor(
+        () => !run.app().tabs.some((tab) => tab.id === tabId),
+        "the corrupt tab to close",
+        8000,
+      );
+    }
+
+    // Ranges and seeking: fetch a range through the real webview and the real
+    // handler, then let the element seek. The element may buffer the whole
+    // 3.5 MiB fixture in one bounded read (inside the approved 10 MiB ceiling),
+    // so the evidence records what it actually requested rather than assuming
+    // every request is a range.
+    await invoke<DeliveryRecord[]>("asset_delivery_log", { clear: true });
+    const largeTab = await open(fixtures.large);
+    try {
+      await waitForState("ready", "the large WAV surface");
+    } catch (error) {
+      throw new Error(await failed("large media loads", String(error)));
+    }
+    const mediaSrc = surface()?.dataset.mediaSrc;
+    let rangeStatus = 0;
+    let contentRange = "";
+    let acceptRanges = "";
+    let rangeBytes = 0;
+    try {
+      if (!mediaSrc) throw new Error("the surface exposes no delivery URL");
+      const response = await fetch(mediaSrc, {
+        headers: { Range: "bytes=0-1023" },
+      });
+      rangeStatus = response.status;
+      contentRange = response.headers.get("content-range") ?? "";
+      acceptRanges = response.headers.get("accept-ranges") ?? "";
+      rangeBytes = (await response.arrayBuffer()).byteLength;
+    } catch (error) {
+      throw new Error(await failed("range request", String(error)));
+    }
+    await check(
+      "the bounded endpoint serves a real byte range",
+      rangeStatus === 206 &&
+        contentRange.startsWith("bytes 0-1023/") &&
+        acceptRanges === "bytes" &&
+        rangeBytes === 1024,
+      `status=${rangeStatus} contentRange=${JSON.stringify(contentRange)} acceptRanges=${JSON.stringify(acceptRanges)} bytes=${rangeBytes}`,
+    );
+
+    const loaded = await deliveryLog(false);
+    const rangedLoad = loaded.filter((record) => record.ranged);
+    const wholeOverCeiling = loaded.filter(
+      (record) => !record.ranged && record.length > 10 * 1024 * 1024,
+    );
+    const rangedOverChunk = rangedLoad.filter(
+      (record) => record.length > 1024 * 1024,
+    );
+    await check(
+      "media deliveries stay inside the approved bounds",
+      wholeOverCeiling.length === 0 && rangedOverChunk.length === 0,
+      `${rangedLoad.length} ranged, ${loaded.length - rangedLoad.length} whole; ` +
+        `wholeOverCeiling=${wholeOverCeiling.length} rangedOverChunk=${rangedOverChunk.length}; ` +
+        rangedLoad
+          .slice(0, 6)
+          .map((record) => `${record.start}+${record.length}`)
+          .join(" "),
+    );
+
+    const large = player();
+    const seekTarget = (large?.duration ?? 0) * 0.8;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const media = large;
+        if (!media) throw new Error("no media element");
+        const onSeeked = () => {
+          media.removeEventListener("seeked", onSeeked);
+          resolve();
+        };
+        media.addEventListener("seeked", onSeeked);
+        media.currentTime = seekTarget;
+        setTimeout(() => reject(new Error("seek timed out")), 15_000);
+      });
+    } catch (error) {
+      throw new Error(await failed("seek completes", String(error)));
+    }
+    const afterSeek = await deliveryLog(false);
+    const seekRanges = afterSeek.filter(
+      (record) => record.ranged && record.start > 0,
+    );
+    // Informational: a seek served from the element's buffered window needs no
+    // new request. The assertion is the element's real position, not a
+    // request count.
+    await run.log(
+      `[media] seek ${seekTarget.toFixed(2)}s -> ${large?.currentTime}; new mid-file ranges: ${
+        seekRanges.map((record) => record.start).join(",") || "none (buffered)"
+      }`,
+    );
+    await check(
+      "seek reaches the requested position",
+      Math.abs((large?.currentTime ?? 0) - seekTarget) < 1,
+      `currentTime=${large?.currentTime} target=${seekTarget}`,
+    );
+    await check(
+      "the element can seek across the whole asset",
+      Number.isFinite(large?.seekable.end(0) ?? 0) &&
+        Math.abs((large?.seekable.end(0) ?? 0) - (large?.duration ?? 0)) < 1,
+      `seekable=${large?.seekable.length ? `${large.seekable.start(0)}-${large.seekable.end(0)}` : "none"} duration=${large?.duration}`,
+    );
+    run.app().closeTab(largeTab);
+    await run.waitFor(
+      () => !run.app().tabs.some((tab) => tab.id === largeTab),
+      "the large media tab to close",
+      8000,
+    );
+
+    // Playback, hidden pause and no automatic resume.
+    const playTab = await open(fixtures.webm);
+    try {
+      await waitForState("ready", "the WebM surface");
+    } catch (error) {
+      throw new Error(await failed("hidden-tab setup", String(error)));
+    }
+    const video = player();
+    let playbackWorks = false;
+    if (video) {
+      video.muted = true;
+      try {
+        await video.play();
+        await run.waitFor(
+          () => Boolean(video && !video.paused && video.currentTime > 0.1),
+          "playback to start",
+          15_000,
+        );
+        playbackWorks = true;
+      } catch (error) {
+        const message = String(error);
+        manual.push({
+          name: "Start playback from the visible controls",
+          detail:
+            `the harness could not start playback programmatically (${message}); ` +
+            "WebKitGTK has no trusted input injection (ticket 32), so press play " +
+            "by hand and confirm audio/video advances, then switch tabs and " +
+            "confirm it pauses without resuming on return.",
+        });
+      }
+    }
+    if (playbackWorks) {
+      await check(
+        "playback starts and advances",
+        Boolean(video && !video.paused && video.currentTime > 0.1),
+        `currentTime=${video?.currentTime} paused=${video?.paused} sessions=${sessions().length}`,
+      );
+      const before = video?.currentTime ?? 0;
+      run.select(first.tabId);
+      try {
+        await run.waitFor(
+          () => Boolean(video?.paused) && sessions().length === 0,
+          "hidden playback to pause and release its slot",
+          8000,
+        );
+      } catch (error) {
+        throw new Error(await failed("hidden tab pauses", String(error)));
+      }
+      await check(
+        "hidden tab pauses playback and releases its slot",
+        Boolean(video?.paused) && sessions().length === 0,
+        `paused=${video?.paused} currentTime=${video?.currentTime} sessions=${sessions().length}`,
+      );
+      run.select(playTab);
+      await pause(800);
+      await check(
+        "returning to the tab does not auto-resume",
+        Boolean(video?.paused) &&
+          sessions().length === 0 &&
+          Math.abs((video?.currentTime ?? 0) - before) < 1,
+        `paused=${video?.paused} currentTime=${video?.currentTime} before=${before} sessions=${sessions().length}`,
+      );
+      if (video) {
+        video.muted = true;
+        await video.play();
+        await run.waitFor(
+          () => Boolean(video && !video.paused),
+          "explicit playback after returning",
+          15_000,
+        );
+        await check(
+          "explicit play after returning works",
+          Boolean(video && !video.paused),
+          `paused=${video?.paused}`,
+        );
+      }
+    }
+
+    // Closing while playing releases the element, the playback slot and the
+    // tab-owned grant.
+    run.app().closeTab(playTab);
+    try {
+      await run.waitFor(
+        () =>
+          !run.app().tabs.some((tab) => tab.id === playTab) &&
+          !document.querySelector("[data-media-player]") &&
+          sessions().length === 0 &&
+          assetScopes.size === 0,
+        "close to release the element, playback slot and grants",
+        10_000,
+      );
+    } catch (error) {
+      throw new Error(await failed("close releases handles", String(error)));
+    }
+    await check(
+      "close releases the element, playback slot and grants",
+      !document.querySelector("[data-media-player]") &&
+        sessions().length === 0 &&
+        assetScopes.size === 0,
+      `${sessions().length} sessions, ${assetScopes.size} grant scopes`,
+    );
+
+    // Closing during an interrupted load must not leave a slot or grant, and
+    // reopening the same file must recover.
+    {
+      const interrupted = await open(fixtures.large);
+      run.app().closeTab(interrupted);
+      try {
+        await run.waitFor(
+          () =>
+            !run.app().tabs.some((tab) => tab.id === interrupted) &&
+            !document.querySelector("[data-media-player]") &&
+            sessions().length === 0 &&
+            assetScopes.size === 0,
+          "the interrupted load to be released",
+          10_000,
+        );
+      } catch (error) {
+        throw new Error(
+          await failed("interrupted load releases", String(error)),
+        );
+      }
+      await check(
+        "interrupted load releases its element, slot and grant",
+        !document.querySelector("[data-media-player]") &&
+          sessions().length === 0 &&
+          assetScopes.size === 0,
+        `${sessions().length} sessions, ${assetScopes.size} grant scopes`,
+      );
+      const recovered = await open(fixtures.large);
+      try {
+        await waitForState("ready", "the reopened large WAV");
+      } catch (error) {
+        throw new Error(
+          await failed("reopening after interrupt", String(error)),
+        );
+      }
+      await check(
+        "reopening after an interrupted load works",
+        surfaceState() === "ready" && Boolean(player()),
+        `state=${surfaceState()}`,
+      );
+      run.app().closeTab(recovered);
+    }
+
+    const pass = steps.every((step) => step.ok);
+    await run.log(
+      `[media] ${pass ? "PASS" : "FAIL"} summary: ${steps.filter((step) => !step.ok).length} failures of ${steps.length}`,
+    );
+    return {
+      media: {
+        pass,
+        steps,
+        formats,
+        manual,
+        retainedSessions: sessions().length,
+        retainedGrantScopes: assetScopes.size,
+      },
+    };
+  } catch (error) {
+    return {
+      media: {
+        pass: false,
+        steps: [
+          ...steps,
+          { name: "scenario completed", ok: false, detail: String(error) },
+        ],
+        formats,
+        manual,
+      },
+    };
+  }
+}
+
+/** One served range, as the native asset handler records it. */
+type DeliveryRecord = {
+  start: number;
+  length: number;
+  size: number;
+  status: number;
+  ranged: boolean;
+};
+
+/**
  * Destructive Git across Spaces, through the panel's own guard.
  *
  * A dirty buffer in one Space must block a discard requested from the panel;
@@ -5159,7 +5831,7 @@ type CreatedCheckpoint = ListedCheckpoint & {
 type CheckpointGroupsReply = {
   manual: ListedCheckpoint[];
   turns: unknown[];
-  safety: unknown[];
+  safety: { ref: string }[];
   storage: { ownedRefs: number; sharedObjects: boolean; looseObjects: number };
 };
 
@@ -5191,6 +5863,7 @@ async function checkpointsScenario(run: ScenarioRun): Promise<unknown> {
     await run.log(`[checkpoints] ${ok ? "PASS" : "FAIL"} ${name}: ${detail}`);
   };
   const workspace = { kind: "local" } as const;
+  const app = () => run.app();
   const call = <T>(command: string, args: Record<string, unknown>) =>
     invoke<T>(command, { ...args, workspace });
   const readFile = (path: string) =>
@@ -5365,6 +6038,275 @@ async function checkpointsScenario(run: ScenarioRun): Promise<unknown> {
       remaining: cleanup.remaining.manual.length,
     });
 
+    // 5. The visible panel: the same native commands and the shared destructive
+    //    guard, driven through the app's own UI seam. Nothing here is a second
+    //    implementation of the guard or the preflight.
+    const space = app().createSpace("Checkpoints panel", fixture.repo);
+    app().newTabInSpace(space, fixture.repo);
+    await run.switchSpace(space);
+    const panelTerminal = app().tabs.find(
+      (tab) => tab.spaceId === space && tab.kind === "terminal",
+    );
+    if (panelTerminal?.kind !== "terminal")
+      throw new Error("the checkpoint panel Space did not get a terminal tab");
+    await run.sessionReady(panelTerminal.activeLeafId);
+    await call("workspace_authorize", { path: fixture.repo });
+    app().openSourceControl();
+    await run.waitFor(
+      () => app().checkpoints().mounted,
+      "the Checkpoints panel",
+      30_000,
+    );
+    app().checkpoints().open();
+    await run.waitFor(
+      () => app().checkpoints().ready,
+      "the checkpoint listing",
+      30_000,
+    );
+    const panelBody = () => document.body.textContent ?? "";
+    await check(
+      "the visible panel lists this worktree's recovery points",
+      (app().checkpoints().groups?.manual ?? 0) === 1 &&
+        panelBody().includes("Checkpoints") &&
+        panelBody().includes("app-lab checkpoint"),
+      `manual ${app().checkpoints().groups?.manual ?? 0}; dialog ${panelBody().includes("Checkpoints")}`,
+    );
+
+    await app().checkpoints().create("panel checkpoint");
+    await run.waitFor(
+      () => (app().checkpoints().groups?.manual ?? 0) === 2,
+      "the panel-created checkpoint",
+      20_000,
+    );
+    const panelGroups = await call<CheckpointGroupsReply>(
+      "git_checkpoint_groups",
+      { worktree: fixture.repo },
+    );
+    const panelCheckpoint = panelGroups.manual.find(
+      (checkpoint) => checkpoint.name === "panel checkpoint",
+    );
+    if (!panelCheckpoint)
+      throw new Error("the panel created no inspectable checkpoint");
+    const inspectButton = [...document.querySelectorAll("button")].find(
+      (button) =>
+        button.getAttribute("aria-label") ===
+        `Inspect checkpoint ${panelCheckpoint.ref}`,
+    );
+    inspectButton?.click();
+    await run.waitFor(
+      () => panelBody().includes("captured paths"),
+      "the panel inspection details",
+      10_000,
+    );
+    await check(
+      "the panel creates and inspects the checkpoint it shows",
+      inspectButton !== undefined &&
+        panelBody().includes("src/a.ts") &&
+        panelBody().includes("panel checkpoint"),
+      `inspection rendered ${panelBody().includes("captured paths")}`,
+    );
+    await run.sync("checkpoints-panel-created", {
+      manual: app().checkpoints().groups?.manual ?? null,
+    });
+
+    // 6. An external writer changes the file, and a dirty editor buffer works in
+    //    the same checkout. The preflight names the affected path and the guard
+    //    requires the buffer to be acknowledged before the restore.
+    const externalEdit = "export const a = 'external edit before restore';";
+    writeToSession(
+      panelTerminal.activeLeafId,
+      `printf "%s\\n" "${externalEdit}" > src/a.ts\r`,
+    );
+    let diskAfterWrite = await readFile(fixture.fileA);
+    const writeDeadline = performance.now() + 15_000;
+    while (
+      !diskAfterWrite.startsWith(externalEdit) &&
+      performance.now() < writeDeadline
+    ) {
+      await pause(150);
+      diskAfterWrite = await readFile(fixture.fileA);
+    }
+    const fileATab = app().openFileTab(fixture.fileA, true, space);
+    await run.waitFor(
+      () => app().tabs.some((tab) => tab.id === fileATab),
+      "the checkpoint file tab",
+      20_000,
+    );
+    run.select(fileATab);
+    await pause(1200);
+    const editorText = () =>
+      document.querySelector(".cm-content")?.textContent ?? "";
+    await run.waitFor(
+      () => editorText().includes("external edit before restore"),
+      "the externally edited file in the editor",
+      20_000,
+    );
+    app().editEditor(fileATab, "unsaved panel buffer\n");
+    const dirty = () => {
+      const tab = app().tabs.find((candidate) => candidate.id === fileATab);
+      return tab?.kind === "editor" && tab.dirty;
+    };
+    await run.waitFor(dirty, "the dirty buffer");
+
+    await app().checkpoints().requestRestore(panelCheckpoint.ref);
+    await run.waitFor(
+      () => app().checkpoints().pending !== null,
+      "the restore preflight dialog",
+      20_000,
+    );
+    const restorePlan = app().checkpoints().pending;
+    await check(
+      "the restore preflight names affected paths, staging and the safety requirement",
+      restorePlan?.affected.includes("src/a.ts") === true &&
+        restorePlan?.requiresSafetyCapture === true &&
+        restorePlan?.headMoved === false &&
+        restorePlan?.blockers.some(
+          (blocker) =>
+            blocker.kind === "unsavedBuffer" && blocker.tabId === fileATab,
+        ) === true &&
+        panelBody().includes("Restore captured content?") &&
+        panelBody().includes("required safety ref"),
+      `affected ${restorePlan?.affected.join(",") ?? "none"}; blockers ${restorePlan?.blockers.length ?? 0}`,
+    );
+    await run.sync("checkpoints-panel-preflight", {
+      affected: restorePlan?.affected ?? [],
+      blockers: restorePlan?.blockers.length ?? 0,
+    });
+
+    await app().checkpoints().confirm({
+      unsavedBuffers: [],
+      activeWork: [],
+      force: false,
+    });
+    await run.waitFor(
+      () => typeof app().checkpoints().pending?.stale === "string",
+      "the unacknowledged restore refusal",
+      10_000,
+    );
+    const refusedStatus = await status();
+    const refusedDisk = await readFile(fixture.fileA);
+    await check(
+      "an unacknowledged restore changes no file and no index entry",
+      app().checkpoints().pending?.stale?.includes("Acknowledge") === true &&
+        refusedDisk.startsWith(externalEdit) &&
+        refusedStatus.changedFiles.some(
+          (file) => file.path === "src/a.ts" && file.unstaged,
+        ) &&
+        dirty(),
+      `stale ${app().checkpoints().pending?.stale ?? "none"}; disk external ${refusedDisk.startsWith(externalEdit)}`,
+    );
+    await run.sync("checkpoints-panel-refused", {
+      stale: app().checkpoints().pending?.stale ?? null,
+    });
+
+    await app()
+      .checkpoints()
+      .confirm({
+        unsavedBuffers: [fileATab],
+        activeWork: [],
+        force: false,
+      });
+    await run.waitFor(
+      () =>
+        app().checkpoints().pending === null &&
+        (app().checkpoints().message ?? "").includes("Restored"),
+      "the confirmed restore",
+      20_000,
+    );
+    let restoredDisk = await readFile(fixture.fileA);
+    const restoreDeadline = performance.now() + 10_000;
+    while (
+      !restoredDisk.startsWith(fixture.editedA) &&
+      performance.now() < restoreDeadline
+    ) {
+      await pause(150);
+      restoredDisk = await readFile(fixture.fileA);
+    }
+    const afterRestoreGroups = await call<CheckpointGroupsReply>(
+      "git_checkpoint_groups",
+      { worktree: fixture.repo },
+    );
+    const restoreMessage = app().checkpoints().message ?? "";
+    await check(
+      "a confirmed restore recovers captured content and keeps a safety ref",
+      restoredDisk.startsWith(fixture.editedA) &&
+        afterRestoreGroups.safety.length === 1 &&
+        restoreMessage.includes("safety ref") &&
+        restoreMessage.includes("not a Git-state undo"),
+      `disk recovered ${restoredDisk.startsWith(fixture.editedA)}; safety ${afterRestoreGroups.safety.length}; message ${restoreMessage.slice(0, 80)}`,
+    );
+    await run.sync("checkpoints-panel-restored", {
+      safety: afterRestoreGroups.safety.length,
+      disk: restoredDisk.length,
+    });
+
+    // 7. The safety ref recovers the content the restore overwrote, and says so
+    //    without claiming a Git-state undo.
+    const safetyRef = afterRestoreGroups.safety[0]?.ref;
+    if (!safetyRef) throw new Error("the restore kept no safety ref");
+    await app().checkpoints().requestRestore(safetyRef);
+    await run.waitFor(
+      () => app().checkpoints().pending !== null,
+      "the safety-ref preflight",
+      20_000,
+    );
+    await app()
+      .checkpoints()
+      .confirm({
+        unsavedBuffers: [fileATab],
+        activeWork: [],
+        force: false,
+      });
+    await run.waitFor(
+      () =>
+        app().checkpoints().pending === null &&
+        (app().checkpoints().message ?? "").includes("content was recovered"),
+      "the content recovery",
+      20_000,
+    );
+    let recoveredDisk = await readFile(fixture.fileA);
+    const recoveryDeadline = performance.now() + 10_000;
+    while (
+      !recoveredDisk.startsWith(externalEdit) &&
+      performance.now() < recoveryDeadline
+    ) {
+      await pause(150);
+      recoveredDisk = await readFile(fixture.fileA);
+    }
+    await check(
+      "the safety ref recovers content without claiming a Git-state undo",
+      recoveredDisk.startsWith(externalEdit) &&
+        (app().checkpoints().message ?? "").includes(
+          "staging is not restored",
+        ) &&
+        (await headSha()) === headBefore,
+      `content recovered ${recoveredDisk.startsWith(externalEdit)}; head ${(await headSha()) === headBefore}`,
+    );
+    await run.sync("checkpoints-panel-recovered", {
+      staged: (await status()).changedFiles
+        .filter((file) => file.staged)
+        .map((file) => file.path),
+    });
+
+    // 8. Explicit deletion through the panel removes only the named ref and
+    //    never promises reclaimed bytes.
+    await app().checkpoints().cleanup(panelCheckpoint.ref);
+    await run.waitFor(
+      () => (app().checkpoints().groups?.manual ?? 0) === 1,
+      "the panel cleanup",
+      20_000,
+    );
+    await check(
+      "panel cleanup deletes the named ref and keeps the shared-object caution",
+      (app().checkpoints().groups?.manual ?? 0) === 1 &&
+        (app().checkpoints().message ?? "").includes("shared") &&
+        (await headSha()) === headBefore,
+      `manual ${app().checkpoints().groups?.manual ?? 0}; message ${(app().checkpoints().message ?? "").slice(0, 60)}`,
+    );
+    await run.sync("checkpoints-panel-cleaned", {
+      remaining: app().checkpoints().groups?.manual ?? null,
+    });
+
     const pass = steps.every((step) => step.ok);
     await run.log(
       `[checkpoints] ${pass ? "PASS" : "FAIL"} summary: ${steps.filter((step) => !step.ok).length} failures of ${steps.length}`,
@@ -5404,6 +6346,7 @@ const SCENARIOS: Record<
   worktree: worktreeScenario,
   preview: previewScenario,
   images: imagesScenario,
+  media: mediaScenario,
   resource: resourceScenario,
   stress: resourceScenario,
   startup: startupScenario,

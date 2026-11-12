@@ -59,6 +59,7 @@ import {
   SidebarRail,
   useSidebarPanel,
 } from "@/modules/sidebar";
+import { checkpointBridge } from "@/modules/source-control/checkpointBridge";
 import { destructiveGitBridge } from "@/modules/source-control/destructiveGitBridge";
 import {
   type DestructiveGitSupport,
@@ -1553,6 +1554,27 @@ export default function App() {
                   pending: bridge?.pending() ?? null,
                   requestDiscard: (paths) =>
                     bridge?.requestDiscard(paths) ?? Promise.resolve(),
+                  confirm: (confirmation) =>
+                    bridge?.confirm(confirmation) ?? Promise.resolve(),
+                  cancel: () => bridge?.cancel(),
+                };
+              }}
+              checkpoints={() => {
+                const bridge = checkpointBridge();
+                return {
+                  mounted: bridge?.mounted() ?? false,
+                  ready: bridge?.ready() ?? false,
+                  busy: bridge?.busy() ?? false,
+                  groups: bridge?.groups() ?? null,
+                  pending: bridge?.pending() ?? null,
+                  error: bridge?.error() ?? null,
+                  message: bridge?.message() ?? null,
+                  open: () => bridge?.open(),
+                  close: () => bridge?.close(),
+                  create: (name) => bridge?.create(name) ?? Promise.resolve(),
+                  requestRestore: (ref) =>
+                    bridge?.requestRestore(ref) ?? Promise.resolve(),
+                  cleanup: (ref) => bridge?.cleanup(ref) ?? Promise.resolve(),
                   confirm: (confirmation) =>
                     bridge?.confirm(confirmation) ?? Promise.resolve(),
                   cancel: () => bridge?.cancel(),

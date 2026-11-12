@@ -1,4 +1,5 @@
 import type { QuitPhase } from "@/modules/shutdown";
+import type { CheckpointBridgePending } from "@/modules/source-control/checkpointBridge";
 import type { DestructiveGitBridgePending } from "@/modules/source-control/destructiveGitBridge";
 import type { Tab } from "@/modules/tabs";
 import type { WorktreeBridge } from "@/modules/worktrees/worktreeBridge";
@@ -78,6 +79,27 @@ export type BenchAppApi = {
     }) => Promise<void>;
     cancel: () => void;
   };
+  /** Drives the Checkpoints panel, its native preflight and shared restore guard. */
+  checkpoints: () => {
+    mounted: boolean;
+    ready: boolean;
+    busy: boolean;
+    groups: { manual: number; safety: number; turns: number } | null;
+    pending: CheckpointBridgePending | null;
+    error: string | null;
+    message: string | null;
+    open: () => void;
+    close: () => void;
+    create: (name: string | null) => Promise<void>;
+    requestRestore: (ref: string) => Promise<void>;
+    cleanup: (ref: string) => Promise<void>;
+    confirm: (confirmation: {
+      unsavedBuffers: number[];
+      activeWork: number[];
+      force: boolean;
+    }) => Promise<void>;
+    cancel: () => void;
+  };
   /** Quit (ticket #18): the same gate the window's close event enters. */
   requestQuit: () => void;
   cancelQuit: () => void;
@@ -134,6 +156,7 @@ export type BenchScenario = {
     | "checkpoints"
     | "preview"
     | "images"
+    | "media"
     | "resource"
     | "stress"
     | "quit"
@@ -248,6 +271,29 @@ export type BenchScenario = {
     svg: string;
     corrupt: string;
     oversized: string;
+  };
+  /** media: fixture paths the scenario opens and asserts through the media surface. */
+  media?: {
+    mp4: string;
+    m4a: string;
+    mov: string;
+    webm: string;
+    mkv: string;
+    ogg: string;
+    wav: string;
+    mp3: string;
+    flac: string;
+    aac: string;
+    corrupt: string;
+    unsupportedCodec: string;
+    /** WebM bytes with a `.mp4` name: the probe must report the mismatch. */
+    mismatch: string;
+    /** >1 MiB PCM WAV so playback has to ask for more than one delivery chunk. */
+    large: string;
+    /** Containers whose real playback outcome the scenario measures. */
+    measured: string[];
+    /** Containers this host's build was measured to play (run.py records them). */
+    expectedSupported: string[];
   };
   /** resource/stress: directory used as the second Space's root and the preview fixture root. */
   workspace?: string;

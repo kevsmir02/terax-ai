@@ -29,10 +29,9 @@
  * the Rust source and fail if the two drift apart.
  *
  * Text ceilings, asset delivery bounds, the single-image decode ceiling, the
- * PDF per-page render ceiling and decoded-viewer admission are enforced today
- * (the PDF reader is issue #31). The media playback ceiling remains the approved
- * contract issue #29 turns into enforced playback behaviour; do not treat it as
- * measured support.
+ * PDF per-page render ceiling, decoded-viewer admission and the media playback
+ * count are enforced today (the PDF reader is issue #31). Each refusal names the
+ * ceiling it applied; none of them installs a codec or widens a read.
  */
 
 export const MIB = 1024 * 1024;

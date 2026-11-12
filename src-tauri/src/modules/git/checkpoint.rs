@@ -2377,6 +2377,779 @@ fn cleanup_inner(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Manual restore: preview, required safety capture, partial-failure recovery
+//
+// Restoring a captured working-tree content is never a Git-state undo. Before
+// a file or an index entry changes, the current working tree is captured and
+// published under a safety ref; a failed or incomplete capture, or a failed ref
+// publication, refuses before mutation and `force` does not bypass it. The
+// preflight reports the affected paths, staging effects, HEAD effect, ignored
+// files it will leave alone and the limits of the safety capture. If the
+// working tree changed after the preview, the stale preview is refused; a
+// retry after a partial failure therefore starts from a fresh preview.
+// ---------------------------------------------------------------------------
+
+const NO_SAFETY_CAPTURE: &str = "the required safety capture failed";
+
+/// Failure injection for the native seam tests. Production calls always pass
+/// `RestoreHooks::default()`, so every flag is `false` there.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct RestoreHooks {
+    pub(crate) fail_safety_capture: bool,
+    pub(crate) inconsistent_capture: bool,
+    pub(crate) fail_safety_ref: bool,
+    pub(crate) fail_after_deletes: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RestoreEffect {
+    Written,
+    Removed,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RestorePath {
+    pub path: String,
+    pub status: FileStatus,
+    pub effect: RestoreEffect,
+    /// The real index has a staged entry for this path; staging is not captured.
+    pub staged: bool,
+    /// Present on disk but excluded from the snapshot, so it is left alone.
+    pub ignored_in_the_way: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ManualRestoreRefusal {
+    /// Affected paths are staged; staging is not part of a safety capture, so
+    /// the user resolves them (unstage/commit) or forces an explicit loss.
+    StagedAffectedPaths,
+    /// The working tree changed after the preview; take a fresh preview.
+    StalePreview,
+    /// A per-turn checkpoint belongs to the retained restore path, not this one.
+    UnsupportedCheckpointKind,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RestoreFailureStage {
+    Writes,
+    IndexSync,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualRestorePreview {
+    #[serde(rename = "ref")]
+    pub ref_name: String,
+    pub kind: RecoveryKind,
+    pub name: Option<String>,
+    pub commit: String,
+    pub tree: String,
+    pub parent: Option<String>,
+    pub head_moved: bool,
+    /// Restoring never moves HEAD; it resets the index entries of touched paths.
+    pub head_effect: String,
+    pub affected: Vec<RestorePath>,
+    pub affected_total: u32,
+    pub affected_truncated: bool,
+    pub skipped: Vec<Skipped>,
+    /// Affected paths staged in the real index.
+    pub staged_total: u32,
+    /// The staged-path probe hit its read cap: staging is unknown, so mutation
+    /// is refused rather than guessed.
+    pub staged_truncated: bool,
+    /// An ignored file or directory the checkpoint holds is left alone.
+    pub ignored_in_the_way: u32,
+    /// The safety capture is a precondition, not a best effort.
+    pub requires_safety_capture: bool,
+    pub captures_index_state: bool,
+    pub captures_ignored_files: bool,
+    pub atomic: bool,
+    pub fingerprint: String,
+    pub refusal: Option<ManualRestoreRefusal>,
+    pub refusal_detail: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualRestoreReport {
+    pub restored: bool,
+    pub refusal: Option<ManualRestoreRefusal>,
+    pub refusal_detail: Option<String>,
+    pub kind: RecoveryKind,
+    /// The target was a safety ref: this recovers content, never Git state.
+    pub content_only: bool,
+    pub affected: Vec<RestorePath>,
+    pub affected_total: u32,
+    pub skipped: Vec<Skipped>,
+    pub staged_total: u32,
+    pub written: u32,
+    pub removed: u32,
+    pub safety: Option<SafetySnapshot>,
+    pub safety_retained: bool,
+    pub captures_index_state: bool,
+    pub index_synced: bool,
+    pub head_effect: String,
+    pub head_moved: bool,
+    pub atomic: bool,
+    pub capture_consistent: bool,
+    pub capture_warnings: Vec<String>,
+    /// A failure happened after mutation started; the effects listed above are
+    /// what this call knows it did.
+    pub partial: bool,
+    pub failure: Option<String>,
+    pub failure_stage: Option<RestoreFailureStage>,
+    /// The previous plan no longer describes the working tree: preview again.
+    pub retry_requires_fresh_preview: bool,
+}
+
+struct Restorable {
+    kind: RecoveryKind,
+    ref_name: String,
+    name: Option<String>,
+    commit: String,
+    tree: String,
+    parent: Option<String>,
+    /// Where a generated safety ref is filed: the manual id, or the task id a
+    /// safety ref already belongs to.
+    safety_task: String,
+}
+
+struct RestoreState {
+    target: Restorable,
+    target_tree: String,
+    head_before: Option<String>,
+    snapshot: Snapshot,
+    skipped: Vec<Skipped>,
+    affected: Vec<RestorePath>,
+    ignored_in_the_way: u32,
+    staged_truncated: bool,
+    fingerprint: String,
+}
+
+impl RestoreState {
+    fn staged_total(&self) -> u32 {
+        self.affected.iter().filter(|path| path.staged).count() as u32
+    }
+
+    fn writes(&self) -> Vec<String> {
+        self.affected
+            .iter()
+            .filter(|path| path.effect == RestoreEffect::Written && !path.ignored_in_the_way)
+            .map(|path| path.path.clone())
+            .collect()
+    }
+
+    fn deletes(&self) -> Vec<String> {
+        self.affected
+            .iter()
+            .filter(|path| path.effect == RestoreEffect::Removed && !path.ignored_in_the_way)
+            .map(|path| path.path.clone())
+            .collect()
+    }
+}
+
+/// Deterministic FNV-1a over the pieces the preview was built from. A native
+/// recheck compares it immediately before mutation, so an external writer or a
+/// failed partial restore cannot be retried with an outdated plan.
+fn restore_fingerprint(parts: &[&str]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for part in parts {
+        for byte in part.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+        hash ^= 0xff;
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn resolve_restorable(
+    repo: &ResolvedGitDirectory,
+    reference: &str,
+    mine: &str,
+) -> Result<Restorable> {
+    let kind =
+        recovery_kind(reference).ok_or_else(|| GitError::InvalidRef(reference.to_string()))?;
+    let output = run(repo, os_args(["for-each-ref", LIST_FORMAT, reference]))?;
+    let record = parse_ref_records(&output.stdout)
+        .into_iter()
+        .find(|record| record.name == reference)
+        .ok_or_else(|| {
+            GitError::command(
+                "git checkpoint restore",
+                "no such checkpoint for this worktree",
+            )
+        })?;
+    if record.worktree_id.as_deref() != Some(mine) {
+        return Err(GitError::command(
+            "git checkpoint restore",
+            "no such checkpoint for this worktree",
+        ));
+    }
+    let (name, safety_task) = match kind {
+        RecoveryKind::Manual => {
+            let manual = record.manual().ok_or_else(|| {
+                GitError::command(
+                    "git checkpoint restore",
+                    "unreadable manual checkpoint record",
+                )
+            })?;
+            (manual.name, manual.id)
+        }
+        RecoveryKind::Safety => {
+            let (task, _) = refs::parse_prerestore_ref(reference)
+                .ok_or_else(|| GitError::InvalidRef(reference.to_string()))?;
+            (None, task.to_string())
+        }
+        RecoveryKind::Turn => (None, String::new()),
+    };
+    Ok(Restorable {
+        kind,
+        ref_name: record.name,
+        name,
+        commit: record.commit,
+        tree: record.tree,
+        parent: record.parent,
+        safety_task,
+    })
+}
+
+/// Names staged in the real index, with the read-cap state (`true` means the
+/// list is incomplete and staging cannot be judged).
+fn staged_path_set(
+    repo: &ResolvedGitDirectory,
+    admin: &Admin,
+) -> Result<(std::collections::HashSet<String>, bool)> {
+    let output = run_git_with(
+        &repo.workspace,
+        Some(&repo.git_path),
+        admin.plumb(os_args(["diff", "--cached", "--name-only", "-z"]))?,
+        SNAPSHOT_TIMEOUT_SECS,
+        RunOptions {
+            stdout_cap: INDEX_SCAN_CAP,
+            ..Default::default()
+        },
+    )?;
+    if output.timed_out {
+        return Err(GitError::TimedOut("git diff --cached"));
+    }
+    ensure_success(&output, "git diff --cached failed")?;
+    let staged = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+        .map(|record| String::from_utf8_lossy(record).into_owned())
+        .collect();
+    Ok((staged, output.truncated))
+}
+
+fn restore_state(
+    repo: &ResolvedGitDirectory,
+    admin: &Admin,
+    mine: &str,
+    reference: &str,
+) -> Result<RestoreState> {
+    let target = resolve_restorable(repo, reference, mine)?;
+    if target.kind == RecoveryKind::Turn {
+        return Ok(RestoreState {
+            target,
+            target_tree: String::new(),
+            head_before: head_commit_opt(repo)?,
+            snapshot: Snapshot {
+                tree: String::new(),
+                consistent: true,
+                passes: 1,
+                warnings: Vec::new(),
+                unstable_paths: Vec::new(),
+            },
+            skipped: Vec::new(),
+            affected: Vec::new(),
+            ignored_in_the_way: 0,
+            staged_truncated: false,
+            fingerprint: String::new(),
+        });
+    }
+
+    let target_tree = tree_of(repo, &target.commit)?;
+    let snapshot = snapshot_tree(repo, true)?;
+    let changes = diff_trees(repo, &snapshot.tree, &target_tree)?;
+    let plan = plan_restore(&changes);
+    let in_snapshot: std::collections::HashSet<&str> = changes
+        .iter()
+        .filter(|change| change.status != FileStatus::Added)
+        .map(|change| change.path.as_str())
+        .collect();
+    let (staged, staged_truncated) = staged_path_set(repo, admin)?;
+
+    let mut writes: std::collections::HashSet<String> = plan.writes.iter().cloned().collect();
+    let mut ignored_in_the_way = 0u32;
+    for path in &plan.writes {
+        let exists = std::fs::symlink_metadata(repo.local_path.join(path)).is_ok();
+        if exists && !in_snapshot.contains(path.as_str()) {
+            // Ignored-file protection: the checkpoint holds this path, the
+            // snapshot does not (it is ignored now), so it stays untouched.
+            writes.remove(path);
+            ignored_in_the_way += 1;
+        }
+    }
+    let mut skipped = plan.skipped.clone();
+    for path in &plan.writes {
+        if !writes.contains(path) {
+            skipped.push(Skipped {
+                path: path.clone(),
+                reason: "ignored-file-in-the-way".into(),
+            });
+        }
+    }
+
+    let status_of = |path: &str| {
+        changes
+            .iter()
+            .find(|change| change.path == path)
+            .map(|change| change.status)
+    };
+    let mut affected: Vec<RestorePath> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for path in writes.iter().chain(plan.deletes.iter()) {
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        let Some(status) = status_of(path) else {
+            continue;
+        };
+        affected.push(RestorePath {
+            path: path.clone(),
+            status,
+            effect: if writes.contains(path) {
+                RestoreEffect::Written
+            } else {
+                RestoreEffect::Removed
+            },
+            staged: staged.contains(path),
+            ignored_in_the_way: false,
+        });
+    }
+    affected.sort_by(|a, b| a.path.cmp(&b.path));
+
+    let head_before = head_commit_opt(repo)?;
+    let mut parts: Vec<String> = vec![
+        format!("{:?}", target.kind).to_lowercase(),
+        target.ref_name.clone(),
+        target.commit.clone(),
+        target_tree.clone(),
+        snapshot.tree.clone(),
+        head_before.clone().unwrap_or_default(),
+    ];
+    for path in &affected {
+        parts.push(format!(
+            "{}:{:?}:{:?}:{}",
+            path.path, path.status, path.effect, path.staged
+        ));
+    }
+    parts.push(format!("staged-truncated:{staged_truncated}"));
+    let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
+    let fingerprint = restore_fingerprint(&refs);
+
+    Ok(RestoreState {
+        target,
+        target_tree,
+        head_before,
+        snapshot,
+        skipped,
+        affected,
+        ignored_in_the_way,
+        staged_truncated,
+        fingerprint,
+    })
+}
+
+fn preview_of(state: &RestoreState, refusal: Option<ManualRestoreRefusal>) -> ManualRestorePreview {
+    let total = state.affected.len() as u32;
+    let affected: Vec<RestorePath> = state
+        .affected
+        .iter()
+        .take(MAX_INSPECTED_PATHS)
+        .cloned()
+        .collect();
+    ManualRestorePreview {
+        ref_name: state.target.ref_name.clone(),
+        kind: state.target.kind,
+        name: state.target.name.clone(),
+        commit: state.target.commit.clone(),
+        tree: state.target.tree.clone(),
+        parent: state.target.parent.clone(),
+        head_moved: state.head_before != state.target.parent,
+        head_effect: "unchanged".into(),
+        affected,
+        affected_total: total,
+        affected_truncated: total as usize > MAX_INSPECTED_PATHS,
+        skipped: state.skipped.clone(),
+        staged_total: state.staged_total(),
+        staged_truncated: state.staged_truncated,
+        ignored_in_the_way: state.ignored_in_the_way,
+        requires_safety_capture: state.target.kind != RecoveryKind::Turn,
+        captures_index_state: false,
+        captures_ignored_files: false,
+        atomic: false,
+        fingerprint: state.fingerprint.clone(),
+        refusal,
+        refusal_detail: refusal.map(|refusal| match refusal {
+            ManualRestoreRefusal::UnsupportedCheckpointKind => {
+                "per-turn checkpoints use the retained checkpoint restore path".to_string()
+            }
+            ManualRestoreRefusal::StagedAffectedPaths => {
+                "affected paths are staged; staging is not part of a safety capture".to_string()
+            }
+            ManualRestoreRefusal::StalePreview => {
+                "the working tree changed after this preview".to_string()
+            }
+        }),
+    }
+}
+
+/// Read-only preflight for restoring captured content. Never writes a ref, a
+/// file or an index entry.
+pub fn restore_preview(
+    registry: &WorkspaceRegistry,
+    worktree: &str,
+    reference: &str,
+    workspace: &WorkspaceEnv,
+) -> Result<ManualRestorePreview> {
+    let repo = open_worktree(registry, worktree, workspace)?;
+    ensure_supported(&repo)?;
+    let admin = Admin::new(&repo)?;
+    let mine = admin.existing_worktree_id().ok_or_else(|| {
+        GitError::command(
+            "git checkpoint restore",
+            "no such checkpoint for this worktree",
+        )
+    })?;
+    let lock = lock_for_repo(&repo);
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let state = restore_state(&repo, &admin, &mine, reference)?;
+    let refusal = (state.target.kind == RecoveryKind::Turn)
+        .then_some(ManualRestoreRefusal::UnsupportedCheckpointKind);
+    Ok(preview_of(&state, refusal))
+}
+
+fn capture_problem(state: &RestoreState, consistent: bool) -> Option<String> {
+    if !consistent {
+        return Some(
+            "the required safety capture was incomplete: the working tree kept changing while it ran"
+                .to_string(),
+        );
+    }
+    let affected: std::collections::HashSet<&str> = state
+        .affected
+        .iter()
+        .map(|path| path.path.as_str())
+        .collect();
+    let unstable: Vec<&str> = state
+        .snapshot
+        .unstable_paths
+        .iter()
+        .map(String::as_str)
+        .filter(|path| affected.contains(path))
+        .collect();
+    if !unstable.is_empty() {
+        return Some(format!(
+            "the required safety capture was incomplete: affected paths kept changing ({})",
+            unstable.join(", ")
+        ));
+    }
+    None
+}
+
+fn report_of(state: &RestoreState, kind: RecoveryKind) -> ManualRestoreReport {
+    let total = state.affected.len() as u32;
+    ManualRestoreReport {
+        restored: false,
+        refusal: None,
+        refusal_detail: None,
+        kind,
+        content_only: kind == RecoveryKind::Safety,
+        affected: state
+            .affected
+            .iter()
+            .take(MAX_INSPECTED_PATHS)
+            .cloned()
+            .collect(),
+        affected_total: total,
+        skipped: state.skipped.clone(),
+        staged_total: state.staged_total(),
+        written: 0,
+        removed: 0,
+        safety: None,
+        safety_retained: false,
+        captures_index_state: false,
+        index_synced: true,
+        head_effect: "unchanged".into(),
+        head_moved: state.head_before != state.target.parent,
+        atomic: false,
+        capture_consistent: state.snapshot.consistent,
+        capture_warnings: state.snapshot.warnings.clone(),
+        partial: false,
+        failure: None,
+        failure_stage: None,
+        retry_requires_fresh_preview: false,
+    }
+}
+
+fn refuse_report(
+    state: &RestoreState,
+    kind: RecoveryKind,
+    refusal: ManualRestoreRefusal,
+    detail: String,
+) -> ManualRestoreReport {
+    let mut report = report_of(state, kind);
+    report.refusal = Some(refusal);
+    report.refusal_detail = Some(detail);
+    report
+}
+
+fn restore_manual_inner(
+    registry: &WorkspaceRegistry,
+    worktree: &str,
+    reference: &str,
+    expected_fingerprint: Option<&str>,
+    force: bool,
+    workspace: &WorkspaceEnv,
+    hooks: RestoreHooks,
+) -> Result<ManualRestoreReport> {
+    let repo = open_worktree(registry, worktree, workspace)?;
+    ensure_supported(&repo)?;
+    let admin = Admin::new(&repo)?;
+    let lock = lock_for_repo(&repo);
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let mine = admin.existing_worktree_id().ok_or_else(|| {
+        GitError::command(
+            "git checkpoint restore",
+            "no such checkpoint for this worktree",
+        )
+    })?;
+
+    let state = restore_state(&repo, &admin, &mine, reference)?;
+    let kind = state.target.kind;
+    if kind == RecoveryKind::Turn {
+        return Ok(refuse_report(
+            &state,
+            kind,
+            ManualRestoreRefusal::UnsupportedCheckpointKind,
+            "per-turn checkpoints use the retained checkpoint restore path".into(),
+        ));
+    }
+
+    // The native recheck immediately before mutation. It sees external writers
+    // and the effects of a previous partial failure, so an old plan cannot be
+    // repeated.
+    if let Some(expected) = expected_fingerprint {
+        if expected != state.fingerprint {
+            return Ok(refuse_report(
+                &state,
+                kind,
+                ManualRestoreRefusal::StalePreview,
+                "the working tree changed after this preview; review a fresh preview before retrying"
+                    .into(),
+            ));
+        }
+    }
+    if state.staged_truncated {
+        return Ok(refuse_report(
+            &state,
+            kind,
+            ManualRestoreRefusal::StagedAffectedPaths,
+            "the staged-path probe was truncated, so staging cannot be judged; resolve it in the terminal"
+                .into(),
+        ));
+    }
+    if !force && state.staged_total() > 0 {
+        let detail = format!(
+            "{} affected path{} staged; staging is not part of a safety capture. Unstage or commit them, or force an explicit index effect.",
+            state.staged_total(),
+            if state.staged_total() == 1 { " is" } else { "s are" }
+        );
+        return Ok(refuse_report(
+            &state,
+            kind,
+            ManualRestoreRefusal::StagedAffectedPaths,
+            detail,
+        ));
+    }
+
+    // Everything that can fail before the working tree or index is touched
+    // happens now, and nothing below is conditional on `force`.
+    if hooks.fail_safety_capture {
+        return Err(GitError::command(
+            "git checkpoint restore",
+            format!("{NO_SAFETY_CAPTURE}: the snapshot could not be read"),
+        ));
+    }
+    let consistent = state.snapshot.consistent && !hooks.inconsistent_capture;
+    if let Some(problem) = capture_problem(&state, consistent) {
+        return Err(GitError::command("git checkpoint restore", problem));
+    }
+    if hooks.fail_safety_ref {
+        return Err(GitError::command(
+            "git checkpoint restore",
+            "the required safety ref publication failed; nothing was changed",
+        ));
+    }
+    let safety = write_safety_snapshot(
+        &repo,
+        &admin,
+        &state.target.safety_task,
+        &state.snapshot.tree,
+        state.head_before.as_deref(),
+        &mine,
+    )?;
+    let mut report = report_of(&state, kind);
+    report.safety = Some(safety);
+    report.safety_retained = true;
+
+    let writes = state.writes();
+    let deletes = state.deletes();
+    let temp = if writes.is_empty() {
+        None
+    } else {
+        let temp = TempIndex::empty(&repo)?;
+        let read = run_indexed(
+            &repo,
+            &temp,
+            os_args(["read-tree", state.target_tree.as_str()]),
+            None,
+        )?;
+        ensure_success(&read, "git read-tree failed")?;
+        Some(temp)
+    };
+
+    let mut touched: Vec<String> = Vec::new();
+    for path in &deletes {
+        match remove_tracked_path(&repo.local_path, path) {
+            Ok(true) => {
+                report.removed += 1;
+                touched.push(path.clone());
+            }
+            Ok(false) => {}
+            Err(reason) => report.skipped.push(Skipped {
+                path: path.clone(),
+                reason,
+            }),
+        }
+    }
+
+    if hooks.fail_after_deletes {
+        return Ok(partial_report(
+            report,
+            RestoreFailureStage::Writes,
+            "a later restore step failed after files were removed; the safety ref is retained"
+                .into(),
+        ));
+    }
+
+    if let Some(temp) = temp {
+        let mut list: Vec<u8> = Vec::new();
+        for path in &writes {
+            list.extend_from_slice(path.as_bytes());
+            list.push(0);
+        }
+        let checkout = run_indexed(
+            &repo,
+            &temp,
+            os_args(["checkout-index", "-f", "-z", "--stdin"]),
+            Some(list),
+        )?;
+        if let Err(error) = ensure_success(&checkout, "git checkout-index failed") {
+            return Ok(partial_report(
+                report,
+                RestoreFailureStage::Writes,
+                format!(
+                    "{error}; the safety ref is retained and write effects are not known exactly"
+                ),
+            ));
+        }
+        report.written = writes.len() as u32;
+        touched.extend(writes.iter().cloned());
+    }
+
+    touched.sort();
+    touched.dedup();
+    if !touched.is_empty() {
+        report.index_synced = sync_index_to_head(&repo, &admin, &touched);
+        if !report.index_synced {
+            return Ok(partial_report(
+                report,
+                RestoreFailureStage::IndexSync,
+                "the working files were restored but the index entries could not be reset; the safety ref is retained"
+                    .into(),
+            ));
+        }
+    }
+    report.restored = true;
+    Ok(report)
+}
+
+fn partial_report(
+    mut report: ManualRestoreReport,
+    stage: RestoreFailureStage,
+    failure: String,
+) -> ManualRestoreReport {
+    report.restored = false;
+    report.partial = true;
+    report.failure = Some(failure);
+    report.failure_stage = Some(stage);
+    report.retry_requires_fresh_preview = true;
+    report
+}
+
+/// Restores captured content after a fresh preview and a required safety
+/// capture. Never moves HEAD; index entries of touched paths are reset to HEAD,
+/// which is disclosed rather than presented as a restored index.
+pub fn restore_manual(
+    registry: &WorkspaceRegistry,
+    worktree: &str,
+    reference: &str,
+    expected_fingerprint: Option<&str>,
+    force: bool,
+    workspace: &WorkspaceEnv,
+) -> Result<ManualRestoreReport> {
+    restore_manual_inner(
+        registry,
+        worktree,
+        reference,
+        expected_fingerprint,
+        force,
+        workspace,
+        RestoreHooks::default(),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn restore_manual_with_hooks(
+    registry: &WorkspaceRegistry,
+    worktree: &str,
+    reference: &str,
+    expected_fingerprint: Option<&str>,
+    force: bool,
+    workspace: &WorkspaceEnv,
+    hooks: RestoreHooks,
+) -> Result<ManualRestoreReport> {
+    restore_manual_inner(
+        registry,
+        worktree,
+        reference,
+        expected_fingerprint,
+        force,
+        workspace,
+        hooks,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

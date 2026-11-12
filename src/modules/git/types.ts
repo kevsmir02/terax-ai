@@ -539,6 +539,91 @@ export type CheckpointCleanupReport = {
   atomic: boolean;
 };
 
+// --------------------------------------------- manual restore preflight
+//
+// Restoring captured content is never a Git-state undo. The preview is
+// read-only; the restore publishes a required safety capture before touching a
+// file or an index entry, refuses a stale preview, and reports partial effects
+// with the safety ref still in place.
+
+export type RestoreEffect = "written" | "removed";
+
+export type RestorePath = {
+  path: string;
+  status: GitFileStatus;
+  effect: RestoreEffect;
+  /** The real index has a staged entry for this path; staging is not captured. */
+  staged: boolean;
+  /** Present on disk but excluded from the snapshot: left alone. */
+  ignoredInTheWay: boolean;
+};
+
+export type ManualRestoreRefusal =
+  | "stagedAffectedPaths"
+  | "stalePreview"
+  | "unsupportedCheckpointKind";
+
+export type ManualRestorePreview = {
+  ref: string;
+  kind: RecoveryKind;
+  name: string | null;
+  commit: string;
+  tree: string;
+  parent: string | null;
+  headMoved: boolean;
+  /** Restoring never moves HEAD; index entries of touched paths are reset. */
+  headEffect: "unchanged";
+  affected: RestorePath[];
+  affectedTotal: number;
+  affectedTruncated: boolean;
+  skipped: SkippedPath[];
+  /** Affected paths staged in the real index. */
+  stagedTotal: number;
+  /** The staged-path probe hit its read cap: staging is unknown. */
+  stagedTruncated: boolean;
+  ignoredInTheWay: number;
+  /** The safety capture is a precondition, not a best effort. */
+  requiresSafetyCapture: boolean;
+  capturesIndexState: boolean;
+  capturesIgnoredFiles: boolean;
+  atomic: boolean;
+  fingerprint: string;
+  refusal: ManualRestoreRefusal | null;
+  refusalDetail: string | null;
+};
+
+export type RestoreFailureStage = "writes" | "indexSync";
+
+export type ManualRestoreReport = {
+  restored: boolean;
+  refusal: ManualRestoreRefusal | null;
+  refusalDetail: string | null;
+  kind: RecoveryKind;
+  /** The target was a safety ref: content recovery, never Git-state restore. */
+  contentOnly: boolean;
+  affected: RestorePath[];
+  affectedTotal: number;
+  skipped: SkippedPath[];
+  stagedTotal: number;
+  written: number;
+  removed: number;
+  safety: SafetySnapshot | null;
+  safetyRetained: boolean;
+  capturesIndexState: boolean;
+  indexSynced: boolean;
+  headEffect: "unchanged";
+  headMoved: boolean;
+  atomic: boolean;
+  captureConsistent: boolean;
+  captureWarnings: string[];
+  /** A failure happened after mutation started. */
+  partial: boolean;
+  failure: string | null;
+  failureStage: RestoreFailureStage | null;
+  /** The previous plan no longer describes the working tree: preview again. */
+  retryRequiresFreshPreview: boolean;
+};
+
 // ------------------------------------------------------------- branches
 
 export type BranchCreated = { name: string; commit: string };
