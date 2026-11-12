@@ -30,14 +30,19 @@ Scenarios (`--scenario`):
   images         Linux image seam: representative formats decode in the real WebKitGTK, oversized
                  and corrupt inputs are refused honestly, hidden tabs release, close cycles do not
                  retain decoded viewers or grants
+  spaces         Linux Space lifecycle: shared checkout, switch with hidden output flowing, tab
+                 close guards, Space deletion that keeps the project directory (pass/fail in page.log)
+  quit           Linux quit: the survey across Spaces, a repeated close that is not consent, cancel,
+                 save-then-quit, graceful termination, the survivor prompt, a confirmed force, and a
+                 reload that restores the layout without replaying commands (pass/fail in page.log)
   git            Linux destructive-Git seam: a dirty buffer blocks a panel discard, stale and
                  unacknowledged plans are refused, a confirmed discard still restores its file
   checkpoints    Linux manual-checkpoint seam: two same-named captures keep distinct identities,
                  limits/exclusions are disclosed, inspection lists captured paths, explicit cleanup
                  removes only the named ref, and HEAD/the index/working files never move
 
-Linux currently implements `workflow`, `spaces`, `markdown`, `git`, `checkpoints`, `preview`,
-`images`, `resource`, `stress` and `startup` (WebKitGTK); the measured scenarios above stay
+Linux currently implements `workflow`, `spaces`, `quit`, `markdown`, `git`, `checkpoints`,
+`preview`, `images`, `resource`, `stress` and `startup` (WebKitGTK); the measured scenarios above stay
 macOS-only until ticket 02 (sampling) and ticket 32 (input/resize/layers). On Linux the app is
 built with `--no-bundle` into `<target>/<profile>/terax`.
 
@@ -95,6 +100,7 @@ SYSTEM = platform.system()
 LINUX_SCENARIOS = (
     "workflow",
     "spaces",
+    "quit",
     "markdown",
     "git",
     "checkpoints",
@@ -644,6 +650,10 @@ def host_timeout(args, scenario: dict) -> float:
     if name == "checkpoints":
         # A few native Git commands in a scratch repository: no rendering cycles.
         return 300
+    if name == "quit":
+        # Two Spaces, the survey, save-then-quit, a 2 s grace pass, the survivor
+        # prompt and a reload pass with a fresh boot.
+        return 900
     if name == "startup":
         return max(1, args.startup_repeats) * 150 + 120
     if name in ("resource", "stress"):
@@ -1062,9 +1072,9 @@ def scenario_json_linux(
         "cwds": {"shell": str(workspace)},
         "localStorage": local,
     }
-    if args.scenario in ("workflow", "spaces"):
+    if args.scenario in ("workflow", "spaces", "quit"):
         scenario.update({"file": str(file), "fileText": first_line})
-    if args.scenario == "spaces":
+    if args.scenario in ("spaces", "quit"):
         scenario.update({"workspace": str(workspace)})
     if args.scenario == "preview" and pdf:
         files = pdf["manifest"]["files"]
@@ -1585,6 +1595,10 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             workspace.joinpath("spaces-keep.txt").write_text(
                 "This file belongs to the project and must survive Space deletion.\n"
             )
+        if args.scenario == "quit":
+            workspace.joinpath("quit-notes.txt").write_text(
+                "quit-notes line, edited in the second Space before quitting.\n"
+            )
     report_path = (args.report or output / "report.json").resolve()
     report_path.parent.mkdir(parents=True, exist_ok=True)
     scenario = scenario_json_linux(
@@ -1893,7 +1907,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         linux_profile.cleanup(home, output)
     if failed is not None:
         raise failed
-    if args.scenario in ("workflow", "spaces", "preview"):
+    if args.scenario in ("workflow", "spaces", "quit", "preview"):
         steps = workflow.get("steps") or []
         passed = sum(1 for step in steps if step.get("ok"))
         print(f"{args.scenario} {'PASS' if workflow.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
@@ -1930,7 +1944,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             [app_report.load(path) for path in args.compare], [manifest], args.compare_format
         ))
     print(f"\nSaved {report_path}")
-    if args.scenario in ("workflow", "spaces", "preview") and not workflow.get("pass"):
+    if args.scenario in ("workflow", "spaces", "quit", "preview") and not workflow.get("pass"):
         print(
             f"Run failed: the {args.scenario} scenario reported a failing step (see page.log).",
             file=sys.stderr,

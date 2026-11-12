@@ -1,3 +1,4 @@
+import type { QuitPhase } from "@/modules/shutdown";
 import type { DestructiveGitBridgePending } from "@/modules/source-control/destructiveGitBridge";
 import type { Tab } from "@/modules/tabs";
 
@@ -67,6 +68,41 @@ export type BenchAppApi = {
     }) => Promise<void>;
     cancel: () => void;
   };
+  /** Quit (ticket #18): the same gate the window's close event enters. */
+  requestQuit: () => void;
+  cancelQuit: () => void;
+  confirmQuit: () => void;
+  saveAllAndQuit: () => void;
+  retryQuitFlush: () => void;
+  loseDraftsAndQuit: () => void;
+  forceQuit: () => void;
+  quitState: () => BenchQuitState;
+};
+
+/** What the quit gate resolved to, as the driver observes it. */
+export type BenchQuitState = {
+  phase: QuitPhase;
+  /** The confirmed close was recorded (bench) instead of ending the process. */
+  closed: boolean;
+  note: string | null;
+  totals: {
+    buffers: number;
+    processes: number;
+    uncertainProcesses: number;
+    drafts: number;
+  };
+  spaces: Array<{
+    id: string;
+    name: string;
+    buffers: Array<{ tabId: number; title: string }>;
+    processes: Array<{ leafId: number; state: string }>;
+    drafts: Array<{ bufferId: string; title: string; state: string }>;
+  }>;
+  survivors: number[];
+  flush: {
+    outcome: string;
+    drafts: Array<{ bufferId: string; title: string; state: string }>;
+  } | null;
 };
 
 /** One scenario, as written by scripts/app-lab/run.py into TERAX_BENCH_SCENARIO. */
@@ -89,6 +125,7 @@ export type BenchScenario = {
     | "images"
     | "resource"
     | "stress"
+    | "quit"
     | "startup";
   /** tabs: "2" (shell + agent) or "4" (shell, agent, agent+shell split, shell). */
   variant?: string;
