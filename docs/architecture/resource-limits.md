@@ -128,8 +128,15 @@ explicit choice above 10 MiB, refusal above 50 MiB), which the real application 
 observed applying in issue #30; the 32 MiB per-page render ceiling is still contract
 only until issue #31, because WebKit's own PDF document never asks this module — see
 `docs/architecture/pdf-reader.md`. A hidden media element still only pauses its own
-pane until issue #29. Markdown inline images go through the same asset delivery
-bounds but are not separate decoded viewers until issue #27.
+pane until issue #29.
+
+Markdown previews (issue #27) inline images go through the same asset delivery bounds
+but are not counted as separate decoded viewers, because each image is bounded by its
+asset response. The document read is the same 10 MiB contract with the explicit
+"Open anyway" override up to 50 MiB, and code highlighting is off above 4 MiB. A
+document outside the Space root is anchored to its own directory; assets beyond that
+boundary or on the network need the explicit choice described in
+`markdown-rendering.md`, so browsing cannot pull an unbounded remote set on its own.
 
 This is **planned implementation, not validated support** for anything that
 needs a real WebKitGTK session: no measurement claims these ceilings are

@@ -19,6 +19,12 @@ type Props = {
   activeTab: Tab | undefined;
   /** The Space on screen; previews in every other Space unload their frames. */
   activeSpaceId: string;
+  /**
+   * Configured Space project roots, by Space id. Markdown previews anchor
+   * automatic local assets here (or their own directory outside it) instead of
+   * a mutable terminal cwd.
+   */
+  spaceRoots: Readonly<Record<string, string | null>>;
   /** Shared native window-presentation feed (occlusion/sleep), optional. */
   subscribeWindowPresentation?: PresentationSubscription;
   registerTerminalHandle: TerminalStackProps["registerHandle"];
@@ -55,6 +61,7 @@ export function WorkspaceSurface({
   activeId,
   activeTab,
   activeSpaceId,
+  spaceRoots,
   subscribeWindowPresentation,
   registerTerminalHandle,
   onSearchReady,
@@ -131,6 +138,7 @@ export function WorkspaceSurface({
         <MarkdownStack
           tabs={tabs}
           activeId={activeId}
+          spaceRoots={spaceRoots}
           onSetMarkdownView={onSetMarkdownView}
         />
       </div>
