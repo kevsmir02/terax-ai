@@ -8,6 +8,8 @@ import { useMarkdownDocument } from "./useMarkdownDocument";
 
 type Props = {
   path: string;
+  /** The tab this document belongs to; image grants are tab-owned. */
+  tabId: number;
   /** Images load only from beneath this folder (the document's own folder if it lies outside). */
   workspaceRoot?: string | null;
   visible: boolean;
@@ -16,6 +18,7 @@ type Props = {
 
 export function MarkdownPreviewPane({
   path,
+  tabId,
   workspaceRoot = null,
   visible,
   onSetView,
@@ -34,7 +37,7 @@ export function MarkdownPreviewPane({
     urlFor: assetUrlFor,
     error: assetError,
     retry: retryImages,
-  } = useAssetGrant(content === null ? null : boundary);
+  } = useAssetGrant(content === null ? null : boundary, tabId);
 
   // A retargeted preview starts at the top, not at the old document's offset.
   // biome-ignore lint/correctness/useExhaustiveDependencies: path is the trigger.

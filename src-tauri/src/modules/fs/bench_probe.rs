@@ -45,10 +45,13 @@ struct Log {
 static LOG: Mutex<Option<Log>> = Mutex::new(None);
 
 /// Records one asset request/response pair from `assets::serve`.
+///
+/// The error side is `(status, message)` rather than `assets::AssetError` so this probe stays a
+/// sibling of the handler instead of widening its private types.
 pub fn record(
     owner: &str,
     request: &Request<Vec<u8>>,
-    result: &Result<tauri::http::Response<Vec<u8>>, String>,
+    result: &Result<tauri::http::Response<Vec<u8>>, (u16, String)>,
 ) {
     let mut file = request
         .uri()
@@ -93,12 +96,12 @@ pub fn record(
                 error: None,
             }
         }
-        Err(error) => Entry {
+        Err((status, error)) => Entry {
             seq: log.seq,
             owner: owner.to_owned(),
             method: request.method().as_str().to_owned(),
             file,
-            status: None,
+            status: Some(*status),
             mime: None,
             bytes: 0,
             range,

@@ -23,6 +23,31 @@ installed Chrome. The macOS terminal CI job caches the full Chromium build pinne
 by Playwright and sets `TERAX_VISUAL_SOFTWARE=1` to use SwiftShader for both
 renderers without requiring a hardware GPU.
 
+The gate compares both shipped renderers by default. `TERAX_VISUAL_RENDERERS`
+narrows that list and then **requires** `TERAX_VISUAL_RENDERERS_GAP`, a sentence
+naming the mechanism the platform cannot provide; the runner refuses a shortened
+list without one, refuses an empty or one-word reason, refuses an unknown
+renderer, and refuses a gap sentence when nothing was dropped. The sentence is
+printed, written into `scaling.json`, and asserted by
+`scripts/tests/test_ci_workflows.py`, so a narrowed run is recorded evidence
+rather than a quiet omission.
+
+```sh
+# the Linux CI job: the WebGL fallback, which is what WebKitGTK uses, at all four DPRs
+TERAX_VISUAL_SOFTWARE=1 TERAX_VISUAL_RENDERERS=webgl \
+  TERAX_VISUAL_RENDERERS_GAP="headless Chromium on a Linux runner has no GPU and its software WebGPU device is destroyed before the harness can read the surface back" \
+  pnpm test:terminal-scaling
+```
+
+**Linux gap (recorded 2026-11-12).** WebGL parity passes on Linux at DPR 1,
+1.25, 1.5 and 2 at both origins with zero differing pixels. WebGPU parity does
+not run there yet: on Linux Chromium the software WebGPU device is destroyed
+while the surface initializes (`A valid external Instance reference no longer
+exists`), the runtime's recovery cannot re-acquire an adapter, and the captured
+surface is unreadable. The gate reports this rather than passing quietly, and
+macOS still compares both renderers.
+
+
 The same fixed glyph/stem pattern goes through WebGL and WebGPU. Each screenshot
 is compared against its renderer's raw texture, and the two raw textures are
 compared against each other. The gate allows at most 1/255 per RGB channel and

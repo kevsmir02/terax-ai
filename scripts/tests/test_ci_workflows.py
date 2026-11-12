@@ -239,6 +239,55 @@ class LinuxSmokeWorkflowTest(unittest.TestCase):
         self.assertIn("python3 -m unittest discover -s scripts/tests", self.body)
 
 
+class TerminalCoverageTest(unittest.TestCase):
+    """The terminal checks ticket #33 ports must run somewhere in ordinary CI, not just locally.
+
+    `terminal-test` keeps Windows and macOS until ticket #34 narrows platforms; `terminal-linux`
+    is the Linux half. A check that runs nowhere is the silent coverage drop this guard exists to
+    prevent, so each one is asserted by the command that runs it rather than by job name.
+    """
+
+    def setUp(self) -> None:
+        if yaml is None:
+            self.fail("PyYAML is not installed, so workflow YAML validation cannot run.")
+        self.workflow = yaml.safe_load(text(CI))
+        self.body = text(CI)
+
+    def step_runs(self, job: str) -> list[str]:
+        return [step.get("run", "") for step in self.workflow["jobs"][job]["steps"] if "run" in step]
+
+    def test_the_linux_terminal_job_runs_the_terminal_strategy_and_is_not_advisory(self) -> None:
+        self.assertIn("terminal-linux", self.workflow["jobs"], "the Linux terminal strategy needs a job")
+        for step in self.workflow["jobs"]["terminal-linux"]["steps"]:
+            self.assertNotEqual(
+                step.get("continue-on-error"), True,
+                f"terminal-linux step {step.get('name', step.get('run'))!r} must not be advisory",
+            )
+        commands = " ".join(self.step_runs("terminal-linux"))
+        for command in (
+            "pnpm exec vitest run src/modules/terminal",
+            "pnpm soak:ghostty",
+            "pnpm test:terminal-scaling",
+        ):
+            self.assertIn(command, commands, f"terminal-linux must run {command}")
+
+    def test_the_compositor_parity_gate_runs_for_every_platform_that_claims_it(self) -> None:
+        scaling = [step for step in self.workflow["jobs"]["terminal-platforms"]["steps"]
+                   if "test:terminal-scaling" in step.get("run", "")]
+        self.assertTrue(scaling, "macOS still runs the full pixel gate")
+        self.assertNotEqual(scaling[0].get("continue-on-error"), True)
+        self.assertTrue(
+            any("test:terminal-scaling" in command for command in self.step_runs("terminal-linux")),
+            "Linux runs the same gate against the WebGL fallback",
+        )
+
+    def test_the_linux_job_records_why_a_renderer_is_not_compared(self) -> None:
+        # Narrowing a gate is allowed; narrowing it silently is not. The gap sentence travels with
+        # the job and lands in scaling.json.
+        self.assertIn("TERAX_VISUAL_RENDERERS_GAP", self.body)
+        self.assertIn("TERAX_VISUAL_RENDERERS", self.body)
+
+
 class ApplicationIdentityTest(unittest.TestCase):
     def test_no_workflow_launches_the_product_identifier(self) -> None:
         for path in workflow_files():

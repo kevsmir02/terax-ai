@@ -2,7 +2,7 @@ pub mod modules;
 
 #[cfg(target_os = "macos")]
 use modules::app_menu;
-use modules::{agent, control, fs, git, history, pty, shell, vibrancy, workspace};
+use modules::{agent, control, fs, git, history, pty, recovery, shell, vibrancy, workspace};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
@@ -291,6 +291,7 @@ pub fn run() {
             fs::file::fs_read_file,
             fs::assets::asset_grant,
             fs::assets::asset_revoke,
+            fs::assets::asset_revoke_scope,
             fs::file::fs_write_file,
             fs::file::fs_stat,
             fs::file::fs_file_revision,
@@ -377,6 +378,11 @@ pub fn run() {
             vibrancy::window_backdrop_kind,
             vibrancy::window_set_backdrop,
             modules::window_presentation::window_presentation_state,
+            recovery::recovery_list,
+            recovery::recovery_put,
+            recovery::recovery_remove,
+            recovery::recovery_usage,
+            recovery::recovery_location,
             #[cfg(feature = "bench")]
             modules::bench::bench_config,
             #[cfg(feature = "bench")]

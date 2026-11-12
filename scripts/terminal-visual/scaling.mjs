@@ -11,6 +11,44 @@ import { createServer } from "vite";
 
 const out = process.env.TERAX_VISUAL_OUT ?? await fs.mkdtemp(path.join(os.tmpdir(), "terax-scaling-"));
 process.env.TERAX_VISUAL_OUT = out;
+
+// The gate compares every renderer the product ships. A platform that cannot provide one of them
+// (software WebGPU destroys its device before this harness can read it back on Linux) runs the
+// rest and states the gap; it never silently narrows the gate. `TERAX_VISUAL_RENDERERS_GAP` is the
+// sentence that ends up in `scaling.json` and in the CI logs.
+const DEFAULT_RENDERERS = ["webgl", "webgpu"];
+
+function selectRenderers() {
+  const requested = (process.env.TERAX_VISUAL_RENDERERS ?? DEFAULT_RENDERERS.join(","))
+    .split(",")
+    .map((name) => name.trim())
+    .filter(Boolean);
+  assert.ok(requested.length > 0, "TERAX_VISUAL_RENDERERS names no renderer");
+  for (const name of requested) {
+    assert.ok(DEFAULT_RENDERERS.includes(name), `unknown renderer in TERAX_VISUAL_RENDERERS: ${name}`);
+  }
+  const missing = DEFAULT_RENDERERS.filter((name) => !requested.includes(name));
+  // WebGPU parity is measured against the WebGL texture, so the fallback must be compared too.
+  assert.ok(
+    !requested.includes("webgpu") || requested.includes("webgl"),
+    "webgpu parity needs the webgl reference, so webgl cannot be dropped",
+  );
+  const gap = (process.env.TERAX_VISUAL_RENDERERS_GAP ?? "").trim();
+  if (missing.length > 0) {
+    // A short or empty reason would let the gap disappear into a log nobody reads.
+    assert.ok(
+      gap.length >= 20,
+      `TERAX_VISUAL_RENDERERS drops ${missing.join(", ")}, so TERAX_VISUAL_RENDERERS_GAP must explain why`,
+    );
+    console.warn(`RENDERER GAP: not compared ${missing.join(", ")} - ${gap}`);
+  } else {
+    assert.equal(gap, "", "TERAX_VISUAL_RENDERERS_GAP is set but every renderer is being compared");
+  }
+  return { renderers: requested, gap: missing.length > 0 ? { missing, reason: gap } : null };
+}
+
+const selection = selectRenderers();
+
 const server = await createServer({
   configFile: fileURLToPath(new URL("./vite.config.ts", import.meta.url)),
   server: { host: "127.0.0.1", port: 0 },
@@ -56,7 +94,7 @@ try {
     const deadline = setTimeout(() => void browser.close(), 60_000);
     try {
       const references = [];
-      for (const renderer of ["webgl", "webgpu"]) {
+      for (const renderer of selection.renderers) {
         const page = await browser.newPage({ viewport: { width: 1100, height: 720 }, deviceScaleFactor: dpr });
         const pageErrors = [];
         page.on("console", (message) => {
@@ -119,8 +157,15 @@ try {
       await browser.close();
     }
   }
-  await fs.writeFile(path.join(out, "scaling.json"), JSON.stringify(reports, null, 2));
+  await fs.writeFile(path.join(out, "scaling.json"), JSON.stringify({
+    renderers: selection.renderers,
+    gap: selection.gap,
+    reports,
+  }, null, 2));
   assert.deepEqual(failures, [], `composited pixel regression; captures: ${out}`);
+  if (selection.gap) {
+    console.log(`RENDERER GAP RECORDED: ${selection.gap.missing.join(", ")} - ${selection.gap.reason}`);
+  }
   console.log(`SCALING CHECK PASSED; captures: ${out}`);
 } finally {
   await server.close();

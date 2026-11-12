@@ -25,6 +25,7 @@ If a guide conflicts with `TERAX.md`, `TERAX.md` wins.
 
 ## Terminal migration and validation
 
+- [Terminal checks: Linux coverage and Ghostty updates](architecture/terminal-checks.md) - every terminal check, the command that runs it on Linux, the platform gaps, and the Ghostty revision update procedure.
 - [Release readiness](architecture/ghostty-release-readiness.md) - release gates, verification evidence, and remaining platform validation.
 - [Resource efficiency](architecture/ghostty-resource-efficiency.md) - resource ownership, measurement tools, results, and limitations.
 - [Final resource audit, 2026-09-07](architecture/ghostty-final-audit-2026-09-07.md) - fixes and measurements at that checkpoint, with raw profile and soak data.

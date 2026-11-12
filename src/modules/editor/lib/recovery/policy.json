@@ -1,0 +1,6 @@
+{
+  "note": "Recovery-draft storage policy. One source for the frontend quota/coverage checks and for the native store, which include_str!s this file. Both limits are measured on the bytes of a stored record (the draft text plus a small JSON envelope): what the private recovery directory actually spends. perFileBytes bounds one buffer's record; totalBytes bounds the whole recovery directory. A draft over the per-file limit is refused for that buffer; exceeding the total pauses recovery for every buffer instead of evicting an unrecovered draft.",
+  "perFileBytes": 10485760,
+  "totalBytes": 104857600,
+  "directory": "recovery"
+}

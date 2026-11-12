@@ -150,6 +150,12 @@ export type Preferences = {
   shortcuts: Record<ShortcutId, KeyBinding[]>;
   editorAutoSave: boolean;
   editorAutoSaveDelay: number;
+  /**
+   * Opt-in durable recovery of unsaved text. Off by default: enabling it is an
+   * explicit choice with the private storage policy disclosed in the editor
+   * settings section, and it is separate from autosave of the original file.
+   */
+  editorRecoveryDrafts: boolean;
   editorFormatOnSave: boolean;
   editorFormatter: EditorFormatter;
   /** languageResolver id -> formatter, overriding the global default. */
@@ -209,6 +215,7 @@ const KEY_DEFAULT_WORKSPACE_ENV = "defaultWorkspaceEnv";
 const KEY_SHORTCUTS = "shortcuts";
 const KEY_EDITOR_AUTO_SAVE = "editorAutoSave";
 const KEY_EDITOR_AUTO_SAVE_DELAY = "editorAutoSaveDelay";
+const KEY_EDITOR_RECOVERY_DRAFTS = "editorRecoveryDrafts";
 const KEY_EDITOR_FORMAT_ON_SAVE = "editorFormatOnSave";
 const KEY_EDITOR_FORMATTER = "editorFormatter";
 const KEY_EDITOR_FORMATTER_BY_LANG = "editorFormatterByLang";
@@ -283,6 +290,8 @@ export const DEFAULT_PREFERENCES: Preferences = {
   shortcuts: {} as Record<ShortcutId, KeyBinding[]>,
   editorAutoSave: false,
   editorAutoSaveDelay: 1000,
+  // Recovery drafts are opt-in; the disclosure lives in EditorSection.
+  editorRecoveryDrafts: false,
   editorFormatOnSave: false,
   editorFormatter: "custom",
   editorFormatterByLang: {},
@@ -443,6 +452,9 @@ export async function loadPreferences(): Promise<Preferences> {
       get<number>(KEY_EDITOR_AUTO_SAVE_DELAY) ??
         DEFAULT_PREFERENCES.editorAutoSaveDelay,
     ),
+    editorRecoveryDrafts:
+      get<boolean>(KEY_EDITOR_RECOVERY_DRAFTS) ??
+      DEFAULT_PREFERENCES.editorRecoveryDrafts,
     editorFormatOnSave:
       get<boolean>(KEY_EDITOR_FORMAT_ON_SAVE) ??
       DEFAULT_PREFERENCES.editorFormatOnSave,
@@ -682,6 +694,10 @@ export async function setEditorAutoSaveDelay(value: number): Promise<void> {
   await writePref(KEY_EDITOR_AUTO_SAVE_DELAY, clampAutoSaveDelay(value));
 }
 
+export async function setEditorRecoveryDrafts(value: boolean): Promise<void> {
+  await writePref(KEY_EDITOR_RECOVERY_DRAFTS, value === true);
+}
+
 export async function setEditorFormatOnSave(value: boolean): Promise<void> {
   await writePref(KEY_EDITOR_FORMAT_ON_SAVE, value);
 }
@@ -776,6 +792,7 @@ export async function onPreferencesChange(
     [KEY_SHORTCUTS]: "shortcuts",
     [KEY_EDITOR_AUTO_SAVE]: "editorAutoSave",
     [KEY_EDITOR_AUTO_SAVE_DELAY]: "editorAutoSaveDelay",
+    [KEY_EDITOR_RECOVERY_DRAFTS]: "editorRecoveryDrafts",
     [KEY_EDITOR_FORMAT_ON_SAVE]: "editorFormatOnSave",
     [KEY_EDITOR_FORMATTER]: "editorFormatter",
     [KEY_EDITOR_FORMATTER_BY_LANG]: "editorFormatterByLang",

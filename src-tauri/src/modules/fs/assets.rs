@@ -1,34 +1,272 @@
+//! Bounded delivery for automatic preview assets.
+//!
+//! The asset scheme is the only native path that serves a file to document
+//! content (Markdown images, media elements, the PDF frame). Its job is to be
+//! a *boundary*, not a file server:
+//!
+//! - a grant names one file or one directory, owned by a webview and (from
+//!   issue #25 on) by the tab scope that asked for it;
+//! - every request re-canonicalizes the requested path, re-applies the secret
+//!   policy, and re-checks the *opened descriptor* against the grant, so a
+//!   symlink or replaced target cannot step outside it;
+//! - a response is never an unexamined whole-file allocation: a range is
+//!   shortened to one chunk, a whole-file read above the approved read ceiling
+//!   is refused unless the caller made the explicit "load anyway" choice, and
+//!   outstanding deliveries are bounded by both count and bytes.
+//!
+//! The ceilings come from the approved contract in
+//! `src/modules/preview/lib/limits.ts` (issue #4). `DeliveryLimits` mirrors
+//! them; `assetDelivery.test.ts` reads this file and fails if they drift.
+
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use tauri::http::{Request, Response};
 use tauri::{Manager, Runtime, UriSchemeContext, UriSchemeResponder};
 
 use super::access::opened_path;
+use super::file::{FORCE_MAX_READ_BYTES, MAX_READ_BYTES};
 use crate::modules::workspace::{resolve_path, WorkspaceEnv};
+
+/// The approved concurrent decoded-viewer ceiling
+/// (`MAX_CONCURRENT_DECODED_VIEWERS` in `src/modules/preview/lib/limits.ts`).
+/// A decoded viewer needs at most one native delivery in flight, so the same
+/// approved count bounds outstanding deliveries.
+const MAX_OUTSTANDING_DELIVERIES: usize = 4;
+
+/// How a delivery is bounded. Production uses [`DeliveryLimits::approved`];
+/// tests pass a small table so bounded allocation is asserted without
+/// multi-megabyte fixtures.
+#[derive(Clone, Copy)]
+struct DeliveryLimits {
+    /// Whole-file (non-range) ceiling: the approved 10 MiB normal read.
+    read_bytes: u64,
+    /// Explicit "load anyway" ceiling: the approved 50 MiB override.
+    override_bytes: u64,
+    /// Most bytes one response may carry, so a range client is served in
+    /// bounded chunks instead of a whole file. A tenth of the normal read
+    /// ceiling — delivery granularity, not a second approved ceiling.
+    chunk_bytes: u64,
+    /// Concurrent deliveries.
+    outstanding: usize,
+    /// Bytes reserved by concurrent deliveries. At least one approved
+    /// override read must fit, or the explicit "load anyway" could never be
+    /// served; the bound is shared, so four maximum reads do not run at once.
+    outstanding_bytes: u64,
+    /// How long a delivery may wait for room before failing explicitly.
+    wait: Duration,
+}
+
+impl DeliveryLimits {
+    fn approved() -> Self {
+        Self {
+            read_bytes: MAX_READ_BYTES,
+            override_bytes: FORCE_MAX_READ_BYTES,
+            chunk_bytes: MAX_READ_BYTES / 10,
+            outstanding: MAX_OUTSTANDING_DELIVERIES,
+            outstanding_bytes: FORCE_MAX_READ_BYTES,
+            wait: Duration::from_secs(5),
+        }
+    }
+}
+
+/// A refusal. Every variant names what the caller can do instead; the response
+/// carries the code and the alternatives as headers so a refusal is observable
+/// without parsing prose.
+#[derive(Debug)]
+struct AssetError {
+    status: u16,
+    code: &'static str,
+    message: String,
+    alternatives: Vec<&'static str>,
+    /// Present when an explicit "load anyway" request could reach this file.
+    override_allowed: bool,
+    /// Present when the asset's size is known.
+    size: Option<u64>,
+}
+
+impl AssetError {
+    fn new(status: u16, code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            code,
+            message: message.into(),
+            alternatives: Vec::new(),
+            override_allowed: false,
+            size: None,
+        }
+    }
+
+    fn with_alternative(mut self, alternative: &'static str) -> Self {
+        self.alternatives.push(alternative);
+        self
+    }
+
+    fn too_large(bytes: u64, limits: &DeliveryLimits) -> Self {
+        let (message, override_allowed) = if bytes > limits.override_bytes {
+            (
+                format!(
+                    "This asset is {bytes} bytes, above the {} byte ceiling an explicit open can reach. Open it in an external viewer.",
+                    limits.override_bytes
+                ),
+                false,
+            )
+        } else {
+            (
+                format!(
+                    "This asset is {bytes} bytes, above the {} byte preview read limit. Load it anyway (up to {} bytes) or open it in an external viewer.",
+                    limits.read_bytes, limits.override_bytes
+                ),
+                true,
+            )
+        };
+        let mut error = Self::new(413, "too-large", message);
+        error.alternatives = vec!["open-externally"];
+        error.override_allowed = override_allowed;
+        error.size = Some(bytes);
+        error
+    }
+
+    fn revoked() -> Self {
+        Self::new(
+            409,
+            "revoked",
+            "The preview grant was revoked while the asset was being read, so nothing was served.",
+        )
+        .with_alternative("open-externally")
+    }
+
+    fn busy() -> Self {
+        Self::new(
+            503,
+            "too-many-reads",
+            "Too many asset reads are already in flight. Retry when the current previews have finished.",
+        )
+    }
+
+    fn io(error: std::io::Error) -> Self {
+        let status = match error.kind() {
+            std::io::ErrorKind::NotFound => 404,
+            std::io::ErrorKind::PermissionDenied => 403,
+            _ => 500,
+        };
+        let code = match status {
+            404 => "not-found",
+            403 => "unreadable",
+            _ => "unreadable",
+        };
+        Self::new(status, code, error.to_string()).with_alternative("open-externally")
+    }
+
+    fn response(&self) -> Response<Vec<u8>> {
+        let mut body = self.message.clone();
+        if !self.alternatives.is_empty() {
+            body.push_str("\n\nalternatives: ");
+            body.push_str(&self.alternatives.join(", "));
+        }
+        let mut response = response(
+            self.status,
+            "text/plain; charset=utf-8",
+            body.into_bytes(),
+        );
+        let headers = response.headers_mut();
+        headers.insert("X-Terax-Asset-Error", header(self.code));
+        if self.override_allowed {
+            headers.insert("X-Terax-Asset-Override", header("1"));
+        }
+        if let Some(size) = self.size {
+            headers.insert("X-Terax-Asset-Size", header(size.to_string()));
+        }
+        if self.status == 413 {
+            headers.insert("Accept-Ranges", header("bytes"));
+        }
+        if self.status == 503 {
+            headers.insert("Retry-After", header("1"));
+        }
+        if !self.alternatives.is_empty() {
+            headers.insert("X-Terax-Asset-Alternatives", header(self.alternatives.join(",")));
+        }
+        response
+    }
+}
+
+fn header(value: impl AsRef<str>) -> tauri::http::HeaderValue {
+    value
+        .as_ref()
+        .parse()
+        .expect("static asset header value")
+}
 
 #[derive(Clone)]
 struct Grant {
     owner: String,
+    /// The tab scope that asked for this grant. A closed tab revokes its own
+    /// scopes; a grant made before the close may not install.
+    scope: Option<String>,
     root: PathBuf,
     directory: bool,
     workspace: WorkspaceEnv,
 }
 
 #[derive(Default)]
-pub struct AssetGrants(Mutex<GrantState>);
-
-#[derive(Default)]
 struct GrantState {
     grants: HashMap<String, Grant>,
+    /// Bumped on every owner-wide revoke (page reload, window close).
     generations: HashMap<String, u64>,
+    /// Scope generations keyed by owner and scope (tab close).
+    scopes: HashMap<String, u64>,
+    /// Deliveries currently reading; see `DeliveryLimits`.
+    in_flight: usize,
+    in_flight_bytes: u64,
+}
+
+impl GrantState {
+    fn owner_generation(&self, owner: &str) -> u64 {
+        *self.generations.get(owner).unwrap_or(&0)
+    }
+
+    fn scope_generation(&self, owner: &str, scope: Option<&str>) -> u64 {
+        scope
+            .and_then(|scope| self.scopes.get(&scope_key(owner, scope)))
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+fn scope_key(owner: &str, scope: &str) -> String {
+    format!("{owner}\u{1f}{scope}")
+}
+
+/// One in-flight delivery. Dropping it returns the reserved count and bytes, so
+/// every exit path (including a refusal after reservation) releases its slot.
+struct Delivery<'a> {
+    grants: &'a AssetGrants,
+    bytes: u64,
+}
+
+impl Drop for Delivery<'_> {
+    fn drop(&mut self) {
+        let mut state = self.grants.state.lock().unwrap();
+        state.in_flight = state.in_flight.saturating_sub(1);
+        state.in_flight_bytes = state.in_flight_bytes.saturating_sub(self.bytes);
+        self.grants.released.notify_all();
+    }
+}
+
+#[derive(Default)]
+pub struct AssetGrants {
+    state: Mutex<GrantState>,
+    released: Condvar,
 }
 
 impl AssetGrants {
+    /// Drops every grant this webview owns. A queued grant request that started
+    /// before this call cannot install afterwards.
     pub fn revoke_owner(&self, owner: &str) {
-        let mut state = self.0.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
         *state.generations.entry(owner.into()).or_default() += 1;
         state.grants.retain(|_, grant| grant.owner != owner);
     }
@@ -36,19 +274,35 @@ impl AssetGrants {
     /// Live grants across every webview (bench observation, issue #30).
     #[cfg(feature = "bench")]
     pub fn active(&self) -> usize {
-        self.0.lock().unwrap().grants.len()
+        self.state.lock().unwrap().grants.len()
+    }
+
+    /// Drops one tab scope's grants. Grants for other tabs in the same webview
+    /// stay usable.
+    pub fn revoke_scope(&self, owner: &str, scope: &str) {
+        let mut state = self.state.lock().unwrap();
+        *state.scopes.entry(scope_key(owner, scope)).or_default() += 1;
+        state
+            .grants
+            .retain(|_, grant| !(grant.owner == owner && grant.scope.as_deref() == Some(scope)));
     }
 
     fn generation(&self, owner: &str) -> u64 {
-        *self.0.lock().unwrap().generations.get(owner).unwrap_or(&0)
+        self.state.lock().unwrap().owner_generation(owner)
+    }
+
+    fn scope_generation(&self, owner: &str, scope: Option<&str>) -> u64 {
+        self.state.lock().unwrap().scope_generation(owner, scope)
     }
 
     fn grant(
         &self,
         owner: String,
+        scope: Option<String>,
         path: &str,
         workspace: WorkspaceEnv,
         generation: u64,
+        scope_generation: u64,
     ) -> Result<String, String> {
         let root =
             std::fs::canonicalize(resolve_path(path, &workspace)).map_err(|e| e.to_string())?;
@@ -59,9 +313,11 @@ impl AssetGrants {
         if !directory && media_type(&root).is_none() {
             return Err("only media files can be granted".into());
         }
-        let mut state = self.0.lock().unwrap();
-        if *state.generations.get(&owner).unwrap_or(&0) != generation {
-            return Err("media view was unloaded".into());
+        let mut state = self.state.lock().unwrap();
+        if state.owner_generation(&owner) != generation
+            || state.scope_generation(&owner, scope.as_deref()) != scope_generation
+        {
+            return Err("the asset view was unloaded".into());
         }
         let grants = &mut state.grants;
         if grants.len() >= 1024 {
@@ -77,12 +333,71 @@ impl AssetGrants {
             token.clone(),
             Grant {
                 owner,
+                scope,
                 root,
                 directory,
                 workspace,
             },
         );
         Ok(token)
+    }
+
+    /// True while the token describes the same grant the delivery started with.
+    /// A revoke during the read therefore aborts the response instead of
+    /// serving a token the tab no longer owns.
+    fn grant_current(
+        &self,
+        owner: &str,
+        token: &str,
+        generation: u64,
+        scope_generation: u64,
+    ) -> bool {
+        let state = self.state.lock().unwrap();
+        let Some(grant) = state.grants.get(token) else {
+            return false;
+        };
+        grant.owner == owner
+            && state.owner_generation(owner) == generation
+            && state.scope_generation(owner, grant.scope.as_deref()) == scope_generation
+    }
+
+    /// Reserves one delivery. Waits for a slot for `limits.wait` so a burst of
+    /// previews queues instead of failing, then refuses explicitly. A request
+    /// larger than the whole byte budget never waits.
+    fn reserve(&self, bytes: u64, limits: &DeliveryLimits) -> Result<Delivery<'_>, AssetError> {
+        if bytes > limits.outstanding_bytes {
+            return Err(AssetError::busy());
+        }
+        let deadline = Instant::now() + limits.wait;
+        let mut state = self.state.lock().unwrap();
+        loop {
+            if state.in_flight < limits.outstanding
+                && state.in_flight_bytes + bytes <= limits.outstanding_bytes
+            {
+                break;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(AssetError::busy());
+            }
+            let (next, _) = self
+                .released
+                .wait_timeout(state, deadline - now)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = next;
+        }
+        state.in_flight += 1;
+        state.in_flight_bytes += bytes;
+        Ok(Delivery {
+            grants: self,
+            bytes,
+        })
+    }
+
+    #[cfg(test)]
+    fn outstanding(&self) -> (usize, u64) {
+        let state = self.state.lock().unwrap();
+        (state.in_flight, state.in_flight_bytes)
     }
 }
 
@@ -92,15 +407,20 @@ pub async fn asset_grant(
     webview: tauri::Webview,
     path: String,
     workspace: Option<WorkspaceEnv>,
+    scope: Option<String>,
 ) -> Result<String, String> {
     let owner = webview.label().to_owned();
-    let generation = app.state::<AssetGrants>().generation(&owner);
+    let grants = app.state::<AssetGrants>();
+    let generation = grants.generation(&owner);
+    let scope_generation = grants.scope_generation(&owner, scope.as_deref());
     super::blocking(move || {
         app.state::<AssetGrants>().grant(
             owner,
+            scope,
             &path,
             WorkspaceEnv::from_option(workspace),
             generation,
+            scope_generation,
         )
     })
     .await
@@ -108,7 +428,7 @@ pub async fn asset_grant(
 
 #[tauri::command]
 pub fn asset_revoke(state: tauri::State<AssetGrants>, webview: tauri::Webview, token: String) {
-    let mut state = state.0.lock().unwrap();
+    let mut state = state.state.lock().unwrap();
     let grants = &mut state.grants;
     if grants
         .get(&token)
@@ -116,6 +436,17 @@ pub fn asset_revoke(state: tauri::State<AssetGrants>, webview: tauri::Webview, t
     {
         grants.remove(&token);
     }
+}
+
+/// Revokes every grant a tab scope owns. A late `asset_grant` for the same
+/// scope cannot install: the scope generation already moved.
+#[tauri::command]
+pub fn asset_revoke_scope(
+    state: tauri::State<AssetGrants>,
+    webview: tauri::Webview,
+    scope: String,
+) {
+    state.revoke_scope(webview.label(), &scope);
 }
 
 pub fn serve<R: Runtime>(
@@ -126,11 +457,24 @@ pub fn serve<R: Runtime>(
     let app = context.app_handle().clone();
     let owner = context.webview_label().to_owned();
     tauri::async_runtime::spawn_blocking(move || {
-        let result = respond(&app.state::<AssetGrants>(), &owner, &request);
+        let result = deliver(
+            &app.state::<AssetGrants>(),
+            &owner,
+            &request,
+            &DeliveryLimits::approved(),
+            &mut |_| {},
+        );
+        // The PDF acceptance scenario reads what the webview actually asked for from here; the
+        // page cannot see it (separate cross-origin document, no `asset:` in `connect-src`).
         #[cfg(feature = "bench")]
-        super::bench_probe::record(&owner, &request, &result);
-        let response =
-            result.unwrap_or_else(|_| response(403, "text/plain", Vec::new()));
+        super::bench_probe::record(
+            &owner,
+            &request,
+            &result
+                .as_ref()
+                .map_err(|error| (error.status, error.message.clone())),
+        );
+        let response = result.unwrap_or_else(|error| error.response());
         responder.respond(response);
     });
 }
@@ -150,45 +494,88 @@ fn response(status: u16, mime: &str, body: Vec<u8>) -> Response<Vec<u8>> {
         .expect("static asset response")
 }
 
+/// Where a delivery is, for the cancellation test: a revoke injected here must
+/// abort the response instead of serving bytes from a grant that just closed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DeliveryStage {
+    GrantResolved,
+    Opened,
+    Reserved,
+}
+
 fn respond(
     grants: &AssetGrants,
     owner: &str,
     request: &Request<Vec<u8>>,
-) -> Result<Response<Vec<u8>>, String> {
+    limits: &DeliveryLimits,
+) -> Response<Vec<u8>> {
+    deliver(grants, owner, request, limits, &mut |_| {}).unwrap_or_else(|error| error.response())
+}
+
+fn deliver(
+    grants: &AssetGrants,
+    owner: &str,
+    request: &Request<Vec<u8>>,
+    limits: &DeliveryLimits,
+    on_stage: &mut dyn FnMut(DeliveryStage),
+) -> Result<Response<Vec<u8>>, AssetError> {
     if request.method() != "GET" && request.method() != "HEAD" {
-        return Err("unsupported method".into());
+        return Err(AssetError::new(
+            405,
+            "method-not-allowed",
+            "Only GET and HEAD are served for preview assets.",
+        ));
     }
-    let token = request
-        .uri()
-        .query()
-        .and_then(|query| query.strip_prefix("token="))
-        .ok_or("missing grant")?;
-    let grant = grants
-        .0
-        .lock()
-        .unwrap()
-        .grants
-        .get(token)
-        .filter(|grant| grant.owner == owner)
-        .cloned()
-        .ok_or("invalid grant")?;
-    let path = percent_encoding::percent_decode_str(
+    let query = request.uri().query().unwrap_or("");
+    let token = query_param(query, "token")
+        .ok_or_else(|| AssetError::new(403, "missing-grant", "This asset URL has no grant token."))?;
+    let override_requested = query_param(query, "override").as_deref() == Some("1");
+
+    let (grant, generation, scope_generation) = {
+        let state = grants.state.lock().unwrap();
+        let grant = state
+            .grants
+            .get(&token)
+            .filter(|grant| grant.owner == owner)
+            .cloned()
+            .ok_or_else(|| {
+                AssetError::new(
+                    403,
+                    "invalid-grant",
+                    "This preview grant is unknown, expired or belongs to another view.",
+                )
+            })?;
+        let generation = state.owner_generation(owner);
+        let scope_generation = state.scope_generation(owner, grant.scope.as_deref());
+        (grant, generation, scope_generation)
+    };
+    on_stage(DeliveryStage::GrantResolved);
+
+    let requested = percent_encoding::percent_decode_str(
         request
             .uri()
             .path()
             .strip_prefix('/')
-            .ok_or("invalid path")?,
+            .ok_or_else(|| AssetError::new(400, "invalid-path", "The asset URL has no path."))?,
     )
     .decode_utf8()
-    .map_err(|e| e.to_string())?;
-    let path =
-        std::fs::canonicalize(resolve_path(&path, &grant.workspace)).map_err(|e| e.to_string())?;
+    .map_err(|error| AssetError::new(400, "invalid-path", error.to_string()))?;
+    // Canonicalize the spelling the renderer sent; the descriptor check below
+    // is the authoritative one.
+    let canonical = std::fs::canonicalize(resolve_path(&requested, &grant.workspace))
+        .map_err(AssetError::io)?;
     if grant.directory {
-        super::access_policy::readable(&path)?;
+        super::access_policy::readable(&canonical)
+            .map_err(|error| AssetError::new(403, "sensitive-path", error))?;
     }
-    if !within(&path, &grant) {
-        return Err("outside media grant".into());
+    if !within(&canonical, &grant) {
+        return Err(AssetError::new(
+            403,
+            "outside-grant",
+            "The requested path is outside the grant the preview was given.",
+        ));
     }
+
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -196,58 +583,126 @@ fn respond(
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NONBLOCK);
     }
-    let mut file = options.open(&path).map_err(|e| e.to_string())?;
-    let actual = opened_path(&file)?;
+    let mut file = options.open(&canonical).map_err(AssetError::io)?;
+    // The descriptor is what is read, so a path swapped after the canonical
+    // check above cannot redirect the response.
+    let actual = opened_path(&file)
+        .map_err(|error| AssetError::new(500, "unreadable", error))?;
     if grant.directory {
-        super::access_policy::readable(&actual)?;
+        super::access_policy::readable(&actual)
+            .map_err(|error| AssetError::new(403, "sensitive-path", error))?;
     }
     if !within(&actual, &grant) {
-        return Err("opened asset escaped its grant".into());
+        return Err(AssetError::new(
+            403,
+            "outside-grant",
+            "The opened asset escaped its grant boundary.",
+        ));
     }
-    let mime = media_type(&actual).ok_or("script-capable documents are not media")?;
-    let meta = file.metadata().map_err(|e| e.to_string())?;
+    let mime = media_type(&actual).ok_or_else(|| {
+        AssetError::new(
+            415,
+            "unsupported-media",
+            "This file type is not a previewable asset.",
+        )
+        .with_alternative("open-externally")
+    })?;
+    let meta = file.metadata().map_err(AssetError::io)?;
     if !meta.is_file() {
-        return Err("asset is not a regular file".into());
+        return Err(AssetError::new(
+            415,
+            "unsupported-media",
+            "This asset is not a regular file.",
+        ));
     }
     let size = meta.len();
-    let range = request
-        .headers()
-        .get("Range")
-        .map(|value| {
-            let ranges =
-                http_range::HttpRange::parse(value.to_str().map_err(|e| e.to_string())?, size)
-                    .map_err(|_| "invalid media range".to_string())?;
+    on_stage(DeliveryStage::Opened);
+
+    let range = match request.headers().get("Range") {
+        Some(value) => {
+            let value = value
+                .to_str()
+                .map_err(|_| AssetError::new(416, "invalid-range", "The range is not text."))?;
+            let ranges = http_range::HttpRange::parse(value, size).map_err(|_| {
+                let mut error =
+                    AssetError::new(416, "invalid-range", "The requested range does not exist.");
+                error.size = Some(size);
+                error
+            })?;
             if ranges.len() != 1 {
-                return Err("one media range is required".into());
+                let mut error =
+                    AssetError::new(416, "invalid-range", "One asset range is required.");
+                error.size = Some(size);
+                return Err(error);
             }
-            Ok::<_, String>((ranges[0].start, ranges[0].length.min(1024 * 1024)))
-        })
-        .transpose()?;
-    let (start, length) = range.unwrap_or((0, size));
-    let mut body = Vec::new();
-    if request.method() != "HEAD" {
-        file.seek(SeekFrom::Start(start))
-            .map_err(|e| e.to_string())?;
-        file.take(length)
-            .read_to_end(&mut body)
-            .map_err(|e| e.to_string())?;
+            let range = ranges[0];
+            // A media element opens with `bytes=0-`; serve one chunk and let it
+            // ask for the next instead of allocating the whole file.
+            Some((range.start, range.length.min(limits.chunk_bytes)))
+        }
+        None => None,
+    };
+
+    let planned = match range {
+        Some((_, length)) => length,
+        None if size > limits.override_bytes => return Err(AssetError::too_large(size, limits)),
+        None if size > limits.read_bytes && !override_requested => {
+            return Err(AssetError::too_large(size, limits));
+        }
+        None => size,
+    };
+
+    let _delivery = grants.reserve(planned, limits)?;
+    on_stage(DeliveryStage::Reserved);
+    if !grants.grant_current(owner, &token, generation, scope_generation) {
+        return Err(AssetError::revoked());
     }
-    let mut result = response(if range.is_some() { 206 } else { 200 }, mime, body);
-    result
-        .headers_mut()
-        .insert("Accept-Ranges", "bytes".parse().unwrap());
-    result
-        .headers_mut()
-        .insert("Content-Length", length.to_string().parse().unwrap());
+
+    let (start, mut length) = range.unwrap_or((0, planned));
+    let mut body = Vec::new();
+    if request.method() != "HEAD" && planned > 0 {
+        file.seek(SeekFrom::Start(start)).map_err(AssetError::io)?;
+        file.take(planned)
+            .read_to_end(&mut body)
+            .map_err(AssetError::io)?;
+        length = body.len() as u64;
+    }
+
+    let status = if range.is_some() { 206 } else { 200 };
+    let mut result = response(status, mime, body);
+    let headers = result.headers_mut();
+    headers.insert("Accept-Ranges", header("bytes"));
+    headers.insert("Content-Length", header(length.to_string()));
+    headers.insert("X-Terax-Asset-Size", header(size.to_string()));
     if range.is_some() {
-        result.headers_mut().insert(
-            "Content-Range",
-            format!("bytes {start}-{}/{size}", start + length - 1)
-                .parse()
-                .unwrap(),
-        );
+        if length > 0 {
+            headers.insert(
+                "Content-Range",
+                header(format!("bytes {start}-{}/{size}", start + length - 1)),
+            );
+        } else {
+            headers.insert("Content-Range", header(format!("bytes */{size}")));
+        }
     }
     Ok(result)
+}
+
+/// One decoded query parameter. `token` is not the only parameter any more, so
+/// the query is parsed as pairs rather than by prefix.
+fn query_param(query: &str, name: &str) -> Option<String> {
+    query.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        let key = percent_encoding::percent_decode_str(key).decode_utf8().ok()?;
+        if key != name {
+            return None;
+        }
+        Some(
+            percent_encoding::percent_decode_str(value)
+                .decode_utf8()
+                .ok()?
+                .into_owned(),
+        )
+    })
 }
 
 fn within(path: &Path, grant: &Grant) -> bool {
@@ -295,6 +750,7 @@ fn media_type(path: &Path) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     fn request(path: &Path, token: &str) -> Request<Vec<u8>> {
         let encoded = percent_encoding::utf8_percent_encode(
             &super::super::to_canon(path),
@@ -307,25 +763,120 @@ mod tests {
             .unwrap()
     }
 
+    fn overridden(mut request: Request<Vec<u8>>) -> Request<Vec<u8>> {
+        let uri = format!("{}&override=1", request.uri());
+        *request.uri_mut() = uri.parse().unwrap();
+        request
+    }
+
+    fn ranged(mut request: Request<Vec<u8>>, range: &str) -> Request<Vec<u8>> {
+        request
+            .headers_mut()
+            .insert("Range", range.parse().unwrap());
+        request
+    }
+
+    fn test_limits() -> DeliveryLimits {
+        DeliveryLimits {
+            read_bytes: 64,
+            override_bytes: 128,
+            chunk_bytes: 32,
+            outstanding: 2,
+            outstanding_bytes: 128,
+            wait: Duration::ZERO,
+        }
+    }
+
+    fn code(response: &Response<Vec<u8>>) -> &str {
+        response.headers()["X-Terax-Asset-Error"]
+            .to_str()
+            .unwrap()
+    }
+
     #[test]
     fn revocation_invalidates_queued_grants_but_allows_the_new_page() {
         let dir = tempfile::tempdir().unwrap();
         let grants = AssetGrants::default();
         let path = super::super::to_canon(dir.path());
         let queued = grants.generation("main");
+        let scope_queued = grants.scope_generation("main", Some("tab-1"));
         grants.revoke_owner("main");
-        assert!(grants
-            .grant("main".into(), &path, WorkspaceEnv::Local, queued)
-            .is_err());
-        assert!(grants.0.lock().unwrap().grants.is_empty());
         assert!(grants
             .grant(
                 "main".into(),
+                Some("tab-1".into()),
                 &path,
                 WorkspaceEnv::Local,
-                grants.generation("main")
+                queued,
+                scope_queued,
+            )
+            .is_err());
+        assert!(grants.state.lock().unwrap().grants.is_empty());
+        assert!(grants
+            .grant(
+                "main".into(),
+                Some("tab-1".into()),
+                &path,
+                WorkspaceEnv::Local,
+                grants.generation("main"),
+                grants.scope_generation("main", Some("tab-1")),
             )
             .is_ok());
+    }
+
+    #[test]
+    fn a_closed_tab_scope_revokes_its_grants_and_rejects_queued_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("one.png");
+        let second = dir.path().join("two.png");
+        for path in [&first, &second] {
+            std::fs::write(path, "SYNTHETIC_FIXTURE").unwrap();
+        }
+        let grants = AssetGrants::default();
+        let generation = grants.generation("main");
+        let queued_scope = grants.scope_generation("main", Some("tab-1"));
+        let doomed = grants
+            .grant(
+                "main".into(),
+                Some("tab-1".into()),
+                &super::super::to_canon(&first),
+                WorkspaceEnv::Local,
+                generation,
+                queued_scope,
+            )
+            .unwrap();
+        let surviving = grants
+            .grant(
+                "main".into(),
+                Some("tab-2".into()),
+                &super::super::to_canon(&second),
+                WorkspaceEnv::Local,
+                generation,
+                grants.scope_generation("main", Some("tab-2")),
+            )
+            .unwrap();
+
+        grants.revoke_scope("main", "tab-1");
+        assert_eq!(
+            respond(&grants, "main", &request(&first, &doomed), &test_limits()).status(),
+            403
+        );
+        assert_eq!(
+            respond(&grants, "main", &request(&second, &surviving), &test_limits()).status(),
+            200
+        );
+        // A grant request that was already in flight when the tab closed must
+        // not install a new token.
+        assert!(grants
+            .grant(
+                "main".into(),
+                Some("tab-1".into()),
+                &super::super::to_canon(&first),
+                WorkspaceEnv::Local,
+                generation,
+                queued_scope,
+            )
+            .is_err());
     }
 
     #[cfg(unix)]
@@ -334,7 +885,8 @@ mod tests {
         use std::os::unix::ffi::OsStrExt;
         let grant = Grant {
             owner: "main".into(),
-            root: PathBuf::from("/repo�"),
+            scope: None,
+            root: PathBuf::from("/repo\u{fffd}"),
             directory: true,
             workspace: WorkspaceEnv::Local,
         };
@@ -342,7 +894,7 @@ mod tests {
             Path::new(std::ffi::OsStr::from_bytes(b"/repo\xff/private.png")),
             &grant
         ));
-        assert!(within(Path::new("/repo�/safe.png"), &grant));
+        assert!(within(Path::new("/repo\u{fffd}/safe.png"), &grant));
     }
 
     #[test]
@@ -356,28 +908,91 @@ mod tests {
         let token = grants
             .grant(
                 "main".into(),
+                None,
                 &super::super::to_canon(dir.path()),
                 WorkspaceEnv::Local,
                 0,
+                0,
             )
             .unwrap();
-        assert!(respond(&grants, "main", &request(&image, &token)).is_err());
+        let limits = test_limits();
+        assert_eq!(
+            respond(&grants, "main", &request(&image, &token), &limits).status(),
+            403
+        );
         #[cfg(unix)]
         {
             let link = dir.path().join("innocent.svg");
             std::os::unix::fs::symlink(&image, &link).unwrap();
-            assert!(respond(&grants, "main", &request(&link, &token)).is_err());
+            assert_eq!(
+                respond(&grants, "main", &request(&link, &token), &limits).status(),
+                403
+            );
         }
         // Explicitly selected media retains the user's direct file grant.
         let direct = grants
             .grant(
                 "main".into(),
+                None,
                 &super::super::to_canon(&image),
                 WorkspaceEnv::Local,
                 0,
+                0,
             )
             .unwrap();
-        assert!(respond(&grants, "main", &request(&image, &direct)).is_ok());
+        assert_eq!(
+            respond(&grants, "main", &request(&image, &direct), &limits).status(),
+            200
+        );
+    }
+
+    #[test]
+    fn symlinks_that_leave_the_grant_boundary_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("private.png");
+        std::fs::write(&secret, "SYNTHETIC_PRIVATE_MEDIA").unwrap();
+        let grants = AssetGrants::default();
+        let token = grants
+            .grant(
+                "main".into(),
+                None,
+                &super::super::to_canon(dir.path()),
+                WorkspaceEnv::Local,
+                0,
+                0,
+            )
+            .unwrap();
+        let limits = test_limits();
+        #[cfg(unix)]
+        {
+            let linked = dir.path().join("escape.png");
+            std::os::unix::fs::symlink(&secret, &linked).unwrap();
+            let response = respond(&grants, "main", &request(&linked, &token), &limits);
+            assert_eq!(response.status(), 403);
+            assert_eq!(code(&response), "outside-grant");
+            assert!(!String::from_utf8_lossy(response.body()).contains("SYNTHETIC_PRIVATE_MEDIA"));
+
+            // A replaced grant root is re-canonicalized per request, so the
+            // replacement cannot be read through the old grant either.
+            let replaced = tempfile::tempdir().unwrap();
+            let token = grants
+                .grant(
+                    "main".into(),
+                    None,
+                    &super::super::to_canon(replaced.path()),
+                    WorkspaceEnv::Local,
+                    0,
+                    0,
+                )
+                .unwrap();
+            std::fs::remove_dir_all(replaced.path()).unwrap();
+            std::os::unix::fs::symlink(outside.path(), replaced.path()).unwrap();
+            let installed = replaced.path().join("private.png");
+            let response = respond(&grants, "main", &request(&installed, &token), &limits);
+            assert_eq!(response.status(), 403);
+            assert_eq!(code(&response), "outside-grant");
+        }
     }
 
     #[test]
@@ -391,19 +1006,34 @@ mod tests {
             std::fs::write(path, "SYNTHETIC_FIXTURE").unwrap();
         }
         let grants = AssetGrants::default();
+        let limits = test_limits();
         let token = grants
             .grant(
                 "main".into(),
+                None,
                 &super::super::to_canon(dir.path()),
                 WorkspaceEnv::Local,
                 0,
+                0,
             )
             .unwrap();
-        assert!(respond(&grants, "main", &request(&html, &token)).is_err());
-        assert!(respond(&grants, "main", &request(&secret, &token)).is_err());
-        assert!(respond(&grants, "main", &request(&image, "unknown")).is_err());
-        assert!(respond(&grants, "other", &request(&image, &token)).is_err());
-        let result = respond(&grants, "main", &request(&image, &token)).unwrap();
+        assert_eq!(
+            code(&respond(&grants, "main", &request(&html, &token), &limits)),
+            "unsupported-media"
+        );
+        assert_eq!(
+            code(&respond(&grants, "main", &request(&secret, &token), &limits)),
+            "outside-grant"
+        );
+        assert_eq!(
+            code(&respond(&grants, "main", &request(&image, "unknown"), &limits)),
+            "invalid-grant"
+        );
+        assert_eq!(
+            code(&respond(&grants, "other", &request(&image, &token), &limits)),
+            "invalid-grant"
+        );
+        let result = respond(&grants, "main", &request(&image, &token), &limits);
         assert_eq!(result.body(), b"SYNTHETIC_FIXTURE");
         assert_eq!(result.headers()["Content-Type"], "image/png");
         assert!(result.headers()["Content-Security-Policy"]
@@ -411,7 +1041,10 @@ mod tests {
             .unwrap()
             .contains("sandbox"));
         grants.revoke_owner("main");
-        assert!(respond(&grants, "main", &request(&image, &token)).is_err());
+        assert_eq!(
+            respond(&grants, "main", &request(&image, &token), &limits).status(),
+            403
+        );
     }
 
     /// A PDF is a document the app only ever *reads*: the request for it must be served as
@@ -427,21 +1060,30 @@ mod tests {
         std::fs::write(&path, &body).unwrap();
         let grants = AssetGrants::default();
         let token = grants
-            .grant("main".into(), &super::super::to_canon(&path), WorkspaceEnv::Local, 0)
+            .grant(
+                "main".into(),
+                None,
+                &super::super::to_canon(&path),
+                WorkspaceEnv::Local,
+                grants.generation("main"),
+                grants.scope_generation("main", None),
+            )
             .unwrap();
 
-        let whole = respond(&grants, "main", &request(&path, &token)).unwrap();
+        let limits = DeliveryLimits::approved();
+        let whole = respond(&grants, "main", &request(&path, &token), &limits);
         assert_eq!(whole.status(), 200);
         assert_eq!(whole.headers()["Content-Type"], "application/pdf");
         assert_eq!(whole.headers()["Content-Length"], body.len().to_string());
         assert_eq!(whole.headers()["Accept-Ranges"], "bytes");
         assert_eq!(whole.body().len(), body.len());
 
-        let mut ranged = request(&path, &token);
-        ranged
-            .headers_mut()
-            .insert("Range", "bytes=0-2999999".parse().unwrap());
-        let clamped = respond(&grants, "main", &ranged).unwrap();
+        let clamped = respond(
+            &grants,
+            "main",
+            &ranged(request(&path, &token), "bytes=0-2999999"),
+            &limits,
+        );
         assert_eq!(clamped.status(), 206);
         assert_eq!(clamped.body().len(), 1024 * 1024);
         assert_eq!(
@@ -449,10 +1091,12 @@ mod tests {
             "bytes 0-1048575/3145728"
         );
 
-        let mut tail = request(&path, &token);
-        tail.headers_mut()
-            .insert("Range", "bytes=1048576-".parse().unwrap());
-        let tail = respond(&grants, "main", &tail).unwrap();
+        let tail = respond(
+            &grants,
+            "main",
+            &ranged(request(&path, &token), "bytes=1048576-"),
+            &limits,
+        );
         assert_eq!(tail.status(), 206);
         assert_eq!(tail.body().len(), 1024 * 1024);
         assert_eq!(
@@ -470,21 +1114,338 @@ mod tests {
         let token = grants
             .grant(
                 "main".into(),
+                None,
                 &super::super::to_canon(&path),
                 WorkspaceEnv::Local,
                 0,
+                0,
             )
             .unwrap();
-        let mut request = request(&path, &token);
-        request
-            .headers_mut()
-            .insert("Range", "bytes=0-4".parse().unwrap());
-        let response = respond(&grants, "main", &request).unwrap();
+        let response = respond(
+            &grants,
+            "main",
+            &ranged(request(&path, &token), "bytes=0-4"),
+            &test_limits(),
+        );
         assert_eq!(response.status(), 206);
         assert_eq!(response.body(), b"<svg>");
         assert_eq!(
             response.headers()["Content-Security-Policy"],
             "sandbox; default-src 'none'; style-src 'unsafe-inline'"
         );
+    }
+
+    #[test]
+    fn ranges_are_chunk_bounded_and_never_allocate_the_whole_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.png");
+        std::fs::write(&path, vec![b'x'; 200]).unwrap();
+        let grants = AssetGrants::default();
+        let token = grants
+            .grant(
+                "main".into(),
+                None,
+                &super::super::to_canon(&path),
+                WorkspaceEnv::Local,
+                0,
+                0,
+            )
+            .unwrap();
+        let limits = test_limits();
+
+        // `bytes=0-` is what a media element sends: one chunk, not 200 bytes.
+        let open_ended = respond(
+            &grants,
+            "main",
+            &ranged(request(&path, &token), "bytes=0-"),
+            &limits,
+        );
+        assert_eq!(open_ended.status(), 206);
+        assert_eq!(open_ended.body().len(), 32);
+        assert_eq!(open_ended.headers()["Content-Range"], "bytes 0-31/200");
+        assert_eq!(open_ended.headers()["Content-Length"], "32");
+
+        let middle = respond(
+            &grants,
+            "main",
+            &ranged(request(&path, &token), "bytes=32-199"),
+            &limits,
+        );
+        assert_eq!(middle.body().len(), 32);
+        assert_eq!(middle.headers()["Content-Range"], "bytes 32-63/200");
+
+        // A HEAD carries the headers of the chunk without the bytes.
+        let mut head = ranged(request(&path, &token), "bytes=0-");
+        *head.method_mut() = tauri::http::Method::HEAD;
+        let head = respond(&grants, "main", &head, &limits);
+        assert_eq!(head.status(), 206);
+        assert_eq!(head.headers()["Content-Length"], "32");
+        assert!(head.body().is_empty());
+
+        assert_eq!(
+            code(&respond(
+                &grants,
+                "main",
+                &ranged(request(&path, &token), "bytes=999-"),
+                &limits
+            )),
+            "invalid-range"
+        );
+        assert_eq!(
+            code(&respond(
+                &grants,
+                "main",
+                &ranged(request(&path, &token), "bytes=0-1,4-5"),
+                &limits
+            )),
+            "invalid-range"
+        );
+    }
+
+    #[test]
+    fn non_range_reads_are_bounded_and_need_an_explicit_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let grants = AssetGrants::default();
+        let limits = test_limits();
+
+        let small = dir.path().join("small.png");
+        std::fs::write(&small, vec![b'a'; 60]).unwrap();
+        let token = grants
+            .grant(
+                "main".into(),
+                None,
+                &super::super::to_canon(&small),
+                WorkspaceEnv::Local,
+                0,
+                0,
+            )
+            .unwrap();
+        let response = respond(&grants, "main", &request(&small, &token), &limits);
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.body().len(), 60);
+
+        let medium = dir.path().join("medium.png");
+        std::fs::write(&medium, vec![b'b'; 96]).unwrap();
+        let token = grants
+            .grant(
+                "main".into(),
+                None,
+                &super::super::to_canon(&medium),
+                WorkspaceEnv::Local,
+                0,
+                0,
+            )
+            .unwrap();
+        let refusal = respond(&grants, "main", &request(&medium, &token), &limits);
+        assert_eq!(refusal.status(), 413);
+        assert_eq!(code(&refusal), "too-large");
+        assert_eq!(refusal.headers()["X-Terax-Asset-Override"], "1");
+        assert_eq!(refusal.headers()["Accept-Ranges"], "bytes");
+        assert!(!String::from_utf8_lossy(refusal.body()).contains("bbbb"));
+        let allowed = respond(&grants, "main", &overridden(request(&medium, &token)), &limits);
+        assert_eq!(allowed.status(), 200);
+        assert_eq!(allowed.body().len(), 96);
+
+        let huge = dir.path().join("huge.png");
+        std::fs::write(&huge, vec![b'c'; 160]).unwrap();
+        let token = grants
+            .grant(
+                "main".into(),
+                None,
+                &super::super::to_canon(&huge),
+                WorkspaceEnv::Local,
+                0,
+                0,
+            )
+            .unwrap();
+        let refusal = respond(&grants, "main", &request(&huge, &token), &limits);
+        assert_eq!(refusal.status(), 413);
+        assert!(refusal.headers().get("X-Terax-Asset-Override").is_none());
+        assert_eq!(refusal.headers()["X-Terax-Asset-Alternatives"], "open-externally");
+        // Even the explicit override cannot allocate above the hard ceiling.
+        assert_eq!(
+            respond(&grants, "main", &overridden(request(&huge, &token)), &limits).status(),
+            413
+        );
+    }
+
+    #[test]
+    fn outstanding_deliveries_are_bounded_by_count_and_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("image.png");
+        std::fs::write(&path, vec![b'x'; 200]).unwrap();
+        let grants = AssetGrants::default();
+        let token = grants
+            .grant(
+                "main".into(),
+                None,
+                &super::super::to_canon(&path),
+                WorkspaceEnv::Local,
+                0,
+                0,
+            )
+            .unwrap();
+        let limits = test_limits();
+        let first = grants.reserve(32, &limits).unwrap();
+        let second = grants.reserve(32, &limits).unwrap();
+        assert_eq!(grants.outstanding(), (2, 64));
+        // A third read is refused explicitly instead of allocating unbounded.
+        let busy = respond(
+            &grants,
+            "main",
+            &ranged(request(&path, &token), "bytes=0-"),
+            &limits,
+        );
+        assert_eq!(busy.status(), 503);
+        assert_eq!(code(&busy), "too-many-reads");
+        assert_eq!(busy.headers()["Retry-After"], "1");
+        drop(first);
+        drop(second);
+        assert_eq!(grants.outstanding(), (0, 0));
+        assert_eq!(
+            respond(
+                &grants,
+                "main",
+                &ranged(request(&path, &token), "bytes=0-"),
+                &limits
+            )
+            .status(),
+            206
+        );
+        // A read bigger than the whole byte budget never waits for a slot.
+        assert!(grants.reserve(129, &limits).is_err());
+    }
+
+    #[test]
+    fn revocation_during_a_read_aborts_the_response() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("image.png");
+        std::fs::write(&path, vec![b'x'; 60]).unwrap();
+        let grants = AssetGrants::default();
+        let token = grants
+            .grant(
+                "main".into(),
+                Some("tab-1".into()),
+                &super::super::to_canon(&path),
+                WorkspaceEnv::Local,
+                0,
+                0,
+            )
+            .unwrap();
+        let mut revoked_at = None;
+        let response = deliver(
+            &grants,
+            "main",
+            &request(&path, &token),
+            &test_limits(),
+            &mut |stage| {
+                if stage == DeliveryStage::Reserved {
+                    revoked_at = Some(grants.state.lock().unwrap().grants.len());
+                    grants.revoke_scope("main", "tab-1");
+                }
+            },
+        )
+        .unwrap_err();
+        assert!(revoked_at.is_some());
+        assert_eq!(response.status, 409);
+        assert_eq!(response.code, "revoked");
+        assert!(!response.response().body().is_empty());
+        assert_eq!(grants.outstanding(), (0, 0));
+        // The token is gone for later requests too.
+        assert_eq!(
+            code(&respond(&grants, "main", &request(&path, &token), &test_limits())),
+            "invalid-grant"
+        );
+    }
+
+    #[test]
+    fn one_token_cannot_be_read_after_the_owner_is_revoked() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("image.png");
+        std::fs::write(&path, "SYNTHETIC_FIXTURE").unwrap();
+        let grants = AssetGrants::default();
+        let token = grants
+            .grant(
+                "main".into(),
+                None,
+                &super::super::to_canon(&path),
+                WorkspaceEnv::Local,
+                0,
+                0,
+            )
+            .unwrap();
+        grants.revoke_owner("main");
+        assert_eq!(
+            code(&respond(&grants, "main", &request(&path, &token), &test_limits())),
+            "invalid-grant"
+        );
+    }
+
+    #[test]
+    fn the_token_survives_an_extra_query_parameter() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("image.png");
+        std::fs::write(&path, "SYNTHETIC_FIXTURE").unwrap();
+        let grants = AssetGrants::default();
+        let token = grants
+            .grant(
+                "main".into(),
+                None,
+                &super::super::to_canon(&path),
+                WorkspaceEnv::Local,
+                0,
+                0,
+            )
+            .unwrap();
+        let encoded = percent_encoding::utf8_percent_encode(
+            &super::super::to_canon(&path),
+            percent_encoding::NON_ALPHANUMERIC,
+        )
+        .to_string();
+        let probe = Request::builder()
+            .uri(format!(
+                "https://asset.localhost/{encoded}?override=1&token={token}"
+            ))
+            .body(Vec::new())
+            .unwrap();
+        assert_eq!(respond(&grants, "main", &probe, &test_limits()).status(), 200);
+    }
+
+    #[test]
+    fn a_missing_or_foreign_grant_is_refused_with_a_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("image.png");
+        std::fs::write(&path, "SYNTHETIC_FIXTURE").unwrap();
+        let grants = AssetGrants::default();
+        let encoded = percent_encoding::utf8_percent_encode(
+            &super::super::to_canon(&path),
+            percent_encoding::NON_ALPHANUMERIC,
+        )
+        .to_string();
+        let probe = Request::builder()
+            .uri(format!("https://asset.localhost/{encoded}"))
+            .body(Vec::new())
+            .unwrap();
+        assert_eq!(
+            code(&respond(&grants, "main", &probe, &test_limits())),
+            "missing-grant"
+        );
+        let mut post = request(&path, "token");
+        *post.method_mut() = tauri::http::Method::POST;
+        assert_eq!(
+            code(&respond(&grants, "main", &post, &test_limits())),
+            "method-not-allowed"
+        );
+    }
+
+    #[test]
+    fn approved_delivery_limits_mirror_the_contract() {
+        let limits = DeliveryLimits::approved();
+        assert_eq!(limits.read_bytes, 10 * 1024 * 1024);
+        assert_eq!(limits.override_bytes, 50 * 1024 * 1024);
+        assert!(limits.chunk_bytes <= limits.read_bytes);
+        assert!(limits.outstanding > 0);
+        assert_eq!(limits.outstanding, MAX_OUTSTANDING_DELIVERIES);
+        assert_eq!(limits.outstanding_bytes, limits.override_bytes);
     }
 }
