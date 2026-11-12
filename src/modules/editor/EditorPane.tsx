@@ -60,6 +60,7 @@ import { useEditorThemeExt } from "./lib/useEditorThemeExt";
 import { initVimGlobals, vimHandlersExtension } from "./lib/vim";
 import { mediaPreviewKind } from "./lib/mediaPreview";
 import { MediaPreview } from "./MediaPreview";
+import { SaveConflictDialog } from "./SaveConflictDialog";
 
 initVimGlobals();
 
@@ -94,6 +95,8 @@ type Props = {
   onDirtyChange?: (dirty: boolean) => void;
   onSaved?: () => void;
   onClose?: () => void;
+  /** Active tab in its stack: only a visible buffer rereads the disk. */
+  visible?: boolean;
   mediaActive?: boolean;
 };
 
@@ -117,19 +120,31 @@ export const EditorPane = memo(
       onDirtyChange,
       onSaved,
       onClose,
+      visible = true,
       mediaActive = true,
     } = props;
 
-    const { doc, onChange, save, reload, adoptDiskText, openAnyway } =
-      useDocument({
-        path,
-        onDirtyChange,
-      });
+    const {
+      doc,
+      onChange,
+      save,
+      reload,
+      adoptDiskText,
+      openAnyway,
+      canFormatOnDisk,
+      conflict,
+      overwriteConflict,
+      reloadConflict,
+      saveConflictCopy,
+      dismissConflict,
+    } = useDocument({ path, visible, onDirtyChange });
     const assetGrant = useAssetGrant((doc.status === "binary" || doc.status === "toolarge") && mediaPreviewKind(path) ? path : null);
     const reloadRef = useRef(reload);
     reloadRef.current = reload;
     const adoptDiskTextRef = useRef(adoptDiskText);
     adoptDiskTextRef.current = adoptDiskText;
+    const canFormatOnDiskRef = useRef(canFormatOnDisk);
+    canFormatOnDiskRef.current = canFormatOnDisk;
     const cmRef = useRef<ReactCodeMirrorRef>(null);
     const themeExt = useEditorThemeExt();
     const vimMode = usePreferencesStore((s) => s.vimMode);
@@ -231,6 +246,11 @@ export const EditorPane = memo(
       const saved = await saveRef.current();
       if (!saved) return;
       if (prefs.editorFormatOnSave && formatter !== "lsp") {
+        // The formatter rewrites the file itself, so it must start from the
+        // revision this buffer just saved: a change in between becomes the same
+        // conflict round as a save instead of a blind rewrite. The formatter
+        // process is an independent writer either way.
+        if (!(await canFormatOnDiskRef.current())) return;
         const error = await runExternalFormatter(
           formatter,
           pathRef.current,
@@ -241,10 +261,7 @@ export const EditorPane = memo(
         } else {
           const readBack = await readFileText(pathRef.current);
           if (readBack !== null && view && view.state.doc === docAtSave) {
-            applyFormattedContent(
-              view,
-              adoptDiskTextRef.current(readBack.text, readBack.mtime),
-            );
+            applyFormattedContent(view, adoptDiskTextRef.current(readBack));
           }
         }
       }
@@ -646,6 +663,16 @@ export const EditorPane = memo(
 
     return (
       <div className="flex h-full min-h-0 flex-col zoom-exempt">
+        {conflict && (
+          <SaveConflictDialog
+            key={`${conflict.path}:${conflict.currentRevision}`}
+            conflict={conflict}
+            onOverwrite={overwriteConflict}
+            onReload={reloadConflict}
+            onSaveCopy={saveConflictCopy}
+            onCancel={dismissConflict}
+          />
+        )}
         <CodeMirror
           ref={cmRef}
           value={doc.content}

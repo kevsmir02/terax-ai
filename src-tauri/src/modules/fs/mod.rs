@@ -11,6 +11,7 @@ pub mod index;
 mod local_file;
 pub mod mutate;
 pub mod project_memory;
+pub mod save;
 pub mod search;
 pub mod supersede;
 pub mod tree;

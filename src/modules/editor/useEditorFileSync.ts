@@ -19,6 +19,11 @@ type Params = {
  * Keeps open editor tabs in sync with on-disk changes: reloads on applied AI
  * diffs, external writes, and fs-watch events, and maintains the watch set for
  * the directories of open editor files.
+ *
+ * These are only *signals*: each document decides whether the reread is allowed
+ * (`planReload` in `lib/diskSync.ts`). Dirty buffers are never replaced — the
+ * save conflict dialog is the only route — and a clean buffer that is not
+ * visible defers the reread until it is shown again.
  */
 export function useEditorFileSync({ tabs, tabsRef, editorRefs }: Params) {
   // When an AI diff is approved (write_file applied to disk), reload any

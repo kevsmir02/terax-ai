@@ -22,9 +22,19 @@ import { invoke } from "@tauri-apps/api/core";
 import { currentWorkspaceEnv, type WorkspaceEnv } from "@/modules/workspace";
 
 export type ReadResult =
-  | { kind: "text"; content: string; size: number; mtime?: number }
+  | {
+      kind: "text";
+      content: string;
+      size: number;
+      mtime?: number;
+      /** Opaque disk revision of this content; send it back on save. */
+      revision?: string;
+    }
   | { kind: "binary"; size: number }
   | { kind: "toolarge"; size: number; limit: number };
+
+/** What a write left on disk. */
+export type WriteResult = { mtime: number; revision: string };
 
 export type CommandOutput = {
   stdout: string;
@@ -47,12 +57,22 @@ export const native = {
       path,
       workspace: currentWorkspaceEnv(),
     }),
-  /** Explicit-user write: atomic tempfile+rename, returns the new mtime. */
-  writeFile: (path: string, content: string) =>
-    invoke<number>("fs_write_file", {
+  /**
+   * Explicit-user write: atomic tempfile+rename. Returns the revision (and
+   * mtime) the write left on disk. `expectedRevision` refuses the write when
+   * the disk no longer matches what the caller read; omitting it is the
+   * deliberate unconditional form used for new files and Save As.
+   */
+  writeFile: (
+    path: string,
+    content: string,
+    expectedRevision: string | null = null,
+  ) =>
+    invoke<WriteResult>("fs_write_file", {
       path,
       content,
       workspace: currentWorkspaceEnv(),
+      expectedRevision,
     }),
   canonicalize: (
     path: string,

@@ -51,6 +51,7 @@ pub fn read_file(
     }
     Ok(match String::from_utf8(bytes) {
         Ok(content) => ReadResult::Text {
+            revision: super::save::DiskRevision::of_bytes(content.as_bytes(), &meta).to_opaque(),
             content,
             size,
             mtime: 0,

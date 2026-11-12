@@ -2,16 +2,16 @@ use std::path::Path;
 use std::time::UNIX_EPOCH;
 use std::{
     fs,
-    io::{Read, Write},
+    io::Read,
 };
 
 use serde::Serialize;
 use tauri::Emitter;
-use tempfile::NamedTempFile;
 
 use super::blocking;
 use super::index::FileIndexState;
 use super::mutate::note_changed;
+use super::save::{self, current_revision, CurrentState, DiskRevision, SaveError, SaveOutcome};
 use crate::modules::workspace::{resolve_path, WorkspaceEnv};
 
 const MAX_READ_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
@@ -26,6 +26,9 @@ pub enum ReadResult {
         content: String,
         size: u64,
         mtime: u64,
+        /// Opaque disk revision this content was read from. Send it back on
+        /// save so a concurrent writer cannot be overwritten unnoticed.
+        revision: String,
     },
     Binary {
         size: u64,
@@ -52,7 +55,7 @@ pub struct FileStat {
     pub kind: StatKind,
 }
 
-fn mtime_millis(meta: &fs::Metadata) -> u64 {
+pub(crate) fn mtime_millis(meta: &fs::Metadata) -> u64 {
     meta.modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
@@ -123,6 +126,7 @@ fn read_file_sync(p: &Path, force: bool) -> Result<ReadResult, String> {
 
     match String::from_utf8(bytes) {
         Ok(content) => Ok(ReadResult::Text {
+            revision: DiskRevision::of_bytes(content.as_bytes(), &meta).to_opaque(),
             content,
             size,
             mtime: mtime_millis(&meta),
@@ -144,54 +148,81 @@ struct FileWrittenEvent {
     source: Option<String>,
 }
 
-/// Atomic write via O_EXCL tempfile in the target's parent, then rename.
-/// The random suffix is what blocks pre-staged symlink attacks.
-fn write_atomic(target: &Path, content: &[u8]) -> std::io::Result<()> {
-    let parent = target.parent().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent")
-    })?;
-    let mut tmp = NamedTempFile::new_in(parent)?;
-    tmp.as_file_mut().write_all(content)?;
-    tmp.as_file_mut().sync_all()?;
-    tmp.persist(target).map_err(|e| e.error)?;
-    Ok(())
-}
-
-/// Returns the new mtime so the editor can track disk state for conflict
-/// detection without a follow-up stat.
+/// Returns the revision (and mtime) the write left on disk so the editor can
+/// track disk state without a follow-up read.
+///
+/// `expected_revision` is the revision this buffer was edited from (or the one
+/// the user explicitly reviewed before overwriting). The check happens inside
+/// native coordination, so two buffers of one file cannot both save the same
+/// baseline; a mismatch is a `conflict` result, never a silent overwrite.
+/// Omitting it is the deliberate unconditional form used for new files and
+/// "Save As"; the editor always sends one.
 #[tauri::command]
 pub async fn fs_write_file(
     path: String,
     content: String,
     workspace: Option<WorkspaceEnv>,
     source: Option<String>,
+    expected_revision: Option<String>,
     app: tauri::AppHandle,
     index: tauri::State<'_, FileIndexState>,
-) -> Result<u64, String> {
+) -> Result<SaveOutcome, SaveError> {
     let index = index.inner().clone();
-    let (path, mtime) = blocking(move || {
+    // `fs::blocking` erases the error type, but a refused save has to reach the
+    // webview as structured data (conflict reason + current revision), so this
+    // one owns its spawn.
+    let written = tauri::async_runtime::spawn_blocking(move || {
         let workspace = WorkspaceEnv::from_option(workspace);
         let target = resolve_path(&path, &workspace);
-        let original = fs::metadata(&target).ok();
-        write_atomic(&target, content.as_bytes()).map_err(|e| {
-            log::warn!("fs_write_file({}) failed: {e}", target.display());
-            e.to_string()
-        })?;
-
-        if let Some(perms) = original.as_ref().map(|m| m.permissions()) {
-            let _ = fs::set_permissions(&target, perms);
-        }
-        if original.is_none() {
+        let outcome = save::save(&target, content.as_bytes(), expected_revision.as_deref())?;
+        if outcome.created {
             note_changed(&index, &target);
         }
-        let mtime = fs::metadata(&target).map(|m| mtime_millis(&m)).unwrap_or(0);
-        Ok((path, mtime))
+        Ok::<_, SaveError>((path, outcome))
     })
-    .await?;
-    let _ = app.emit("fs:file-written", FileWrittenEvent { path, source });
+    .await
+    .map_err(|e| SaveError::Failed(e.to_string()))?;
 
-    Ok(mtime)
+    let (path, outcome) = written?;
+    let _ = app.emit("fs:file-written", FileWrittenEvent { path, source });
+    Ok(outcome)
 }
+
+/// Current disk revision without transferring the file over IPC. Used to
+/// confirm an app-owned format step still edits the revision the editor just
+/// saved, instead of blindly rewriting whatever is there now.
+#[tauri::command]
+pub async fn fs_file_revision(
+    path: String,
+    workspace: Option<WorkspaceEnv>,
+) -> Result<FileRevision, String> {
+    blocking(move || {
+        let workspace = WorkspaceEnv::from_option(workspace);
+        let target = resolve_path(&path, &workspace);
+        let meta = fs::metadata(&target).map_err(|e| e.to_string())?;
+        if !meta.is_file() {
+            return Err("only regular files have a disk revision".into());
+        }
+        match current_revision(&target) {
+            CurrentState::Present(revision) => Ok(FileRevision {
+                revision: revision.to_opaque(),
+                mtime: mtime_millis(&meta),
+                size: meta.len(),
+            }),
+            CurrentState::Missing => Err("file no longer exists".into()),
+            CurrentState::Unreadable => Err("file cannot be read".into()),
+        }
+    })
+    .await
+}
+
+#[derive(Serialize)]
+pub struct FileRevision {
+    pub revision: String,
+    pub mtime: u64,
+    pub size: u64,
+}
+
 
 #[tauri::command]
 pub async fn fs_canonicalize(
@@ -503,7 +534,7 @@ mod tests {
             _ => panic!("expected text"),
         }
         // …and write through the same atomic path `fs_write_file` uses.
-        write_atomic(&config, b"saved").unwrap();
+        save::write_atomic(&config, b"saved").unwrap();
         let reread = fs_read_file(config.to_string_lossy().into_owned(), None, None)
             .await
             .unwrap();
@@ -532,7 +563,7 @@ mod tests {
                 }
                 _ => panic!("expected text for {name}"),
             }
-            write_atomic(&path, b"SECRET=2").unwrap();
+            save::write_atomic(&path, b"SECRET=2").unwrap();
             assert_eq!(std::fs::read(&path).unwrap(), b"SECRET=2");
         }
     }
@@ -547,10 +578,12 @@ mod tests {
                 content,
                 size,
                 mtime,
+                revision,
             } => {
                 assert_eq!(content, "hello world");
                 assert_eq!(size, 11);
                 assert!(mtime > 0);
+                assert!(revision.starts_with("r1:"), "{revision}");
             }
             _ => panic!("expected text"),
         }
@@ -594,32 +627,4 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn overwrites_existing_target() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("note.txt");
-        std::fs::write(&target, b"old").unwrap();
-        write_atomic(&target, b"new").unwrap();
-        assert_eq!(std::fs::read(&target).unwrap(), b"new");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn does_not_follow_legacy_staging_symlink() {
-        use std::os::unix::fs::symlink;
-        let dir = tempfile::tempdir().unwrap();
-        let outside = dir.path().join("outside.txt");
-        std::fs::write(&outside, b"untouched").unwrap();
-
-        let target = dir.path().join("note.txt");
-        // Pre-stage a symlink at the legacy deterministic staging path.
-        let legacy = dir.path().join(".note.txt.terax.tmp");
-        symlink(&outside, &legacy).unwrap();
-
-        write_atomic(&target, b"payload").unwrap();
-
-        assert_eq!(std::fs::read(&target).unwrap(), b"payload");
-        // The pre-staged symlink target must not have been written through.
-        assert_eq!(std::fs::read(&outside).unwrap(), b"untouched");
-    }
 }
