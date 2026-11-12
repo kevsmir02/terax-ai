@@ -124,10 +124,19 @@ Images and decoded viewers are enforced by the preview surfaces:
 ceiling, releasing hidden viewers least-recently-used first and never evicting a
 visible one. Hidden image tabs drop the rendered element and release their
 decoded slot; closing or replacing the tab releases the raster, the slot and the
-tab-owned asset grant. PDF opens in the bounded frame, so the file read is
-bounded, but the 32 MiB per-page render ceiling is still contract only until
-issue #31. Markdown inline images go through the same asset delivery bounds but
-are not separate decoded viewers until issue #27.
+tab-owned asset grant. A PDF goes through the same whole-file delivery gate (the
+explicit choice above 10 MiB, refusal above 50 MiB), which the real application was
+observed applying in issue #30; the 32 MiB per-page render ceiling is still contract
+only until issue #31, because WebKit's own PDF document never asks this module — see
+`docs/architecture/pdf-reader.md`.
+
+Markdown previews (issue #27) inline images go through the same asset delivery bounds
+but are not counted as separate decoded viewers, because each image is bounded by its
+asset response. The document read is the same 10 MiB contract with the explicit
+"Open anyway" override up to 50 MiB, and code highlighting is off above 4 MiB. A
+document outside the Space root is anchored to its own directory; assets beyond that
+boundary or on the network need the explicit choice described in
+`markdown-rendering.md`, so browsing cannot pull an unbounded remote set on its own.
 
 ### Audio and video
 
@@ -247,9 +256,10 @@ Do not add one to the other, and do not derive one from the other.
   Fedora WebKitGTK build recorded above; issue #29 measured the media containers
   in the table in "Audio and video". A different engine or GStreamer codec pack
   needs its own run, and no codec is installed automatically.
-- **The PDF reader path.** Issue #30 decides whether the current iframe can
-  meet the PDF contract and issue #31 implements the reader; these limits apply
-  either way.
+- **The PDF reader path.** Issue #30 recorded the evidence and decided that the
+  current iframe cannot meet the PDF contract, so issue #31 implements a dedicated
+  on-demand reader (`docs/architecture/pdf-reader.md`); these limits apply either
+  way.
 
 ## Using the contract
 

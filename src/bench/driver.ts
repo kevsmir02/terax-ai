@@ -3,8 +3,17 @@ import { assetScopes } from "@/lib/assetScopes";
 import { setWindowVibrancy } from "@/modules/settings/store";
 import { mediaKind, mediaMime } from "@/modules/preview/lib/mediaFormats";
 import { useMediaPlaybackStore } from "@/modules/preview/lib/mediaPlayback";
+import { ASSET_DELIVERY } from "@/modules/preview/lib/assetDelivery";
+import {
+  PDF_PAGE_LIMIT_BYTES,
+  pdfPageDecision,
+} from "@/modules/preview/lib/limits";
 import { useViewerAdmissionStore } from "@/modules/preview/lib/viewerAdmission";
-import { whenSessionReady, writeToSession } from "@/modules/terminal";
+import {
+  whenSessionReady,
+  writeToSession,
+  ptyIdForLeaf,
+} from "@/modules/terminal";
 import type { Tab } from "@/modules/tabs";
 import {
   readTerminalClipboard,
@@ -13,7 +22,12 @@ import {
 import { collectDiagnostics } from "./diagnostics";
 import { nativeWindow, reportError, reportPhase } from "./report";
 import { installSmoothProbe, type SmoothSummary } from "./smoothProbe";
-import type { BenchAppApi, BenchConfig, BenchScenario } from "./types";
+import type {
+  BenchAppApi,
+  BenchConfig,
+  BenchScenario,
+  PdfFixtures,
+} from "./types";
 
 const pause = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -231,6 +245,31 @@ class ScenarioRun {
 
   select(tabId: number): void {
     this.app().setActiveId(tabId);
+  }
+
+  /** Switches to a Space and returns the active tab id there, warming a cold tab. */
+  async switchSpace(spaceId: string): Promise<number> {
+    this.app().setActiveSpace(spaceId);
+    await this.waitFor(
+      () => this.app().activeSpaceId === spaceId,
+      `Space ${spaceId}`,
+      10_000,
+    );
+    const active = this.app().tabs.find(
+      (tab) => tab.id === this.app().activeId,
+    );
+    if (active?.spaceId !== spaceId) {
+      const tabs = this.app().tabs.filter((tab) => tab.spaceId === spaceId);
+      if (tabs.length === 0) throw new Error(`Space ${spaceId} has no tab`);
+      this.app().setActiveId(tabs[tabs.length - 1].id);
+      await this.waitFor(() => {
+        const tab = this.app().tabs.find(
+          (tab) => tab.id === this.app().activeId,
+        );
+        return tab?.spaceId === spaceId;
+      }, `an active tab in Space ${spaceId}`);
+    }
+    return this.app().activeId;
   }
 
   async native(
@@ -1896,6 +1935,11 @@ async function previewScenario(
     );
     await run.sync("preview-closed", { instances: instances().length });
 
+    // PDF documents go through the same preview surface (the editor pane's media iframe and the
+    // app's asset grant), but WebKitGTK hands them to its own viewer document. See
+    // `pdfDocuments` for what is asserted and what is left to the named manual checks.
+    const pdf = await pdfDocuments(run, check, failed);
+
     const pass = steps.every((step) => step.ok);
     await run.log(
       `[preview] ${pass ? "PASS" : "FAIL"} summary: ${steps.filter((step) => !step.ok).length} failures of ${steps.length}`,
@@ -1911,11 +1955,1839 @@ async function previewScenario(
           visibility: minimized.visibility,
           miniaturized: minimized.snapshot.miniaturized,
         },
+        pdf,
       },
     };
   } finally {
     window.removeEventListener("message", receive);
   }
+}
+
+/** A rendered Markdown image, identified by the alt text the fixture wrote. */
+function markdownImage(alt: string): HTMLImageElement | null {
+  return document.querySelector<HTMLImageElement>(
+    `[data-streamdown="image"][alt="${alt}"]`,
+  );
+}
+
+/** A document-rendered link; the hardened href may be normalized to `/path`. */
+function markdownLink(fragment: string): HTMLAnchorElement | null {
+  return (
+    [...document.querySelectorAll<HTMLAnchorElement>("a")].find((anchor) =>
+      (anchor.getAttribute("href") ?? "").includes(fragment),
+    ) ?? null
+  );
+}
+
+function buttonWithText(text: string): HTMLButtonElement | null {
+  return (
+    [...document.querySelectorAll("button")].find((button) =>
+      (button.textContent ?? "").includes(text),
+    ) ?? null
+  );
+}
+
+/**
+ * The Markdown panes actually on screen. Every preview tab stays mounted (so scroll state
+ * survives a switch), so a selector for the rendered text must skip the `aria-hidden`
+ * wrappers of the inactive ones.
+ */
+function visibleMarkdownPanes(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>(".select-text")].filter(
+    (element) => !element.closest('[aria-hidden="true"]'),
+  );
+}
+
+function visibleMarkdownText(): string {
+  return visibleMarkdownPanes()
+    .map((element) => element.textContent ?? "")
+    .join("\n");
+}
+
+/**
+ * The Markdown acceptance scenario through the real WebKitGTK webview.
+ *
+ * It drives the app's own Markdown tab planner and observes what the page really rendered and
+ * fetched: an in-Space image, a symlink escape refused by the native grant, an outside
+ * document confined to its own folder, an explicit grant, a counted remote image that is only
+ * fetched after the person chooses, inert links, the syntax ceiling, and grant revocation on
+ * close. The terminal cwd changes through the same `setLeafCwd` update an OSC 7 report drives.
+ */
+async function markdownScenario(
+  run: ScenarioRun,
+): Promise<Record<string, unknown>> {
+  const config = run.scenario.markdown;
+  if (!config)
+    throw new Error(
+      "the markdown scenario needs its fixture paths (scripts/app-lab/run.py creates them)",
+    );
+  const steps: WorkflowStep[] = [];
+  const check = async (name: string, ok: boolean, detail: string) => {
+    steps.push({ name, ok, detail });
+    await run.log(`[markdown] ${ok ? "PASS" : "FAIL"} ${name}: ${detail}`);
+  };
+  const failed = async (name: string, detail: string) => {
+    await check(name, false, detail);
+    return `markdown step failed: ${name}: ${detail}`;
+  };
+  const remoteHits = async (): Promise<number> => {
+    try {
+      const response = await fetch(run.url("/preview-ping"));
+      const body = (await response.json()) as { markdownRemoteHits?: number };
+      return body.markdownRemoteHits ?? 0;
+    } catch {
+      return -1;
+    }
+  };
+
+  const domState = () => {
+    const tabs = run
+      .app()
+      .tabs.map((tab) =>
+        tab.kind === "terminal" ||
+        tab.kind === "editor" ||
+        tab.kind === "preview" ||
+        tab.kind === "markdown"
+          ? `${tab.kind}:${"path" in tab ? tab.path : "cwd" in tab ? tab.cwd : "url" in tab ? tab.url : ""}`
+          : tab.kind,
+      )
+      .join(",");
+    const body = document.querySelector(".select-text")?.textContent ?? "";
+    return `tabs [${tabs}], active ${run.app().activeId}, page ${JSON.stringify(body.slice(0, 120))}, imgs ${document.querySelectorAll("img").length}, notice ${JSON.stringify((document.querySelector("[data-markdown-asset-notice]")?.textContent ?? "").slice(0, 160))}, alert ${JSON.stringify((document.querySelector('[role="alert"]')?.textContent ?? "").slice(0, 160))}`;
+  };
+
+  const first = await run.booted();
+
+  // 1. A document inside the Space: its image loads from the configured root, and a symlink
+  //    inside that root which points outside is refused by the native canonical check.
+  const insideTab = run.app().openMarkdownTab(config.insideDoc);
+  try {
+    await run.waitFor(
+      () =>
+        run.app().activeId === insideTab &&
+        markdownImage("inside")?.naturalWidth === 16,
+      "the in-Space Markdown image",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(
+      await failed("inside document image", `${String(error)}; ${domState()}`),
+    );
+  }
+  const insideSrc = markdownImage("inside")?.src ?? "";
+  await check(
+    "inside document image",
+    insideSrc.includes("token="),
+    insideSrc || "no src",
+  );
+  try {
+    await run.waitFor(
+      () => markdownImage("escape")?.complete === true,
+      "the symlink escape attempt",
+      15_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("symlink escape refused", String(error)));
+  }
+  const escaped = markdownImage("escape");
+  await check(
+    "symlink escape refused",
+    escaped !== null && escaped.naturalWidth === 0,
+    `naturalWidth ${escaped?.naturalWidth ?? "missing"}`,
+  );
+
+  // 2. The mutable terminal cwd changes; the document's access must not follow it.
+  run.app().setLeafCwd(first.leafId, "/tmp");
+  run.select(first.tabId);
+  try {
+    await run.waitFor(
+      () => {
+        const tab = run
+          .app()
+          .tabs.find((candidate) => candidate.id === first.tabId);
+        return tab?.kind === "terminal" && tab.cwd === "/tmp";
+      },
+      "the terminal cwd update",
+      10_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("terminal cwd changes", String(error)));
+  }
+  run.select(insideTab);
+  await pause(400);
+  const afterCwd = markdownImage("inside");
+  await check(
+    "cwd change does not change document access",
+    afterCwd?.src === insideSrc && afterCwd.naturalWidth === 16,
+    `src ${afterCwd?.src === insideSrc ? "unchanged" : "changed"}, naturalWidth ${afterCwd?.naturalWidth ?? 0}`,
+  );
+
+  // 3. A document outside the Space root anchors on its own folder; a sibling image beyond it
+  //    needs the explicit grant the notice offers.
+  const outsideTab = run.app().openMarkdownTab(config.outsideDoc);
+  try {
+    await run.waitFor(
+      () =>
+        run.app().activeId === outsideTab &&
+        markdownImage("own")?.naturalWidth === 16,
+      "the outside document's own image",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(
+      await failed("outside document own-folder image", String(error)),
+    );
+  }
+  await check(
+    "outside document own-folder image",
+    markdownImage("parent") === null,
+    "the outside image waits for consent",
+  );
+  const allow = buttonWithText("Allow");
+  if (!allow)
+    throw new Error(await failed("explicit grant offered", "no Allow button"));
+  allow.click();
+  try {
+    await run.waitFor(
+      () => markdownImage("parent")?.naturalWidth === 16,
+      "the explicitly granted outside image",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("explicit outside grant", String(error)));
+  }
+  await check(
+    "explicit outside grant",
+    (markdownImage("parent")?.src ?? "").includes("token="),
+    "loaded after the person chose",
+  );
+
+  // 4. Remote content: rendering the document fetches nothing; the counted pixel is requested
+  //    only after the deliberate choice.
+  const hitsBefore = await remoteHits();
+  const remoteTab = run.app().openMarkdownTab(config.remoteDoc);
+  try {
+    await run.waitFor(
+      () => run.app().activeId === remoteTab && buttonWithText("Load") !== null,
+      "the remote-consent notice",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("remote consent notice", String(error)));
+  }
+  await pause(600);
+  const beforeConsent = await remoteHits();
+  await check(
+    "remote image is not fetched automatically",
+    markdownImage("remote") === null && hitsBefore === 0 && beforeConsent === 0,
+    `image ${markdownImage("remote") ? "present" : "absent"}, hits ${hitsBefore}->${beforeConsent}`,
+  );
+  const loadRemote = buttonWithText("Load 1 remote image");
+  if (!loadRemote)
+    throw new Error(await failed("remote consent button", "no Load button"));
+  loadRemote.click();
+  try {
+    await run.waitFor(
+      () => (markdownImage("remote")?.naturalWidth ?? 0) > 0,
+      "the consented remote image",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("consented remote load", String(error)));
+  }
+  const afterConsent = await remoteHits();
+  await check(
+    "consented remote load",
+    afterConsent > beforeConsent,
+    `hits ${beforeConsent}->${afterConsent}`,
+  );
+
+  // 5. A relative link is inert: it never navigates the application webview or opens a tab.
+  const linkTab = run.app().openMarkdownTab(config.linkDoc);
+  try {
+    await run.waitFor(
+      () =>
+        run.app().activeId === linkTab && markdownLink("elsewhere.md") !== null,
+      "the link document",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("link document", String(error)));
+  }
+  const hrefBefore = window.location.href;
+  const tabsBefore = run.app().tabs.length;
+  document
+    .querySelector<HTMLAnchorElement>('a[href="./elsewhere.md"]')
+    ?.click();
+  await pause(500);
+  await check(
+    "relative link cannot navigate the app",
+    window.location.href === hrefBefore && run.app().tabs.length === tabsBefore,
+    `url ${window.location.href === hrefBefore ? "unchanged" : "changed"}, tabs ${tabsBefore}->${run.app().tabs.length}`,
+  );
+
+  // 5b. A document of hostile references: nothing in it runs, no handler survives into the
+  //     DOM, a javascript: link keeps no script href, and the only asset URLs are the ones the
+  //     app minted with a grant token.
+  const maliciousTab = run.app().openMarkdownTab(config.maliciousDoc);
+  try {
+    await run.waitFor(
+      () =>
+        run.app().activeId === maliciousTab &&
+        visibleMarkdownText().includes("malicious-marker"),
+      "the hostile document",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(
+      await failed(
+        "hostile document renders",
+        `${String(error)}; ${domState()}`,
+      ),
+    );
+  }
+  await pause(600);
+  const scope = visibleMarkdownPanes()[0] ?? null;
+  const executed = (window as unknown as Record<string, unknown>)
+    .__teraxMarkdownPwned;
+  const scripts = scope?.querySelectorAll("script").length ?? 0;
+  const handlers =
+    scope?.querySelectorAll("[onerror],[onclick],[onload],[onmouseover]")
+      .length ?? 0;
+  const injected =
+    scope === null || scope === undefined
+      ? 0
+      : [...scope.querySelectorAll("img")].filter((img) =>
+          (img.getAttribute("src") ?? "").includes("/etc/passwd"),
+        ).length;
+  const untokened =
+    scope === null || scope === undefined
+      ? 0
+      : [...scope.querySelectorAll<HTMLImageElement>("img")].filter(
+          (img) =>
+            /^asset:/i.test(img.getAttribute("src") ?? "") &&
+            !(img.getAttribute("src") ?? "").includes("token="),
+        ).length;
+  const scriptHrefs =
+    scope === null || scope === undefined
+      ? 0
+      : [...scope.querySelectorAll<HTMLAnchorElement>("a")].filter((anchor) =>
+          /^\s*javascript:/i.test(anchor.getAttribute("href") ?? ""),
+        ).length;
+  await check(
+    "hostile document executes nothing",
+    executed === undefined &&
+      scripts === 0 &&
+      handlers === 0 &&
+      scriptHrefs === 0,
+    `effect ${JSON.stringify(executed)}, ${scripts} scripts, ${handlers} handlers, ${scriptHrefs} javascript: hrefs`,
+  );
+  await check(
+    "hostile references never become app or file URLs",
+    injected === 0 && untokened === 0,
+    `${injected} references to /etc/passwd, ${untokened} untokened asset URLs`,
+  );
+  run.app().closeTab(maliciousTab);
+  await pause(300);
+
+  // 6. Above the 4 MiB syntax ceiling the document still opens, without highlighting. Closing
+  //    its tab revokes the asset grant it held, and a late completion does not resurrect it.
+  const largeTab = run.app().openMarkdownTab(config.largeDoc);
+  try {
+    await run.waitFor(
+      () =>
+        run.app().activeId === largeTab &&
+        document.querySelector('[data-syntax="off"]') !== null &&
+        markdownImage("large")?.naturalWidth === 16,
+      "the large document",
+      40_000,
+    );
+  } catch (error) {
+    throw new Error(
+      await failed("large document without syntax", String(error)),
+    );
+  }
+  const largeSrc = markdownImage("large")?.src ?? "";
+  await check(
+    "large document opens without syntax",
+    largeSrc.includes("token="),
+    largeSrc || "no asset src",
+  );
+  run.app().closeTab(largeTab);
+  await pause(1000);
+  const servedAfterClose = await new Promise<boolean>((resolve) => {
+    if (!largeSrc) {
+      resolve(false);
+      return;
+    }
+    // A distinct query makes this a fresh request: the browser's memory image
+    // cache must not answer for a grant that was just revoked.
+    const probeUrl = `${largeSrc}${largeSrc.includes("?") ? "&" : "?"}probe=${Date.now()}`;
+    const probe = new Image();
+    probe.onload = () => resolve(true);
+    probe.onerror = () => resolve(false);
+    probe.src = probeUrl;
+  });
+  await check(
+    "close revokes the document's asset grant",
+    largeSrc !== "" && !servedAfterClose,
+    `asset ${servedAfterClose ? "still served" : "refused"}`,
+  );
+  await check(
+    "closed document does not resurrect",
+    run.app().tabs.every((tab) => tab.id !== largeTab) &&
+      document.querySelector('[data-syntax="off"]') === null,
+    `tab ${run.app().tabs.some((tab) => tab.id === largeTab) ? "present" : "gone"}`,
+  );
+
+  // 7. A read landing after its document closed must not resurrect it: the 4 MiB document is
+  //    closed while its read is still in flight, and nothing it owned may appear afterwards.
+  const tabsBeforeLate = run.app().tabs.length;
+  const lateTab = run.app().openMarkdownTab(config.largeDoc);
+  run.app().closeTab(lateTab);
+  await pause(1500);
+  const afterLate = visibleMarkdownText();
+  await check(
+    "a read landing after close does not resurrect the document",
+    run.app().tabs.every((tab) => tab.id !== lateTab) &&
+      run.app().tabs.length === tabsBeforeLate &&
+      !afterLate.includes(config.largeMarker) &&
+      document.querySelector('[data-syntax="off"]') === null,
+    `tabs ${tabsBeforeLate}->${run.app().tabs.length}, marker ${afterLate.includes(config.largeMarker) ? "present" : "absent"}`,
+  );
+
+  const pass = steps.every((step) => step.ok);
+  await run.log(
+    `[markdown] ${pass ? "PASS" : "FAIL"} summary: ${steps.filter((step) => !step.ok).length} failures of ${steps.length}`,
+  );
+  return {
+    markdown: {
+      pass,
+      steps,
+      insideTab,
+      outsideTab,
+      remoteTab,
+      linkTab,
+      maliciousTab,
+      cwdAfter: "/tmp",
+      remoteHits: { before: hitsBefore, after: afterConsent },
+    },
+  };
+}
+
+/** One asset request/response pair the app's own server answered (see fs::bench_probe). */
+type AssetEntry = {
+  seq: number;
+  owner: string;
+  method: string;
+  file: string;
+  status: number | null;
+  mime: string | null;
+  bytes: number;
+  range: string | null;
+  contentRange: string | null;
+  acceptRanges: boolean;
+  /** The request carried the explicit `override=1` choice (above the read ceiling). */
+  explicit: boolean;
+  error: string | null;
+};
+
+type AssetLog = {
+  activeGrants: number;
+  dropped: number;
+  entries: AssetEntry[];
+};
+
+/** The app's own view of its process memory (bench_window memory; Linux reads /proc). */
+type MemorySummary = {
+  totalPss: number;
+  appPss: number;
+  webContentPss: number;
+  hostPss: number;
+  processes: number;
+};
+
+function memorySummary(report: Record<string, unknown>): MemorySummary {
+  const byRole = (report.byRole ?? {}) as Record<string, { pss?: number }>;
+  const pss = (role: string) => byRole[role]?.pss ?? 0;
+  return {
+    totalPss: Number((report.total as { pss?: number } | undefined)?.pss ?? 0),
+    appPss: Number((report.app as { pss?: number } | undefined)?.pss ?? 0),
+    webContentPss: pss("web_content"),
+    hostPss: pss("host"),
+    processes: Number(
+      (report.total as { processes?: number } | undefined)?.processes ?? 0,
+    ),
+  };
+}
+
+/** A grant token is a capability: never put it in a report or a log line. */
+function redactGrant(url: string): string {
+  return url.replace(/token=[0-9a-f]+/i, "token=<grant>");
+}
+
+/** One PDF document the phase opened, and where the app's own surface put it. */
+type PdfTab = {
+  key: keyof PdfFixtures["files"];
+  name: string;
+  path: string;
+  tabId: number;
+  frame: () => HTMLIFrameElement | null;
+};
+
+type OpenedPdf = PdfTab & {
+  /**
+   * Whether a `load` event was seen after the driver first saw the frame. Recorded, never asserted:
+   * a commit that happened before this listener was attached cannot be distinguished from one that
+   * never happened, so the report does not claim the event is absent.
+   */
+  loaded: Promise<boolean>;
+};
+
+/**
+ * PDF documents in the real app (issue #30). The app opens a PDF through its own file planner: the
+ * editor pane classifies the file as an asset, takes a tab-scoped media grant for it and renders
+ * `AssetPreview`, whose delivery gate (`assetDeliveryDecision`) bounds the whole-file read before
+ * an iframe with the app's `asset:` URL exists. WebKitGTK then hands the PDF to a document of its
+ * own (the built-in PDF.js viewer at `webkit-pdfjs-viewer://`), so what this scenario asserts is:
+ *
+ * - the app's own gate: a PDF above the approved whole-file read ceiling is not handed to the
+ *   viewer until the explicit "Load anyway" choice, and the refusal names the limit and the
+ *   external-viewer alternative (the delivery contract, on the surface that owns it);
+ * - the transport: the asset server answers `application/pdf` with ranges advertised, observes the
+ *   explicit override, and never serves more than the file in one body — recorded natively,
+ *   because the PDF document is cross-origin and the app's CSP keeps scripted reads out of
+ *   `asset:`;
+ * - the frame commits a document the app page cannot read (a separate origin), which is exactly
+ *   why no reader function can be asserted from here;
+ * - the lifecycle: the tab opens and the app keeps answering, and closing it drops the grant and
+ *   the frame;
+ * - the error paths: a corrupt PDF and a `.pdf`-named text file.
+ *
+ * Navigation, zoom, search and text selection happen *inside* that separate document. WebKitGTK
+ * gives this repository no native input injection (ticket 32) and the viewer's document is
+ * cross-origin, so those checks are named, recorded manual checks in
+ * `docs/architecture/pdf-reader.md` rather than automated passes here.
+ */
+async function pdfDocuments(
+  run: ScenarioRun,
+  check: (name: string, ok: boolean, detail: string) => Promise<void>,
+  failed: (name: string, detail: string) => Promise<string>,
+): Promise<Record<string, unknown>> {
+  const facts = run.scenario.pdf;
+  if (!facts) {
+    throw new Error(
+      await failed(
+        "pdf fixtures",
+        "the scenario carries no `pdf` field; scripts/app-lab/run.py provides it",
+      ),
+    );
+  }
+  const app = () => run.app();
+  const assetLog = async (): Promise<AssetLog> => {
+    try {
+      return await invoke<AssetLog>("bench_asset_log");
+    } catch (error) {
+      return {
+        activeGrants: -1,
+        dropped: 0,
+        entries: [],
+        error: String(error),
+      } as AssetLog;
+    }
+  };
+  const memory = async (): Promise<MemorySummary> => {
+    try {
+      return memorySummary(await run.native({ cmd: "memory" }));
+    } catch {
+      return {
+        totalPss: 0,
+        appPss: 0,
+        webContentPss: 0,
+        hostPss: 0,
+        processes: 0,
+      };
+    }
+  };
+  const mib = (bytes: number) => Math.round((bytes / (1024 * 1024)) * 10) / 10;
+  const notes: string[] = [];
+
+  // The fixture geometry must map onto the approved per-page ceiling exactly as the generator
+  // claims: it parsed the number out of the TypeScript owner, so this catches drift between the
+  // two files before any PDF behaviour is attributed to the app.
+  const decisions = {
+    zoomed: (facts.renders["zoomed-a4"] ?? []).map(({ zoom, bytes }) => ({
+      zoom,
+      bytes,
+      kind: pdfPageDecision(bytes).kind,
+    })),
+    large: (facts.renders["large-page"] ?? []).map(({ zoom, bytes }) => ({
+      zoom,
+      bytes,
+      kind: pdfPageDecision(bytes).kind,
+    })),
+  };
+  const decisionAt = (
+    list: { zoom: number; kind: string }[],
+    zoom: number,
+    kind: string,
+  ) => list.some((entry) => entry.zoom === zoom && entry.kind === kind);
+  await check(
+    "pdf fixtures map onto the approved page ceiling",
+    facts.ceilingBytes === PDF_PAGE_LIMIT_BYTES &&
+      decisionAt(decisions.zoomed, 4, "allow") &&
+      decisionAt(decisions.zoomed, 8, "refuse") &&
+      decisionAt(decisions.large, 0.5, "allow") &&
+      decisionAt(decisions.large, 1, "refuse"),
+    `generator ${mib(facts.ceilingBytes)} MiB/page, owner ${mib(PDF_PAGE_LIMIT_BYTES)} MiB/page; ` +
+      `zoomed ${decisions.zoomed.map((d) => `${d.zoom}x=${d.kind}`).join(" ")}; ` +
+      `large ${decisions.large.map((d) => `${d.zoom}x=${d.kind}`).join(" ")}`,
+  );
+
+  const nameOf = (key: keyof PdfFixtures["files"]) =>
+    facts.files[key].split("/").pop() ?? key;
+  const frameFor = (name: string) =>
+    document.querySelector<HTMLIFrameElement>(`iframe[title="${name}"]`);
+
+  /** Watches an iframe element for a `load`; a timeout is recorded, not thrown (see `OpenedPdf`). */
+  const watchLoad = (element: HTMLIFrameElement): Promise<boolean> =>
+    new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (value: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      };
+      const timer = setTimeout(() => finish(false), 30_000);
+      element.addEventListener("load", () => finish(true), { once: true });
+    });
+
+  const openTab = async (key: keyof PdfFixtures["files"]): Promise<PdfTab> => {
+    const path = facts.files[key];
+    const name = nameOf(key);
+    await run.log(`[preview] pdf: requesting a tab for ${name} (${path})`);
+    const tabId = app().openFileTab(path);
+    await run.waitFor(
+      () =>
+        app().activeId === tabId && app().tabs.some((tab) => tab.id === tabId),
+      `the ${name} tab`,
+      30_000,
+    );
+    await run.log(`[preview] pdf: tab ${tabId} for ${name} is active`);
+    return { key, name, path, tabId, frame: () => frameFor(name) };
+  };
+
+  /** Waits for the app's own surface to mount the frame, then watches its load. */
+  const waitFrame = async (opened: PdfTab): Promise<OpenedPdf> => {
+    try {
+      await run.waitFor(
+        () => Boolean(opened.frame()),
+        `the ${opened.name} frame`,
+        30_000,
+      );
+    } catch (error) {
+      throw new Error(await failed(`pdf ${opened.name} frame`, String(error)));
+    }
+    await run.log(`[preview] pdf: the ${opened.name} frame exists`);
+    return {
+      ...opened,
+      loaded: watchLoad(opened.frame() as HTMLIFrameElement),
+    };
+  };
+
+  const closeTab = async (opened: PdfTab) => {
+    app().closeTab(opened.tabId);
+    try {
+      await run.waitFor(
+        () =>
+          !opened.frame() && !app().tabs.some((tab) => tab.id === opened.tabId),
+        `closing ${opened.name}`,
+        20_000,
+      );
+    } catch (error) {
+      throw new Error(await failed(`pdf ${opened.name} close`, String(error)));
+    }
+  };
+
+  const servedFor = (entries: AssetEntry[], name: string) =>
+    entries.filter((entry) => entry.file === name);
+  /** How the webview actually read the document: whole file in one body, or byte ranges. */
+  const readPath = (entries: AssetEntry[], fileBytes: number) => ({
+    fileBytes,
+    wholeFileResponses: entries.filter(
+      (entry) => entry.range === null && entry.status === 200,
+    ).length,
+    rangeResponses: entries.filter((entry) => entry.status === 206).length,
+    refusals: entries.filter((entry) => (entry.status ?? 0) >= 400).length,
+    bytesServed: entries.reduce((sum, entry) => sum + entry.bytes, 0),
+  });
+  /** Waits for the app's asset server to have answered a request for this file. */
+  const waitForServed = async (name: string, timeoutMs = 30_000) => {
+    const startedAt = performance.now();
+    for (;;) {
+      const entries = servedFor((await assetLog()).entries, name);
+      if (entries.length > 0) return entries;
+      if (performance.now() - startedAt > timeoutMs) return entries;
+      await pause(200);
+    }
+  };
+  /**
+   * What the app can and cannot see about the document it just handed to WebKit.
+   *
+   * `contentDocument === null` means the frame committed a document from another origin: the
+   * application page cannot read its DOM, its page number, its scale or its error state. Reading
+   * `contentWindow.location` is then refused as well, which is the second, independent signal.
+   * Both are recorded as evidence rather than assumed.
+   */
+  const documentEvidence = async (opened: OpenedPdf) => {
+    const entries = await waitForServed(opened.name);
+    let separate = false;
+    try {
+      await run.waitFor(
+        () => opened.frame()?.contentDocument === null,
+        `the ${opened.name} document`,
+        30_000,
+      );
+      separate = true;
+    } catch {
+      separate = false;
+    }
+    let location = "";
+    try {
+      const view = opened.frame() as
+        | (HTMLIFrameElement & {
+            contentWindow?: { location?: { href?: string } };
+          })
+        | null;
+      location = String(view?.contentWindow?.location?.href ?? "");
+    } catch (error) {
+      location = `refused (${String(error).slice(0, 80)})`;
+    }
+    const src = opened.frame()?.getAttribute("src") ?? "";
+    let scheme = "";
+    try {
+      scheme = new URL(src).protocol;
+    } catch {
+      scheme = "unparseable";
+    }
+    return {
+      committed: separate && entries.length > 0,
+      separate,
+      document: location,
+      scheme,
+      served: entries.length,
+      load: await opened.loaded,
+      src: redactGrant(src),
+    };
+  };
+
+  const start = await assetLog();
+  await run.log(
+    `[preview] pdf phase: ${Object.keys(facts.files).length} fixtures, ` +
+      `grants before=${start.activeGrants}, asset log entries=${start.entries.length}`,
+  );
+  const baselineMemory = await memory();
+  await run.log(
+    `[preview] pdf phase: baseline ${mib(baselineMemory.totalPss)} MiB PSS ` +
+      `(${mib(baselineMemory.webContentPss)} MiB WebContent)`,
+  );
+  const served: Record<string, AssetEntry[]> = {};
+  const frames: Record<string, Record<string, unknown>> = {};
+  const memories: Record<string, MemorySummary> = { baseline: baselineMemory };
+  const closeGrant = async (name: string) => {
+    const after = await assetLog();
+    return {
+      file: name,
+      activeGrants: after.activeGrants,
+      baselineGrants: start.activeGrants,
+    };
+  };
+
+  // 1. The representative multi-page document: what the app does with a PDF it can preview.
+  const textOpened = await openTab("text");
+  const text = await waitFrame(textOpened);
+  const textEvidence = await documentEvidence(text);
+  const textSrc = text.frame()?.getAttribute("src") ?? "";
+  await check(
+    "pdf text frame uses an app asset grant",
+    textSrc.includes("token=") &&
+      decodeURIComponent(textSrc).includes(facts.files.text),
+    `src ${redactGrant(textSrc).slice(0, 96)} scheme=${textEvidence.scheme}`,
+  );
+  await check(
+    "pdf text frame commits a separate document",
+    textEvidence.committed === true,
+    `committed=${String(textEvidence.committed)} separate=${String(textEvidence.separate)} ` +
+      `served=${String(textEvidence.served)} load=${String(textEvidence.load)} ` +
+      `document=${textEvidence.document}`,
+  );
+  // Evidence, not a check: the app's CSP has no `asset:` in connect-src, so the application page
+  // cannot read the document it is showing. Recorded so the report says why the checks above are
+  // native observations rather than page reads.
+  const scriptedRead = await fetch(textSrc)
+    .then((response) => `resolved status=${response.status}`)
+    .catch((error: unknown) => `refused (${String(error).slice(0, 120)})`);
+  notes.push(
+    `scripted fetch of the granted PDF from the app page: ${scriptedRead}`,
+  );
+  served.text = servedFor((await assetLog()).entries, text.name);
+  memories.text = await memory();
+  frames.text = textEvidence;
+  await run.sync("pdf-text", {
+    pdf: { file: text.name, ...textEvidence, memory: memories.text },
+  });
+
+  const textServed = served.text;
+  await check(
+    "pdf served as application/pdf, at most the file's bytes",
+    textServed.length > 0 &&
+      textServed.every(
+        (entry) =>
+          entry.mime === "application/pdf" &&
+          (entry.status === 200 || entry.status === 206) &&
+          entry.bytes > 0 &&
+          entry.bytes <= facts.sizes.text &&
+          entry.acceptRanges,
+      ),
+    textServed
+      .map(
+        (entry) =>
+          `${entry.method} ${entry.file} ${entry.status} ${entry.mime} ${entry.bytes}B` +
+          ` range=${entry.range ?? "-"} content-range=${entry.contentRange ?? "-"}`,
+      )
+      .join("; ") || "no request reached the app's asset server",
+  );
+  // The resource-contract question the decision turns on: does the webview pull the document in
+  // one whole-file response, or does it ask for bounded ranges? Recorded either way.
+  notes.push(
+    `representative PDF (${facts.sizes.text} bytes): ${JSON.stringify(readPath(textServed, facts.sizes.text))}`,
+  );
+
+  // A hold, not a delay: with `--pdf-hold-ms` the document stays on screen so the named manual
+  // reader checks can be run against this exact window. The orchestrator is waiting for the next
+  // phase, so nothing else touches the app while it is held.
+  const holdMs = facts.holdMs ?? 0;
+  if (holdMs > 0) {
+    await run.log(
+      `[preview] pdf hold: keeping ${text.name} on screen for ${Math.round(holdMs / 1000)} s`,
+    );
+    const until = performance.now() + holdMs;
+    while (performance.now() < until) await pause(1000);
+    await run.log("[preview] pdf hold: finished");
+  }
+
+  // 2. A hidden PDF tab. The web preview unloads its frame the moment the tab is hidden, so the
+  // same question applies to a document: does presentation pause and does the decoded content go
+  // away? The app page cannot read the state of a cross-origin document, so this records what is
+  // observable from the outside — the frame element, the native request log and the process
+  // memory. The result is a finding for the decision, not a pass condition of the current path.
+  const beforeHidden = await assetLog();
+  const shellTab = app().newTab();
+  try {
+    await run.waitFor(
+      () => app().activeId === shellTab,
+      "a terminal tab in front of the PDF",
+      30_000,
+    );
+    await pause(3000);
+  } catch (error) {
+    throw new Error(await failed("pdf hidden tab", String(error)));
+  }
+  const whileHidden = await assetLog();
+  const hiddenMemory = await memory();
+  const tabReturnRequests = whileHidden.entries.length;
+  const hidden = {
+    frame: Boolean(text.frame()),
+    activeTab: app().activeId,
+    pdfTab: text.tabId,
+    newRequests: whileHidden.entries.length - beforeHidden.entries.length,
+    memory: hiddenMemory,
+  };
+  await run.sync("pdf-tab-hidden", {
+    pdf: { file: text.name, ...hidden, memory: hiddenMemory },
+  });
+  app().setActiveId(text.tabId);
+  await run.waitFor(
+    () => app().activeId === text.tabId,
+    "the PDF tab again",
+    30_000,
+  );
+  await pause(1500);
+  const afterReturn = await assetLog();
+  const returned = {
+    frame: Boolean(text.frame()),
+    newRequests: afterReturn.entries.length - tabReturnRequests,
+    reloaded: afterReturn.entries.length > tabReturnRequests,
+  };
+  await run.sync("pdf-tab-returned", { pdf: { file: text.name, ...returned } });
+  notes.push(
+    `hidden PDF tab: frame ${hidden.frame ? "stayed mounted" : "unmounted"}, ` +
+      `${hidden.newRequests} new asset request(s) while hidden, WebContent ` +
+      `${mib(hiddenMemory.webContentPss)} MiB; on return ` +
+      `${returned.reloaded ? "the document was reloaded" : "the same document was still loaded"}` +
+      ` (${returned.newRequests} new request(s))`,
+  );
+  app().closeTab(shellTab);
+  await run.waitFor(
+    () => !app().tabs.some((tab) => tab.id === shellTab),
+    "closing the terminal tab",
+    20_000,
+  );
+
+  await closeTab(text);
+  await run.sync("pdf-text-closed", {
+    pdf: await closeGrant(text.name),
+  });
+
+  // 2. A page whose 100 % render is far above the approved per-page ceiling, at a file size the
+  // delivery gate still lets through. The ceiling itself is a *reader* contract (issue #31): the
+  // iframe path has no way to compute or enforce it, which is recorded rather than asserted.
+  const largeOpened = await openTab("large-page");
+  const large = await waitFrame(largeOpened);
+  const largeEvidence = await documentEvidence(large);
+  served["large-page"] = servedFor((await assetLog()).entries, large.name);
+  memories.large = await memory();
+  frames["large-page"] = largeEvidence;
+  await check(
+    "large-page PDF opens without destabilising the app",
+    largeEvidence.committed === true &&
+      app().tabs.some((tab) => tab.id === large.tabId) &&
+      memories.large.totalPss > 0,
+    `committed=${String(largeEvidence.committed)} totalPss=${mib(memories.large.totalPss)} MiB ` +
+      `(baseline ${mib(baselineMemory.totalPss)} MiB), served ${
+        served["large-page"]
+          .map((entry) => `${entry.status} ${entry.bytes}B`)
+          .join("; ") || "-"
+      }`,
+  );
+  await run.sync("pdf-large", {
+    pdf: {
+      file: large.name,
+      ...largeEvidence,
+      memory: memories.large,
+      renders: facts.renders["large-page"],
+    },
+  });
+  await closeTab(large);
+
+  // 3. A PDF above the approved whole-file read ceiling: the app's delivery gate answers first.
+  // Nothing reaches the viewer until the explicit choice, and the refusal has to explain itself.
+  const oversized = await openTab("oversized");
+  const gate = () =>
+    Array.from(document.querySelectorAll<HTMLElement>('[role="alert"]')).find(
+      (node) =>
+        (node.textContent ?? "").includes(
+          "Large file needs an explicit choice",
+        ),
+    ) ?? null;
+  try {
+    await run.waitFor(
+      () => Boolean(gate()),
+      "the oversized PDF delivery notice",
+      30_000,
+    );
+  } catch (error) {
+    throw new Error(
+      await failed(
+        "pdf above the read ceiling needs an explicit choice",
+        String(error),
+      ),
+    );
+  }
+  const notice = gate() as HTMLElement;
+  const noticeText = notice.textContent ?? "";
+  const noticeButton = (label: string) =>
+    Array.from(notice.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => (button.textContent ?? "").trim() === label,
+    );
+  const loadAnyway = noticeButton("Load anyway");
+  // The refusal must name the limit it applied and offer a safe alternative, in the approved
+  // numbers (never a copy declared here).
+  const readCeiling = `${mib(ASSET_DELIVERY.readBytes)} MiB`;
+  const overrideCeiling = `${mib(ASSET_DELIVERY.overrideBytes)} MiB`;
+  await check(
+    "pdf above the read ceiling needs an explicit choice",
+    !oversized.frame() &&
+      noticeText.includes(readCeiling) &&
+      noticeText.includes(overrideCeiling) &&
+      Boolean(noticeButton("Open externally")) &&
+      Boolean(loadAnyway),
+    `frame=${Boolean(oversized.frame())} ceiling=${readCeiling}/${overrideCeiling} ` +
+      `notice=${JSON.stringify(noticeText.slice(0, 200))}`,
+  );
+  notes.push(
+    `${oversized.name} (${facts.sizes.oversized} bytes) is above the approved whole-file read ` +
+      "ceiling: the app shows the explicit-choice notice and mounts no frame until it is used.",
+  );
+  loadAnyway?.click();
+  const oversizedFrame = await waitFrame(oversized);
+  const oversizedEvidence = await documentEvidence(oversizedFrame);
+  served.oversized = servedFor((await assetLog()).entries, oversized.name);
+  const oversizedRead = readPath(served.oversized, facts.sizes.oversized ?? 0);
+  memories.oversized = await memory();
+  frames.oversized = oversizedEvidence;
+  await check(
+    "explicit load delivers the whole PDF in one response",
+    oversizedEvidence.committed === true &&
+      oversizedRead.wholeFileResponses === 1 &&
+      served.oversized.some(
+        (entry) =>
+          entry.status === 200 &&
+          entry.explicit &&
+          entry.bytes === (facts.sizes.oversized ?? 0),
+      ),
+    `committed=${String(oversizedEvidence.committed)} read=${JSON.stringify(oversizedRead)} ` +
+      `entries=${served.oversized
+        .map(
+          (entry) =>
+            `${entry.status}${entry.explicit ? "+override" : ""} ${entry.bytes}B` +
+            ` range=${entry.range ?? "-"}`,
+        )
+        .join("; ")}`,
+  );
+  notes.push(
+    `${oversized.name}: ${JSON.stringify(oversizedRead)} — one whole-file response carries the ` +
+      `entire ${mib(facts.sizes.oversized ?? 0)} MiB document after the explicit choice, and the ` +
+      "per-page render ceiling is still not computable by this path.",
+  );
+  await run.sync("pdf-oversized", {
+    pdf: {
+      file: oversized.name,
+      ...oversizedEvidence,
+      readPath: oversizedRead,
+      memory: memories.oversized,
+    },
+  });
+  await closeTab(oversized);
+
+  // 4. The error paths. The app classifies a file by its *content*, not its extension, so the two
+  // error fixtures exercise different paths:
+  //  - corrupt.pdf is binary, so it reaches the PDF viewer, which cannot parse it. The viewer's
+  //    own error text lives inside the separate document (manual check M5); what is asserted here
+  //    is that the app itself survives and the tab stays open.
+  //  - not-a-pdf.pdf is valid UTF-8 text, so it opens in the text editor: a misnamed file never
+  //    reaches a PDF renderer at all.
+  const errors: Record<string, Record<string, unknown>> = {};
+
+  const corruptOpened = await openTab("corrupt");
+  const corrupt = await waitFrame(corruptOpened);
+  const corruptEvidence = await documentEvidence(corrupt);
+  served.corrupt = servedFor((await assetLog()).entries, corrupt.name);
+  errors.corrupt = {
+    file: corrupt.name,
+    ...corruptEvidence,
+    served: served.corrupt.map((entry) => ({
+      status: entry.status,
+      mime: entry.mime,
+      bytes: entry.bytes,
+      error: entry.error,
+    })),
+    tabs: app().tabs.length,
+  };
+  await run.sync("pdf-corrupt", { pdf: errors.corrupt });
+  const corruptSnapshot = await run.native({ cmd: "snapshot" });
+  await check(
+    "corrupt pdf does not destabilise the app",
+    app().tabs.some((tab) => tab.id === corrupt.tabId) &&
+      corruptSnapshot.windowVisible !== false,
+    `tabs=${app().tabs.length} committed=${String(corruptEvidence.committed)} ` +
+      `served=${JSON.stringify(errors.corrupt.served)} visible=${String(corruptSnapshot.windowVisible)}`,
+  );
+  notes.push(
+    `${corrupt.name}: served=${JSON.stringify(errors.corrupt.served)}; the viewer's error state ` +
+      "is inside the separate PDF document and cannot be read from the app page (manual check M5)",
+  );
+  await closeTab(corrupt);
+
+  const misnamed = await openTab("not-a-pdf");
+  const editorText = () =>
+    document.querySelector<HTMLElement>(".cm-content")?.textContent ?? "";
+  try {
+    await run.waitFor(
+      () => editorText().includes("This file is named .pdf"),
+      "the misnamed file's text",
+      30_000,
+    );
+  } catch (error) {
+    throw new Error(
+      await failed("pdf-named text opens as text", String(error)),
+    );
+  }
+  const misnamedFrame = frameFor(misnamed.name);
+  errors["not-a-pdf"] = {
+    file: misnamed.name,
+    openedAs: "text",
+    frame: Boolean(misnamedFrame),
+  };
+  await check(
+    "a .pdf name with text content opens as text, not as a document",
+    !misnamedFrame && editorText().includes("This file is named .pdf"),
+    `frame=${Boolean(misnamedFrame)} text=${JSON.stringify(editorText().slice(0, 80))}`,
+  );
+  await run.sync("pdf-not-a-pdf", { pdf: errors["not-a-pdf"] });
+  app().closeTab(misnamed.tabId);
+  await run.waitFor(
+    () => !app().tabs.some((tab) => tab.id === misnamed.tabId),
+    "closing the misnamed .pdf tab",
+    20_000,
+  );
+
+  // 5. Closing a PDF tab releases its grant: the spec's "release tab-owned resources and grants on
+  // close" is observable natively, through the same probe that recorded the requests.
+  const afterAll = await assetLog();
+  await check(
+    "pdf close releases the media grant",
+    afterAll.activeGrants === start.activeGrants,
+    `grants ${start.activeGrants} -> ${afterAll.activeGrants}`,
+  );
+  await run.sync("pdf-closed", {
+    pdf: {
+      activeGrants: afterAll.activeGrants,
+      baselineGrants: start.activeGrants,
+    },
+  });
+
+  const servedSummary: Record<string, unknown> = {};
+  for (const [key, entries] of Object.entries(served)) {
+    servedSummary[key] = entries.map((entry) => ({
+      method: entry.method,
+      status: entry.status,
+      mime: entry.mime,
+      bytes: entry.bytes,
+      range: entry.range,
+      contentRange: entry.contentRange,
+      explicit: entry.explicit,
+      error: entry.error,
+    }));
+  }
+  return {
+    textPages: facts.textPages,
+    memoryMiB: {
+      baseline: mib(baselineMemory.totalPss),
+      text: mib(memories.text.totalPss),
+      large: mib(memories.large.totalPss),
+      oversized: mib(memories.oversized.totalPss),
+      webContentBaseline: mib(baselineMemory.webContentPss),
+      webContentText: mib(memories.text.webContentPss),
+      webContentLarge: mib(memories.large.webContentPss),
+      webContentOversized: mib(memories.oversized.webContentPss),
+    },
+    decisions,
+    readPaths: {
+      text: readPath(served.text, facts.sizes.text ?? 0),
+      oversized: readPath(served.oversized, facts.sizes.oversized ?? 0),
+    },
+    served: servedSummary,
+    frames,
+    errors,
+    oversized,
+    notes,
+  };
+}
+
+/** sessionStorage marker: the quit scenario's second pass runs after a reload. */
+const QUIT_RESTORE_KEY = "terax:bench:quit-restore";
+
+/**
+ * Quit (ticket #18) through the real application.
+ *
+ * First pass: work in two Spaces (dirty buffers plus one cooperating and one
+ * SIGTERM-ignoring job), the survey, a repeated close request that is not an
+ * answer, cancel, save-then-quit, graceful termination and the survivor prompt,
+ * then a confirmed force. Before the window would close it writes a replay
+ * marker and reloads the page — the second pass proves the layout came back and
+ * the command was not re-run, then quits a quiet application.
+ */
+async function quitScenario(run: ScenarioRun): Promise<unknown> {
+  const { scenario } = run;
+  const workspace = scenario.workspace?.replace(/\/+$/, "");
+  const file = scenario.file;
+  const firstLine = scenario.fileText;
+  if (!workspace || !file || !firstLine)
+    throw new Error(
+      "the quit scenario needs a workspace, a file and its text (scripts/app-lab/run.py creates them)",
+    );
+
+  const steps: WorkflowStep[] = [];
+  const check = async (name: string, ok: boolean, detail: string) => {
+    steps.push({ name, ok, detail });
+    await run.log(`[quit] ${ok ? "PASS" : "FAIL"} ${name}: ${detail}`);
+  };
+  const failed = async (name: string, detail: string) => {
+    await check(name, false, detail);
+    return `quit step failed: ${name}: ${detail}`;
+  };
+
+  const pageText = () => document.body.textContent ?? "";
+  // Only the active tab's editor is on screen; the others (including another
+  // Space's) stay mounted behind `aria-hidden="true"`, so an unscoped
+  // `.cm-content` query would read the wrong buffer.
+  const editorText = () => {
+    for (const node of document.querySelectorAll(".cm-content")) {
+      if (node.closest('[aria-hidden="true"]') === null) {
+        return node.textContent ?? "";
+      }
+    }
+    return "";
+  };
+  // Every phase the gate passed through, for the failure detail: a wrong final
+  // phase is much easier to read with the transitions beside it.
+  const trace: string[] = [];
+  let traced = "";
+  const quit = () => {
+    const state = run.app().quitState();
+    if (state.phase !== traced) {
+      traced = state.phase;
+      trace.push(state.phase);
+    }
+    return state;
+  };
+  const traceTimer = window.setInterval(() => void quit(), 50);
+  const traceText = () => trace.join(">");
+  const ptyBusy = async (leafId: number): Promise<boolean> => {
+    const ptyId = ptyIdForLeaf(leafId);
+    if (ptyId === null) return false;
+    return invoke<boolean>("pty_has_foreground_process", { id: ptyId }).catch(
+      () => false,
+    );
+  };
+  // A file that does not exist yet (the replay marker before the shell creates
+  // it) reads as empty instead of failing the scenario.
+  const readFile = (path: string) =>
+    invoke<{ kind: string; content?: string }>("fs_read_file", {
+      path,
+      workspace: { kind: "local" },
+      force: false,
+    })
+      .then((result) => (result.kind === "text" ? (result.content ?? "") : ""))
+      .catch(() => "");
+  const waitUntil = async (
+    condition: () => boolean | Promise<boolean>,
+    what: string,
+    timeoutMs = 20_000,
+  ) => {
+    const started = performance.now();
+    while (!(await condition())) {
+      if (performance.now() - started > timeoutMs)
+        throw new Error(`timed out waiting for ${what}`);
+      await pause(100);
+    }
+  };
+
+  const notesFile = `${workspace}/quit-notes.txt`;
+  const notesLine = (await readFile(notesFile)).split("\n")[0] ?? "";
+  const markerFile = `${workspace}/quit-replay.txt`;
+  const markerLines = async () =>
+    (await readFile(markerFile)).split("\n").filter(Boolean).length;
+
+  // ---------------------------------------------------------------- reload pass
+  const stored = window.sessionStorage.getItem(QUIT_RESTORE_KEY);
+  if (stored !== null) {
+    window.sessionStorage.removeItem(QUIT_RESTORE_KEY);
+    const first = JSON.parse(stored) as { steps: WorkflowStep[] };
+    const restored = await run.booted();
+    const tabs = run.app().tabs;
+    const editors = tabs.filter((tab) => tab.kind === "editor");
+    const notesRestored = editors.some((tab) => tab.path === notesFile);
+    const fileRestored = editors.some((tab) => tab.path === file);
+    const marker = await markerLines();
+    await check(
+      "reload restores Spaces, tabs and file locations",
+      notesRestored &&
+        fileRestored &&
+        run.app().spaces.length >= 2 &&
+        restored.tabId > 0,
+      `editors ${editors.map((tab) => tab.path.split("/").pop()).join(",")}; spaces ${run.app().spaces.length}`,
+    );
+    await check(
+      "reload does not replay the previous commands",
+      marker === 1,
+      `${marker} marker line(s) after the reload`,
+    );
+    await run.sync("quit-restored", {
+      editors: editors.length,
+      spaces: run.app().spaces.length,
+      markerLines: marker,
+    });
+
+    // The restored application has nothing at stake, so it quits without a question.
+    run.app().requestQuit();
+    await pause(150);
+    try {
+      await waitUntil(() => quit().phase === "closing", "the quiet quit");
+    } catch (error) {
+      throw new Error(
+        await failed("quitting a restored application", String(error)),
+      );
+    }
+    await check(
+      "a quiet restored application closes without asking",
+      quit().closed &&
+        quit().totals.buffers === 0 &&
+        quit().survivors.length === 0,
+      `phase ${quit().phase}; closed ${quit().closed}`,
+    );
+    window.clearInterval(traceTimer);
+    const all = [...first.steps, ...steps];
+    return {
+      workflow: {
+        token: firstLine,
+        pass: all.every((step) => step.ok),
+        steps: all,
+      },
+    };
+  }
+
+  // ---------------------------------------------------------------- first pass
+  const booted = await run.booted();
+  void booted;
+  const spaceA = run.app().activeSpaceId;
+  if (!spaceA) throw new Error("the application reports no active Space");
+  const spaceB = run.app().createSpace("Quit Notes", workspace);
+  run.app().newTabInSpace(spaceB, workspace);
+  await run.sync("quit-setup", { spaceA, spaceB });
+
+  // Unsaved text in A, and a job that will honour SIGTERM.
+  const dirtyA = run.app().openFileTab(file, true, spaceA);
+  try {
+    await run.waitFor(
+      () =>
+        run.app().tabs.some((tab) => tab.id === dirtyA) &&
+        editorText().includes(firstLine),
+      "the editor in the first Space",
+    );
+  } catch (error) {
+    throw new Error(await failed("quit setup", String(error)));
+  }
+  run.app().editEditor(dirtyA, "unsaved text from the first Space\n");
+  const cooperative = await run.newShellTab();
+  writeToSession(cooperative.leafId, "sleep 300\r");
+  await waitUntil(() => ptyBusy(cooperative.leafId), "the cooperating job");
+
+  // Unsaved text in B, and a job that ignores SIGTERM.
+  await run.switchSpace(spaceB);
+  const dirtyB = run.app().openFileTab(notesFile, true, spaceB);
+  try {
+    await run.waitFor(
+      () =>
+        run.app().tabs.some((tab) => tab.id === dirtyB) &&
+        editorText().includes(notesLine),
+      "the editor in the second Space",
+    );
+  } catch (error) {
+    throw new Error(
+      await failed("quit setup in the second Space", String(error)),
+    );
+  }
+  run.app().editEditor(dirtyB, "unsaved text from the second Space\n");
+  const stubborn = await run.newShellTab();
+  writeToSession(stubborn.leafId, "sh -c 'trap \"\" TERM; exec sleep 300'\r");
+  await waitUntil(() => ptyBusy(stubborn.leafId), "the stubborn job");
+
+  // A command whose replay would be visible after the reload.
+  const markerShell = await run.newShellTab();
+  // A fresh marker per run: the output directory (and its workspace) is reused
+  // between runs, and a leftover line would look like a replay.
+  writeToSession(
+    markerShell.leafId,
+    `rm -f '${markerFile}'; printf 'replayed\\n' >> '${markerFile}'\r`,
+  );
+  await waitUntil(async () => (await markerLines()) === 1, "the replay marker");
+
+  // 1. The survey names both Spaces, their buffers and their processes.
+  run.app().requestQuit();
+  await pause(150);
+  try {
+    await waitUntil(() => quit().phase === "resolving", "the quit survey");
+  } catch (error) {
+    throw new Error(await failed("quit survey", String(error)));
+  }
+  const survey = quit();
+  const spaceNames = survey.spaces.map((space) => space.name);
+  const summaryText = pageText();
+  await check(
+    "quit summarises unsaved buffers and running work across Spaces",
+    survey.totals.buffers === 2 &&
+      survey.totals.processes === 2 &&
+      spaceNames.length === 2 &&
+      spaceNames.includes("Quit Notes") &&
+      summaryText.includes("Quit Terax?"),
+    `spaces ${spaceNames.join(",")}; buffers ${survey.totals.buffers}; processes ${survey.totals.processes}`,
+  );
+  await check(
+    "the summary names the unsaved buffers",
+    summaryText.includes("workflow-file.txt") &&
+      summaryText.includes("quit-notes.txt"),
+    `names ${summaryText.includes("workflow-file.txt")}/${summaryText.includes("quit-notes.txt")}`,
+  );
+  await check(
+    "the summary does not claim control of detached services",
+    summaryText.includes("keep running") &&
+      summaryText.includes("outside Terax"),
+    `caveat ${summaryText.includes("keep running")}`,
+  );
+  await run.sync("quit-survey", {
+    spaceNames,
+    totals: survey.totals,
+  });
+
+  // 2. A second close request is not an answer.
+  run.app().requestQuit();
+  await pause(150);
+  await pause(500);
+  await check(
+    "a repeated close request does not quit",
+    quit().phase === "resolving" && !quit().closed,
+    `phase ${quit().phase}; closed ${quit().closed}`,
+  );
+
+  // 3. Cancel keeps the window and the processes.
+  run.app().cancelQuit();
+  await pause(150);
+  await waitUntil(() => quit().phase === "idle", "the cancelled quit");
+  await check(
+    "cancel keeps the application and its processes",
+    !quit().closed &&
+      (await ptyBusy(cooperative.leafId)) &&
+      (await ptyBusy(stubborn.leafId)),
+    `cooperative ${await ptyBusy(cooperative.leafId)}; stubborn ${await ptyBusy(stubborn.leafId)}`,
+  );
+
+  // 4. Save-then-quit persists both buffers and re-asks about the processes.
+  run.app().requestQuit();
+  await pause(150);
+  await waitUntil(() => quit().phase === "resolving", "the second survey");
+  run.app().saveAllAndQuit();
+  await pause(150);
+  try {
+    await waitUntil(
+      () => quit().phase === "resolving" || quit().phase === "flushing",
+      "the post-save survey",
+      30_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("save before quit", String(error)));
+  }
+  const savedText = await readFile(file);
+  const savedNotes = await readFile(notesFile);
+  await check(
+    "save before quit writes the buffers and asks again",
+    savedText.includes("unsaved text from the first Space") &&
+      savedNotes.includes("unsaved text from the second Space") &&
+      quit().totals.buffers === 0,
+    `first ${savedText.includes("unsaved text from the first Space")}; notes ${savedNotes.includes("unsaved text from the second Space")}; buffers ${quit().totals.buffers}`,
+  );
+
+  // 5. Confirmed quit: graceful termination, then a question about survivors.
+  if (quit().phase !== "resolving") {
+    throw new Error(
+      await failed(
+        "quit confirmation",
+        `unexpected phase ${quit().phase}; ${traceText()}; totals ${JSON.stringify(quit().totals)}`,
+      ),
+    );
+  }
+  run.app().confirmQuit();
+  await pause(150);
+  try {
+    await waitUntil(
+      () => quit().phase === "force-prompt",
+      "the survivor prompt",
+      30_000,
+    );
+  } catch (error) {
+    throw new Error(
+      await failed(
+        "graceful termination",
+        `${String(error)}; phase ${quit().phase}`,
+      ),
+    );
+  }
+  await check(
+    "graceful termination ends a cooperating job",
+    !(await ptyBusy(cooperative.leafId)),
+    `cooperative still running ${await ptyBusy(cooperative.leafId)}`,
+  );
+  await check(
+    "a process that ignores SIGTERM is reported, not killed",
+    (await ptyBusy(stubborn.leafId)) &&
+      quit().survivors.length === 1 &&
+      pageText().includes("Processes Did Not Exit"),
+    `stubborn still running ${await ptyBusy(stubborn.leafId)}; survivors ${quit().survivors.join(",")}`,
+  );
+  await run.sync("quit-survivors", {
+    survivors: quit().survivors,
+    totals: quit().totals,
+  });
+
+  // 6. The survivor prompt is a question, not a countdown.
+  run.app().cancelQuit();
+  await pause(150);
+  await waitUntil(() => quit().phase === "idle", "the cancelled force prompt");
+  await check(
+    "cancel at the survivor prompt keeps the window open",
+    !quit().closed && (await ptyBusy(stubborn.leafId)),
+    `closed ${quit().closed}; stubborn ${await ptyBusy(stubborn.leafId)}`,
+  );
+
+  // 7. Only an explicit force ends the survivor.
+  run.app().requestQuit();
+  await pause(150);
+  await waitUntil(() => quit().phase === "resolving", "the final survey");
+  run.app().confirmQuit();
+  await pause(150);
+  await waitUntil(
+    () => quit().phase === "force-prompt",
+    "the final survivor prompt",
+    30_000,
+  );
+  run.app().forceQuit();
+  await pause(150);
+  try {
+    await waitUntil(
+      () => quit().phase === "closing" && quit().closed,
+      "the forced close",
+    );
+  } catch (error) {
+    throw new Error(await failed("forced quit", String(error)));
+  }
+  await check(
+    "force runs only after the survivor question",
+    quit().closed && !(await ptyBusy(stubborn.leafId)),
+    `closed ${quit().closed}; stubborn running ${await ptyBusy(stubborn.leafId)}`,
+  );
+
+  // 8. Reopen (a webview reload: the app process survives, every PTY is reaped
+  // by the boot path) and check the restored layout replays nothing.
+  window.clearInterval(traceTimer);
+  await run.sync("quit-closed", { steps });
+  window.sessionStorage.setItem(QUIT_RESTORE_KEY, JSON.stringify({ steps }));
+  await pause(300);
+  window.location.reload();
+  // The page is going away; the reload pass reports the run.
+  await new Promise<void>(() => undefined);
+}
+
+/**
+ * Space lifecycle in the real application: one checkout shared by two Spaces,
+ * a switch that keeps a hidden terminal's output flowing, the tab close guards,
+ * and Space deletion that leaves the project directory alone.
+ */
+async function spacesScenario(run: ScenarioRun): Promise<unknown> {
+  const { scenario } = run;
+  const workspace = scenario.workspace;
+  const file = scenario.file;
+  const firstLine = scenario.fileText;
+  if (!workspace || !file || !firstLine)
+    throw new Error(
+      "the spaces scenario needs a workspace, a file and its text (scripts/app-lab/run.py creates them)",
+    );
+
+  const steps: WorkflowStep[] = [];
+  const check = async (name: string, ok: boolean, detail: string) => {
+    steps.push({ name, ok, detail });
+    await run.log(`[spaces] ${ok ? "PASS" : "FAIL"} ${name}: ${detail}`);
+  };
+  const failed = async (name: string, detail: string) => {
+    await check(name, false, detail);
+    return `spaces step failed: ${name}: ${detail}`;
+  };
+  const pageText = () => document.body.textContent ?? "";
+  const guards = () => run.app().pendingGuards();
+  const buffer = (leafId: number) => run.app().readBuffer(leafId, 500) ?? "";
+  const readFile = (path: string) =>
+    invoke<{ kind: string; content?: string }>("fs_read_file", {
+      path,
+      workspace: { kind: "local" },
+      force: false,
+    }).then((result) => (result.kind === "text" ? (result.content ?? "") : ""));
+  const statOk = (path: string) =>
+    invoke("fs_stat", { path, workspace: { kind: "local" } }).then(
+      () => true,
+      () => false,
+    );
+  const editorText = () =>
+    document.querySelector(".cm-content")?.textContent ?? "";
+
+  const first = await run.booted();
+  const spaceA = run.app().activeSpaceId;
+  if (!spaceA) throw new Error("the application reports no active Space");
+
+  // 1. Two Spaces on one checkout, with the shared relationship indicated.
+  const spaceB = run.app().createSpace("Lab shared", workspace);
+  run.app().newTabInSpace(spaceB, workspace);
+  await run.switchSpace(spaceB);
+  const activeB = run.app().tabs.find((tab) => tab.id === run.app().activeId);
+  if (activeB?.kind !== "terminal")
+    throw new Error("the second Space did not open a terminal tab");
+  await run.sessionReady(activeB.activeLeafId);
+  const badge = document.querySelector("[data-shared-root]");
+  const badgeRoot = (badge?.getAttribute("data-shared-root") ?? "").replace(
+    /\/+$/,
+    "",
+  );
+  await check(
+    "shared checkout indication",
+    badge !== null && badgeRoot === workspace.replace(/\/+$/, ""),
+    `badge ${badge ? badgeRoot : "missing"}; spaces ${run
+      .app()
+      .spaces.map((s) => s.id)
+      .join(",")}`,
+  );
+  await run.sync("spaces-shared", { spaceA, spaceB, shared: badge !== null });
+
+  // 2. Switching away must not stop a terminal that is no longer on screen.
+  const marker = `HIDDEN-${Date.now().toString(36)}`;
+  writeToSession(
+    first.leafId,
+    `for n in 1 2 3 4 5; do printf '%s-%s\\n' '${marker}' "$n"; sleep 0.25; done\r`,
+  );
+  await run.switchSpace(spaceB);
+  await pause(1800);
+  const hiddenTab = document.querySelector(
+    `[data-terminal-tab="${first.tabId}"]`,
+  ) as HTMLElement | null;
+  const presentationHidden =
+    hiddenTab?.getAttribute("aria-hidden") === "true" &&
+    hiddenTab.style.visibility === "hidden";
+  await run.switchSpace(spaceA);
+  run.select(first.tabId);
+  await pause(700);
+  const seen = (
+    buffer(first.leafId).match(new RegExp(`${marker}-[0-9]`, "g")) ?? []
+  ).length;
+  await check(
+    "switch keeps hidden output flowing",
+    seen >= 5 && presentationHidden,
+    `${seen}/5 output lines; presentation hidden ${presentationHidden}`,
+  );
+  await run.sync("spaces-switched", {
+    seen,
+    presentationHidden,
+    activeSpaceId: run.app().activeSpaceId,
+  });
+
+  // 3. Closing a tab with a live process asks first; cancel keeps the tab.
+  await run.switchSpace(spaceB);
+  const busyTab = await run.newShellTab();
+  writeToSession(busyTab.leafId, "sleep 30\r");
+  await pause(800);
+  run.app().requestCloseTab(busyTab.tabId);
+  try {
+    await run.waitFor(
+      () => guards().terminalTabId === busyTab.tabId,
+      "the running-process close guard",
+      10_000,
+    );
+  } catch (error) {
+    throw new Error(
+      await failed("tab close with a running process", String(error)),
+    );
+  }
+  const terminalPrompt = pageText();
+  await check(
+    "tab close with a running process asks first",
+    terminalPrompt.includes("Close Terminal?") &&
+      terminalPrompt.includes("A process is running") &&
+      run.app().tabs.some((tab) => tab.id === busyTab.tabId),
+    `dialog: ${terminalPrompt.includes("Close Terminal?")}`,
+  );
+  run.app().cancelPendingClose();
+  await run.waitFor(
+    () => guards().terminalTabId === null,
+    "the canceled guard",
+  );
+  await check(
+    "cancel keeps the running terminal",
+    run.app().tabs.some((tab) => tab.id === busyTab.tabId),
+    `tabs ${run.app().tabs.length}`,
+  );
+  writeToSession(busyTab.leafId, "\u0003");
+  await pause(300);
+
+  // 4. A dirty buffer closes only after a complete save; cancel keeps it dirty.
+  const dirtyTabId = run.app().openFileTab(file, true, spaceB);
+  try {
+    await run.waitFor(
+      () =>
+        run.app().tabs.some((tab) => tab.id === dirtyTabId) &&
+        editorText().includes(firstLine),
+      "the opened file",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("dirty buffer close", String(error)));
+  }
+  run.app().editEditor(dirtyTabId, "lab typed line\n");
+  const dirty = () =>
+    run.app().tabs.find((tab) => tab.id === dirtyTabId)?.kind === "editor" &&
+    (run.app().tabs.find((tab) => tab.id === dirtyTabId) as { dirty: boolean })
+      .dirty;
+  await run.waitFor(dirty, "the dirty buffer");
+  run.app().requestCloseTab(dirtyTabId);
+  await run.waitFor(
+    () => guards().closeTabId === dirtyTabId,
+    "the unsaved-buffer close guard",
+    10_000,
+  );
+  const dirtyPrompt = pageText();
+  await check(
+    "dirty buffer close offers saving",
+    dirtyPrompt.includes("Unsaved Changes") &&
+      dirtyPrompt.includes("Save & Close"),
+    `dialog: ${dirtyPrompt.includes("Save & Close")}`,
+  );
+  run.app().cancelPendingClose();
+  await run.waitFor(
+    () => guards().closeTabId === null,
+    "the canceled close guard",
+  );
+  await check(
+    "cancel keeps the dirty buffer",
+    dirty(),
+    `tab ${dirtyTabId} still dirty`,
+  );
+
+  run.app().requestCloseTab(dirtyTabId);
+  await run.waitFor(
+    () => guards().closeTabId === dirtyTabId,
+    "the unsaved-buffer close guard again",
+    10_000,
+  );
+  run.app().saveAndCloseTab();
+  try {
+    await run.waitFor(
+      () => !run.app().tabs.some((tab) => tab.id === dirtyTabId),
+      "the saved tab to close",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("save and close", String(error)));
+  }
+  const savedText = await readFile(file);
+  await check(
+    "save and close persists before closing",
+    savedText.includes("lab typed line"),
+    `${savedText.length} bytes on disk`,
+  );
+  await run.sync("spaces-tab-close", { dirtyTabId, saved: true });
+
+  // 5. Space deletion resolves dirty buffers and processes, then removes only
+  //    saved organization; cancel leaves the work and the folder intact.
+  const spaceC = run.app().createSpace("Lab delete", workspace);
+  run.app().newTabInSpace(spaceC, workspace);
+  await run.switchSpace(spaceC);
+  const activeC = run.app().tabs.find((tab) => tab.id === run.app().activeId);
+  if (activeC?.kind !== "terminal")
+    throw new Error("the deletion Space did not open a terminal tab");
+  await run.sessionReady(activeC.activeLeafId);
+  writeToSession(activeC.activeLeafId, "sleep 30\r");
+  const deletedDirtyTab = run.app().openFileTab(file, true, spaceC);
+  await run.waitFor(
+    () =>
+      run.app().tabs.some((tab) => tab.id === deletedDirtyTab) &&
+      editorText().includes("lab typed line"),
+    "the file in the deletion Space",
+    20_000,
+  );
+  run.app().editEditor(deletedDirtyTab, "deletion draft\n");
+  await run.waitFor(
+    () =>
+      run.app().tabs.find((tab) => tab.id === deletedDirtyTab)?.kind ===
+        "editor" &&
+      (
+        run.app().tabs.find((tab) => tab.id === deletedDirtyTab) as {
+          dirty: boolean;
+        }
+      ).dirty,
+    "the dirty buffer in the deletion Space",
+  );
+
+  run.app().requestDeleteSpace(spaceC);
+  try {
+    await run.waitFor(
+      () => guards().spaceDeleteId === spaceC,
+      "the Space deletion guard",
+      10_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("Space delete guard", String(error)));
+  }
+  const deletePrompt = pageText();
+  await check(
+    "Space delete summarizes unsaved work and processes",
+    deletePrompt.includes("Delete Space?") &&
+      deletePrompt.includes("unsaved changes") &&
+      deletePrompt.includes("may still be running") &&
+      deletePrompt.includes("Files and worktrees on disk are not deleted"),
+    `dialog text ${deletePrompt.includes("Delete Space?")}`,
+  );
+  run.app().cancelDeleteSpace();
+  await run.waitFor(
+    () => guards().spaceDeleteId === null,
+    "the canceled Space deletion",
+  );
+  await check(
+    "cancel keeps the Space, its tabs and its dirty buffer",
+    run.app().spaces.some((space) => space.id === spaceC) &&
+      run
+        .app()
+        .tabs.some(
+          (tab) =>
+            tab.spaceId === spaceC &&
+            tab.id === deletedDirtyTab &&
+            tab.kind === "editor" &&
+            tab.dirty,
+        ),
+    `spaces ${run.app().spaces.length}, tabs ${run.app().tabs.length}`,
+  );
+  await run.sync("spaces-delete-canceled", { spaceC });
+
+  run.app().requestDeleteSpace(spaceC);
+  await run.waitFor(
+    () => guards().spaceDeleteId === spaceC,
+    "the Space deletion guard again",
+    10_000,
+  );
+  run.app().saveAndDeleteSpace();
+  try {
+    await run.waitFor(
+      () => !run.app().spaces.some((space) => space.id === spaceC),
+      "the Space to be deleted",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("save and delete Space", String(error)));
+  }
+  await check(
+    "deleting the Space removes saved organization only",
+    !run.app().tabs.some((tab) => tab.spaceId === spaceC) &&
+      (await statOk(workspace)) &&
+      run.app().spaces.some((space) => space.id === spaceA),
+    `project folder ${(await statOk(workspace)) ? "present" : "MISSING"}`,
+  );
+  await run.sync("spaces-deleted", {
+    projectDirExists: await statOk(workspace),
+    remainingSpaces: run.app().spaces.length,
+  });
+
+  const pass = steps.every((step) => step.ok);
+  await run.log(
+    `[spaces] ${pass ? "PASS" : "FAIL"} summary: ${steps.filter((step) => !step.ok).length} failures of ${steps.length}`,
+  );
+  return {
+    workflow: {
+      pass,
+      steps,
+      spaceA,
+      spaceB,
+      shared: badge !== null,
+      hiddenOutputLines: seen,
+      presentationHidden,
+      projectDirExists: await statOk(workspace),
+    },
+  };
 }
 
 /**
@@ -2878,6 +4750,260 @@ type DeliveryRecord = {
   ranged: boolean;
 };
 
+/**
+ * Destructive Git across Spaces, through the panel's own guard.
+ *
+ * A dirty buffer in one Space must block a discard requested from the panel;
+ * an unacknowledged confirmation and a plan whose Git state changed after the
+ * dialog opened are both refused, and every refusal is observed to leave the
+ * file and the index unchanged. The successful discard at the end is the
+ * control: the same path still mutates when it is deliberately confirmed.
+ */
+async function gitScenario(run: ScenarioRun): Promise<unknown> {
+  const fixture = run.scenario.git;
+  if (!fixture)
+    throw new Error(
+      "the git scenario needs a scratch repository (scripts/app-lab/run.py creates it)",
+    );
+  const steps: WorkflowStep[] = [];
+  const check = async (name: string, ok: boolean, detail: string) => {
+    steps.push({ name, ok, detail });
+    await run.log(`[git] ${ok ? "PASS" : "FAIL"} ${name}: ${detail}`);
+  };
+  const failed = async (name: string, detail: string) => {
+    await check(name, false, detail);
+    return `git step failed: ${name}: ${detail}`;
+  };
+  const app = () => run.app();
+  const pending = () => app().destructiveGit().pending;
+  const gitStatus = () =>
+    invoke<{
+      changedFiles: {
+        path: string;
+        staged: boolean;
+        unstaged: boolean;
+        untracked: boolean;
+      }[];
+    }>("git_status", {
+      repoRoot: fixture.repo,
+      workspace: { kind: "local" },
+    });
+  const fileStatus = async (path: string) =>
+    (await gitStatus()).changedFiles.find((file) => file.path === path) ?? null;
+  const readFile = (path: string) =>
+    invoke<{ kind: string; content?: string }>("fs_read_file", {
+      path,
+      workspace: { kind: "local" },
+      force: false,
+    }).then((result) => (result.kind === "text" ? (result.content ?? "") : ""));
+  const editorText = () =>
+    document.querySelector(".cm-content")?.textContent ?? "";
+  const dirty = (tabId: number) => {
+    const tab = app().tabs.find((candidate) => candidate.id === tabId);
+    return tab?.kind === "editor" && tab.dirty;
+  };
+  const requestDiscard = async (path: string) => {
+    for (let attempt = 0; attempt < 60; attempt++) {
+      if (pending()) app().destructiveGit().cancel();
+      await app().destructiveGit().requestDiscard([path]);
+      // The bridge reads React state: wait for the pending plan to render
+      // instead of cancelling it on the next microtask.
+      for (let wait = 0; wait < 20 && pending() === null; wait++) {
+        await pause(50);
+      }
+      const plan = pending();
+      if (plan?.affected.includes(path)) return plan;
+      app().destructiveGit().cancel();
+      await pause(200);
+    }
+    throw new Error(`no destructive plan was built for ${path}`);
+  };
+
+  try {
+    await run.booted();
+
+    const space = app().createSpace("Git guard", fixture.repo);
+    app().newTabInSpace(space, fixture.repo);
+    await run.switchSpace(space);
+    // The scratch repository is a fresh root: open its terminal so the shell
+    // authorizes the directory before the editor asks for the file.
+    const gitTerminal = app().tabs.find(
+      (tab) => tab.spaceId === space && tab.kind === "terminal",
+    );
+    if (gitTerminal?.kind !== "terminal")
+      throw new Error("the Git-lab Space did not get a terminal tab");
+    await run.sessionReady(gitTerminal.activeLeafId);
+    await invoke("workspace_authorize", {
+      path: fixture.repo,
+      workspace: { kind: "local" },
+    });
+    const fileATab = app().openFileTab(fixture.fileA, true, space);
+    await run.waitFor(
+      () => app().tabs.some((tab) => tab.id === fileATab),
+      "the file tab",
+      20_000,
+    );
+    run.select(fileATab);
+    await pause(1500);
+    // The fixture is committed without the disk edits, so the editor opens the
+    // edited wording a discard would throw away.
+    await run.waitFor(
+      () => editorText().includes(fixture.editedA),
+      "the tracked file in the editor",
+      20_000,
+    );
+
+    // The panel follows the active file's repository, so mount it only once
+    // the Git-lab Space is the context.
+    app().openSourceControl();
+    await run.waitFor(
+      () => app().destructiveGit().mounted && app().destructiveGit().ready,
+      "the Source Control destructive guard",
+      30_000,
+    );
+    await check(
+      "the Source Control guard mounts",
+      app().destructiveGit().mounted,
+      "bridge mounted and repository status ready",
+    );
+    app().editEditor(fileATab, "unsaved in the buffer\n");
+    await run.waitFor(() => dirty(fileATab), "the dirty buffer");
+
+    // 1. A dirty buffer in another pane of the same checkout blocks the discard.
+    const firstPlan = await requestDiscard("src/a.ts");
+    await run.waitFor(() => pending() !== null, "the discard dialog");
+    const dialogText = document.body.textContent ?? "";
+    await check(
+      "the discard dialog names the unsaved buffer and its Space",
+      firstPlan.blockers.some(
+        (blocker) =>
+          blocker.kind === "unsavedBuffer" &&
+          blocker.tabId === fileATab &&
+          blocker.spaceName === "Git guard",
+      ) &&
+        dialogText.includes("Discard changes?") &&
+        dialogText.includes("unsaved changes") &&
+        dialogText.includes("src/a.ts"),
+      `blockers ${firstPlan.blockers.length}; dialog ${dialogText.includes("Discard changes?")}`,
+    );
+
+    // 2. Confirming without the acknowledgement is refused, and nothing moves.
+    await app().destructiveGit().confirm({
+      unsavedBuffers: [],
+      activeWork: [],
+      force: false,
+    });
+    await run.waitFor(
+      () => typeof pending()?.stale === "string",
+      "the unacknowledged refusal",
+      10_000,
+    );
+    const afterRefusalStatus = await fileStatus("src/a.ts");
+    const afterRefusalDisk = await readFile(fixture.fileA);
+    await check(
+      "an unacknowledged confirmation leaves the file and index unchanged",
+      pending()?.stale?.includes("Acknowledge") === true &&
+        afterRefusalDisk.includes(fixture.editedA) &&
+        afterRefusalStatus?.staged === false &&
+        afterRefusalStatus?.unstaged === true &&
+        dirty(fileATab) &&
+        editorText().includes("unsaved in the buffer"),
+      `stale ${pending()?.stale ?? "none"}; disk edited ${afterRefusalDisk.includes(fixture.editedA)}; staged ${afterRefusalStatus?.staged}`,
+    );
+    await run.sync("git-refused-unacknowledged", {
+      stale: pending()?.stale ?? null,
+      disk: afterRefusalDisk.length,
+    });
+
+    // 3. Work started after the dialog opened makes the confirmation stale.
+    const secondPlan = await requestDiscard("src/a.ts");
+    await invoke("git_stage", {
+      repoRoot: fixture.repo,
+      paths: ["src/a.ts"],
+      workspace: { kind: "local" },
+    });
+    await app()
+      .destructiveGit()
+      .confirm({
+        unsavedBuffers: [fileATab],
+        activeWork: [],
+        force: false,
+      });
+    await run.waitFor(
+      () => pending()?.stale?.includes("changed since") === true,
+      "the stale-plan refusal",
+      10_000,
+    );
+    const staleStatus = await fileStatus("src/a.ts");
+    const staleDisk = await readFile(fixture.fileA);
+    await check(
+      "a plan that went stale is refused and performs no discard",
+      secondPlan.fingerprint !== pending()?.fingerprint &&
+        staleDisk.includes(fixture.editedA) &&
+        staleStatus?.staged === true &&
+        dirty(fileATab),
+      `new fingerprint ${pending()?.fingerprint !== secondPlan.fingerprint}; disk edited ${staleDisk.includes(fixture.editedA)}; staged ${staleStatus?.staged}`,
+    );
+    await run.sync("git-refused-stale", {
+      stale: pending()?.stale ?? null,
+      staged: staleStatus?.staged ?? null,
+    });
+
+    app().destructiveGit().cancel();
+    await run.waitFor(() => pending() === null, "the canceled dialog");
+    await check(
+      "cancel leaves the dialog closed and the buffer intact",
+      pending() === null &&
+        dirty(fileATab) &&
+        (await readFile(fixture.fileA)).includes(fixture.editedA),
+      "no pending plan, buffer still dirty",
+    );
+
+    // 4. The same action still works when it is deliberately confirmed.
+    const bPlan = await requestDiscard("src/b.ts");
+    await check(
+      "a clean-buffer discard has no blockers",
+      bPlan.blockers.length === 0,
+      `blockers ${bPlan.blockers.length}`,
+    );
+    await app().destructiveGit().confirm({
+      unsavedBuffers: [],
+      activeWork: [],
+      force: false,
+    });
+    await run.waitFor(
+      () =>
+        pending() === null &&
+        (document.body.textContent ?? "").includes("Discarded"),
+      "the confirmed discard",
+      15_000,
+    );
+    const deadline = performance.now() + 10_000;
+    let bDisk = await readFile(fixture.fileB);
+    while (!bDisk.startsWith(fixture.baseB) && performance.now() < deadline) {
+      await pause(150);
+      bDisk = await readFile(fixture.fileB);
+    }
+    const bStatus = await fileStatus("src/b.ts");
+    await check(
+      "a confirmed discard restores the working file and keeps the index",
+      bDisk.startsWith(fixture.baseB) && bStatus === null,
+      `disk restored ${bDisk.startsWith(fixture.baseB)}; status ${JSON.stringify(bStatus)}`,
+    );
+    await run.sync("git-confirmed", {
+      restored: bDisk.startsWith(fixture.baseB),
+    });
+  } catch (error) {
+    throw new Error(await failed("scenario completed", String(error)));
+  }
+
+  const pass = steps.every((step) => step.ok);
+  await run.log(
+    `[git] ${pass ? "PASS" : "FAIL"} summary: ${steps.filter((step) => !step.ok).length} failures of ${steps.length}`,
+  );
+  return { git: { pass, steps } };
+}
+
 const SCENARIOS: Record<
   BenchScenario["name"],
   (run: ScenarioRun) => Promise<unknown>
@@ -2891,6 +5017,10 @@ const SCENARIOS: Record<
   "fs-churn": fsChurnScenario,
   input: inputScenario,
   workflow: workflowScenario,
+  markdown: markdownScenario,
+  spaces: spacesScenario,
+  quit: quitScenario,
+  git: gitScenario,
   preview: previewScenario,
   images: imagesScenario,
   media: mediaScenario,
@@ -2908,6 +5038,17 @@ export async function startBenchDriver(app: () => BenchAppApi): Promise<void> {
     .__teraxBenchConfig;
   if (!config?.scenario || !config.reportUrl) return;
   started = true;
+  // Forward console warnings/errors to the run log so a failing step leaves its cause behind.
+  for (const level of ["error", "warn"] as const) {
+    const original = console[level].bind(console);
+    console[level] = (...args: unknown[]) => {
+      original(...args);
+      void fetch(`${config.reportUrl}/log`, {
+        method: "POST",
+        body: `console.${level}: ${args.map((value) => String(value)).join(" ")}`,
+      }).catch(() => undefined);
+    };
+  }
   const run = new ScenarioRun(config.reportUrl, config.scenario, app);
   try {
     await pause(1500);

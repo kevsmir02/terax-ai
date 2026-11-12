@@ -18,7 +18,9 @@ import {
 } from "@/modules/terminal/lib/ptyPresentation";
 import { tokenBytes } from "@/modules/terminal/lib/ptyWire";
 import type { TerminalGpuTheme } from "@/modules/terminal/ghostty/gpu/terminalVisuals";
+import { assertNoDestructiveSpawn } from "@/modules/git";
 import { currentWorkspaceEnv } from "@/modules/workspace";
+import { native } from "@/modules/workspace/native";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
 
@@ -161,6 +163,11 @@ export async function openPty(
   const presentation =
     paneId === undefined ? undefined : leafPresentationClass(paneId);
   try {
+    // A terminal started inside a worktree that a destructive Git action is
+    // mutating would race that action with a shell nobody accounted for.
+    await assertNoDestructiveSpawn(cwd ?? "", (path) =>
+      native.canonicalize(path).catch(() => null),
+    );
     await ensureAgentActivityListener();
     await stream.ensureStream();
     id = await invoke<number>("pty_open", {

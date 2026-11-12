@@ -1,3 +1,5 @@
+import type { QuitPhase } from "@/modules/shutdown";
+import type { DestructiveGitBridgePending } from "@/modules/source-control/destructiveGitBridge";
 import type { Tab } from "@/modules/tabs";
 
 /** What the scenario driver may do to the running application: the app's own tab actions. */
@@ -18,6 +20,10 @@ export type BenchAppApi = {
   closeTab: (id: number) => void;
   /** Opens a file in an editor tab (the app's own planner); returns the tab id. */
   openFileTab: (path: string, pin?: boolean, spaceId?: string) => number;
+  /** Opens a rendered Markdown tab (the app's own planner); returns the tab id. */
+  openMarkdownTab: (path: string) => number;
+  /** Applies the terminal's own cwd update, as an OSC 7 report would. */
+  setLeafCwd: (leafId: number, cwd: string) => void;
   readBuffer: (leafId: number, maxLines?: number) => string | null;
   /** Spaces (workspaces) the application knows about. */
   spaces: { id: string; name: string }[];
@@ -28,6 +34,75 @@ export type BenchAppApi = {
   newTabInSpace: (spaceId: string, cwd?: string) => number;
   /** Opens the web preview pane (the app's own planner); returns the tab id. */
   openPreview: (url: string) => number;
+  /** Space lifecycle (the app's own guards, not direct disposal). */
+  requestCloseTab: (id: number) => void;
+  cancelPendingClose: () => void;
+  confirmDiscardTab: () => void;
+  saveAndCloseTab: () => void;
+  requestDeleteSpace: (id: string) => void;
+  cancelDeleteSpace: () => void;
+  confirmDeleteSpace: () => void;
+  saveAndDeleteSpace: () => void;
+  pendingGuards: () => {
+    closeTabId: number | null;
+    terminalTabId: number | null;
+    spaceDeleteId: string | null;
+    closeSaveState: "idle" | "saving" | "incomplete";
+    spaceDeleteIncomplete: boolean;
+  };
+  /** Inserts text through the editor's real editing path (dirty buffer, drafts, saves). */
+  editEditor: (tabId: number, text: string) => void;
+  /** Shows the Source Control panel so its real destructive-action guard mounts. */
+  openSourceControl: () => void;
+  /** Drives the panel's own destructive-action guard (never a second implementation). */
+  destructiveGit: () => {
+    mounted: boolean;
+    ready: boolean;
+    busy: boolean;
+    pending: DestructiveGitBridgePending | null;
+    requestDiscard: (paths: string[]) => Promise<void>;
+    confirm: (confirmation: {
+      unsavedBuffers: number[];
+      activeWork: number[];
+      force: boolean;
+    }) => Promise<void>;
+    cancel: () => void;
+  };
+  /** Quit (ticket #18): the same gate the window's close event enters. */
+  requestQuit: () => void;
+  cancelQuit: () => void;
+  confirmQuit: () => void;
+  saveAllAndQuit: () => void;
+  retryQuitFlush: () => void;
+  loseDraftsAndQuit: () => void;
+  forceQuit: () => void;
+  quitState: () => BenchQuitState;
+};
+
+/** What the quit gate resolved to, as the driver observes it. */
+export type BenchQuitState = {
+  phase: QuitPhase;
+  /** The confirmed close was recorded (bench) instead of ending the process. */
+  closed: boolean;
+  note: string | null;
+  totals: {
+    buffers: number;
+    processes: number;
+    uncertainProcesses: number;
+    drafts: number;
+  };
+  spaces: Array<{
+    id: string;
+    name: string;
+    buffers: Array<{ tabId: number; title: string }>;
+    processes: Array<{ leafId: number; state: string }>;
+    drafts: Array<{ bufferId: string; title: string; state: string }>;
+  }>;
+  survivors: number[];
+  flush: {
+    outcome: string;
+    drafts: Array<{ bufferId: string; title: string; state: string }>;
+  } | null;
 };
 
 /** One scenario, as written by scripts/app-lab/run.py into TERAX_BENCH_SCENARIO. */
@@ -42,11 +117,15 @@ export type BenchScenario = {
     | "fs-churn"
     | "input"
     | "workflow"
+    | "markdown"
+    | "spaces"
+    | "git"
     | "preview"
     | "images"
     | "media"
     | "resource"
     | "stress"
+    | "quit"
     | "startup";
   /** tabs: "2" (shell + agent) or "4" (shell, agent, agent+shell split, shell). */
   variant?: string;
@@ -60,6 +139,16 @@ export type BenchScenario = {
   durationS?: number;
   warmupS?: number;
   hiddenAgents?: number;
+  /** git: an isolated scratch repository the scenario mutates and inspects. */
+  git?: {
+    repo: string;
+    fileA: string;
+    fileB: string;
+    baseA: string;
+    baseB: string;
+    editedA: string;
+    editedB: string;
+  };
   /** split-drag: seconds of divider motion per drag, and its amplitude as a share of the pane area. */
   dragS?: number;
   dragAmplitude?: number;
@@ -97,6 +186,27 @@ export type BenchScenario = {
   file?: string;
   /** workflow: the file's distinctive first line, asserted in the rendered editor. */
   fileText?: string;
+  /** markdown: documents and assets the scenario drives through the real preview. */
+  markdown?: {
+    /** The configured Space project root (the app's launch directory). */
+    workspace: string;
+    /** A document inside the root with an allowed image and a symlink escape. */
+    insideDoc: string;
+    /** A document outside the root with a sibling image and an outside image. */
+    outsideDoc: string;
+    /** A document whose only image is remote. */
+    remoteDoc: string;
+    /** A document with relative and external links. */
+    linkDoc: string;
+    /** A document whose references are hostile: asset://, javascript:, file:, script, onerror. */
+    maliciousDoc: string;
+    /** A large document above the approved 4 MiB syntax ceiling. */
+    largeDoc: string;
+    /** Orchestrator URL that counts remote image fetches. */
+    remoteImage: string;
+    /** Marker text inside the large document. */
+    largeMarker: string;
+  };
   /** images: fixture paths the scenario opens and asserts through the image surface. */
   images?: {
     png: string;
@@ -155,6 +265,42 @@ export type BenchScenario = {
   closeCycles?: number;
   /** resource/stress: seconds the app is left idle (one shell, no agents) before the workload. */
   idleSeconds?: number;
+  /** preview: the PDF fixtures the scenario opens (see scripts/app-lab/pdf_fixtures.py). */
+  pdf?: PdfFixtures;
+  /**
+   * preview: keep the representative PDF on screen this long after its sample, so the named
+   * reader checks (`docs/architecture/pdf-reader.md`) can be run against the real window.
+   */
+  pdfHoldMs?: number;
+};
+
+/**
+ * PDF documents for the preview scenario, generated and independently verified by
+ * `scripts/app-lab/pdf_fixtures.py`. `ceilingBytes` is parsed there from the TypeScript that owns
+ * the approved limit, and the driver compares it with `PDF_PAGE_LIMIT_BYTES` so the two cannot
+ * drift apart silently.
+ */
+export type PdfFixtures = {
+  files: {
+    text: string;
+    "zoomed-a4": string;
+    "large-page": string;
+    oversized: string;
+    corrupt: string;
+    "not-a-pdf": string;
+  };
+  sizes: Record<string, number>;
+  textPages: number;
+  searchPrefix: string;
+  searchTemplate: string;
+  uniqueNeedle: string;
+  uniquePage: number;
+  ceilingBytes: number;
+  /** Render bytes per zoom factor for the fixtures where the ceiling decision matters. */
+  renders: Record<string, { zoom: number; bytes: number }[]>;
+  pagePt: Record<string, { widthPt: number; heightPt: number }>;
+  /** Milliseconds the representative PDF is held on screen (see `pdfHoldMs`). */
+  holdMs?: number;
 };
 
 export type BenchConfig = {

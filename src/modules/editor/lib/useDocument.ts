@@ -1,5 +1,7 @@
+import { assertNoDestructiveSave } from "@/modules/git";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { currentWorkspaceEnv } from "@/modules/workspace";
+import { native } from "@/modules/workspace/native";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -109,14 +111,20 @@ export function useDocument({ path, visible, onDirtyChange, buffer }: Options) {
 
   // Explicit-user file access (tier A): no path policy, no workspace registry.
   const ioRef = useRef<DiskIo>({
-    write: async (target, content, expectedRevision) =>
-      invoke<{ mtime: number; revision: string }>("fs_write_file", {
+    write: async (target, content, expectedRevision) => {
+      // A destructive Git action that is already mutating this file must win:
+      // writing under it would race the restore and could be discarded silently.
+      await assertNoDestructiveSave(target, (path) =>
+        native.canonicalize(path).catch(() => null),
+      );
+      return invoke<{ mtime: number; revision: string }>("fs_write_file", {
         path: target,
         content: restoreEol(content, eolRef.current),
         workspace: currentWorkspaceEnv(),
         source: "editor",
         expectedRevision,
-      }),
+      });
+    },
     read: async (target) => {
       const res = await invoke<ReadResult>("fs_read_file", {
         path: target,
@@ -332,6 +340,9 @@ export function useDocument({ path, visible, onDirtyChange, buffer }: Options) {
     return saveNow();
   }, [clearAutoSaveTimer, saveNow]);
 
+  /** The buffer's own text against its last persisted baseline, synchronously. */
+  const isDirty = useCallback(() => bufferRef.current !== savedRef.current, []);
+
   /**
    * Coordinates an app-owned format step: the file the formatter is about to
    * rewrite must still be the revision this buffer last saved. When it is not,
@@ -519,6 +530,7 @@ export function useDocument({ path, visible, onDirtyChange, buffer }: Options) {
     dirty,
     onChange,
     save,
+    isDirty,
     reload,
     adoptDiskText,
     openAnyway,
@@ -538,5 +550,6 @@ export function useDocument({ path, visible, onDirtyChange, buffer }: Options) {
     applyRecoveredText,
     saveDraftCopy,
     dismissDraft,
+    discardRecovery: () => recoveryRef.current.discard(),
   };
 }

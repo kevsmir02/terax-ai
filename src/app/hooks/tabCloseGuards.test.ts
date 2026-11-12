@@ -3,12 +3,15 @@ import {
   type CloseHazardSnapshot,
   type CloseManyHazards,
   deletedPathTabs,
+  dirtyAfterSave,
   evaluateCloseHazards,
   hasOpenPathTab,
   hasCloseManyHazards,
   hasNewCloseManyHazards,
   pathAtOrUnder,
   renamedPath,
+  saveAllForClose,
+  saveThenClose,
   spacesEmptiedByTabs,
 } from "./tabCloseGuards";
 import type { EditorTab, MarkdownTab } from "@/modules/tabs";
@@ -191,5 +194,118 @@ describe("evaluateCloseHazards", () => {
     };
     const result = await evaluateCloseHazards(capture, async () => false, true);
     expect(result).toEqual(hazards([], [last]));
+  });
+});
+
+describe("saveThenClose", () => {
+  function deps(over: {
+    save?: () => Promise<boolean>;
+    dirty?: boolean;
+    exists?: boolean;
+  } = {}) {
+    let dirty = over.dirty ?? true;
+    const close = vi.fn();
+    const defaultSave = async () => {
+      dirty = false;
+      return true;
+    };
+    const save = vi.fn(over.save ?? defaultSave);
+    return {
+      close,
+      save,
+      setDirty: (next: boolean) => {
+        dirty = next;
+      },
+      deps: {
+        save,
+        isDirty: () => dirty,
+        exists: () => over.exists ?? true,
+        close,
+      },
+    };
+  }
+
+  it("closes a tab whose save covered the whole buffer", async () => {
+    const h = deps();
+    await expect(saveThenClose(h.deps, 7)).resolves.toBe("closed");
+    expect(h.save).toHaveBeenCalledWith(7);
+    expect(h.close).toHaveBeenCalledOnce();
+    expect(h.close).toHaveBeenCalledWith(7);
+  });
+
+  it("keeps the tab open when newer typing made the save stale", async () => {
+    const h = deps();
+    // Typing that lands while the save is in flight: the save completed for
+    // the captured text, so its result alone must not authorize the close.
+    h.deps.save = vi.fn(async () => {
+      h.setDirty(true);
+      return true;
+    });
+    h.setDirty(false);
+
+    await expect(saveThenClose(h.deps, 7)).resolves.toBe("incomplete");
+    expect(h.close).not.toHaveBeenCalled();
+  });
+
+  it("keeps the tab open when the save reported a conflict or failure", async () => {
+    const h = deps({ save: async () => false });
+    await expect(saveThenClose(h.deps, 7)).resolves.toBe("incomplete");
+    expect(h.close).not.toHaveBeenCalled();
+  });
+
+  it("does not close a tab that disappeared while saving", async () => {
+    const h = deps({ exists: false });
+    await expect(saveThenClose(h.deps, 7)).resolves.toBe("gone");
+    expect(h.close).not.toHaveBeenCalled();
+  });
+});
+
+describe("saveAllForClose", () => {
+  it("reports success only when every dirty buffer is fully persisted", async () => {
+    const dirty = new Set([1, 2]);
+    const save = vi.fn(async (id: number) => {
+      dirty.delete(id);
+      return true;
+    });
+    await expect(
+      saveAllForClose([1, 2], save, (id) => dirty.has(id)),
+    ).resolves.toBe(true);
+    expect(save.mock.calls).toEqual([[1], [2]]);
+  });
+
+  it("stops at the first incomplete save and reports failure", async () => {
+    const dirty = new Set([1, 2]);
+    const save = vi.fn(async (id: number) => {
+      if (id === 2) return false;
+      dirty.delete(id);
+      return true;
+    });
+    await expect(
+      saveAllForClose([1, 2], save, (id) => dirty.has(id)),
+    ).resolves.toBe(false);
+    expect(save).toHaveBeenCalledTimes(2);
+  });
+
+  it("treats text typed during the save as incomplete", async () => {
+    let dirty = false;
+    const save = vi.fn(async () => {
+      dirty = true;
+      return true;
+    });
+    await expect(
+      saveAllForClose([1], save, () => dirty),
+    ).resolves.toBe(false);
+  });
+});
+
+describe("dirtyAfterSave", () => {
+  it("rejects a close where a saved buffer has newer typing", () => {
+    expect(dirtyAfterSave([2], { dirtyIds: [2], busyLeafIds: [] })).toBe(true);
+  });
+
+  it("accepts a close after every saved buffer is clean", () => {
+    expect(dirtyAfterSave([2, 3], { dirtyIds: [], busyLeafIds: [] })).toBe(
+      false,
+    );
   });
 });

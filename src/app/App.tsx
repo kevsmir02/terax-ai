@@ -59,7 +59,9 @@ import {
   SidebarRail,
   useSidebarPanel,
 } from "@/modules/sidebar";
+import { destructiveGitBridge } from "@/modules/source-control/destructiveGitBridge";
 import {
+  type DestructiveGitSupport,
   SourceControlPanel,
   useRepositoryTargeting,
   useSourceControlContext,
@@ -86,6 +88,7 @@ import {
   findLeafCwd,
   hasLeaf,
   isTerminalSurfaceTarget,
+  leafHasForegroundProcess,
   leafIds,
   navigateFocusedBlocks,
   type PaneBounds,
@@ -125,15 +128,17 @@ import {
   useState,
 } from "react";
 import { CloseDialogs } from "./components/CloseDialogs";
+import { QuitDialog } from "./components/QuitDialog";
 import { WorkspaceInputBar } from "./components/WorkspaceInputBar";
 import { WorkspaceSurface } from "./components/WorkspaceSurface";
-import { useAppCloseGuard } from "./hooks/useAppCloseGuard";
+import { useQuitGuard } from "./hooks/useQuitGuard";
 import {
   hasOpenPathTab,
   renamedPath,
   spacesEmptiedByTabs,
 } from "./hooks/tabCloseGuards";
 import { useTabCloseGuards } from "./hooks/useTabCloseGuards";
+import { useSpaceDeleteGuard } from "./hooks/useSpaceDeleteGuard";
 import { useWorkspaceSwitcher } from "./hooks/useWorkspaceSwitcher";
 
 // Real-application benchmark driver (scripts/app-lab). `__TERAX_BENCH__` is the literal `false`
@@ -247,6 +252,12 @@ export default function App() {
   const spaceList = useSpaces((s) => s.spaces);
   const spaceNames = useMemo(
     () => Object.fromEntries(spaceList.map((space) => [space.id, space.name])),
+    [spaceList],
+  );
+  // Markdown previews anchor automatic local assets to the Space's configured
+  // project root, not to a terminal's current directory.
+  const spaceRoots = useMemo(
+    () => Object.fromEntries(spaceList.map((space) => [space.id, space.root])),
     [spaceList],
   );
   const activeSpaceIdRef = useRef(activeSpaceId);
@@ -417,22 +428,89 @@ export default function App() {
     [disposeTab, newTabInSpace],
   );
 
+  const isTabDirty = useCallback((id: number): boolean => {
+    const tab = tabsRef.current.find((t) => t.id === id);
+    if (tab?.kind !== "editor") return false;
+    return editorRefs.current.get(id)?.isDirty() ?? tab.dirty;
+  }, []);
+
+  /**
+   * Every buffer and terminal the destructive-Git guard may need to see, read
+   * at request time. Space names and roots come from the live Spaces store so a
+   * rename does not need to re-register this provider.
+   */
+  const destructiveSupport = useMemo<DestructiveGitSupport>(
+    () => ({
+      usage: () => {
+        const spaces = useSpaces.getState().spaces;
+        const nameOf = (id: string) =>
+          spaces.find((space) => space.id === id)?.name ?? "Space";
+        const rootOf = (id: string) =>
+          spaces.find((space) => space.id === id)?.root ?? null;
+        const current = tabsRef.current;
+        return {
+          buffers: current
+            .filter((tab) => tab.kind === "editor")
+            .map((tab) => ({
+              tabId: tab.id,
+              spaceId: tab.spaceId,
+              spaceName: nameOf(tab.spaceId),
+              spaceRoot: rootOf(tab.spaceId),
+              path: tab.path,
+              dirty: isTabDirty(tab.id),
+            })),
+          terminals: current
+            .filter((tab) => tab.kind === "terminal")
+            .flatMap((tab) =>
+              leafIds(tab.paneTree).map((leafId) => ({
+                tabId: tab.id,
+                leafId,
+                spaceId: tab.spaceId,
+                spaceName: nameOf(tab.spaceId),
+                cwd: findLeafCwd(tab.paneTree, leafId) ?? tab.cwd ?? "",
+              })),
+            ),
+          isBusy: (leafId: number) => leafHasForegroundProcess(leafId),
+        };
+      },
+      canonicalize: (path: string) =>
+        native.canonicalize(path).catch(() => null),
+    }),
+    [isTabDirty],
+  );
+
+  const saveTab = useCallback(async (id: number): Promise<boolean> => {
+    const handle = editorRefs.current.get(id);
+    if (!handle) return false;
+    try {
+      const complete = await handle.save();
+      return complete && !handle.isDirty();
+    } catch (error) {
+      console.error("[terax] save before close failed:", error);
+      return false;
+    }
+  }, []);
+
   const {
     pendingCloseTab,
     pendingTerminalCloseTab,
     pendingDeleteTabs,
     pendingCloseMany,
     closeManyConfirming,
+    closeManyIncomplete,
+    closeSaveState,
     handleClose,
     handleCloseTabsToRight,
     handleCloseOtherTabs,
     confirmClose,
     cancelClose,
+    saveAndClose,
     confirmTerminalClose,
     cancelTerminalClose,
     confirmDeleteClose,
     cancelDeleteClose,
     confirmCloseMany,
+    saveAndCloseMany,
     cancelCloseMany,
     handlePathsDeleted,
   } = useTabCloseGuards({
@@ -441,10 +519,34 @@ export default function App() {
     disposeTab,
     disposeDeletedTabs,
     disposeTabs,
+    saveTab,
+    isTabDirty,
   });
 
-  const { pendingAppClose, confirmAppClose, cancelAppClose } =
-    useAppCloseGuard(tabsRef);
+  // The app lab records the confirmed close instead of ending the process, so
+  // a scenario can report what quitting resolved to before the app exits.
+  const benchQuitClosed = useRef(false);
+  const benchCloseWindow = __TERAX_BENCH__
+    ? async () => {
+        benchQuitClosed.current = true;
+      }
+    : undefined;
+
+  const {
+    quit,
+    requestQuit,
+    cancel: cancelQuit,
+    confirm: confirmQuit,
+    saveAll: saveAllAndQuit,
+    retryFlush: retryQuitFlush,
+    loseDrafts: loseDraftsAndQuit,
+    force: forceQuit,
+  } = useQuitGuard({
+    tabsRef,
+    isTabDirty,
+    saveTab,
+    ...(benchCloseWindow ? { closeWindow: benchCloseWindow } : {}),
+  });
 
   useEffect(() => {
     const live = new Set<number>();
@@ -577,7 +679,7 @@ export default function App() {
       const tabId = newTab(path);
       setTimeout(() => {
         const tab = tabsRef.current.find((x) => x.id === tabId);
-        if (!tab || tab.kind !== "terminal") return;
+        if (tab?.kind !== "terminal") return;
         const t = terminalRefs.current.get(tab.activeLeafId);
         if (!t) return;
         t.write(`cd ${quoteShellArg(path)}\r`);
@@ -1060,7 +1162,7 @@ export default function App() {
     return meta.id;
   }, [activeCwd, home, workspaceEnv, newTab, setActiveSpaceForNewTabs]);
 
-  const handleDeleteSpace = useCallback(
+  const commitDeleteSpace = useCallback(
     (id: string) => {
       const nextSpaceId = useSpaces.getState().remove(id);
       if (!nextSpaceId) return;
@@ -1071,6 +1173,27 @@ export default function App() {
     },
     [removeTabsForSpace],
   );
+
+  const prepareDiscard = useCallback((id: number): (() => void) | null => {
+    const handle = editorRefs.current.get(id);
+    return handle ? () => handle.discardRecovery() : null;
+  }, []);
+
+  const {
+    pendingSpaceDelete,
+    spaceDeleteSaving,
+    spaceDeleteIncomplete,
+    requestSpaceDelete,
+    confirmSpaceDelete,
+    saveAndDeleteSpace,
+    cancelSpaceDelete,
+  } = useSpaceDeleteGuard({
+    tabs,
+    deleteSpace: commitDeleteSpace,
+    saveTab,
+    isTabDirty,
+    prepareDiscard,
+  });
 
   const handleMoveTab = useCallback(
     (tabId: number, targetSpaceId: string) => {
@@ -1118,7 +1241,7 @@ export default function App() {
       onOpenChange={setSwitcherOpen}
       tabs={tabs}
       onNewSpace={() => void handleNewSpace()}
-      onDeleteSpace={handleDeleteSpace}
+      onDeleteSpace={requestSpaceDelete}
       onNewTabInSpace={handleNewTabInSpace}
       onJumpTab={jumpToTab}
       onCloseTab={handleClose}
@@ -1286,10 +1409,14 @@ export default function App() {
               openFileTab={(path, pin = true, spaceId) =>
                 openFileTab(path, pin, spaceId ? { spaceId } : undefined)
               }
+              openMarkdownTab={newMarkdownTab}
+              setLeafCwd={setLeafCwd}
               readBuffer={(leafId, maxLines) =>
                 terminalRefs.current.get(leafId)?.getBuffer(maxLines) ?? null
               }
-              spaces={useSpaces.getState().spaces.map(({ id, name }) => ({ id, name }))}
+              spaces={useSpaces
+                .getState()
+                .spaces.map(({ id, name }) => ({ id, name }))}
               activeSpaceId={activeSpaceId}
               createSpace={(name, root) =>
                 useSpaces.getState().create({ name, root }).id
@@ -1297,6 +1424,91 @@ export default function App() {
               setActiveSpace={(id) => useSpaces.getState().setActive(id)}
               newTabInSpace={(spaceId, cwd) => newTabInSpace(spaceId, cwd)}
               openPreview={(url) => openPreviewTab(url)}
+              requestCloseTab={(id) => void handleClose(id)}
+              cancelPendingClose={() => {
+                cancelClose();
+                cancelTerminalClose();
+              }}
+              confirmDiscardTab={() => {
+                confirmClose();
+                confirmTerminalClose();
+              }}
+              saveAndCloseTab={() => void saveAndClose()}
+              requestDeleteSpace={(id) => void requestSpaceDelete(id)}
+              cancelDeleteSpace={cancelSpaceDelete}
+              confirmDeleteSpace={() => void confirmSpaceDelete()}
+              saveAndDeleteSpace={() => void saveAndDeleteSpace()}
+              pendingGuards={() => ({
+                closeTabId: pendingCloseTab,
+                terminalTabId: pendingTerminalCloseTab,
+                spaceDeleteId: pendingSpaceDelete?.spaceId ?? null,
+                closeSaveState,
+                spaceDeleteIncomplete,
+              })}
+              editEditor={(tabId, text) =>
+                editorRefs.current.get(tabId)?.insertText(text)
+              }
+              requestQuit={requestQuit}
+              cancelQuit={cancelQuit}
+              confirmQuit={confirmQuit}
+              saveAllAndQuit={saveAllAndQuit}
+              retryQuitFlush={retryQuitFlush}
+              loseDraftsAndQuit={loseDraftsAndQuit}
+              forceQuit={forceQuit}
+              quitState={() => ({
+                phase: quit.phase,
+                closed: benchQuitClosed.current,
+                note: quit.note,
+                totals: quit.survey?.totals ?? {
+                  buffers: 0,
+                  processes: 0,
+                  uncertainProcesses: 0,
+                  drafts: 0,
+                },
+                spaces: (quit.survey?.spaces ?? []).map((space) => ({
+                  id: space.id,
+                  name: space.name,
+                  buffers: space.buffers.map((buffer) => ({
+                    tabId: buffer.tabId,
+                    title: buffer.title,
+                  })),
+                  processes: space.processes.map((process) => ({
+                    leafId: process.leafId,
+                    state: process.state,
+                  })),
+                  drafts: space.drafts.map((draft) => ({
+                    bufferId: draft.bufferId,
+                    title: draft.title,
+                    state: draft.state,
+                  })),
+                })),
+                survivors: quit.survivors,
+                flush: quit.flush
+                  ? {
+                      outcome: quit.flush.outcome,
+                      drafts: quit.flush.drafts.map((draft) => ({
+                        bufferId: draft.bufferId,
+                        title: draft.title,
+                        state: draft.state,
+                      })),
+                    }
+                  : null,
+              })}
+              openSourceControl={openSourceControl}
+              destructiveGit={() => {
+                const bridge = destructiveGitBridge();
+                return {
+                  mounted: bridge !== null,
+                  ready: bridge?.ready() ?? false,
+                  busy: bridge?.busy() ?? false,
+                  pending: bridge?.pending() ?? null,
+                  requestDiscard: (paths) =>
+                    bridge?.requestDiscard(paths) ?? Promise.resolve(),
+                  confirm: (confirmation) =>
+                    bridge?.confirm(confirmation) ?? Promise.resolve(),
+                  cancel: () => bridge?.cancel(),
+                };
+              }}
             />
           </Suspense>
         )}
@@ -1392,6 +1604,7 @@ export default function App() {
                           onFollowRepositoryContext={
                             handleFollowRepositoryContext
                           }
+                          destructive={destructiveSupport}
                         />
                       )}
                     </div>
@@ -1413,6 +1626,7 @@ export default function App() {
                         activeId={activeId}
                         activeTab={activeTab}
                         activeSpaceId={activeSpaceId ?? DEFAULT_SPACE_ID}
+                        spaceRoots={spaceRoots}
                         subscribeWindowPresentation={
                           subscribeWindowPresentation
                         }
@@ -1494,8 +1708,10 @@ export default function App() {
           <CloseDialogs
             tabs={tabs}
             pendingCloseTab={pendingCloseTab}
+            closeSaveState={closeSaveState}
             onCancelClose={cancelClose}
             onConfirmClose={confirmClose}
+            onSaveAndClose={saveAndClose}
             pendingTerminalCloseTab={pendingTerminalCloseTab}
             onCancelTerminalClose={cancelTerminalClose}
             onConfirmTerminalClose={confirmTerminalClose}
@@ -1504,11 +1720,31 @@ export default function App() {
             onConfirmDeleteClose={confirmDeleteClose}
             pendingCloseMany={pendingCloseMany}
             closeManyConfirming={closeManyConfirming}
+            closeManyIncomplete={closeManyIncomplete}
             onCancelCloseMany={cancelCloseMany}
             onConfirmCloseMany={confirmCloseMany}
-            pendingAppClose={pendingAppClose}
-            onCancelAppClose={cancelAppClose}
-            onConfirmAppClose={confirmAppClose}
+            onSaveAndCloseMany={saveAndCloseMany}
+            pendingSpaceDelete={pendingSpaceDelete}
+            spaceName={
+              spaceList.find((s) => s.id === pendingSpaceDelete?.spaceId)
+                ?.name ?? "this Space"
+            }
+            spaceDeleteSaving={spaceDeleteSaving}
+            spaceDeleteIncomplete={spaceDeleteIncomplete}
+            onCancelSpaceDelete={cancelSpaceDelete}
+            onConfirmSpaceDelete={() => void confirmSpaceDelete()}
+            onSaveAndDeleteSpace={() => void saveAndDeleteSpace()}
+          />
+
+          <QuitDialog
+            quit={quit}
+            tabs={tabs}
+            onCancel={cancelQuit}
+            onConfirm={confirmQuit}
+            onSaveAll={saveAllAndQuit}
+            onRetryFlush={retryQuitFlush}
+            onLoseDrafts={loseDraftsAndQuit}
+            onForce={forceQuit}
           />
         </div>
       </TooltipProvider>

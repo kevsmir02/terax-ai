@@ -697,7 +697,20 @@ describe("exclusions and shutdown", () => {
     expect(h.storage.records.get("buf-a")?.text).toBe("durable");
   });
 
-  it("flushes pending text on request (bounded quit flush)", async () => {    const h = harness();
+  it("reports live statuses without writing anything", async () => {
+    const h = harness();
+    const buf = openBuffer(h, { bufferId: "buf-a" });
+    buf.edit({ text: "not yet written", diskRevision: null });
+    // The quit survey reads this before deciding; it must describe the buffer
+    // and must not schedule or perform a write of its own.
+    const statuses = h.manager.statuses();
+    expect(statuses.get("buf-a")?.kind).toBe("pending");
+    expect(statuses.get("buf-a")?.bufferRevision).toBe(1);
+    expect(h.storage.writes).toHaveLength(0);
+  });
+
+  it("flushes pending text on request (bounded quit flush)", async () => {
+    const h = harness();
     const buf = openBuffer(h, { bufferId: "buf-a" });
     buf.edit({ text: "pending at quit", diskRevision: null });
     const statuses = await h.manager.flushAll();

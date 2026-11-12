@@ -1,0 +1,3 @@
+# Unload hidden web previews to bound background work
+
+An arbitrary cross-origin web preview cannot be reliably paused by the application; the existing thirty-second hidden grace period can continue scripts, media and network activity. Planned: immediately tear down frames for inactive tabs/Spaces and supported hidden/minimized-window signals, accepting reload and transient state loss, while mere focus loss of a visible window does not trigger teardown and complete Linux occlusion detection is not promised. The user chose this bounded lifecycle over an unenforceable suspension promise, distinct from terminal models that keep processing background agents and document previews with their own resource lifecycle.

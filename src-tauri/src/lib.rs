@@ -281,6 +281,7 @@ pub fn run() {
             pty::pty_resize,
             pty::pty_close,
             pty::pty_close_all,
+            pty::pty_terminate,
             pty::pty_has_foreground_process,
             pty::pty_has_foreground_job,
             pty::pty_shell_name,
@@ -390,6 +391,8 @@ pub fn run() {
             modules::bench::bench_config,
             #[cfg(feature = "bench")]
             modules::bench::bench_window,
+            #[cfg(feature = "bench")]
+            modules::bench::bench_asset_log,
             #[cfg(feature = "bench")]
             modules::bench::bench_exit,
             #[cfg(feature = "bench")]

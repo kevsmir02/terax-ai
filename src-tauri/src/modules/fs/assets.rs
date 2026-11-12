@@ -291,6 +291,12 @@ impl AssetGrants {
         state.grants.retain(|_, grant| grant.owner != owner);
     }
 
+    /// Live grants across every webview (bench observation, issue #30).
+    #[cfg(feature = "bench")]
+    pub fn active(&self) -> usize {
+        self.state.lock().unwrap().grants.len()
+    }
+
     /// Drops one tab scope's grants. Grants for other tabs in the same webview
     /// stay usable.
     pub fn revoke_scope(&self, owner: &str, scope: &str) {
@@ -855,12 +861,24 @@ pub fn serve<R: Runtime>(
     let app = context.app_handle().clone();
     let owner = context.webview_label().to_owned();
     tauri::async_runtime::spawn_blocking(move || {
-        let response = respond(
+        let result = deliver(
             &app.state::<AssetGrants>(),
             &owner,
             &request,
             &DeliveryLimits::approved(),
+            &mut |_| {},
         );
+        // The PDF acceptance scenario reads what the webview actually asked for from here; the
+        // page cannot see it (separate cross-origin document, no `asset:` in `connect-src`).
+        #[cfg(feature = "bench")]
+        super::bench_probe::record(
+            &owner,
+            &request,
+            &result
+                .as_ref()
+                .map_err(|error| (error.status, error.message.clone())),
+        );
+        let response = result.unwrap_or_else(|error| error.response());
         responder.respond(response);
     });
 }
@@ -889,6 +907,10 @@ enum DeliveryStage {
     Reserved,
 }
 
+/// Serves one asset request the way `serve` does, as a test entry point: a delivery error becomes
+/// the same response the handler hands to WebKit (`serve` itself keeps the error so the bench probe
+/// can record why a request was refused).
+#[cfg(test)]
 fn respond(
     grants: &AssetGrants,
     owner: &str,
@@ -1506,6 +1528,64 @@ mod tests {
         assert_eq!(
             respond(&grants, "main", &request(&image, &token), &limits).status(),
             403
+        );
+    }
+
+    /// A PDF is a document the app only ever *reads*: the request for it must be served as
+    /// `application/pdf` with ranges advertised, an unbounded request must be answered with the
+    /// whole file (the path the PDF iframe actually takes), and a range must be clamped so one
+    /// request cannot pull an arbitrary slice into memory. The acceptance scenario (issue #30)
+    /// records which of these the real WebKitGTK webview asked for.
+    #[test]
+    fn pdf_media_is_served_with_ranges_and_each_range_is_clamped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fixture.pdf");
+        let body = vec![b'x'; 3 * 1024 * 1024];
+        std::fs::write(&path, &body).unwrap();
+        let grants = AssetGrants::default();
+        let token = grants
+            .grant(
+                "main".into(),
+                None,
+                &super::super::to_canon(&path),
+                WorkspaceEnv::Local,
+                grants.generation("main"),
+                grants.scope_generation("main", None),
+            )
+            .unwrap();
+
+        let limits = DeliveryLimits::approved();
+        let whole = respond(&grants, "main", &request(&path, &token), &limits);
+        assert_eq!(whole.status(), 200);
+        assert_eq!(whole.headers()["Content-Type"], "application/pdf");
+        assert_eq!(whole.headers()["Content-Length"], body.len().to_string());
+        assert_eq!(whole.headers()["Accept-Ranges"], "bytes");
+        assert_eq!(whole.body().len(), body.len());
+
+        let clamped = respond(
+            &grants,
+            "main",
+            &ranged(request(&path, &token), "bytes=0-2999999"),
+            &limits,
+        );
+        assert_eq!(clamped.status(), 206);
+        assert_eq!(clamped.body().len(), 1024 * 1024);
+        assert_eq!(
+            clamped.headers()["Content-Range"],
+            "bytes 0-1048575/3145728"
+        );
+
+        let tail = respond(
+            &grants,
+            "main",
+            &ranged(request(&path, &token), "bytes=1048576-"),
+            &limits,
+        );
+        assert_eq!(tail.status(), 206);
+        assert_eq!(tail.body().len(), 1024 * 1024);
+        assert_eq!(
+            tail.headers()["Content-Range"],
+            "bytes 1048576-2097151/3145728"
         );
     }
 

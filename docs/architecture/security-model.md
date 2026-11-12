@@ -36,7 +36,22 @@ Three tiers exist and must stay distinct:
 2. **Root-confined structural mutation**: `fs_move`, `fs_delete_batch`, `fs_copy`, control `open`, shell cwd. Canonicalize + `WorkspaceRegistry::is_authorized` only. Control `open` of a target outside every authorized root is still refused (retained-but-strict; a deliberate `terax open` outside the roots needs an explicit grant in a later change).
 3. **Automatic preview assets**: grant token + canonical containment + secret policy + media type + range + descriptor identity, in `src-tauri/src/modules/fs/assets.rs`.
 
+3. **Automatic preview assets**: grant token + canonical containment + secret policy + media type + range + descriptor identity, in `src-tauri/src/modules/fs/assets.rs`.
+
 Media elements cannot load a custom URI scheme in WebKitGTK (WebKit bug 146351; observed as `MEDIA_ERR_SRC_NOT_SUPPORTED` for every container), so the same tab-owned grant is also served at `http://127.0.0.1:<ephemeral-port>/media?token=…`. That endpoint is loopback-only, requires the same bearer token (it grants no new file access), serves only single-file media grants, re-checks revocation after reserving a delivery, applies the identical range chunking and delivery bounds, caps concurrent connections, and stops serving a token as soon as the tab scope revokes it. It is a transport for tier 3, not a fourth tier.
+
+An automatic consumer never widens its own boundary. A Markdown document loads
+local images only from its Space project root, or from its own directory when
+the document lies outside that root. Anything beyond that needs an explicit
+per-file grant the person chooses in the preview (`MarkdownAssetNotice`); a
+secret path is never offered and a symlink that leaves the boundary is still
+refused natively. Remote images are not fetched on render: the transform drops
+their `src` until a deliberate "Load remote images" action. Document links never
+navigate the application webview; only a clicked external target reaches the
+native opener. `tauri.conf.json`'s `img-src` has to allow `https:` for a consented
+remote image to render at all, so CSP is not the consent boundary: the renderer's
+policy is, and the counted `--scenario markdown` fixture is what proves the page
+makes zero remote requests before the person chooses.
 
 The fourth tier, automatic agent reads (`fs::access::authorize_read` plus the `fs::ai` reader commands), was removed with the built-in AI stack (ticket #14). Nothing now reads a file on the user's behalf: an external agent reads files in its own process, and the application reads only what the user opened or the preview policy explicitly serves.
 
@@ -164,10 +179,15 @@ two-Space independence, Save As retarget), `RecoveryStatusBar.test.tsx` /
 `src-tauri/src/modules/recovery.rs` unit tests (atomicity, private modes,
 quota refusal, revision-aware delete, corrupt-record handling) and
 `src-tauri/tests/recovery_store.rs` (restart, two-Space records through the
-native seam, refusal leaves the older record). Not exercised: a real forced kill
-of the packaged application, a packaged two-Space UI race, and the quit-time
-bounded flush UI (the manager exposes `flushAll`; the close/quit flow is ticket
-#34).
+native seam, refusal leaves the older record), and now
+`src/modules/shutdown/lib/flush.test.ts` together with
+`docs/architecture/quit-shutdown.md` (the quit-time bounded flush: a failed,
+slow or quota-paused write is reported to the quit prompt as *not saved*, text
+typed during the write stays pending, and only the durable revision counts).
+Not exercised: a real forced kill of the packaged application, a packaged
+two-Space UI race, and a real disk stall during quit (the bound is proven in
+virtual time against the manager, and the app-lab drives the survey, cancel,
+save-then-quit and the survivor prompt end to end).
 
 
 Limitation, deliberately not claimed otherwise: this coordinates **app-owned**

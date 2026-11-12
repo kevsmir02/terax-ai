@@ -47,6 +47,19 @@ python3 scripts/app-lab/run.py --scenario workflow --profile debug \
 python3 scripts/app-lab/run.py --scenario preview --profile debug \
     --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-preview
 
+# the Markdown seam (Space-root assets, consent, symlink escape, grant revocation)
+python3 scripts/app-lab/run.py --scenario markdown --profile debug \
+    --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-markdown
+
+# the Spaces lifecycle seam (shared checkout, switch, close guards, Space deletion)
+python3 scripts/app-lab/run.py --scenario spaces --profile debug \
+    --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-spaces
+
+# the quit seam (survey across Spaces, repeated close, save-then-quit, graceful
+# termination, survivor prompt, forced exit, reload without command replay)
+python3 scripts/app-lab/run.py --scenario quit --profile debug \
+    --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-quit
+
 # the image seam (real decode per format, oversized/corrupt refusal, hidden-tab and
 # close-cycle release of decoded viewers and grants)
 python3 scripts/app-lab/run.py --scenario images --profile debug \
@@ -127,6 +140,53 @@ and the editor's rendered text is asserted. Each step emits `[workflow] PASS|FAI
 `page.log`; the structured summary (`token`, `pass`, `steps`) rides the final `done` sync, the
 report stores it under `workflow`, and the runner exits 2 when any step failed.
 
+**The Markdown preview** (`--scenario markdown`) drives the real preview against fixtures the runner
+writes: a document inside the Space root, an outside document, a symlink escape, a remote pixel the
+runner counts, a link document, a document of hostile references and a document above the 4 MiB
+syntax ceiling. It asserts the image
+loads from the configured Space root, that changing the terminal cwd through `setLeafCwd` leaves the
+same `asset://` token and pixels in place, that the symlink escape is refused (`naturalWidth 0`), that
+an outside document loads from its own folder and only loads a sibling image after the "Allow"
+button, that the remote image is absent and the fixture server recorded zero hits until "Load remote
+images" is chosen (then one), that a relative link neither navigates the app nor opens a tab, that a
+hostile document leaves no executed effect, no `<script>`, no event-handler attribute, no
+`javascript:` href and no asset URL the app did not mint with a token, that
+the large document renders with `data-syntax="off"`, that closing the tab makes its old asset URL
+fail while no content resurfaces, and that closing it while its 4 MiB read is still in flight
+leaves no tab, no marker text and no syntax block behind. Pass/fail steps and the remote hit
+counters are in the report's `markdown` and `markdownServer` blocks.
+
+**The Spaces lifecycle** (`--scenario spaces`): two Spaces are created on one real checkout and the
+rendered `[data-shared-root]` badge is asserted; a shell in the first Space streams five lines
+while the app switches to the second Space, and after switching back the scrollback holds all five
+while the hidden terminal tab reported `visibility: hidden` (presentation off, output processing
+on). The scenario then drives the app's own close guards: a tab whose shell runs `sleep 30` opens
+the running-process dialog and cancel keeps it; an editor buffer edited through the real CodeMirror
+path opens the unsaved-changes dialog, cancel keeps it dirty, and Save & Close reads the persisted
+text back from disk before the tab disappears. A third Space with a dirty buffer and a running
+process is asked about and canceled first (Space, tabs and dirty text still there), then saved and
+deleted; the report records that the project directory and its `spaces-keep.txt` still exist under
+`spaceDeletion`. The runner exits 2 when any step failed. The scenario does not relaunch the app:
+restart restoration (layout, cwd and file locations cold, no command replay) is verified at the
+planning seam in `src/modules/spaces/lib/restore.test.ts`, and — for quit — by the reload pass of
+`--scenario quit` (below).
+
+**Quit** (`--scenario quit`, ticket #18): the real application quits. Two Spaces hold a dirty
+buffer (edited through CodeMirror) and a busy terminal — one job honours `SIGTERM`, one runs
+`sh -c 'trap "" TERM; exec sleep 300'`. Asking to quit opens the survey, which must name both
+Spaces, both buffers and both processes and must state that detached services keep running. A
+second close request while the dialog is open is asserted **not** to quit. Cancel keeps the window
+and both processes. Save All & Quit writes both buffers (read back from disk) and asks again with
+only the processes left. Confirming runs the bounded recovery flush, then the native graceful pass:
+the cooperating job is gone, the survivor's terminal still runs, and the survivor prompt has
+appeared. Cancelling there keeps the window open; a second round forces only after that prompt.
+Before the window would close the scenario appends one line to a replay-marker file and reloads the
+page (the boot path reaps every PTY, exactly as a relaunch would); the second pass asserts the
+Spaces and editor tabs came back, the marker still has one line — no command was replayed — and a
+quiet restored application closes without a question. The runner exits 2 when any step failed.
+A full process relaunch needs two profiles; the reload exercises the same restore path, and the
+difference is stated rather than papered over.
+
 **The preview** (`previewScenario`): a preview tab opens through the app's own planner
 (`openPreviewTab`) at `/preview-fixture?redirect=1`, which the orchestrator serves. The fixture page
 posts a 200 ms beat and a `pagehide` notice to the app page, so a teardown is observed as the
@@ -157,6 +217,29 @@ frame's document really stopping rather than as an attribute change:
 The step list and the observed signals (`blurExercised`, minimize `visibility`, `reportedHidden`)
 ride the final `done` sync as `preview` next to `workflow`; the fixture server's counters
 (`fixtureLoads`, `redirectHits`, `pings`) are recorded as `previewServer`.
+
+**PDF documents** (`pdfDocuments` in `src/bench/driver.ts`, issue #30). The same preview
+scenario opens five generated documents through the app's file planner and asserts what the
+application can actually own:
+
+- the app's delivery gate: a 12 MiB document above the 10 MiB whole-file read ceiling shows the
+  explicit-choice notice, mounts no frame and sends no request until "Load anyway" is used; then
+  exactly one `200` response carries the whole file with `override=1`;
+- the transport, recorded natively by `fs::bench_probe`/`bench_asset_log` (bench-only): method,
+  content type, status, bytes, the client's `Range`, advertised `Accept-Ranges` and the live grant
+  count — the app page cannot read the document, so the request log is the honest witness;
+- the document boundary: the frame commits a cross-origin document (`contentDocument` null, its
+  location refused), which is also why no reader function can be asserted from the page;
+- the error paths (`corrupt.pdf` is served and must not destabilise the app; `not-a-pdf.pdf` opens
+  as text because classification is by content) and the lifecycle (a hidden tab, tab close and
+  grant release).
+
+Fixtures are written and re-verified by `scripts/app-lab/pdf_fixtures.py` (poppler as the
+independent check) into the run's workspace, never the repository, and the manifest travels in the
+report with its verification. `--pdf-hold-ms N` keeps `text.pdf` on screen for `N` milliseconds
+after its sample so the named manual reader checks in `docs/architecture/pdf-reader.md` can be run
+against the real window; the reader functions themselves are not automated (WebKitGTK offers no
+input or screenshot seam, and the viewer's document is cross-origin).
 
 **The images** (`imagesScenario`): committed containers from
 `src-tauri/tests/fixtures/images/` are copied into the run's workspace and opened through the
@@ -268,6 +351,7 @@ not.
 | `workflow` (Linux) | acceptance workflow: shell spawn, exact echo, new tab, split, switch back, open a file and assert its rendered text; now sampled like the measured scenarios |
 | `images` (Linux) | image seam: representative committed containers decode in the real WebKitGTK, oversized/corrupt are refused, hidden tabs release, close cycles leave no decoded viewers or grants |
 | `media` (Linux) | media seam: real container/codec outcomes from the element, ranged delivery and seeking, hidden pause without auto-resume, unsupported/corrupt/mismatch/interrupted inputs, close releases elements, playback slots and grants |
+| `spaces` (Linux) | Space lifecycle: one checkout shared by two Spaces and its rendered indication, a switch that keeps hidden terminal output flowing while presentation stops, the running-process and unsaved-buffer close guards, and Space deletion that resolves dirty buffers/processes, leaves the project directory intact, and cancel leaving everything as it was |
 | `resource` (Linux) | idle terminal for `--idle-seconds` (5), then 2 Spaces, 4 terminal panes, `--agents` (2) busy synthetic agents, several text files, one active local preview; `--streams` (2) streaming panes for `--stream-seconds`, `--close-cycles` editor open/close cycles, `--cycles` hide/show cycles, then +10/+30 s settle |
 | `stress` (Linux) | the same shape with 4 agents, 4 streaming panes and the 4 MiB close-cycle file; a separate, clearly described workload |
 | `startup` (Linux) | boot only; `--startup-repeats` (3) launches — the first cold (fresh profile), the rest warm (same profile) |

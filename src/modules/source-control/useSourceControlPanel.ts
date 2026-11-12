@@ -1,9 +1,19 @@
 import {
+  assertNoDestructiveMutation,
+  assessDestructiveAction,
+  createDestructiveGitGuard,
+  type CanonicalizePath,
+  type DestructiveAction,
+  type DestructiveConfirmResult,
+  type DestructiveGitGuard,
+  type DestructivePlan,
+  type DestructiveUsageSource,
   git,
   type GitChangedFile,
   type GitDiscardEntry,
   type GitRepoInfo,
   type GitStatusSnapshot,
+  resolveDestructiveUsage,
 } from "@/modules/git";
 import {
   invalidateDiff,
@@ -51,10 +61,21 @@ export type SourceControlFileEntry = {
   untracked: boolean;
 };
 
-type PendingDiscard = {
-  scope: "single" | "all";
-  count: number;
-  label: string;
+/** Everything the destructive-action dialog renders and confirms against. */
+export type PendingDestructive = {
+  kind: "discard" | "checkout";
+  plan: DestructivePlan;
+  /** A refreshed plan after a stale or incomplete confirmation. */
+  stale: string | null;
+};
+
+/**
+ * What the panel needs to know about the rest of the application before it may
+ * mutate a checkout: every editor buffer and terminal in every Space.
+ */
+export type DestructiveGitSupport = {
+  usage: () => DestructiveUsageSource;
+  canonicalize: CanonicalizePath;
 };
 
 type SourceControlPanelState = {
@@ -78,7 +99,15 @@ type SourceControlPanelState = {
   selectionTransition: SelectionTransition;
   stagedEmptyText: string;
   unstagedEmptyText: string;
-  pendingDiscard: PendingDiscard | null;
+  pendingDestructive: PendingDestructive | null;
+  destructiveBusy: boolean;
+  requestCheckout: (branch: string, onDone?: () => void) => Promise<void>;
+  confirmDestructive: (confirmation: {
+    unsavedBuffers: number[];
+    activeWork: number[];
+    force: boolean;
+  }) => Promise<void>;
+  cancelDestructive: () => void;
   setCommitMessage: (value: string) => void;
   refresh: () => Promise<void>;
   selectEntry: (entry: SourceControlEntry) => Promise<void>;
@@ -89,9 +118,8 @@ type SourceControlPanelState = {
   toggleAll: () => Promise<void>;
   requestDiscardEntry: (entry: SourceControlEntry) => void;
   requestDiscardFile: (entry: SourceControlFileEntry) => void;
+  requestDiscardPaths: (paths: readonly string[]) => Promise<void>;
   requestDiscardAll: () => void;
-  confirmPendingDiscard: () => Promise<void>;
-  cancelPendingDiscard: () => void;
   stageAllEntries: () => Promise<void>;
   unstageAllEntries: () => Promise<void>;
   commit: () => Promise<void>;
@@ -169,7 +197,8 @@ function optimisticStage(
     if (!paths.has(file.path)) return file;
     if (file.staged && !file.unstaged) return file;
     changed = true;
-    const wt = file.worktreeStatus !== " " ? file.worktreeStatus : file.indexStatus;
+    const wt =
+      file.worktreeStatus !== " " ? file.worktreeStatus : file.indexStatus;
     return {
       ...file,
       indexStatus: wt,
@@ -199,7 +228,8 @@ function optimisticUnstage(
       continue;
     }
     changed = true;
-    const idx = file.indexStatus !== " " ? file.indexStatus : file.worktreeStatus;
+    const idx =
+      file.indexStatus !== " " ? file.indexStatus : file.worktreeStatus;
     if (idx === "R" && file.originalPath) {
       next.push({
         path: file.originalPath,
@@ -276,6 +306,7 @@ export function useSourceControlPanel(
         title?: string;
       }) => void)
     | null,
+  destructive: DestructiveGitSupport,
 ): SourceControlPanelState {
   const [panelState, setPanelState] = useState<PanelState>("closed");
   const [repo, setRepo] = useState<GitRepoInfo | null>(null);
@@ -287,13 +318,30 @@ export function useSourceControlPanel(
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [selectionTransition, setSelectionTransition] =
     useState<SelectionTransition>("none");
-  const [pendingDiscard, setPendingDiscard] = useState<
-    | { scope: "single"; entry: SourceControlEntry }
-    | { scope: "all"; entries: SourceControlEntry[] }
-    | null
-  >(null);
+  const [pendingDestructive, setPendingDestructive] =
+    useState<PendingDestructive | null>(null);
+  const [destructiveBusy, setDestructiveBusy] = useState(false);
   const selectedRef = useRef<DiffSelection | null>(null);
   const reconcileTimerRef = useRef(0);
+  const repoRef = useRef<GitRepoInfo | null>(null);
+  const destructiveRef = useRef(destructive);
+  const checkoutDoneRef = useRef<(() => void) | null>(null);
+  const executeRef = useRef<
+    | ((
+        busyKey: string,
+        optimistic: ((status: GitStatusSnapshot) => GitStatusSnapshot) | null,
+        ipc: () => Promise<void>,
+        affected: string[],
+      ) => Promise<void>)
+    | null
+  >(null);
+
+  useEffect(() => {
+    repoRef.current = repo;
+  }, [repo]);
+  useEffect(() => {
+    destructiveRef.current = destructive;
+  }, [destructive]);
 
   useEffect(() => {
     selectedRef.current = selected;
@@ -389,7 +437,11 @@ export function useSourceControlPanel(
   useEffect(() => () => cancelReconcile(), [cancelReconcile]);
 
   const openSelection = useCallback(
-    (sel: DiffSelection, repoRoot: string, file: GitChangedFile | undefined) => {
+    (
+      sel: DiffSelection,
+      repoRoot: string,
+      file: GitChangedFile | undefined,
+    ) => {
       onOpenDiff?.({
         path: sel.path,
         repoRoot,
@@ -487,7 +539,10 @@ export function useSourceControlPanel(
   const selectEntry = useCallback(
     async (entry: SourceControlEntry) => {
       if (!repo) return;
-      const nextSelection: DiffSelection = { path: entry.path, mode: entry.mode };
+      const nextSelection: DiffSelection = {
+        path: entry.path,
+        mode: entry.mode,
+      };
       if (sameSelection(selected, nextSelection)) {
         setActionError(null);
         setActionMessage(null);
@@ -504,7 +559,7 @@ export function useSourceControlPanel(
     [openSelection, repo, selected, status],
   );
 
-  const runMutation = useCallback(
+  const executeMutation = useCallback(
     async (
       busyKey: string,
       optimistic: ((status: GitStatusSnapshot) => GitStatusSnapshot) | null,
@@ -532,6 +587,115 @@ export function useSourceControlPanel(
       }
     },
     [cancelReconcile, repo, scheduleReconcile, summary],
+  );
+  useEffect(() => {
+    executeRef.current = executeMutation;
+  }, [executeMutation]);
+
+  const destructiveGuardRef = useRef<DestructiveGitGuard | null>(null);
+  const destructiveGuard =
+    destructiveGuardRef.current ??
+    createDestructiveGitGuard({
+      inspect: async (action: DestructiveAction) => {
+        const support = destructiveRef.current;
+        // Recheck immediately before the decision: the render-cached status can
+        // lag a save, a stage or another Space's mutation by a full refresh.
+        const fresh = await git.status(action.repoRoot);
+        return assessDestructiveAction({
+          action,
+          status: fresh,
+          usage: await resolveDestructiveUsage(
+            support.usage(),
+            support.canonicalize,
+          ),
+          canonicalize: support.canonicalize,
+        });
+      },
+      mutate: async (action: DestructiveAction) => {
+        const execute = executeRef.current;
+        if (!execute) return;
+        if (action.kind === "discard") {
+          const entries: GitDiscardEntry[] = action.entries.map((entry) => ({
+            path: entry.path,
+            untracked: entry.untracked,
+          }));
+          const paths = new Set(action.entries.map((entry) => entry.path));
+          await execute(
+            action.entries.length === 1
+              ? `discard:${entries[0]?.path ?? "file"}`
+              : "discard:all",
+            (snapshot) => optimisticDiscard(snapshot, paths),
+            () => git.discard(action.repoRoot, entries),
+            [...paths],
+          );
+          setActionMessage(
+            entries.length === 1
+              ? "Discarded working changes"
+              : `Discarded working changes in ${entries.length} files`,
+          );
+          return;
+        }
+        if (action.kind === "checkout") {
+          await execute(
+            "checkout",
+            null,
+            () => git.checkoutBranch(action.repoRoot, action.branch),
+            [],
+          );
+          setActionMessage(`Switched to branch ${action.branch}`);
+          checkoutDoneRef.current?.();
+        }
+      },
+    });
+  destructiveGuardRef.current = destructiveGuard;
+
+  const requestDestructive = useCallback(
+    async (
+      kind: PendingDestructive["kind"],
+      action: DestructiveAction,
+      onDone?: () => void,
+    ): Promise<void> => {
+      if (!repo || summary.busyAction || destructiveBusy) return;
+      setActionError(null);
+      setActionMessage(null);
+      checkoutDoneRef.current = null;
+      setDestructiveBusy(true);
+      try {
+        const plan = await destructiveGuard.request(action);
+        if (plan === null) {
+          setActionError(
+            "Another destructive Git action is starting or running; wait for it to finish.",
+          );
+          return;
+        }
+        checkoutDoneRef.current = onDone ?? null;
+        setPendingDestructive({ kind, plan, stale: null });
+      } catch (error) {
+        setActionError(normalizeError(error));
+      } finally {
+        setDestructiveBusy(false);
+      }
+    },
+    [destructiveBusy, destructiveGuard, repo, summary.busyAction],
+  );
+
+  const runMutation = useCallback(
+    async (
+      busyKey: string,
+      optimistic: ((status: GitStatusSnapshot) => GitStatusSnapshot) | null,
+      ipc: () => Promise<void>,
+      affected: string[],
+    ) => {
+      if (!repo) return;
+      try {
+        await assertNoDestructiveMutation(repo.repoRoot);
+      } catch (error) {
+        setActionError(normalizeError(error));
+        return;
+      }
+      await executeMutation(busyKey, optimistic, ipc, affected);
+    },
+    [executeMutation, repo],
   );
 
   const stageEntry = useCallback(
@@ -562,44 +726,132 @@ export function useSourceControlPanel(
     [repo, runMutation],
   );
 
-  const requestDiscardEntry = useCallback(
-    (entry: SourceControlEntry) => {
-      if (!repo || summary.busyAction) return;
-      setPendingDiscard({ scope: "single", entry });
+  const requestDiscard = useCallback(
+    (entries: readonly SourceControlEntry[]) => {
+      if (!repo || summary.busyAction || entries.length === 0) return;
+      void requestDestructive("discard", {
+        kind: "discard",
+        repoRoot: repo.repoRoot,
+        worktreeRoot: repo.repoRoot,
+        entries: entries.map((entry) => ({
+          path: entry.path,
+          untracked: entry.untracked,
+        })),
+      });
     },
-    [repo, summary.busyAction],
+    [repo, requestDestructive, summary.busyAction],
   );
 
-  const requestDiscardAll = useCallback(() => {
-    if (!repo || summary.busyAction || unstagedEntries.length === 0) return;
-    setPendingDiscard({ scope: "all", entries: unstagedEntries });
-  }, [repo, summary.busyAction, unstagedEntries]);
+  const requestDiscardEntry = useCallback(
+    (entry: SourceControlEntry) => requestDiscard([entry]),
+    [requestDiscard],
+  );
 
-  const cancelPendingDiscard = useCallback(() => {
-    setPendingDiscard(null);
-  }, []);
+  const requestDiscardPaths = useCallback(
+    async (paths: readonly string[]) => {
+      const repoRoot = repoRef.current?.repoRoot ?? "";
+      if (!repoRoot) return;
+      const fresh = await git.status(repoRoot).catch(() => null);
+      const entries = paths.flatMap((path) => {
+        const file = fresh?.changedFiles.find(
+          (candidate) => candidate.path === path,
+        );
+        if (!file?.unstaged) return [];
+        return [makeEntry(path, "-", file)];
+      });
+      await requestDestructive("discard", {
+        kind: "discard",
+        repoRoot,
+        worktreeRoot: repoRoot,
+        entries: entries.map((entry) => ({
+          path: entry.path,
+          untracked: entry.untracked,
+        })),
+      });
+    },
+    [requestDestructive],
+  );
 
-  const confirmPendingDiscard = useCallback(async () => {
-    if (!repo || !pendingDiscard) return;
-    const list =
-      pendingDiscard.scope === "single"
-        ? [pendingDiscard.entry]
-        : pendingDiscard.entries;
-    setPendingDiscard(null);
-    const entries: GitDiscardEntry[] = list.map((entry) => ({
-      path: entry.path,
-      untracked: entry.untracked,
-    }));
-    const paths = new Set(list.map((entry) => entry.path));
-    await runMutation(
-      pendingDiscard.scope === "single"
-        ? `discard:${list[0].path}`
-        : "discard:all",
-      (s) => optimisticDiscard(s, paths),
-      () => git.discard(repo.repoRoot, entries),
-      [...paths],
-    );
-  }, [pendingDiscard, repo, runMutation]);
+  const requestDiscardAll = useCallback(
+    () => requestDiscard(unstagedEntries),
+    [requestDiscard, unstagedEntries],
+  );
+
+  const requestCheckout = useCallback(
+    (branch: string, onDone?: () => void) => {
+      if (!repo || summary.busyAction) return Promise.resolve();
+      return requestDestructive(
+        "checkout",
+        {
+          kind: "checkout",
+          repoRoot: repo.repoRoot,
+          worktreeRoot: repo.repoRoot,
+          branch,
+        },
+        onDone,
+      );
+    },
+    [repo, requestDestructive, summary.busyAction],
+  );
+
+  const cancelDestructive = useCallback(() => {
+    if (destructiveBusy) return;
+    destructiveGuard.cancel();
+    checkoutDoneRef.current = null;
+    setPendingDestructive(null);
+  }, [destructiveBusy, destructiveGuard]);
+
+  const confirmDestructive = useCallback(
+    async (confirmation: {
+      unsavedBuffers: number[];
+      activeWork: number[];
+      force: boolean;
+    }) => {
+      if (!pendingDestructive || destructiveBusy) return;
+      setDestructiveBusy(true);
+      try {
+        const result: DestructiveConfirmResult = await destructiveGuard.confirm(
+          {
+            fingerprint: pendingDestructive.plan.fingerprint,
+            unsavedBuffers: confirmation.unsavedBuffers,
+            activeWork: confirmation.activeWork,
+            force: confirmation.force,
+          },
+        );
+        switch (result.status) {
+          case "done":
+            setPendingDestructive(null);
+            checkoutDoneRef.current = null;
+            break;
+          case "stale":
+          case "unacknowledged":
+            setPendingDestructive({
+              kind: pendingDestructive.kind,
+              plan: result.plan,
+              stale: result.message,
+            });
+            setActionError(result.message);
+            break;
+          case "failed":
+            setPendingDestructive(null);
+            checkoutDoneRef.current = null;
+            setActionError(result.error);
+            break;
+          case "busy":
+            setActionError(result.message);
+            break;
+          case "idle":
+            setPendingDestructive(null);
+            break;
+        }
+      } catch (error) {
+        setActionError(normalizeError(error));
+      } finally {
+        setDestructiveBusy(false);
+      }
+    },
+    [destructiveBusy, destructiveGuard, pendingDestructive],
+  );
 
   const stageAllEntries = useCallback(async () => {
     if (!repo || unstagedEntries.length === 0) return;
@@ -674,10 +926,8 @@ export function useSourceControlPanel(
 
   const requestDiscardFile = useCallback(
     (entry: SourceControlFileEntry) => {
-      if (!repo || summary.busyAction) return;
-      setPendingDiscard({
-        scope: "single",
-        entry: {
+      requestDiscard([
+        {
           key: `-:${entry.path}`,
           path: entry.path,
           mode: "-",
@@ -688,13 +938,19 @@ export function useSourceControlPanel(
           originalPath: entry.originalPath,
           untracked: entry.untracked,
         },
-      });
+      ]);
     },
-    [repo, summary.busyAction],
+    [requestDiscard],
   );
 
   const commit = useCallback(async () => {
     if (!repo || summary.busyAction) return;
+    try {
+      await assertNoDestructiveMutation(repo.repoRoot);
+    } catch (error) {
+      setActionError(normalizeError(error));
+      return;
+    }
     setLocalActionBusy("commit");
     setActionMessage(null);
     setActionError(null);
@@ -729,24 +985,6 @@ export function useSourceControlPanel(
     }
   }, [repo, status?.upstream, summary]);
 
-  const pendingDiscardView = useMemo<PendingDiscard | null>(() => {
-    if (!pendingDiscard) return null;
-    if (pendingDiscard.scope === "single") {
-      return {
-        scope: "single",
-        count: 1,
-        label: pendingDiscard.entry.path,
-      };
-    }
-    return {
-      scope: "all",
-      count: pendingDiscard.entries.length,
-      label: `${pendingDiscard.entries.length} unstaged ${
-        pendingDiscard.entries.length === 1 ? "file" : "files"
-      }`,
-    };
-  }, [pendingDiscard]);
-
   return {
     panelState,
     repo,
@@ -768,7 +1006,11 @@ export function useSourceControlPanel(
     selectionTransition,
     stagedEmptyText,
     unstagedEmptyText,
-    pendingDiscard: pendingDiscardView,
+    pendingDestructive,
+    destructiveBusy,
+    requestCheckout,
+    confirmDestructive,
+    cancelDestructive,
     setCommitMessage,
     refresh,
     selectEntry,
@@ -779,9 +1021,8 @@ export function useSourceControlPanel(
     toggleAll,
     requestDiscardEntry,
     requestDiscardFile,
+    requestDiscardPaths,
     requestDiscardAll,
-    confirmPendingDiscard,
-    cancelPendingDiscard,
     stageAllEntries,
     unstageAllEntries,
     commit,

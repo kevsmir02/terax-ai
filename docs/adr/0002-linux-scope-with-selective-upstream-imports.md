@@ -1,0 +1,3 @@
+# Reduce platform commitments while preserving useful upstream compatibility
+
+The fork targets Linux x86-64 with Fedora as the primary validation environment and personal-use-first public support. The user chose selective upstream imports and purposeful Linux cleanup over making every surviving internal abstraction Linux-specific, because eliminating inert portability seams can increase the recurring cost of importing terminal and application fixes. Non-Linux build and distribution support is removed from the intended product scope; retained compatibility seams require a maintenance rationale, not a support promise.
