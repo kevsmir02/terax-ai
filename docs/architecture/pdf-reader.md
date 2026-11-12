@@ -209,10 +209,10 @@ python3 -m unittest discover -s scripts/tests          # fixtures and their cont
 
 ### Issue #31 (the reader)
 
-Observed on 2026-11-12 on branch `issue/31-pdf-reader` at revision `9f0fe51` (the report records the
+Observed on 2026-11-12 on branch `issue/31-pdf-reader` at revision `eed57a8` (the report records the
 revision it ran): **`preview PASS: 45/45 steps`**, with the PDF phase driving the reader's own DOM.
 The evidence is in
-`personal/terax-baseline/evidence/2026-11-12/31-pdf-reader/run9/` (`report.json`, `page.log`); the
+`personal/terax-baseline/evidence/2026-11-12/31-pdf-reader/run11/` (`report.json`, `page.log`); the
 report carries `preview.pdf.steps` with every snapshot the driver read back.
 
 | check (real app) | observed |
@@ -233,9 +233,10 @@ report carries `preview.pdf.steps` with every snapshot the driver read back.
 | close | no reader element; live grants back to baseline (0 → 0) |
 
 Memory was sampled while other benchmark agents shared the host (load average 16 → 5), so the
-absolute PSS figures are directional: baseline 430.7 MiB, `text.pdf` open 472.6 MiB
-(+41.9 MiB for a 10.7 KB, 6-page document at 162 % with a 5.2 MiB raster and the PDF.js runtime),
-after the hidden/open cycles 390.9 MiB, after close 383.9 MiB; WebContent 249.7 → 289.1 MiB.
+absolute PSS figures are directional and vary with what else runs on the host: across three clean
+runs the baseline was 339-431 MiB, `text.pdf` open +42 to +64 MiB for a 10.7 KB, 6-page document
+at 162 % with a 5.2 MiB raster and the PDF.js runtime, and closing returned the process to
+about the baseline (final run: 379.7 → 425.5 → 378.5 MiB; WebContent 223.8 → 267.2 MiB).
 
 **Environment finding.** PDF.js schedules a display render on animation frames, and WebKit suspends
 those for an occluded window — including while the page still reports `visibility: visible` on this
