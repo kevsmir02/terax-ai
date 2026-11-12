@@ -1,17 +1,8 @@
-import { MarkdownCode } from "@/components/ai-elements/markdown-code";
-import { checkReadable } from "@/modules/workspace/policy";
-import { cn } from "@/lib/utils";
 import { useAssetGrant } from "@/lib/useAssetGrant";
-import {
-  memo,
-  useCallback,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-} from "react";
-import { defaultRehypePlugins, Streamdown } from "streamdown";
-import { previewBoundary, rehypeLocalImages } from "./lib/assetPath";
-import { MarkdownLink } from "./MarkdownLink";
+import { cn } from "@/lib/utils";
+import { useCallback, useLayoutEffect, useMemo, useRef } from "react";
+import { previewBoundary } from "./lib/assetPath";
+import { MarkdownContent } from "./MarkdownContent";
 import { MarkdownViewToggle } from "./MarkdownViewToggle";
 import { useMarkdownDocument } from "./useMarkdownDocument";
 
@@ -23,8 +14,6 @@ type Props = {
   onSetView: (mode: "rendered" | "raw") => void;
 };
 
-const components = { a: MarkdownLink, code: MarkdownCode };
-
 export function MarkdownPreviewPane({
   path,
   workspaceRoot = null,
@@ -35,6 +24,17 @@ export function MarkdownPreviewPane({
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollTopRef = useRef(0);
   const content = status.kind === "ready" ? status.content : null;
+  const boundary = useMemo(
+    () => previewBoundary(path, workspaceRoot),
+    [path, workspaceRoot],
+  );
+  // No grant request until there is a document to draw (binary/oversized/
+  // failed reads never touch the asset surface).
+  const {
+    urlFor: assetUrlFor,
+    error: assetError,
+    retry: retryImages,
+  } = useAssetGrant(content === null ? null : boundary);
 
   // A retargeted preview starts at the top, not at the old document's offset.
   // biome-ignore lint/correctness/useExhaustiveDependencies: path is the trigger.
@@ -85,10 +85,13 @@ export function MarkdownPreviewPane({
             </p>
           )}
           {content !== null && (
-            <MarkdownBody
+            <MarkdownContent
               path={path}
-              boundary={previewBoundary(path, workspaceRoot)}
+              boundary={boundary}
               content={content}
+              assetUrlFor={assetUrlFor}
+              assetError={assetError}
+              onRetryImages={retryImages}
             />
           )}
         </div>
@@ -96,42 +99,3 @@ export function MarkdownPreviewPane({
     </div>
   );
 }
-
-const MarkdownBody = memo(function MarkdownBody({
-  path,
-  boundary,
-  content,
-}: {
-  path: string;
-  boundary: string;
-  content: string;
-}) {
-  const { urlFor: assetUrlFor, error: assetError, retry } = useAssetGrant(boundary);
-  const rehypePlugins = useMemo(() => {
-    const d = defaultRehypePlugins;
-    return [
-      d.raw,
-      d.sanitize,
-      rehypeLocalImages(path, (abs) => assetUrlFor(abs) ?? "data:,", {
-        boundary,
-        isReadable: (abs) => checkReadable(abs).ok,
-      }),
-      d.harden,
-    ];
-  }, [path, boundary, assetUrlFor]);
-
-  return (
-    <>
-    {assetError && <div className="mb-3 text-xs text-muted-foreground"><p role="alert">Local images unavailable: {assetError}</p><button type="button" className="underline" onClick={retry}>Retry images</button></div>}
-    <Streamdown
-      className="select-text [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
-      components={components}
-      rehypePlugins={rehypePlugins}
-      mode="static"
-      parseIncompleteMarkdown={false}
-    >
-      {content}
-    </Streamdown>
-    </>
-  );
-});

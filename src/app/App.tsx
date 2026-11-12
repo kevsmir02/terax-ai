@@ -52,6 +52,7 @@ import {
   type SearchInlineHandle,
   type SearchTarget,
 } from "@/modules/header";
+import { setCodeBlockRunner } from "@/modules/markdown/lib/codeBlockRunner";
 import type { PreviewPaneHandle } from "@/modules/preview";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
@@ -1392,12 +1393,21 @@ export default function App() {
     () =>
       isTerminalTab && activeLeafId !== null
         ? (cmd: string) => {
-            writeToSession(activeLeafId, cmd);
+            const wrote = writeToSession(activeLeafId, cmd);
             terminalRefs.current.get(activeLeafId)?.focus();
+            return wrote;
           }
         : null,
     [isTerminalTab, activeLeafId],
   );
+
+  // Rendered Markdown owns its code-block UI; only this shell knows the active
+  // terminal, so the "Run in active terminal" action is published here. The
+  // returned boolean lets the button refuse instead of claiming "Sent".
+  useEffect(() => {
+    setCodeBlockRunner(insertHistoryCommand);
+    return () => setCodeBlockRunner(null);
+  }, [insertHistoryCommand]);
 
   useAiLiveBridge({
     setLive,
