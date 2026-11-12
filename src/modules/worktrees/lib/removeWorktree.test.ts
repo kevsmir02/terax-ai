@@ -9,11 +9,16 @@
 
 import type {
   CheckpointGroups,
+  WorktreeRemoveBlocker,
   WorktreeRemoveReport,
 } from "@/modules/git/types";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   canForceRemoval,
+  forcePolicy,
+  hasForceableBlocker,
   recoveryRefsToDelete,
   removalBlockers,
   removalRefusal,
@@ -40,6 +45,9 @@ const report = (
   lockReason: null,
   ...patch,
 });
+
+const root = join(import.meta.dirname, "../../../..");
+const read = (path: string) => readFileSync(join(root, path), "utf8");
 
 const groups: CheckpointGroups = {
   manual: [
@@ -182,6 +190,54 @@ describe("explicit scoped cleanup", () => {
         safety: [],
       }),
     ).toEqual([]);
+  });
+});
+
+describe("force policy", () => {
+  const documented = () => {
+    const doc = read("docs/architecture/worktrees.md");
+    const rule =
+      /`force` is offered only for the on-disk Git blockers \(([\s\S]*?)\) and never for ([\s\S]*?)\./.exec(
+        doc,
+      );
+    expect(rule, "the documented force rule is missing").not.toBeNull();
+    const names = (text: string) =>
+      [...text.matchAll(/`(\w+)`/g)].map((match) => match[1]).sort();
+    return { offered: names(rule?.[1] ?? ""), never: names(rule?.[2] ?? "") };
+  };
+
+  it("comes from the documented rule instead of a list beside it", () => {
+    // `docs/architecture/worktrees.md` is the spec for what `force` may
+    // override. The map and the documentation cannot drift apart unnoticed.
+    const { offered, never } = documented();
+    const blockers = Object.keys(forcePolicy) as WorktreeRemoveBlocker[];
+    expect(
+      blockers
+        .filter((blocker) => forcePolicy[blocker] === "overridable")
+        .sort(),
+    ).toEqual(offered);
+    expect(
+      blockers.filter((blocker) => forcePolicy[blocker] === "refused").sort(),
+    ).toEqual(never);
+  });
+
+  it("derives both force decisions from the same map", () => {
+    const blockers = Object.keys(forcePolicy) as WorktreeRemoveBlocker[];
+    for (const blocker of blockers) {
+      const single = report({ blockers: [blocker] });
+      const overridable = forcePolicy[blocker] === "overridable";
+      expect(canForceRemoval(single), blocker).toBe(overridable);
+      expect(hasForceableBlocker(single), blocker).toBe(overridable);
+    }
+    // A lock is not made forceable by an on-disk blocker beside it, but the
+    // dialog still knows force was the choice it is being denied.
+    const mixed = report({ blockers: ["dirty", "locked"] });
+    expect(canForceRemoval(mixed)).toBe(false);
+    expect(hasForceableBlocker(mixed)).toBe(true);
+    expect(
+      canForceRemoval(report()),
+      "a report with no blocker needs no force decision",
+    ).toBe(true);
   });
 });
 

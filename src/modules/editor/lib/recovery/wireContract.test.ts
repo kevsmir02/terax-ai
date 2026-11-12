@@ -10,46 +10,13 @@
  * handler.
  */
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readRepoFile, rustEnum, wireName } from "@/test/rustSource";
 import { describe, expect, it } from "vitest";
 import { createRecoveryManager, type RecoveryStorage } from "./manager";
 import { RECOVERY_LIMITS, type RecoveryRecord } from "./model";
 
-const root = join(import.meta.dirname, "../../../../..");
-const read = (path: string) => readFileSync(join(root, path), "utf8");
-
-const rust = read("src-tauri/src/modules/recovery.rs");
-const quotaSource = read("src/modules/editor/lib/recovery/quota.ts");
-
-/** Variant names of a Rust enum, with the serde rename convention it declares. */
-function rustEnum(
-  source: string,
-  name: string,
-): { rename: string; variants: string[] } {
-  const block = new RegExp(
-    `#\\[serde\\(([^)]*)\\)\\]\\s*pub enum ${name} \\{([\\s\\S]*?)\\n\\}`,
-  ).exec(source);
-  if (!block) throw new Error(`enum ${name} not found in the Rust source`);
-  const rename = /rename_all = "([a-z-]+)"/.exec(block[1])?.[1];
-  if (!rename) throw new Error(`enum ${name} declares no rename_all`);
-  const variants = [...block[2].matchAll(/^\s{4}([A-Z][A-Za-z]*),/gm)].map(
-    (match) => match[1],
-  );
-  return { rename, variants };
-}
-
-/** The string serde derives for a variant under the declared convention. */
-function wireName(variant: string, rename: string): string {
-  switch (rename) {
-    case "kebab-case":
-      return variant.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
-    case "lowercase":
-      return variant.toLowerCase();
-    default:
-      throw new Error(`unsupported rename convention ${rename}`);
-  }
-}
+const rust = readRepoFile("src-tauri/src/modules/recovery.rs");
+const quotaSource = readRepoFile("src/modules/editor/lib/recovery/quota.ts");
 
 function tsQuotaRefusals(): string[] {
   const union = /export type QuotaRefusal =([^;]+);/.exec(quotaSource);
@@ -57,8 +24,8 @@ function tsQuotaRefusals(): string[] {
   return [...union[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]);
 }
 
-const quotaReason = rustEnum(rust, "QuotaReason");
-const storeError = rustEnum(rust, "StoreError");
+const quotaReason = rustEnum(rust, "QuotaReason", { requireRenameAll: true });
+const storeError = rustEnum(rust, "StoreError", { requireRenameAll: true });
 /** The exact strings the native store puts on the wire today. */
 const [perFileWire, totalWire] = quotaReason.variants.map((variant) =>
   wireName(variant, quotaReason.rename),

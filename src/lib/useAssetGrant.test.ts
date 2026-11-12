@@ -322,6 +322,39 @@ it("permits the loopback origin the media element actually uses", () => {
   expect(media?.split(/\s+/)).toContain("http://localhost:*");
 });
 
+it("keeps img-src to the sources the security model documents", () => {
+  // `docs/architecture/security-model.md` documents `https:` (for a consented
+  // remote image), the app's own origin, `data:`, `blob:` and the asset scheme
+  // — and nothing else. The loopback origins are a *media* transport (WebKit
+  // bug 146351 makes the media element unable to load `asset:`), not an image
+  // one: an `img-src` that named any local HTTP service would let a preview
+  // image URL read bytes from whatever listens on that port.
+  const config = JSON.parse(
+    readFileSync(
+      new URL("../../src-tauri/tauri.conf.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  const img = config.app.security.csp
+    .split(";")
+    .map((directive: string) => directive.trim())
+    .find((directive: string) => directive.startsWith("img-src "))
+    ?.split(/\s+/)
+    .sort();
+  expect(img).toEqual(
+    [
+      "img-src",
+      "'self'",
+      "data:",
+      "asset:",
+      "http://asset.localhost",
+      "https://asset.localhost",
+      "blob:",
+      "https:",
+    ].sort(),
+  );
+});
+
 it("allows a consented remote image to load, while the policy gates it", () => {
   const config = JSON.parse(
     readFileSync(
