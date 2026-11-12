@@ -13,27 +13,47 @@ import { resolveFormatter, runExternalFormatter } from "./externalFormat";
 const prefs = (
   global: Parameters<typeof resolveFormatter>[1]["editorFormatter"],
   byLang: Record<string, never> | Record<string, "ruff" | "prettier"> = {},
-) => ({ editorFormatter: global, editorFormatterByLang: byLang });
+  customCommand = "",
+) => ({
+  editorFormatter: global,
+  editorFormatterByLang: byLang,
+  editorCustomFormatCommand: customCommand,
+});
 
 describe("resolveFormatter", () => {
   it("explicit override wins over the global default", () => {
     expect(resolveFormatter("py", prefs("biome", { py: "ruff" }))).toBe("ruff");
+    // Overrides run even for a language the tool does not advertise.
+    expect(resolveFormatter("py", prefs("biome", { py: "prettier" }))).toBe(
+      "prettier",
+    );
   });
 
   it("global external applies only to languages it understands", () => {
     expect(resolveFormatter("ts", prefs("biome"))).toBe("biome");
-    expect(resolveFormatter("py", prefs("biome"))).toBe("lsp");
-    expect(resolveFormatter("rs", prefs("prettier"))).toBe("lsp");
     expect(resolveFormatter("svelte", prefs("prettier"))).toBe("prettier");
   });
 
-  it("lsp and custom globals always apply", () => {
-    expect(resolveFormatter("py", prefs("lsp"))).toBe("lsp");
-    expect(resolveFormatter("py", prefs("custom"))).toBe("custom");
+  // With language servers removed there is no fallback formatter: a language
+  // the configured tool does not understand saves unformatted.
+  it("leaves unsupported languages and unknown files unformatted", () => {
+    expect(resolveFormatter("py", prefs("biome"))).toBeNull();
+    expect(resolveFormatter("rs", prefs("prettier"))).toBeNull();
+    expect(resolveFormatter(null, prefs("biome"))).toBeNull();
   });
 
-  it("unknown language falls back to lsp for external globals", () => {
-    expect(resolveFormatter(null, prefs("biome"))).toBe("lsp");
+  it("runs the custom command once the user configures one", () => {
+    expect(resolveFormatter("py", prefs("custom"))).toBeNull();
+    // The custom command is language-agnostic, so unknown files still run it.
+    expect(resolveFormatter("py", prefs("custom", {}, "mytool --fix"))).toBe(
+      "custom",
+    );
+    expect(resolveFormatter(null, prefs("custom", {}, "mytool"))).toBe(
+      "custom",
+    );
+    // An unrelated custom command never revives a tool that does not apply.
+    expect(resolveFormatter("py", prefs("biome", {}, "mytool"))).toBeNull();
+    expect(resolveFormatter("ts", prefs("biome", {}, "mytool"))).toBe("biome");
   });
 });
 

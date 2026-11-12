@@ -39,6 +39,7 @@ import { useControlBridge } from "@/modules/control";
 import {
   type EditorPaneHandle,
   NewEditorDialog,
+  setFileNavigator,
   useApplyEditorFontSize,
   useEditorFileSync,
 } from "@/modules/editor";
@@ -49,7 +50,6 @@ import {
   type SearchInlineHandle,
   type SearchTarget,
 } from "@/modules/header";
-import { setLspNavigator } from "@/modules/lsp";
 import { setCodeBlockRunner } from "@/modules/markdown/lib/codeBlockRunner";
 import type { PreviewPaneHandle } from "@/modules/preview";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
@@ -1312,6 +1312,11 @@ export default function App() {
     [openFileTab],
   );
 
+  useEffect(() => {
+    setFileNavigator({ openFile: openContentHit });
+    return () => setFileNavigator(null);
+  }, [openContentHit]);
+
   useControlBridge({
     ready: spacesHydrated && launchCwdResolved,
     tabsRef,
@@ -1319,11 +1324,6 @@ export default function App() {
     activeSpaceIdRef,
     onOpen: openControlFile,
   });
-
-  useEffect(() => {
-    setLspNavigator({ openFile: openContentHit });
-    return () => setLspNavigator(null);
-  }, [openContentHit]);
 
   const insertHistoryCommand = useMemo(
     () =>
