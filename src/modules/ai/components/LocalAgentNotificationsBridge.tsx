@@ -19,14 +19,13 @@ function isBusy(s: RunStatus): boolean {
 }
 
 function liveStatus(s: RunStatus): AgentStatus | null {
-  if (s === "awaiting-approval") return "waiting";
-  if (s === "thinking" || s === "streaming") return "working";
+  if (s === "awaiting-approval") return "attention";
+  if (s === "thinking" || s === "streaming") return "running";
   return null;
 }
 
 export function LocalAgentNotificationsBridge() {
   const status = useChatStore((s) => s.agentMeta.status) as RunStatus;
-  const error = useChatStore((s) => s.agentMeta.error);
   const visible = useChatStore((s) => s.panelOpen || s.mini.open);
   const focused = useWindowFocus();
 
@@ -37,25 +36,23 @@ export function LocalAgentNotificationsBridge() {
   const prev = useRef<RunStatus>(status);
 
   useEffect(() => {
-    useAgentStore.getState().setLocalAgent(
-      liveStatus(status) ? { agent: AGENT, status: liveStatus(status)! } : null,
-    );
+    useAgentStore
+      .getState()
+      .setLocalAgent(
+        liveStatus(status)
+          ? { agent: AGENT, status: liveStatus(status)! }
+          : null,
+      );
 
     const was = prev.current;
     prev.current = status;
     if (was === status) return;
 
-    const fire = (
-      kind: "attention" | "finished" | "error",
-      title: string,
-      body?: string,
-    ) =>
+    const fire = (kind: "attention" | "turn-finished" | "error") =>
       routeAgentNotification({
         source: "local",
         agent: AGENT,
         kind,
-        title,
-        body,
         focused: focusedRef.current,
         visible: visibleRef.current,
         allowToast: true,
@@ -63,13 +60,13 @@ export function LocalAgentNotificationsBridge() {
       });
 
     if (status === "awaiting-approval") {
-      fire("attention", "Terax needs your approval", "Approve a tool to continue");
+      fire("attention");
     } else if (status === "error") {
-      fire("error", "Terax run failed", error ?? undefined);
+      fire("error");
     } else if (status === "idle" && isBusy(was)) {
-      fire("finished", "Terax finished", "Your task is ready");
+      fire("turn-finished");
     }
-  }, [status, error]);
+  }, [status]);
 
   return null;
 }

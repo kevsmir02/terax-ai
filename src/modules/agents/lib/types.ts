@@ -1,4 +1,14 @@
-export type AgentStatus = "working" | "waiting";
+/**
+ * What a live session row may claim.
+ *
+ * `running` comes from the process lifecycle: an agent command was armed by the
+ * shell and its process is still attached to the pane. It is not a claim that
+ * the agent is doing anything, only that it has not exited.
+ *
+ * `attention` comes from an agent event (an opt-in hook, or the notification the
+ * agent sent to its terminal). A turn that merely ends is not attention.
+ */
+export type AgentStatus = "running" | "attention";
 
 export type AgentSource = "terminal" | "local";
 
@@ -36,7 +46,12 @@ export type AgentNotification = {
   read: boolean;
 };
 
-export type NotificationKind = "attention" | "finished" | "error";
+/**
+ * `attention` is an agent asking for the user; `turn-finished` is a completed
+ * turn reported by an agent event, not a process that went away; `error` is a
+ * failed run.
+ */
+export type NotificationKind = "attention" | "turn-finished" | "error";
 
 export type LocalAgentState = {
   agent: string;

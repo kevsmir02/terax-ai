@@ -322,7 +322,12 @@ pub fn intent_for(facts: &HookFacts) -> HookIntent {
                 HookIntent::Attention
             }
         }
-        HookKind::Stop | HookKind::Interrupt => HookIntent::Finished,
+        // A turn the user cancelled ended, but it did not complete: reporting it
+        // as "turn finished" would overclaim a result the agent never produced.
+        HookKind::Stop if facts.reason.as_deref() == Some("aborted") => HookIntent::Quiet,
+        HookKind::Stop => HookIntent::Finished,
+        // Interrupt is the agent's own cancellable turn boundary (Codex Esc).
+        HookKind::Interrupt => HookIntent::Quiet,
         HookKind::SessionEnd | HookKind::PermissionResolved => HookIntent::Quiet,
     }
 }
@@ -1125,8 +1130,7 @@ mod tests {
     }
 
     #[test]
-    fn hook_kinds_map_to_legacy_intents() {
-        let facts = |kind: HookKind, notification: Option<&str>| {
+    fn hook_kinds_map_to_legacy_intents() {        let facts = |kind: HookKind, notification: Option<&str>| {
             let mut facts = HookFacts::new(kind);
             facts.notification_type = notification.map(str::to_string);
             facts
@@ -1162,7 +1166,8 @@ mod tests {
                 HookIntent::Quiet,
             ),
             (HookKind::Stop, None, HookIntent::Finished),
-            (HookKind::Interrupt, None, HookIntent::Finished),
+            // Interrupt is a cancelled turn, not a completed one.
+            (HookKind::Interrupt, None, HookIntent::Quiet),
             (HookKind::SessionEnd, None, HookIntent::Quiet),
         ];
         for (kind, notification, expected) in table {
@@ -1172,6 +1177,24 @@ mod tests {
                 "{kind:?} {notification:?}"
             );
         }
+    }
+
+    #[test]
+    fn an_aborted_turn_is_not_a_completed_one() {
+        // Esc / a cancelled turn ends the turn without completing it, so it must
+        // not reach the surfaces that say "turn finished".
+        let mut aborted = HookFacts::new(HookKind::Stop);
+        aborted.reason = Some("aborted".to_string());
+        assert_eq!(intent_for(&aborted), HookIntent::Quiet);
+
+        let interrupt = HookFacts::new(HookKind::Interrupt);
+        assert_eq!(intent_for(&interrupt), HookIntent::Quiet);
+
+        // An ordinary stop is still a finished turn.
+        assert_eq!(
+            intent_for(&HookFacts::new(HookKind::Stop)),
+            HookIntent::Finished
+        );
     }
 
     #[test]

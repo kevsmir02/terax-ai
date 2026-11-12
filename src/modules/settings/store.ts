@@ -349,7 +349,8 @@ export const DEFAULT_PREFERENCES: Preferences = {
   lastWslDistro: null,
   zoomLevel: 1.0,
   agentNotifications: true,
-  agentNotificationSound: true,
+  // Sound is opt-in: background agents must not make noise by default.
+  agentNotificationSound: false,
   agentLaunchCommands: DEFAULT_AGENT_LAUNCH_COMMANDS,
   defaultWorkspaceEnv: "local",
   shortcuts: {} as Record<ShortcutId, KeyBinding[]>,
@@ -473,7 +474,9 @@ export async function loadPreferences(): Promise<Preferences> {
     explorerGitDecorations:
       get<boolean>(KEY_EXPLORER_GIT_DECORATIONS) ??
       DEFAULT_PREFERENCES.explorerGitDecorations,
-    terminalRenderer: coerceTerminalRenderer(get<string>(KEY_TERMINAL_RENDERER)),
+    terminalRenderer: coerceTerminalRenderer(
+      get<string>(KEY_TERMINAL_RENDERER),
+    ),
     terminalScreenReader: get<boolean>(KEY_TERMINAL_SCREEN_READER) === true,
     terminalCursorBlink:
       get<boolean>(KEY_TERMINAL_CURSOR_BLINK) ??
@@ -773,7 +776,9 @@ const TERMINAL_FONT_WEIGHT_VALUES = new Set(["normal", "500", "600", "bold"]);
 /** Renderer for new terminals: WebGPU with WebGL fallback, WebGPU, or WebGL. */
 export type TerminalRendererSetting = "auto" | "webgpu" | "webgl";
 
-export function coerceTerminalRenderer(value: unknown): TerminalRendererSetting {
+export function coerceTerminalRenderer(
+  value: unknown,
+): TerminalRendererSetting {
   return value === "webgl" || value === "webgpu" ? value : "auto";
 }
 

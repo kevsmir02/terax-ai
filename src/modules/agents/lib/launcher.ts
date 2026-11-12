@@ -1,4 +1,8 @@
 import type { PaneNode } from "@/modules/terminal";
+import {
+  ANTIGRAVITY_GUI_REFUSAL,
+  classifyAntigravityCommand,
+} from "./launchTarget";
 
 export const AGENT_LAUNCHERS = [
   {
@@ -35,6 +39,15 @@ export const AGENT_LAUNCHERS = [
     id: "grok",
     label: "Grok",
     defaultCommand: "grok",
+    supportsHooks: false,
+  },
+  {
+    // The terminal CLI of Antigravity, which is a separate product from its
+    // desktop app. Terax launches this command in a pane; it never drives the
+    // GUI (see `launchTarget.ts`).
+    id: "antigravity",
+    label: "Antigravity CLI",
+    defaultCommand: "antigravity",
     supportsHooks: false,
   },
 ] as const;
@@ -97,6 +110,31 @@ export function normalizeAgentLaunchCommands(
       ] as const;
     }),
   ) as AgentLaunchCommands;
+}
+
+export type AgentLaunchResolution =
+  | { ok: true; command: string }
+  | { ok: false; error: string };
+
+/**
+ * The command a pane will actually run for a launcher. It is the validated
+ * custom command verbatim, except when the launcher has a separate GUI that
+ * must not be smuggled into a terminal pane: Antigravity's desktop app is
+ * refused here rather than launched and silently described as the CLI.
+ */
+export function resolveAgentLaunchCommand(
+  agent: AgentLauncherId,
+  value: unknown,
+): AgentLaunchResolution {
+  const result = validateAgentLaunchCommand(value);
+  if (!result.ok) return result;
+  if (
+    agent === "antigravity" &&
+    classifyAntigravityCommand(result.command) === "desktop-app"
+  ) {
+    return { ok: false, error: ANTIGRAVITY_GUI_REFUSAL };
+  }
+  return result;
 }
 
 export function findAgentLauncher(id: AgentLauncherId) {

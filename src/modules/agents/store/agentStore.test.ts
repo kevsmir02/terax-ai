@@ -15,32 +15,37 @@ describe("agent session store", () => {
     vi.useRealTimers();
   });
 
-  it("starts a session in the working state", () => {
+  it("starts a session as running, without claiming progress", () => {
     useAgentStore.getState().start(7, 3, "claude");
     const s = useAgentStore.getState().sessions[7];
 
-    expect(s).toMatchObject({ leafId: 7, tabId: 3, agent: "claude", status: "working" });
+    expect(s).toMatchObject({
+      leafId: 7,
+      tabId: 3,
+      agent: "claude",
+      status: "running",
+    });
     expect(s.attentionSince).toBeNull();
   });
 
   it("ignores status updates for unknown leaves and identical statuses", () => {
-    expect(useAgentStore.getState().setStatus(42, "waiting")).toBeUndefined();
+    expect(useAgentStore.getState().setStatus(42, "attention")).toBeUndefined();
     useAgentStore.getState().start(7, 3, "codex");
     const before = useAgentStore.getState().sessions[7];
 
-    useAgentStore.getState().setStatus(7, "working");
+    useAgentStore.getState().setStatus(7, "running");
 
     expect(useAgentStore.getState().sessions[7]).toBe(before);
   });
 
-  it("stamps attentionSince when entering waiting and clears it on working", () => {
+  it("stamps attentionSince when entering attention and clears it on running", () => {
     useAgentStore.getState().start(7, 3, "claude");
-    useAgentStore.getState().setStatus(7, "waiting");
-    const waiting = useAgentStore.getState().sessions[7];
-    expect(waiting.status).toBe("waiting");
-    expect(waiting.attentionSince).not.toBeNull();
+    useAgentStore.getState().setStatus(7, "attention");
+    const attention = useAgentStore.getState().sessions[7];
+    expect(attention.status).toBe("attention");
+    expect(attention.attentionSince).not.toBeNull();
 
-    useAgentStore.getState().setStatus(7, "working");
+    useAgentStore.getState().setStatus(7, "running");
     expect(useAgentStore.getState().sessions[7].attentionSince).toBeNull();
   });
 
@@ -51,19 +56,19 @@ describe("agent session store", () => {
   });
 
   it("dedupes local agent state when neither status nor agent changed", () => {
-    useAgentStore.getState().setLocalAgent({ agent: "pi", status: "working" });
+    useAgentStore.getState().setLocalAgent({ agent: "pi", status: "running" });
     const before = useAgentStore.getState().localAgent;
 
-    useAgentStore
-      .getState()
-      .setLocalAgent({ agent: "pi", status: "working" });
+    useAgentStore.getState().setLocalAgent({ agent: "pi", status: "running" });
 
     expect(useAgentStore.getState().localAgent).toBe(before);
 
-    useAgentStore.getState().setLocalAgent({ agent: "pi", status: "waiting" });
+    useAgentStore
+      .getState()
+      .setLocalAgent({ agent: "pi", status: "attention" });
     expect(useAgentStore.getState().localAgent).toEqual({
       agent: "pi",
-      status: "waiting",
+      status: "attention",
     });
   });
 
@@ -88,34 +93,35 @@ describe("agent session store", () => {
     useAgentStore.getState().markAllRead();
 
     expect(useAgentStore.getState().notifications).toBe(afterFirst);
-    expect(useAgentStore.getState().notifications.every((n) => n.read)).toBe(true);
+    expect(useAgentStore.getState().notifications.every((n) => n.read)).toBe(
+      true,
+    );
   });
 
-  it("nextAttentionTarget returns the most recently waiting agent", () => {
+  it("nextAttentionTarget returns the most recent agent needing attention", () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);
     useAgentStore.getState().start(1, 10, "claude");
-    useAgentStore.getState().setStatus(1, "waiting");
+    useAgentStore.getState().setStatus(1, "attention");
     vi.setSystemTime(2_000);
     useAgentStore.getState().start(2, 20, "codex");
-    useAgentStore.getState().setStatus(2, "waiting");
+    useAgentStore.getState().setStatus(2, "attention");
 
     expect(nextAttentionTarget()).toEqual({ tabId: 20, leafId: 2 });
 
     vi.setSystemTime(3_000);
-    useAgentStore.getState().setStatus(1, "working");
-    useAgentStore.getState().setStatus(1, "waiting");
+    useAgentStore.getState().setStatus(1, "running");
+    useAgentStore.getState().setStatus(1, "attention");
 
     expect(nextAttentionTarget()).toEqual({ tabId: 10, leafId: 1 });
   });
-
 });
 
 function push(partial: { leafId: number; tabId: number }): void {
   const n: Omit<AgentNotification, "id" | "at" | "read"> = {
     source: "terminal",
     agent: "claude",
-    kind: "finished",
+    kind: "turn-finished",
     ...partial,
   };
   useAgentStore.getState().pushNotification(n);

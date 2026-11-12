@@ -10,7 +10,7 @@ import {
   type AgentLaunchRequest,
   DEFAULT_AGENT_LAUNCH_COMMANDS,
   findAgentLauncher,
-  validateAgentLaunchCommand,
+  resolveAgentLaunchCommand,
 } from "@/modules/agents/lib/launcher";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { setAgentLaunchCommands } from "@/modules/settings/store";
@@ -38,7 +38,7 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
   const hydratedRef = useRef(hydrated);
   const persistedRef = useRef(storedCommands);
   const command = drafts[agentId];
-  const validation = validateAgentLaunchCommand(command);
+  const validation = resolveAgentLaunchCommand(agentId, command);
   const launcher = findAgentLauncher(agentId);
 
   useEffect(() => {
@@ -65,7 +65,7 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
     id: AgentLauncherId,
     value: string,
   ): AgentLaunchCommands | null => {
-    const result = validateAgentLaunchCommand(value);
+    const result = resolveAgentLaunchCommand(id, value);
     if (!result.ok) return null;
     const next = { ...drafts, [id]: result.command };
     setDrafts(next);
@@ -232,7 +232,9 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
           )}
         >
           {validation.ok
-            ? "Aliases and flags are supported."
+            ? agentId === "antigravity"
+              ? "Starts the terminal CLI. The desktop app is not launched or controlled."
+              : "Aliases and flags are supported."
             : validation.error}
         </div>
       </div>

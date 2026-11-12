@@ -21,6 +21,7 @@ import {
 import { useMemo, useState } from "react";
 import { AgentIcon } from "../lib/agentIcon";
 import { displayAgent } from "../lib/format";
+import { signalStatusLabel } from "../lib/status";
 import type { AgentNotification, AgentStatus } from "../lib/types";
 import { useAgentStore } from "../store/agentStore";
 
@@ -48,7 +49,7 @@ function StatusRow({
   status: AgentStatus;
   onClick: () => void;
 }) {
-  const waiting = status === "waiting";
+  const attention = status === "attention";
   return (
     <button
       type="button"
@@ -66,19 +67,22 @@ function StatusRow({
       <span
         className={cn(
           "flex items-center gap-1.5 text-xs",
-          waiting ? "font-medium text-primary" : "text-muted-foreground",
+          attention ? "font-medium text-primary" : "text-muted-foreground",
         )}
       >
-        {waiting ? <span className="size-1.5 rounded-full bg-primary" /> : null}
-        {waiting ? "waiting" : "working"}
+        {attention ? (
+          <span className="size-1.5 rounded-full bg-primary" />
+        ) : null}
+        {signalStatusLabel(status)}
       </span>
     </button>
   );
 }
 
 const NOTIF_LABEL: Record<AgentNotification["kind"], string> = {
-  attention: "needs input",
-  finished: "finished",
+  attention: "needs attention",
+  // A finished turn, reported by the agent, not a process that exited.
+  "turn-finished": "turn finished",
   error: "failed",
 };
 
@@ -95,7 +99,11 @@ function HookAgentRow({
   const partial = status?.configState === "partial";
   return (
     <div className="flex items-center gap-2 px-2 py-1">
-      <AgentIcon agent={id} size={14} className="shrink-0 text-muted-foreground" />
+      <AgentIcon
+        agent={id}
+        size={14}
+        className="shrink-0 text-muted-foreground"
+      />
       <span className="flex-1 truncate text-[12px] text-muted-foreground">
         {label}
       </span>
@@ -131,7 +139,7 @@ function NotificationRow({
       className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors hover:bg-accent"
     >
       <span className="flex w-4 shrink-0 items-center justify-center">
-        {n.kind === "finished" ? (
+        {n.kind === "turn-finished" ? (
           <HugeiconsIcon
             icon={CheckmarkCircle02Icon}
             size={15}
@@ -171,9 +179,9 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
   const active = useMemo(() => Object.values(sessions), [sessions]);
   const activeCount = active.length + (localAgent ? 1 : 0);
   const waitingCount =
-    active.filter((s) => s.status === "waiting").length +
-    (localAgent?.status === "waiting" ? 1 : 0);
-  // attention maps to an active waiting session, so only completed events add
+    active.filter((s) => s.status === "attention").length +
+    (localAgent?.status === "attention" ? 1 : 0);
+  // attention maps to an active attention session, so only completed events add
   // to the badge to avoid double-counting.
   const unreadDone = notifications.filter(
     (n) => !n.read && n.kind !== "attention",
@@ -307,7 +315,11 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
             aria-expanded={alertsOpen}
             className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70 transition-colors hover:text-foreground"
           >
-            <HugeiconsIcon icon={Notification03Icon} size={11} strokeWidth={2} />
+            <HugeiconsIcon
+              icon={Notification03Icon}
+              size={11}
+              strokeWidth={2}
+            />
             Agent alerts
             <span className="ml-auto flex items-center gap-1.5 normal-case tracking-normal">
               {enabledCount > 0 ? (
