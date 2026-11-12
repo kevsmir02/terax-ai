@@ -176,6 +176,21 @@ pub fn bench_exit(app: AppHandle) {
     app.exit(0);
 }
 
+/// What the app's asset server actually served (bench-only; see `fs::bench_probe`).
+///
+/// The PDF acceptance scenario needs the native side of the request: whether the webview asked
+/// for the whole file or a byte range, the content type and size it received, and how many grants
+/// are live after a tab closes. The page itself cannot read that: the PDF document is a separate
+/// cross-origin document and the app's CSP keeps `asset:` out of `connect-src`.
+#[tauri::command]
+pub fn bench_asset_log(
+    app: AppHandle,
+    grants: tauri::State<'_, crate::modules::fs::assets::AssetGrants>,
+) -> Result<Value, String> {
+    guard(&app)?;
+    Ok(crate::modules::fs::bench_probe::snapshot(grants.active()))
+}
+
 #[cfg(target_os = "macos")]
 mod platform {
     use super::*;

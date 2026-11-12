@@ -382,6 +382,8 @@ pub fn run() {
             #[cfg(feature = "bench")]
             modules::bench::bench_window,
             #[cfg(feature = "bench")]
+            modules::bench::bench_asset_log,
+            #[cfg(feature = "bench")]
             modules::bench::bench_exit,
         ])
         .build(tauri::generate_context!())
