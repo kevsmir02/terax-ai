@@ -28,6 +28,7 @@ REPO = Path(__file__).resolve().parent.parent.parent
 WORKFLOWS = REPO / ".github/workflows"
 CI = WORKFLOWS / "ci.yml"
 RELEASE = WORKFLOWS / "release.yml"
+LINUX_PACKAGES_DOC = REPO / "docs/architecture/linux-packages.md"
 SMOKE = WORKFLOWS / "linux-app-smoke.yml"
 TOOLCHAIN = REPO / "rust-toolchain.toml"
 NVMRC = REPO / ".nvmrc"
@@ -285,7 +286,14 @@ class PlatformSupportTest(unittest.TestCase):
 
 
 class ReleaseWorkflowTest(unittest.TestCase):
-    """Releases publish one x86-64 Linux artifact set, from the bundle targets the config declares."""
+    """The workflow builds one x86-64 Linux candidate set and publishes nothing yet.
+
+    Publication gating is ticket #40 (GitHub issue #41) and is on an execution hold, so the
+    half-built path fails closed: no tag trigger, no release object, no upload to a release. The
+    spec says a version tag publishes only *subject to* passing checks and tag/application-version
+    agreement, and that "a tag alone is not successful validation" — until the gate that compares
+    those exists, a tag must produce no artifact set at all.
+    """
 
     def setUp(self) -> None:
         if yaml is None:
@@ -294,12 +302,35 @@ class ReleaseWorkflowTest(unittest.TestCase):
         self.body = text(RELEASE)
         self.jobs = self.workflow["jobs"]
 
-    def publish_job(self) -> dict:
-        self.assertIn("publish-tauri", self.jobs, "the release build keeps its job identity")
-        return self.jobs["publish-tauri"]
+    def candidate_job(self) -> dict:
+        self.assertIn("build-candidate", self.jobs, "the release build keeps its job identity")
+        return self.jobs["build-candidate"]
+
+    def bundle_dir(self) -> str:
+        """Where a `--target` build writes its bundles, from the producer's own constant."""
+        triple = re.search(
+            r'^TARGET_TRIPLE = "([^"]+)"',
+            text(REPO / "scripts/packaging.py"),
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(triple, "scripts/packaging.py must pin the released target triple")
+        return f"src-tauri/target/{triple.group(1)}/release/bundle/"
+
+    def staged_packages(self) -> list[str]:
+        staged = [
+            line
+            for line in lines(RELEASE)
+            if line.startswith(f"for package in {self.bundle_dir()}")
+        ]
+        self.assertTrue(
+            staged,
+            f"the candidate must be staged from {self.bundle_dir()}: a `--target {SUPPORTED_RELEASE_TARGET}` "
+            "build writes under the target triple, so `src-tauri/target/release/bundle/` never exists",
+        )
+        return staged
 
     def test_the_release_is_one_explicit_x86_64_linux_job(self) -> None:
-        job = self.publish_job()
+        job = self.candidate_job()
         self.assertEqual(job["runs-on"], "ubuntu-22.04")
         self.assertNotIn("strategy", job, "one platform needs no matrix")
         self.assertIn(
@@ -312,32 +343,74 @@ class ReleaseWorkflowTest(unittest.TestCase):
     def test_the_release_only_stages_the_package_formats_the_config_declares(self) -> None:
         configured = json.loads(text(REPO / "src-tauri/tauri.conf.json"))["bundle"]["targets"]
         self.assertEqual(sorted(configured), ["deb", "rpm"])
-        staged = [line for line in lines(RELEASE)
-                  if line.startswith("for package in src-tauri/target/release/bundle/")]
-        self.assertTrue(staged, "the release must stage the built packages")
+        staged = self.staged_packages()
         for fmt in ("rpm", "deb"):
             self.assertIn(fmt, staged[0], f"the release must stage the configured {fmt} output")
         for unsupported in ("appimage", "nsis", "msi", "dmg"):
             self.assertNotIn(unsupported, " ".join(staged).lower())
 
-    def test_the_release_checks_the_architecture_it_publishes(self) -> None:
-        # A package for another architecture is refused rather than uploaded: this is the
+    def test_the_workflow_reads_the_bundle_directory_a_target_build_writes(self) -> None:
+        # `scripts/package-candidate/run.py` reads the artifacts of a real `--target` build from
+        # this exact directory. Tauri creates `src-tauri/target/release/bundle/` only for a build
+        # without `--target`, which this fork never does, so staging from there would fail at the
+        # first `test -s` on a run that produced perfect packages.
+        run_py = text(REPO / "scripts/package-candidate/run.py")
+        self.assertIn(
+            'REPO_ROOT / "src-tauri" / "target" / packaging.TARGET_TRIPLE / PROFILE / "bundle"',
+            run_py,
+            "the packaging runner is the proven producer; the workflow must follow it",
+        )
+        self.assertIn(f"--target {SUPPORTED_RELEASE_TARGET}", self.body)
+
+    def test_the_candidate_checks_the_architecture_it_stages(self) -> None:
+        # A package for another architecture is refused rather than staged: this is the
         # release-output half of "no non-x86-64 initial release outputs".
         self.assertIn('"amd64"', self.body, "the deb must be checked as amd64")
         self.assertIn('"x86_64"', self.body, "the rpm must be checked as x86_64")
-        self.assertIn("sha256sum", self.body, "published artifacts keep their hashes")
+        self.assertIn("sha256sum", self.body, "staged artifacts keep their hashes")
 
-    def test_the_release_is_tag_gated_and_never_a_draft_free_push_target(self) -> None:
-        triggers = text(RELEASE).split("jobs:", 1)[0]
-        self.assertIn("tags:", triggers)
-        self.assertIn("v*", triggers)
+    def test_a_version_tag_cannot_start_the_workflow(self) -> None:
+        # A tag is the publication trigger the gate will own (#41). Taking it away is what makes
+        # the ungated path fail closed; re-adding it requires the tag/version + green-CI gate.
+        triggers = self.body.split("jobs:", 1)[0]
+        self.assertIn("workflow_dispatch:", triggers, "a candidate is built on request")
+        self.assertNotIn("push:", triggers, "no push, and so no tag, may start this workflow")
+        self.assertNotIn("tags:", triggers)
+        self.assertNotIn("v*", triggers)
+        self.assertNotIn("schedule:", triggers)
 
-    def test_the_release_does_not_claim_a_built_in_updater(self) -> None:
+    def test_nothing_in_the_workflow_creates_or_uploads_a_release(self) -> None:
+        code = workflow_code(RELEASE)
+        for forbidden in (
+            "gh release",
+            "tauri-action",
+            "tagName",
+            "releaseName",
+            "releaseBody",
+            "releaseDraft",
+            "prerelease",
+            "contents: write",
+        ):
+            self.assertNotIn(
+                forbidden,
+                code,
+                f"release.yml must not contain {forbidden!r} while the publication gate (#41) "
+                "does not exist; a tag or dispatch would otherwise publish unchecked artifacts",
+            )
+
+    def test_the_candidate_set_leaves_as_a_workflow_artifact(self) -> None:
+        self.assertIn("actions/upload-artifact", self.body)
+        self.assertIn("name: linux-x86_64-packages", self.body)
+        self.assertIn("if-no-files-found: error", self.body)
+
+    def test_the_candidate_docs_do_not_claim_a_built_in_updater(self) -> None:
         # Updates are a package-tool action for the user (spec: never download or install by
-        # itself). The release body is the one place users read that promise.
-        body = json.dumps(self.workflow)
-        self.assertNotIn("Auto-update is built in", body)
-        self.assertIn("package manager", body)
+        # itself). With no release text, the candidate docs carry that promise.
+        docs = text(LINUX_PACKAGES_DOC)
+        self.assertNotIn("Auto-update is built in", docs)
+        self.assertIn("package manager", docs)
+        for path in workflow_files():
+            self.assertNotIn("Auto-update is built in", text(path), f"{path.name}")
 
 
 class DocumentationPlatformClaimTest(unittest.TestCase):

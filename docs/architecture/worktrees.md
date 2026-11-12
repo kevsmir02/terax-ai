@@ -117,6 +117,13 @@ registration goes through `git worktree remove --force <path>` for that one entr
 runs `git worktree prune`, so other stale registrations (a volume that is merely offline) are
 left alone.
 
+Task archiving (`task_worktree_archive`) is the second caller that deletes a worktree, so it
+obeys the same rule: an archive is refused while the worktree still owns a manual checkpoint or a
+pre-restore safety ref, force included, and the archive reports the same `recoveryRefs` blocker
+without deleting the directory, its registration or the refs. The archive's own snapshot is a
+task ref (`refs/<namespace>/tasks/<id>/archive/…`), not an owned recovery ref, so the snapshot
+the archive just took never blocks that archive.
+
 ### What removal does and does not touch
 
 - It revokes only the removed worktree's **derived** access grant. A path covered by a stronger
@@ -162,7 +169,8 @@ left alone.
   checkpoint and a restore safety ref each refuse removal even with `force`, explicit cleanup
   unblocks it, another worktree's refs are never counted or deleted, a missing directory is still
   refused while refs remain and its single registration is removed without a repository-wide
-  prune, and the retained archive path keeps its own policy.
+  prune, and the archive path refuses a manual checkpoint too (deleting nothing) before it is
+  asked again after explicit cleanup.
 - `src/modules/worktrees/lib/removeWorktree.test.ts` — blocker wording, force availability
   (never for a lock or a retained ref), the exact refs an explicit cleanup may name, refusal and
   result copy.
