@@ -288,8 +288,9 @@ to prove the range path. The driver asserts:
 - a valid MP4 whose sample entry names `zzzz` reaches an honest codec error (not a blank player),
   and Matroska is refused as unmeasured; a corrupt EBML header and WebM bytes named `.mp4` are
   refused before an element mounts;
-- the native delivery log shows the element asking for ranged responses only, each inside one
-  1 MiB chunk, and seeking past the first chunk issues a new mid-file range;
+- the native delivery log shows every response inside its bound — a range response at most one
+  1 MiB chunk, a whole response at most the 10 MiB read ceiling — and seeking past the first
+  chunk issues a new mid-file range;
 - playback (muted; WebKitGTK has no input injection) pauses when the tab is hidden, releases the
   playback slot, and does not resume when the tab returns;
 - closing while playing, and closing during an interrupted load, leave no element, playback

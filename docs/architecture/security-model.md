@@ -36,8 +36,6 @@ Three tiers exist and must stay distinct:
 2. **Root-confined structural mutation**: `fs_move`, `fs_delete_batch`, `fs_copy`, control `open`, shell cwd. Canonicalize + `WorkspaceRegistry::is_authorized` only. Control `open` of a target outside every authorized root is still refused (retained-but-strict; a deliberate `terax open` outside the roots needs an explicit grant in a later change).
 3. **Automatic preview assets**: grant token + canonical containment + secret policy + media type + range + descriptor identity, in `src-tauri/src/modules/fs/assets.rs`.
 
-3. **Automatic preview assets**: grant token + canonical containment + secret policy + media type + range + descriptor identity, in `src-tauri/src/modules/fs/assets.rs`.
-
 Media elements cannot load a custom URI scheme in WebKitGTK (WebKit bug 146351; observed as `MEDIA_ERR_SRC_NOT_SUPPORTED` for every container), so the same tab-owned grant is also served at `http://127.0.0.1:<ephemeral-port>/media?token=…`. That endpoint is loopback-only, requires the same bearer token (it grants no new file access), serves only single-file media grants, re-checks revocation after reserving a delivery, applies the identical range chunking and delivery bounds, caps concurrent connections, and stops serving a token as soon as the tab scope revokes it. It is a transport for tier 3, not a fourth tier.
 
 An automatic consumer never widens its own boundary. A Markdown document loads
