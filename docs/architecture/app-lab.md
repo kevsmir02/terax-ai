@@ -107,7 +107,10 @@ frame's document really stopping rather than as an attribute change:
   installs no new-window handler);
 - switching to another tab, and switching to another Space, unloads the frame in the same turn (no
   further beats) and returning re-mounts a fresh document that says why it reloaded and that
-  transient page state was lost (`[data-preview-reloaded]`);
+  transient page state was lost (`[data-preview-reloaded]`). The Space cycle is repeated without
+  creating a tab, because creating one activates it and the cause is then legitimately the tab:
+  the plain switch asserts the notice names the Space, and that the intermediate render while the
+  app restores the Space's active tab does not rewrite the recorded cause;
 - the fixture server answers a ping after the tab teardown and after the tab closes, so frame
   teardown never owns the dev server process;
 - `preview-blur` opens a separate application window (zenity/yad) so the app loses focus while its

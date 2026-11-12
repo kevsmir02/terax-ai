@@ -1409,10 +1409,12 @@ async function previewScenario(
       instances: instances().length,
     });
 
-    // Inactive Space: every frame of the Space that left the screen unloads.
+    // Inactive Space: every frame of the Space that left the screen unloads. Creating the second
+    // Space also activates a new terminal tab, so this cycle asserts the teardown and the reload;
+    // the cause is asserted in the plain Space switch below.
     const spaceA =
       run.app().tabs.find((tab) => tab.id === previewId)?.spaceId ?? "";
-    run.app().newSpace();
+    const spaceB = run.app().newSpace();
     try {
       await run.waitFor(
         () => !frame(),
@@ -1423,7 +1425,7 @@ async function previewScenario(
       throw new Error(await failed("space switch unloads", String(error)));
     }
     const beatsAfterSpace = beats().length;
-    await run.sync("preview-space-hidden", { spaceA });
+    await run.sync("preview-space-hidden", { spaceA, spaceB });
     const afterSpace = await pauseBeats(1500);
     await check(
       "space switch unloads",
@@ -1441,23 +1443,63 @@ async function previewScenario(
           !beforeSpaceReturn.includes(message.instance) && message.redirected,
         "a fresh preview page after returning to the Space",
       );
-      await run.waitFor(
-        () => Boolean(reloadNotice()),
-        "the reload notice on the returned Space",
-        10_000,
-      );
     } catch (error) {
       throw new Error(await failed("space return reloads", String(error)));
     }
-    const spaceNotice = reloadNotice();
-    const spaceReason =
-      spaceNotice?.getAttribute("data-preview-reloaded") ?? null;
     await check(
       "space return reloads",
       Boolean(frame()) &&
         !beforeSpaceReturn.includes(lastBeat()?.instance ?? ""),
       `before=${beforeSpaceReturn.join(",")} after=${instances().join(",")}`,
     );
+    await run.sync("preview-space-returned", {
+      instances: instances().length,
+    });
+
+    // A plain Space switch creates no tab: the Space alone is why the frame goes away, and the
+    // notice on return must name the Space rather than a tab switch the user never made.
+    const beforePlainSpace = instances();
+    run.app().setActiveSpace(spaceB);
+    try {
+      await run.waitFor(
+        () => !frame(),
+        "the frame to unload when only the Space changes",
+        8000,
+      );
+    } catch (error) {
+      throw new Error(
+        await failed("plain Space switch unloads", String(error)),
+      );
+    }
+    const beatsAfterPlain = beats().length;
+    await run.sync("preview-space-away", { spaceA, spaceB });
+    const afterPlain = await pauseBeats(1500);
+    await check(
+      "plain Space switch unloads",
+      !frame() && beats().length === beatsAfterPlain,
+      `${afterPlain} beats after teardown, ${beatsAfterPlain} before`,
+    );
+
+    const plainReturnMark = mark();
+    run.app().setActiveSpace(spaceA);
+    try {
+      await waitForNewBeat(
+        plainReturnMark,
+        (message) =>
+          !beforePlainSpace.includes(message.instance) && message.redirected,
+        "the preview page after returning from the plain Space switch",
+      );
+      await run.waitFor(
+        () => Boolean(reloadNotice("space-inactive")),
+        "the Space reload notice",
+        10_000,
+      );
+    } catch (error) {
+      throw new Error(await failed("space reload disclosed", String(error)));
+    }
+    const spaceNotice = reloadNotice("space-inactive");
+    const spaceReason =
+      spaceNotice?.getAttribute("data-preview-reloaded") ?? null;
     await check(
       "space reload disclosed",
       Boolean(spaceNotice) &&
@@ -1467,9 +1509,9 @@ async function previewScenario(
       `reason=${spaceReason} text=${JSON.stringify(spaceNotice?.textContent?.slice(0, 140) ?? null)}`,
     );
     await run.log(
-      `[preview] NOTE Space-return notice reason=${spaceReason} (returning to a Space re-renders before the app restores its active tab; the recorded cause must stay the Space)`,
+      `[preview] NOTE plain Space return notice reason=${spaceReason} (returning re-renders before the app restores the Space's active tab; the recorded cause must stay the Space)`,
     );
-    await run.sync("preview-space-returned", {
+    await run.sync("preview-space-returned-plain", {
       instances: instances().length,
     });
 
