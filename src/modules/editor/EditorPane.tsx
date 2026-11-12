@@ -553,7 +553,10 @@ export const EditorPane = memo(
       return (
         <div className="flex h-full min-h-0 flex-col">
           {recoveryEnabled && (
-            <RecoveryStatusBar status={recoveryStatus} onRetry={recoveryRetry} />
+            <RecoveryStatusBar
+              status={recoveryStatus}
+              onRetry={recoveryRetry}
+            />
           )}
           {draftBanner}
           <div className="flex flex-1 items-center justify-center px-6 text-center text-xs text-destructive">
@@ -573,6 +576,7 @@ export const EditorPane = memo(
             kind={kind}
             bytes={doc.size}
             url={assetGrant.urlFor(path)}
+            token={assetGrant.tokenFor(path)}
             grantError={assetGrant.error}
             onRetryGrant={assetGrant.retry}
             visible={visible}
