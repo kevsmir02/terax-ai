@@ -120,9 +120,10 @@ NOT_VALIDATED = (
 )
 
 KNOWN_GAPS = (
-    "The runtime update feed and minisign key still belong to upstream and are issue #37's "
-    "scope; candidates embed them but are not update artifacts (createUpdaterArtifacts=false) "
-    "and must not be published.",
+    "The frontend Linux update check still queries upstream's GitHub release feed in this "
+    "revision; fork-owned discovery is issue #37. Candidate packages strip the updater plugin's "
+    "endpoint/pubkey and are built with createUpdaterArtifacts=false, so nothing is signed with "
+    "or verified against the upstream key, and candidates must not be published.",
     "The deb Maintainer field is derived by Tauri from the Cargo authors (upstream credit), "
     "not from the candidate vendor. Final maintainer/branding identity is tickets #39/#40.",
     "The CLI launcher command exposed inside terminal sessions is still `terax` (documented "
@@ -287,6 +288,10 @@ def candidate_config() -> dict:
                 "rpm": {"depends": list(RPM_DEPENDS)},
             },
         },
+        # A candidate must not be able to check upstream's release feed or trust upstream's
+        # signing key. The plugin is left installed (issue #37 replaces the discovery flow),
+        # but with no endpoint and no upstream pubkey, `check()` cannot contact upstream.
+        "plugins": {"updater": {"endpoints": [], "pubkey": ""}},
     }
 
 
@@ -334,6 +339,14 @@ def config_problems(base: dict | None = None, overlay: dict | None = None) -> li
         found.append(
             f"bundle.externalBin is {external!r}; the candidate installs "
             f"binaries/{c.cli_binary_name}"
+        )
+
+    # A candidate may not keep upstream's update endpoint or trust key.
+    updater = (overlay.get("plugins") or {}).get("updater") or {}
+    if updater.get("endpoints") != [] or updater.get("pubkey") != "":
+        found.append(
+            "the candidate overlay must strip the upstream updater endpoint and pubkey "
+            "(issue #37 owns fork-owned discovery)"
         )
 
     deb_depends = list(bundle.get("linux", {}).get("deb", {}).get("depends") or [])

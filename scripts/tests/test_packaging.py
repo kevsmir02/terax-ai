@@ -174,6 +174,17 @@ class TargetTest(unittest.TestCase):
 
 
 class DependencyTest(unittest.TestCase):
+    def test_the_candidate_strips_the_upstream_updater_identity(self) -> None:
+        overlay = packaging.candidate_config()
+        self.assertEqual(overlay["plugins"]["updater"]["endpoints"], [])
+        self.assertEqual(overlay["plugins"]["updater"]["pubkey"], "")
+        overlay["plugins"]["updater"] = {
+            "endpoints": ["https://github.com/crynta/terax-ai/releases/latest/download/latest.json"],
+            "pubkey": "upstream-key",
+        }
+        problems = packaging.config_problems(overlay=overlay)
+        self.assertTrue(any("updater" in problem for problem in problems), problems)
+
     def test_deb_and_rpm_require_the_webkit_and_gtk_runtime(self) -> None:
         linux = packaging.merged_bundle_config()["linux"]
         for label, depends in (

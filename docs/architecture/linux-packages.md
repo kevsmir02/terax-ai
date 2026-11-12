@@ -38,11 +38,12 @@ pnpm package:candidate           # build rpm+deb, write dist-packages/<pkg>-<ver
 The runner (`scripts/package-candidate/run.py`) refuses to start when any of these is true:
 
 - the host is not Linux/x86_64 (no `aarch64`, macOS or Windows output);
-- it runs as root, or `rpmbuild`/`rpm` is missing;
+- it runs as root, or `rpm` is missing (the artifact could not be verified back);
 - the working tree is dirty (artifacts must correspond to a recorded commit);
 - the identity is an upstream name, the product name does not derive the declared package name,
-  the bundle targets are not exactly `rpm`+`deb` (no AppImage/NSIS/MSI/DMG), or
-  `createUpdaterArtifacts` is not `false`;
+  the bundle targets are not exactly `rpm`+`deb` (no AppImage/NSIS/MSI/DMG),
+  `createUpdaterArtifacts` is not `false`, or the overlay does not strip the upstream updater
+  endpoint/pubkey;
 - the deb/rpm dependency lists lack WebKitGTK or GTK3;
 - the Arch recipe's `pkgver`/`pkgname`/`arch`/`_commit`/`depends` do not line up;
 - the output directory already holds a completed candidate (outputs are immutable).
@@ -98,8 +99,10 @@ environment that records package versions. The packaging runner writes a revisio
 
 ## Known gaps
 
-- The runtime update feed and minisign key are still upstream's; that is issue #37's scope.
-  Candidates are built with `createUpdaterArtifacts=false` and are not update artifacts.
+- The frontend Linux update check still queries upstream's GitHub release feed in this revision;
+  fork-owned discovery is issue #37. Candidate builds strip the updater plugin's endpoint and
+  pubkey and use `createUpdaterArtifacts=false`, so a candidate can neither fetch upstream's
+  release feed nor verify/install an artifact with the upstream key.
 - The deb `Maintainer` field is derived by the bundler from the Cargo authors (upstream credit),
   not from the candidate vendor; final maintainer identity belongs to #39/#40.
 
