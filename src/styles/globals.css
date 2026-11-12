@@ -314,6 +314,21 @@ textarea,
   user-select: text;
 }
 
+/* A Markdown image the asset policy did not load: visible text instead of a
+   broken icon, with no URL attached. */
+.terax-md-blocked-asset {
+  display: inline-block;
+  max-width: 100%;
+  padding: 0.1em 0.45em;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8125em;
+  vertical-align: middle;
+  overflow-wrap: anywhere;
+}
+
 .cm-color-swatch {
   display: inline-block;
   width: 0.85em;

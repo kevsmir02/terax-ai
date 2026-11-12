@@ -19,6 +19,10 @@ export type BenchAppApi = {
   closeTab: (id: number) => void;
   /** Opens a file in an editor tab (the app's own planner); returns the tab id. */
   openFileTab: (path: string, pin?: boolean, spaceId?: string) => number;
+  /** Opens a rendered Markdown tab (the app's own planner); returns the tab id. */
+  openMarkdownTab: (path: string) => number;
+  /** Applies the terminal's own cwd update, as an OSC 7 report would. */
+  setLeafCwd: (leafId: number, cwd: string) => void;
   readBuffer: (leafId: number, maxLines?: number) => string | null;
   /** Spaces (workspaces) the application knows about. */
   spaces: { id: string; name: string }[];
@@ -77,6 +81,7 @@ export type BenchScenario = {
     | "fs-churn"
     | "input"
     | "workflow"
+    | "markdown"
     | "spaces"
     | "git"
     | "preview"
@@ -143,6 +148,27 @@ export type BenchScenario = {
   file?: string;
   /** workflow: the file's distinctive first line, asserted in the rendered editor. */
   fileText?: string;
+  /** markdown: documents and assets the scenario drives through the real preview. */
+  markdown?: {
+    /** The configured Space project root (the app's launch directory). */
+    workspace: string;
+    /** A document inside the root with an allowed image and a symlink escape. */
+    insideDoc: string;
+    /** A document outside the root with a sibling image and an outside image. */
+    outsideDoc: string;
+    /** A document whose only image is remote. */
+    remoteDoc: string;
+    /** A document with relative and external links. */
+    linkDoc: string;
+    /** A document whose references are hostile: asset://, javascript:, file:, script, onerror. */
+    maliciousDoc: string;
+    /** A large document above the approved 4 MiB syntax ceiling. */
+    largeDoc: string;
+    /** Orchestrator URL that counts remote image fetches. */
+    remoteImage: string;
+    /** Marker text inside the large document. */
+    largeMarker: string;
+  };
   /** images: fixture paths the scenario opens and asserts through the image surface. */
   images?: {
     png: string;

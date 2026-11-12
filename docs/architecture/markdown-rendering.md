@@ -37,23 +37,66 @@ refuses and the button stays idle.
 
 ## Local image access
 
-An image is loaded only when all of these hold (`isAllowedLocalImage`):
+An image is loaded automatically only when all of these hold
+(`classifyImageReference` → `rehypeLocalImages`):
 
-1. the extension is an image type,
-2. the resolved absolute path stays inside `previewBoundary` (the workspace root
-   when the document is inside it, else the document's own folder),
-3. `checkReadable` accepts the path (secret basenames and protected directories).
+1. the reference is a relative image,
+2. the resolved absolute path stays inside `previewBoundary`: the configured
+   **Space project root** when the document is inside it, otherwise the
+   document's own folder (`MarkdownStack` receives `spaceRoots` from
+   `App`/`WorkspaceSurface`). The mutable terminal cwd is not an input, so a
+   `cd` cannot widen or narrow what a document may load,
+3. `checkReadable` accepts the path (secret basenames and protected
+   directories).
 
-An allowed image is rewritten to an `asset://` URL carrying the grant token
-(`useAssetGrant`). A refused one keeps a non-loadable path, and an `asset://`
-URL written into the document is dropped. Symlink resolution and canonical
-containment happen natively in `src-tauri/src/modules/fs/assets.rs`.
+`previewBoundary` normalizes `.`/`..` before deciding where the document lives,
+and `resolveRelativeAsset` does the same for the reference. An allowed image is
+rewritten to an `asset://` URL carrying the grant token (`useAssetGrants`).
+`MarkdownContent` keys the Streamdown surface on that policy (document,
+boundary, consent, grant version) because Streamdown memoises on the Markdown
+text alone; without the key a grant or consent choice would render once and then
+stay blocked.
+Symlink resolution and canonical containment remain native in
+`src-tauri/src/modules/fs/assets.rs`; a symlink inside the root that points out
+of it is refused at delivery.
 
-Known follow-ups owned by other tickets, do not fix them here:
+A refused image is replaced by a visible `[reason: reference]` notice, never a
+blank pane or broken icon. The document itself cannot turn that into a load:
 
-- the boundary root is the mutable terminal cwd, not the Space project root
-  (spec: Preview access boundaries),
-- preview consent/lifecycle policy and unload/close behaviour (preview tickets).
+- **Outside the boundary:** a notice names the count and the boundary, with an
+  explicit "Allow N images outside" action. Pressing it grants exactly those
+  files through the same tab scope; a protected (secret) path is never offered
+  and cannot be granted.
+- **Remote:** rendering fetches nothing. A "Load N remote images" action is the
+  only path to a remote `src`; `tauri.conf.json`'s `img-src` includes `https:`
+  and the counted acceptance fixture proves zero requests before the choice.
+- **Inline `data:` images** are kept because they fetch nothing, and an
+  `asset://` URL written into the document is dropped outright.
+
+## Links
+
+`MarkdownLink` prevents the default for every href, so document content can
+never navigate the application webview or run an application command. Only a
+deliberate click on an `http(s)`/`mailto`/`tel` target goes to the native
+opener. A relative, `file:` or custom-scheme link is inert
+(`lib/linkAction.ts`).
+
+## Limits, hidden work and close
+
+- The native read keeps the approved 10 MiB ceiling. A larger document explains
+  its size and offers the explicit "Open anyway" override up to 50 MiB; above
+  4 MiB the document opens with fenced-code highlighting off
+  (`textReadDecision`, `data-syntax="off"`).
+- A hidden tab does not read and does not request an asset grant until it is
+  first shown; while hidden it only marks itself stale. On show it reads once.
+- `createDocumentLoad` discards a completion whose document closed or whose
+  request is no longer the newest, so a slow read cannot resurrect content.
+- Grants belong to the tab scope: closing the tab (or its Space) revokes them in
+  `assetScopes` and natively, and an in-flight grant for a closed scope is
+  revoked instead of installed.
+
+Remaining follow-up owned by other tickets: PDF/image/media viewers (#28/#29/#31)
+and the web-preview frame policy.
 
 ## Removed AI-owned entry points
 
@@ -73,9 +116,19 @@ ownership.
 ## Checks
 
 - `src/modules/markdown/MarkdownContent.test.tsx` - sanitisation, static mode,
-  local-image allow/deny, fenced-code rendering through the retained block.
-- `src/modules/markdown/MarkdownPreviewPane.test.tsx` - document states and that
-  no asset grant is requested without a document to draw.
+  local-image allow/deny, remote consent, explicit outside grants, syntax-off
+  and fenced-code rendering through the retained block.
+- `src/modules/markdown/MarkdownPreviewPane.test.tsx` - document states, the
+  10/50 MiB override offer, boundary selection and that no asset grant is
+  requested without a document to draw.
+- `src/modules/markdown/MarkdownStack.test.tsx` - the boundary comes from the
+  Space root (never a terminal cwd) and follows the document's own Space.
+- `src/modules/markdown/lib/{assetPath,documentAssets,linkAction,documentLoad}.test.ts`
+  - reference classification, remote/outside consent, inert links and stale
+    load completions.
+- `src/modules/markdown/useMarkdownDocument.test.ts` - a hidden tab does not
+  read, a change while hidden reads once on show, stale/older completions are
+  discarded, and only the explicit action forces the 50 MiB read.
 - `src/modules/markdown/components/*.test.tsx` - inline vs fenced code, shell
   blocks, streaming placeholder.
 - `src/modules/markdown/lib/codeHighlight.test.ts` - token classes, text
@@ -84,6 +137,16 @@ ownership.
 - `src/modules/markdown/lib/assetPath.test.ts` - boundary/policy outcomes.
 - `src/modules/markdown/lib/codeBlockRunner.test.ts` - the run-in-terminal seam
   reports refusal instead of success when no terminal is published.
+- `scripts/app-lab/run.py --scenario markdown` - the real WebKitGTK seam: the
+  Space-root image, the refused symlink escape, cwd independence, an outside
+  document's own folder, the explicit outside grant, a counted remote pixel that
+  stays at zero requests until the "Load remote images" action, an inert relative
+  link, a hostile document that executes nothing, the syntax ceiling, grant
+  revocation on close and a read that lands after its document closed. Steps and
+  counters are in the report's `markdown` / `markdownServer` blocks; the
+  scenario is documented in `docs/architecture/app-lab.md`. That run is a
+  bench-build observation in a disposable profile on this host, not a
+  packaged-install validation.
 - `src/modules/markdown/ownership.test.ts` - the retained renderer never imports
   the AI feature, every consumer of an old entry point is accounted for, the
   markdown tab kind stays behind its dynamic import, and Streamdown is still
