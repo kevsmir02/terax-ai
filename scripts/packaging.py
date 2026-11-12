@@ -547,6 +547,10 @@ def manifest_problems(document: dict) -> list[str]:
     formats = {artifact.get("format") for artifact in artifacts or []}
     if targets != set(BUNDLE_TARGETS) or formats != set(BUNDLE_TARGETS):
         found.append(f"manifest artifacts {sorted(formats)} do not match targets {sorted(targets)}")
+    # The package must install the identity the manifest claims. This is the check that a build
+    # without the generated overlay fails: it installs the base config's `terax` binaries while
+    # the manifest still says `terax-workspace`.
+    upstream = identity_table()["upstream"]
     for artifact in artifacts or []:
         for field in REQUIRED_ARTIFACT_FIELDS:
             if field not in artifact:
@@ -557,6 +561,28 @@ def manifest_problems(document: dict) -> list[str]:
             found.append(f"artifact {artifact.get('fileName')!r} has no sha256")
         if not artifact.get("licenses"):
             found.append(f"artifact {artifact.get('fileName')!r} lists no licence resources")
+        installed = {
+            str(entry.get("path"))
+            for entry in artifact.get("binaries") or []
+            if isinstance(entry, dict)
+        }
+        for path in (
+            f"/usr/bin/{identity.get('packageName')}",
+            f"/usr/bin/{identity.get('cliBinaryName')}",
+        ):
+            if path not in installed:
+                found.append(
+                    f"{artifact.get('format', '?')} artifact does not install the candidate "
+                    f"binary {path} (the overlay was not applied)"
+                )
+        for upstream_path in (
+            f"/usr/bin/{upstream['namespace']}",
+            f"/usr/bin/{upstream['namespace']}-cli",
+        ):
+            if upstream_path in installed:
+                found.append(
+                    f"{artifact.get('format', '?')} artifact installs upstream's {upstream_path}"
+                )
     return found
 
 

@@ -15,10 +15,18 @@ first. Until then the half-built path fails closed:
   uploads nothing and creates no release. It runs only on `workflow_dispatch`, and a manual run
   builds, verifies and hashes the x86-64 RPM/DEB set and attaches it to that workflow run as the
   `linux-x86_64-packages` artifact.
+- A manual run builds **through `scripts/package-candidate/run.py`**, the same runner described
+  below, not with a bare `pnpm tauri build`: the base config carries upstream's product name,
+  binary name and descriptions, so only the generated overlay gives the artifact the candidate
+  identity (`Terax Workspace`, `/usr/bin/terax-workspace`, `/usr/bin/terax-workspace-cli`). The
+  artifact holds the two packages, their `SHA256SUMS` and the runner's `manifest.json`.
 - No job creates or uploads a GitHub release, and the workflow asks for `contents: read` only, so
   there is no token with which a manual run could publish.
 - `scripts/tests/test_ci_workflows.py` fails if a tag trigger, `tauri-action` release inputs,
-  `gh release` or `contents: write` come back to the workflow without the #41 gate.
+  `gh release` or `contents: write` come back to the workflow without the #41 gate. It also fails
+  if the candidate job stops using the packaging runner, restates a name from the identity table, or
+  stops proving the staged deb installs the candidate binary instead of upstream's
+  `/usr/bin/terax`.
 
 This is deliberate: the spec's "a version tag triggers stable release publication *subject to*
 passing checks and tag/application-version agreement" and "a tag alone is not successful
@@ -61,6 +69,10 @@ sidecar file moved.
 pnpm package:candidate:dry-run   # effective config + planned artifact names, no build
 pnpm package:candidate           # build rpm+deb, write dist-packages/<pkg>-<ver>-<rev>/
 ```
+
+`.github/workflows/release.yml` runs `python3 scripts/package-candidate/run.py` on
+`workflow_dispatch`, so a candidate built in CI and a candidate built locally come from the same
+code path and carry the same identity.
 
 The runner (`scripts/package-candidate/run.py`) refuses to start when any of these is true:
 
