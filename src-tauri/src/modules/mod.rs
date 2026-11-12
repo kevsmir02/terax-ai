@@ -16,5 +16,6 @@ pub mod recovery;
 pub mod runtime;
 pub mod shell;
 pub mod vibrancy;
+pub mod webview_origin;
 pub mod window_presentation;
 pub mod workspace;

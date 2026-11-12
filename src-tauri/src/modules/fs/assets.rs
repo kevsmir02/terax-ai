@@ -32,6 +32,7 @@ use tauri::{Manager, Runtime, UriSchemeContext, UriSchemeResponder};
 
 use super::access::opened_path;
 use super::file::{FORCE_MAX_READ_BYTES, MAX_READ_BYTES};
+use crate::modules::webview_origin::AllowedOrigins;
 use crate::modules::workspace::{resolve_path, WorkspaceEnv};
 
 /// The approved concurrent decoded-viewer ceiling
@@ -499,9 +500,17 @@ impl AssetGrants {
             TcpListener::bind(("127.0.0.1", 0)).map_err(|error| error.to_string())?;
         let bound = listener.local_addr().map_err(|error| error.to_string())?.port();
         let app = app.clone();
+        // The app's own origin, resolved once from the same config the pty gate
+        // reads. Every response names it (never `*`) and a request from any
+        // other origin is refused.
+        let origins = AllowedOrigins::for_app(
+            app.config().build.dev_url.as_ref(),
+            tauri::is_dev(),
+            cfg!(windows),
+        );
         std::thread::Builder::new()
             .name("asset-media-server".into())
-            .spawn(move || media_accept_loop(listener, app))
+            .spawn(move || media_accept_loop(listener, app, origins))
             .map_err(|error| error.to_string())?;
         *port = Some(bound);
         Ok(bound)
@@ -532,7 +541,7 @@ pub fn asset_media_url(
 const MAX_MEDIA_CONNECTIONS: usize = 8;
 static MEDIA_CONNECTIONS: AtomicUsize = AtomicUsize::new(0);
 
-fn media_accept_loop(listener: TcpListener, app: tauri::AppHandle) {
+fn media_accept_loop(listener: TcpListener, app: tauri::AppHandle, origins: AllowedOrigins) {
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
         if MEDIA_CONNECTIONS.fetch_add(1, Ordering::SeqCst) >= MAX_MEDIA_CONNECTIONS {
@@ -542,15 +551,19 @@ fn media_accept_loop(listener: TcpListener, app: tauri::AppHandle) {
                 &mut stream,
                 MediaResponse::error(AssetError::busy()),
                 false,
+                // The request was never read, so no origin is echoed.
+                None,
             );
             continue;
         }
         let app = app.clone();
+        let origins = origins.clone();
         let spawned = std::thread::Builder::new()
             .name("asset-media-conn".into())
             .spawn(move || {
                 let mut stream = stream;
-                let _ = handle_media_connection(&mut stream, &app);
+                let grants = app.state::<AssetGrants>();
+                let _ = handle_media_connection(&mut stream, &grants, &origins);
                 MEDIA_CONNECTIONS.fetch_sub(1, Ordering::SeqCst);
             });
         if spawned.is_err() {
@@ -559,7 +572,11 @@ fn media_accept_loop(listener: TcpListener, app: tauri::AppHandle) {
     }
 }
 
-fn handle_media_connection(stream: &mut TcpStream, app: &tauri::AppHandle) -> std::io::Result<()> {
+fn handle_media_connection(
+    stream: &mut TcpStream,
+    grants: &AssetGrants,
+    origins: &AllowedOrigins,
+) -> std::io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(30)))?;
     let mut buffer = Vec::new();
@@ -584,27 +601,45 @@ fn handle_media_connection(stream: &mut TcpStream, app: &tauri::AppHandle) -> st
         Some((path, query)) => (path, query),
         None => (target, ""),
     };
-    let range = lines.find_map(|line| {
-        let (name, value) = line.split_once(':')?;
-        if name.eq_ignore_ascii_case("range") {
-            Some(value.trim().to_string())
-        } else {
-            None
-        }
-    });
-    if method == "OPTIONS" {
-        // The app page reads the delivery URL with a Range header; that is a
-        // non-simple CORS request, so answer the preflight. The token remains
-        // the capability; no origin gains file access without it.
-        let _ = stream.write_all(
-            b"HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\n\
-              Access-Control-Allow-Methods: GET, HEAD, OPTIONS\r\n\
-              Access-Control-Allow-Headers: Range\r\n\
-              Access-Control-Max-Age: 600\r\nConnection: close\r\n\r\n",
-        );
+    let headers: Vec<(&str, &str)> = lines
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            Some((name.trim(), value.trim()))
+        })
+        .collect();
+    let header = |wanted: &str| {
+        headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(wanted))
+            .map(|(_, value)| value.to_string())
+    };
+    // First, and for every method: a page that is not the application's own
+    // learns nothing from this endpoint, not even which routes exist. The
+    // bearer token stays the capability; this is the rule that its response can
+    // only be read by the app's own origin.
+    let Some(origin) = origins.check(header("Origin").as_deref().map(str::as_bytes)) else {
+        let response = MediaResponse::error(AssetError::new(
+            403,
+            "origin-not-allowed",
+            "This preview endpoint is only reachable from the application's own page.",
+        ));
+        let _ = write_media_response(stream, response, method == "HEAD", None);
         return stream.flush();
-    }
-    let response = if method != "GET" && method != "HEAD" {
+    };
+    let range = header("Range");
+    let response = if method == "OPTIONS" {
+        // The app page reads the delivery URL with a Range header; that is a
+        // non-simple CORS request, so answer the preflight naming the caller's
+        // origin when it is one of ours.
+        let preflight = format!(
+            "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: {origin}\r\n\
+             Access-Control-Allow-Methods: GET, HEAD, OPTIONS\r\n\
+             Access-Control-Allow-Headers: Range\r\n\
+             Access-Control-Max-Age: 600\r\nVary: Origin\r\nConnection: close\r\n\r\n"
+        );
+        let _ = stream.write_all(preflight.as_bytes());
+        return stream.flush();
+    } else if method != "GET" && method != "HEAD" {
         MediaResponse::error(AssetError::new(
             405,
             "method-not-allowed",
@@ -619,7 +654,7 @@ fn handle_media_connection(stream: &mut TcpStream, app: &tauri::AppHandle) -> st
     } else {
         match query_param(query, "token") {
             Some(token) => deliver_media(
-                &app.state::<AssetGrants>(),
+                grants,
                 &token,
                 range.as_deref(),
                 &DeliveryLimits::approved(),
@@ -632,7 +667,7 @@ fn handle_media_connection(stream: &mut TcpStream, app: &tauri::AppHandle) -> st
             )),
         }
     };
-    write_media_response(stream, response, method == "HEAD")
+    write_media_response(stream, response, method == "HEAD", Some(&origin))
 }
 
 /// Serves one granted media file with the same bounds as the asset scheme.
@@ -779,11 +814,11 @@ fn write_media_response(
     stream: &mut TcpStream,
     response: MediaResponse,
     head_only: bool,
+    origin: Option<&str>,
 ) -> std::io::Result<()> {
     let mut headers = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
          Accept-Ranges: bytes\r\nCache-Control: no-store\r\n\
-         Access-Control-Allow-Origin: *\r\n\
          Access-Control-Expose-Headers: Content-Range, Content-Length, Accept-Ranges\r\n\
          X-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\n\
          Connection: close\r\n",
@@ -792,6 +827,13 @@ fn write_media_response(
         response.mime,
         response.length,
     );
+    // Only ever the application's own origin, never `*`: a page that is not
+    // ours cannot read this response even when it knows the token.
+    if let Some(origin) = origin {
+        headers.push_str(&format!(
+            "Access-Control-Allow-Origin: {origin}\r\nVary: Origin\r\n"
+        ));
+    }
     if response.ranged {
         if response.length > 0 {
             headers.push_str(&format!(
@@ -2374,43 +2416,145 @@ mod tests {
         );
     }
 
-    #[test]
-    fn loopback_media_writes_a_valid_range_response() {
+    /// Serves one loopback request through the real connection handler and
+    /// returns the raw response bytes.
+    fn media_request(grants: &AssetGrants, origins: &AllowedOrigins, request: &str) -> String {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let address = listener.local_addr().unwrap();
-        let body = b"0123456789".to_vec();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0u8; 1024];
-            let _ = stream.read(&mut request);
-            write_media_response(
-                &mut stream,
-                MediaResponse {
-                    status: 206,
-                    mime: "audio/wav",
-                    size: 10,
-                    start: 4,
-                    length: 4,
-                    ranged: true,
-                    body: body[4..8].to_vec(),
-                },
-                false,
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let (mut stream, _) = listener.accept().unwrap();
+                let _ = handle_media_connection(&mut stream, grants, origins);
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+            });
+            let mut client = TcpStream::connect(address).unwrap();
+            client.write_all(request.as_bytes()).unwrap();
+            let mut response = Vec::new();
+            client.read_to_end(&mut response).unwrap();
+            String::from_utf8_lossy(&response).into_owned()
+        })
+    }
+
+    fn media_grant(body: &[u8]) -> (tempfile::TempDir, AssetGrants, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clip.wav");
+        std::fs::write(&path, body).unwrap();
+        let grants = AssetGrants::default();
+        let token = grants
+            .grant(
+                "main".into(),
+                Some("tab-media".into()),
+                &super::super::to_canon(&path),
+                WorkspaceEnv::Local,
+                0,
+                0,
             )
             .unwrap();
-            let _ = stream.shutdown(std::net::Shutdown::Write);
-        });
-        let mut client = TcpStream::connect(address).unwrap();
-        client
-            .write_all(b"GET /media?token=t HTTP/1.1\r\nRange: bytes=4-\r\n\r\n")
-            .unwrap();
-        let mut response = Vec::new();
-        client.read_to_end(&mut response).unwrap();
-        server.join().unwrap();
-        let text = String::from_utf8_lossy(&response);
+        (dir, grants, token)
+    }
+
+    #[test]
+    fn loopback_media_writes_a_valid_range_response() {
+        let body = b"0123456789".to_vec();
+        let (_dir, grants, token) = media_grant(&body);
+        let origins = AllowedOrigins::for_app(None, false, false);
+        let text = media_request(
+            &grants,
+            &origins,
+            &format!(
+                "GET /media?token={token} HTTP/1.1\r\nOrigin: tauri://localhost\r\nRange: bytes=4-\r\n\r\n"
+            ),
+        );
         assert!(text.starts_with("HTTP/1.1 206 Partial Content\r\n"));
-        assert!(text.contains("Content-Range: bytes 4-7/10\r\n"));
+        assert!(text.contains("Content-Range: bytes 4-9/10\r\n"));
         assert!(text.contains("Accept-Ranges: bytes\r\n"));
-        assert!(text.contains("Access-Control-Allow-Origin: *\r\n"));
-        assert!(text.ends_with("4567"));
+        assert!(text.contains("Access-Control-Allow-Origin: tauri://localhost\r\n"));
+        assert!(text.ends_with("456789"));
+    }
+
+    #[test]
+    fn loopback_media_refuses_a_foreign_origin_and_never_names_a_wildcard() {
+        // The bearer token is the capability; CORS is the boundary that stops a
+        // page which learns a token from *reading* the bytes. The repository's
+        // rule (the pty gate) is: name the application's own origin, never `*`,
+        // and refuse every other origin.
+        let (_dir, grants, token) = media_grant(&[b'w'; 64]);
+        let origins = AllowedOrigins::for_app(None, false, false);
+        let get = format!("GET /media?token={token} HTTP/1.1\r\nHost: 127.0.0.1\r\n");
+
+        for foreign in ["https://evil.example", "null"] {
+            let refused = media_request(
+                &grants,
+                &origins,
+                &format!("{get}Origin: {foreign}\r\n\r\n"),
+            );
+            assert!(
+                refused.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+                "{refused}"
+            );
+            assert!(
+                !refused
+                    .to_ascii_lowercase()
+                    .contains("access-control-allow-origin"),
+                "a refused origin learns no CORS grant: {refused}"
+            );
+            assert!(
+                !refused.contains("wwww"),
+                "a refused origin reads no bytes: {refused}"
+            );
+        }
+
+        // A foreign page's preflight is refused the same way.
+        let preflight = media_request(
+            &grants,
+            &origins,
+            &format!(
+                "OPTIONS /media?token={token} HTTP/1.1\r\nOrigin: https://evil.example\r\n\r\n"
+            ),
+        );
+        assert!(
+            preflight.starts_with("HTTP/1.1 403 Forbidden\r\n"),
+            "{preflight}"
+        );
+        assert!(
+            !preflight
+                .to_ascii_lowercase()
+                .contains("access-control-allow-origin"),
+            "{preflight}"
+        );
+
+        // The application's own page is accepted and named exactly.
+        let allowed = media_request(
+            &grants,
+            &origins,
+            &format!("{get}Origin: tauri://localhost\r\n\r\n"),
+        );
+        assert!(allowed.starts_with("HTTP/1.1 200 OK\r\n"), "{allowed}");
+        assert!(
+            allowed.contains("Access-Control-Allow-Origin: tauri://localhost\r\n"),
+            "{allowed}"
+        );
+        assert!(
+            !allowed.contains("Access-Control-Allow-Origin: *"),
+            "{allowed}"
+        );
+        assert!(allowed.contains("Vary: Origin\r\n"), "{allowed}");
+        assert!(allowed.ends_with("wwww"), "{allowed}");
+
+        // The media element itself sends no `Origin` (measured against
+        // WebKitGTK: it sends `Sec-Fetch-Mode: no-cors`), so that is not a
+        // cross-origin browser read: the token authorizes it, and the response
+        // still names the application's origin instead of `*`.
+        let element = media_request(&grants, &origins, &format!("{get}\r\n"));
+        assert!(element.starts_with("HTTP/1.1 200 OK\r\n"), "{element}");
+        assert!(
+            element.contains("Access-Control-Allow-Origin: tauri://localhost\r\n"),
+            "{element}"
+        );
+        assert!(
+            !element.contains("Access-Control-Allow-Origin: *"),
+            "{element}"
+        );
+        assert!(element.ends_with("wwww"), "{element}");
     }
 }

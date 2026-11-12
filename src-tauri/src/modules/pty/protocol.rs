@@ -19,7 +19,8 @@ use std::sync::Arc;
 use tauri::http::{self, header, HeaderValue, StatusCode};
 use tauri::{Manager, Runtime, UriSchemeContext, UriSchemeResponder};
 
-use super::gate::{admit, Admission, AllowedOrigins, Incoming};
+use super::gate::{admit, Admission, Incoming};
+use crate::modules::webview_origin::AllowedOrigins;
 use super::hub::{Command, Hub, Reply};
 use super::PtyState;
 

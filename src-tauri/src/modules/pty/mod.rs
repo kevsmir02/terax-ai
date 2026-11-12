@@ -50,7 +50,7 @@ pub struct PtyState {
     next_id: AtomicU32,
     hub: Hub,
     /// Resolved from the app's config on the first `terax-pty` request.
-    origins: OnceLock<gate::AllowedOrigins>,
+    origins: OnceLock<crate::modules::webview_origin::AllowedOrigins>,
 }
 
 impl Default for PtyState {
