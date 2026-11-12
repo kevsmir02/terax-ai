@@ -173,10 +173,10 @@ mod tests {
         // A candidate package installs into its own paths: no `/usr/bin/terax`, no
         // `/usr/bin/terax-cli`, so it cannot overwrite an installed upstream build.
         assert_eq!(packaging.package_name, packaging.package_name.to_lowercase());
-        assert!(packaging.package_name.contains(&namespace()));
+        assert!(packaging.package_name.contains(namespace()));
         assert_ne!(packaging.package_name, upstream.namespace);
         assert_ne!(cli_binary_name(), format!("{}-cli", upstream.namespace));
-        assert!(cli_binary_name().contains(&namespace()));
+        assert!(cli_binary_name().contains(namespace()));
     }
 
     #[test]

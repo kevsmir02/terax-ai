@@ -1,7 +1,10 @@
 import { useState } from "react";
-import { AssetDeliveryNotice } from "./AssetDeliveryNotice";
-import { imageBudgetDecision } from "./lib/limits";
+import { useViewerAdmissionStore } from "./lib/viewerAdmission";
 import { useDecodedViewer } from "./lib/useDecodedViewer";
+import { useImageProbe } from "./lib/useImageProbe";
+import { imageFormatForPath } from "./lib/imageFormats";
+import { imageViewerRequest, imageViewerState } from "./lib/imageViewer";
+import { ImagePreviewView } from "./ImagePreviewView";
 
 type Props = {
   path: string;
@@ -14,12 +17,13 @@ type Props = {
 /**
  * The bounded image surface.
  *
- * `<img>` decodes at intrinsic size, so the raster is measured as soon as it
- * loads and then either admitted against the 64 MiB per-image ceiling and the
- * 192 MiB / four-viewer decoded budget, or replaced by an explicit refusal. The
- * admission table never evicts a visible viewer; a hidden one may be released
- * and reports why its raster disappeared. Issue #28 adds genuine reduced-size
- * decoding; this surface refuses instead of silently allocating a bigger raster.
+ * The order is the contract: the native header probe reads the intrinsic
+ * dimensions without decoding, the approved 64 MiB decision runs on those
+ * dimensions, and only then does the image ask the decoded-viewer table for a
+ * slot and mount the `<img>`. An oversized, corrupt, unsupported or oversized-
+ * budget image therefore never allocates a raster first. Closing the tab or
+ * replacing the path releases the raster and its slot; hiding the tab stops
+ * presentation and releases the decoded slot as well.
  */
 export function ImagePreview({
   path,
@@ -28,93 +32,59 @@ export function ImagePreview({
   visible,
   onOpenExternally,
 }: Props) {
-  const [intrinsic, setIntrinsic] = useState<{
-    width: number;
-    height: number;
-  } | null>(null);
-  const [failed, setFailed] = useState(false);
+  const format = imageFormatForPath(path);
+  const [decodeFailed, setDecodeFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
-  // A vector image has no intrinsic raster to budget: the browser rasterizes it
-  // at the displayed size, so the decoded-image ceiling does not apply.
-  const vector = path.toLowerCase().endsWith(".svg");
+  const probeState = useImageProbe(path, visible);
+  const id = `image:${tabId}:${path}`;
+  const evicted = useViewerAdmissionStore((state) =>
+    state.viewers.some((entry) => entry.id === id && entry.evicted),
+  );
 
-  const budget =
-    !vector && intrinsic
-      ? imageBudgetDecision(intrinsic.width, intrinsic.height)
-      : null;
-  const decodedBytes = budget?.kind === "allow" ? budget.decodedBytes : 0;
-  const viewer = useDecodedViewer({
-    id: `image:${tabId}:${path}`,
-    tabId: String(tabId),
-    decodedBytes,
+  // Admission is requested from the pre-admission decision: the bytes are
+  // exactly the ones the budget approved, and nothing mounts until the table
+  // says yes.
+  const candidate = imageViewerState({
+    format,
+    probe: probeState.probe,
     visible,
-    enabled: budget?.kind === "allow",
+    decodeFailed,
+    admission: null,
+    evicted,
+  });
+  const requested = imageViewerRequest(candidate);
+  const viewer = useDecodedViewer({
+    id,
+    tabId: String(tabId),
+    decodedBytes: requested?.decodedBytes ?? 0,
+    visible,
+    enabled: Boolean(requested),
+  });
+  const state = imageViewerState({
+    format,
+    probe: probeState.probe,
+    visible,
+    decodeFailed,
+    admission: viewer.admission,
+    evicted: viewer.evicted,
   });
 
-  if (failed) {
-    return (
-      <AssetDeliveryNotice
-        title="Image could not be decoded"
-        reason="This file may use an unsupported image format or be corrupt. Open it in an external viewer, or retry."
-        alternatives={["open-externally"]}
-        onRetry={() => {
-          setFailed(false);
-          setAttempt((value) => value + 1);
-        }}
-        onOpenExternally={onOpenExternally}
-      />
-    );
-  }
-  if (budget?.kind === "refuse") {
-    return (
-      <AssetDeliveryNotice
-        title="Image too large to decode"
-        reason={budget.reason}
-        alternatives={budget.alternatives}
-        onOpenExternally={onOpenExternally}
-      />
-    );
-  }
-  if (viewer.admission?.kind === "refuse") {
-    return (
-      <AssetDeliveryNotice
-        title="No room for another decoded preview"
-        reason={viewer.admission.reason}
-        alternatives={viewer.admission.alternatives}
-        onOpenExternally={onOpenExternally}
-      />
-    );
-  }
-  if (viewer.evicted) {
-    return (
-      <AssetDeliveryNotice
-        title="Preview released to keep memory bounded"
-        reason="Another preview needed the decoded-asset budget, so this image was released while its tab was hidden. Open it again once another large preview is closed."
-        alternatives={["close-another-viewer", "open-externally"]}
-        onOpenExternally={onOpenExternally}
-      />
-    );
-  }
+  const retry = () => {
+    setDecodeFailed(false);
+    setAttempt((value) => value + 1);
+    probeState.retry();
+  };
+
   return (
-    <img
+    <ImagePreviewView
+      // A retry must remount the element even for the same source.
       key={attempt}
-      src={url}
-      alt={path.split("/").pop()}
-      loading={visible ? "eager" : "lazy"}
-      decoding="async"
-      className="max-h-full max-w-full rounded-md border border-border object-contain shadow-sm"
-      style={{
-        backgroundImage:
-          "conic-gradient(var(--muted) 0.25turn, transparent 0.25turn 0.5turn, var(--muted) 0.5turn 0.75turn, transparent 0.75turn)",
-        backgroundSize: "20px 20px",
-      }}
-      onLoad={(event) =>
-        setIntrinsic({
-          width: event.currentTarget.naturalWidth,
-          height: event.currentTarget.naturalHeight,
-        })
-      }
-      onError={() => setFailed(true)}
+      state={state}
+      path={path}
+      url={url}
+      onOpenExternally={onOpenExternally}
+      onRetry={retry}
+      onDecodeFailed={() => setDecodeFailed(true)}
     />
   );
 }

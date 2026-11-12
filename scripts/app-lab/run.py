@@ -21,6 +21,11 @@ Scenarios (`--scenario`):
   input          native key events / input-method calls into a PTY reader (pass/fail in page.log)
   workflow       Linux acceptance workflow: shell spawn, exact echo, new tab, split, switch back,
                  open a temp file and assert the editor's text (pass/fail in page.log)
+  preview        Linux web-preview seam: frame teardown on tab/Space/window changes, sandbox and
+                 redirect boundaries, independent dev server
+  images         Linux image seam: representative formats decode in the real WebKitGTK, oversized
+                 and corrupt inputs are refused honestly, hidden tabs release, close cycles do not
+                 retain decoded viewers or grants
 
 Linux currently implements `workflow` only (WebKitGTK); the measured scenarios above stay
 macOS-only until ticket 02 (sampling) and ticket 32 (input/resize/layers). On Linux the app is
@@ -76,7 +81,7 @@ SYSTEM = platform.system()
 # measured scenarios (tabs, resize, split-drag, occlusion, agents-steady, idle, fs-churn, input)
 # stay unavailable here: WebKitGTK has no occlusion signal, no layer-tree mirror and no native
 # input hook (ticket 32).
-LINUX_SCENARIOS = ("workflow", "preview", "resource", "stress", "startup")
+LINUX_SCENARIOS = ("workflow", "preview", "images", "resource", "stress", "startup")
 SCENARIOS = list(dict.fromkeys([*app_report.SCENARIOS, *LINUX_SCENARIOS]))
 IDENTIFIER = linux_profile.disposable_identifier("app-lab", "stable")
 PRODUCT_NAME = "Terax App Lab"
@@ -597,6 +602,8 @@ def host_timeout(args, scenario: dict) -> float:
     name = args.scenario
     if name == "workflow":
         return 600
+    if name == "images":
+        return 600
     if name == "startup":
         return max(1, args.startup_repeats) * 150 + 120
     if name in ("resource", "stress"):
@@ -872,12 +879,51 @@ def run(args, app: Path, source: Path, output: Path) -> int:
     return 0
 
 
+def prepare_image_fixtures(workspace: Path, source: Path) -> dict:
+    """Copy the committed image fixtures the `images` scenario opens.
+
+    The files are real containers (generated once, not synthesized per run), so
+    the scenario measures this webview's decoders rather than this script's idea
+    of an image. `oversized.png` carries a valid 5000x5000 IHDR and no pixel
+    data: the probe must refuse it from the header before any decode.
+    """
+    origin = source / "src-tauri/tests/fixtures/images"
+    if not origin.is_dir():
+        origin = REPO / "src-tauri/tests/fixtures/images"
+    names = {
+        "png": "sample.png",
+        "jpeg": "sample.jpg",
+        "gif": "sample.gif",
+        "webp": "sample.webp",
+        "bmp": "sample.bmp",
+        "ico": "sample.ico",
+        "avif": "sample.avif",
+        "svg": "sample.svg",
+        "corrupt": "corrupt.png",
+        "oversized": "oversized.png",
+    }
+    workspace.mkdir(parents=True, exist_ok=True)
+    copied = {}
+    for key, name in names.items():
+        destination = workspace / name
+        shutil.copyfile(origin / name, destination)
+        copied[key] = str(destination)
+    (workspace / "images-README.md").write_text(
+        "# Image fixtures\n\n"
+        "Committed containers copied by `scripts/app-lab/run.py` for the `images` scenario.\n"
+        "`sample.*` are 64x64; `oversized.png` declares 5000x5000 (95.4 MiB RGBA8) and has no\n"
+        "pixel data; `corrupt.png` has a PNG signature but no usable header.\n"
+    )
+    return copied
+
+
 def scenario_json_linux(
     args,
     file: Path | None,
     first_line: str | None,
     workspace: Path,
     fixtures: dict | None,
+    images: dict | None = None,
 ) -> dict:
     """The scenario as the driver receives it (Linux; no synthetic agent)."""
     local: dict[str, str | None] = {}
@@ -901,6 +947,8 @@ def scenario_json_linux(
     }
     if args.scenario == "workflow":
         scenario.update({"file": str(file), "fileText": first_line})
+    if args.scenario == "images" and images:
+        scenario.update({"images": images})
     if args.scenario in ("resource", "stress") and fixtures:
         node = shutil.which("node")
         if not node:
@@ -974,6 +1022,10 @@ def build_startup_entry(kind: str, launch: int, event: dict, spawned_wall_s: flo
 # ---------------------------------------------------------------------------------------------
 
 LIMITATIONS_LINUX = [
+    "Image format support is measured only on this host's WebKitGTK build and only for the "
+    "committed fixtures; a different distro/WebKit version needs its own run.",
+    "The images scenario observes the rendered element and the decoded-viewer table; it does not "
+    "measure the webview's private decoded-bitmap memory.",
     "PDF rendering is not exercised: fixture.pdf exists as a document fixture but the run never "
     "opens it, and no PDF capability is claimed for the preview pane.",
     "Audio and video codecs are not exercised: the only media fixture is a 64x64 PNG decoded by "
@@ -1242,6 +1294,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     workspace.mkdir(parents=True, exist_ok=True)
     fixture_server = None
     fixtures = None
+    image_fixtures = None
     file = None
     first_line = ""
     if args.scenario in ("resource", "stress"):
@@ -1249,6 +1302,8 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         fixture_server = FixtureServer(workspace)
         fixtures["previewUrl"] = fixture_server.url("preview.html")
         fixtures["workload"] = describe_workload(args, fixtures)
+    elif args.scenario == "images":
+        image_fixtures = prepare_image_fixtures(workspace, source)
     else:
         token = uuid.uuid4().hex[:10]
         first_line = f"workflow-file {token}"
@@ -1256,7 +1311,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         file.write_text(f"{first_line}\nsecond line for the editor\n")
     report_path = (args.report or output / "report.json").resolve()
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    scenario = scenario_json_linux(args, file, first_line, workspace, fixtures)
+    scenario = scenario_json_linux(args, file, first_line, workspace, fixtures, image_fixtures)
     timeout = host_timeout(args, scenario)
     load_average = [round(value, 2) for value in os.getloadavg()]
 
@@ -1307,7 +1362,15 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         "samples": [],
         "series": [],
         "startup": [],
-        "workload": fixtures["workload"] if fixtures else "Linux acceptance workflow only (no resource workload)",
+        "workload": (
+            fixtures["workload"]
+            if fixtures
+            else (
+                "Linux image acceptance scenario (representative formats, oversized/corrupt refusal, hidden-tab release, open/close cycles)"
+                if args.scenario == "images"
+                else "Linux acceptance workflow only (no resource workload)"
+            )
+        ),
         "limitations": list(LIMITATIONS_LINUX),
     }
     manifest["environment"]["loadAverageStart"] = load_average
@@ -1327,6 +1390,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     poller.start()
     failed: BaseException | None = None
     workflow: dict = {}
+    images: dict = {}
     started = time.monotonic()
 
     def take_sample(phase: str, event: dict, elapsed: float) -> dict:
@@ -1366,6 +1430,8 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                 if phase == "done":
                     manifest["samples"].append({"phase": "done", "tMonoNs": time.monotonic_ns(), "event": app_report.slim_event(event)})
                     workflow = event.get("workflow") or {}
+                    if event.get("images") is not None:
+                        images = event["images"]
                     if event.get("preview") is not None:
                         # Scenario-specific evidence that is not a pass/fail step: how many
                         # frame instances were loaded, whether the blur was exercised, and what
@@ -1425,6 +1491,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         if server.log:
             (output / "page.log").write_text("\n".join(server.log))
         manifest["workflow"] = workflow
+        manifest["images"] = images
         # The fixture server is the independent process previews are served by; these counters
         # show it kept answering across every frame teardown.
         manifest["previewServer"] = {
@@ -1486,6 +1553,8 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                 break
         if workflow:
             manifest["qualification"]["workflowPass"] = bool(workflow.get("pass"))
+        if images:
+            manifest["qualification"]["imagesPass"] = bool(images.get("pass"))
         completed = [sample for sample in manifest["samples"] if "memory" in sample]
         if completed:
             try:
@@ -1504,6 +1573,14 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         steps = workflow.get("steps") or []
         passed = sum(1 for step in steps if step.get("ok"))
         print(f"workflow {'PASS' if workflow.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
+    if args.scenario == "images":
+        steps = images.get("steps") or []
+        passed = sum(1 for step in steps if step.get("ok"))
+        print(f"images {'PASS' if images.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
+        if not images.get("pass"):
+            for step in steps:
+                if not step.get("ok"):
+                    print(f"  failed: {step.get('name')}: {step.get('detail')}")
     isolation = manifest["isolation"]
     print(
         f"coexistence {'PASS' if isolation['upstreamStateUnchanged'] else 'FAIL'}: "
@@ -1520,6 +1597,9 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     print(f"\nSaved {report_path}")
     if args.scenario == "workflow" and not workflow.get("pass"):
         print("Run failed: the workflow reported a failing step (see page.log).", file=sys.stderr)
+        return 2
+    if args.scenario == "images" and not images.get("pass"):
+        print("Run failed: the images scenario reported a failing step (see page.log).", file=sys.stderr)
         return 2
     if not isolation["upstreamStateUnchanged"]:
         print(
