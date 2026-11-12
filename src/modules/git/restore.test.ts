@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   formatRestoreEffect,
@@ -9,9 +11,28 @@ import type {
   CheckpointGroups,
   ManualCheckpoint,
   ManualRestorePreview,
+  ManualRestoreRefusal,
   ManualRestoreReport,
+  RestoreEffect,
+  RestoreFailureStage,
   SafetyRef,
 } from "./types";
+
+const root = join(import.meta.dirname, "../../..");
+const read = (path: string) => readFileSync(join(root, path), "utf8");
+
+/** Variants of a `#[serde(rename_all = "camelCase")]` Rust enum, in TS spelling. */
+function rustEnumVariants(source: string, name: string): string[] {
+  const body =
+    new RegExp(`pub enum ${name} \\{([\\s\\S]*?)\\n\\}`).exec(source)?.[1] ??
+    "";
+  return [...body.matchAll(/^\s{4}([A-Z][A-Za-z]*),/gm)]
+    .map((match) => {
+      const variant = match[1] ?? "";
+      return variant[0]?.toLowerCase() + variant.slice(1);
+    })
+    .sort();
+}
 
 const manual = (id: string, name: string | null): ManualCheckpoint => ({
   ref: `refs/terax-workspace/manual-checkpoints/${id}`,
@@ -215,5 +236,31 @@ describe("restore result copy", () => {
     );
     expect(message).toContain("Nothing was changed");
     expect(message).toContain("the working tree changed after this preview");
+  });
+});
+
+describe("cross-language restore contracts", () => {
+  const source = read("src-tauri/src/modules/git/checkpoint.rs");
+
+  it("keeps the Rust refusal enum and the TS union in step", () => {
+    const union: ManualRestoreRefusal[] = [
+      "stagedAffectedPaths",
+      "stalePreview",
+      "unsupportedCheckpointKind",
+    ];
+    expect(rustEnumVariants(source, "ManualRestoreRefusal")).toEqual(
+      [...union].sort(),
+    );
+  });
+
+  it("keeps the Rust effect and failure-stage enums in step", () => {
+    const effects: RestoreEffect[] = ["written", "removed"];
+    const stages: RestoreFailureStage[] = ["writes", "indexSync"];
+    expect(rustEnumVariants(source, "RestoreEffect")).toEqual(
+      [...effects].sort(),
+    );
+    expect(rustEnumVariants(source, "RestoreFailureStage")).toEqual(
+      [...stages].sort(),
+    );
   });
 });
