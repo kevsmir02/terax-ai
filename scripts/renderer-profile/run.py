@@ -37,7 +37,9 @@ from urllib.parse import urlencode
 
 sys.dont_write_bytecode = True  # keep the repository free of __pycache__ from the sibling modules
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import lab_report  # noqa: E402
+import linux_profile  # noqa: E402
 import procstats  # noqa: E402
 
 LEGACY_PHASES = {"blank", "two-blank", "streamed", "switched", "resized", "repaint-start", "repainted", "hidden", "disposed", "done"}
@@ -295,7 +297,7 @@ if args.workload != "default":
     })
 url = f"http://127.0.0.1:{server.server_port}/?{urlencode(query)}" + ("&inspect=1" if args.inspect else "")
 with (bundle / "Contents/Info.plist").open("wb") as info:
-    plistlib.dump({"CFBundleIdentifier": "app.crynta.terax.renderer-lab", "CFBundleExecutable": "renderer-lab", "CFBundleName": "Terax Renderer Lab", "CFBundlePackageType": "APPL", "NSHighResolutionCapable": True, "TeraxLabURL": url}, info)
+    plistlib.dump({"CFBundleIdentifier": linux_profile.disposable_identifier("renderer-lab", "stable"), "CFBundleExecutable": "renderer-lab", "CFBundleName": "Terax Renderer Lab", "CFBundlePackageType": "APPL", "NSHighResolutionCapable": True, "TeraxLabURL": url}, info)
 
 # ---------------------------------------------------------------------------------------------
 # Sampling

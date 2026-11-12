@@ -6,6 +6,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use super::agent_json;
+use crate::modules::identity;
 
 /// How an agent's config describes a hook, and which shell runs it on Windows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -132,8 +133,21 @@ const AGENTS: &[AgentSpec] = &[
 ];
 
 const PI_EXTENSION_DIR: &str = ".pi/agent/extensions";
-const PI_EXTENSION_FILE: &str = "terax-notifications.ts";
-const PI_EXTENSION_FAMILY: &str = "terax-pi-notifications-v";
+
+/// The extension file this fork owns inside the (shared) Pi extensions directory.
+/// Upstream's `terax-notifications.ts` sits next to it and is never touched.
+fn pi_extension_file() -> String {
+    format!("{}-notifications.ts", identity::namespace())
+}
+
+/// Marker of this fork's extension `v*` family, so only our own stale versions are
+/// rewritten or removed.
+fn pi_extension_family() -> String {
+    format!("{}-pi-notifications-v", identity::namespace())
+}
+
+/// Version of this fork's Pi extension; bumping it makes stale files rewrite.
+const PI_VERSION: &str = "2";
 struct PiHook {
     pi_event: &'static str,
     hook: &'static str,
@@ -181,13 +195,13 @@ const PI_HOOKS: &[PiHook] = &[
     },
 ];
 
-const PI_HEAD: &str = r#"// terax-pi-notifications-v2
+const PI_HEAD: &str = r#"__HEADER__
 import { spawn } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
-  const cli = process.env.TERAX_CLI;
-  if (!cli || !process.env.TERAX_PANE_ID) return;
+  const cli = process.env.__CLI_ENV__;
+  if (!cli || !process.env.__PANE_ENV__) return;
 
   const attempt = <T>(read: () => T): T | undefined => {
     try {
@@ -239,7 +253,13 @@ export default function (pi: ExtensionAPI) {
 
 /// The Pi extension: one handler per wanted entry of `PI_HOOKS`.
 fn pi_extension() -> String {
-    let mut out = String::from(PI_HEAD);
+    let mut out = PI_HEAD
+        .replace(
+            "__HEADER__",
+            &format!("// {}{}", pi_extension_family(), PI_VERSION),
+        )
+        .replace("__CLI_ENV__", &identity::env("CLI"))
+        .replace("__PANE_ENV__", &identity::env("PANE_ID"));
     for hook in PI_HOOKS.iter().filter(|hook| hook.wanted) {
         out.push_str(&format!(
             "  pi.on(\"{}\", (e: any, ctx: any) => send(\"{}\", ctx, {}));\n",
@@ -249,10 +269,6 @@ fn pi_extension() -> String {
     out.push_str("}\n");
     out
 }
-
-/// Hook commands that older Terax versions wrote (OSC markers, a CONOUT$
-/// helper); recognised so an install migrates them.
-const LEGACY_MARKERS: [&str; 3] = ["notify;Terax;", "terax;notify", "__terax_notify"];
 
 fn find(agent: &str) -> Result<&'static AgentSpec, String> {
     AGENTS
@@ -269,20 +285,21 @@ fn shell_for(style: Style, windows: bool) -> Dialect {
     }
 }
 
-/// Runs the CLI Terax exposes through `TERAX_CLI`, and prints an empty JSON
-/// object where there is none (outside Terax, or a stale path) because some
-/// agents reject an empty stdout. No user data is interpolated.
+/// Runs the CLI this fork exposes through its own `*_CLI` variable, and prints an
+/// empty JSON object where there is none (outside this fork's terminal, or a stale
+/// path) because some agents reject an empty stdout. No user data is interpolated.
 fn hook_command(dialect: Dialect, agent: &str, event: &str) -> String {
+    let cli = identity::env("CLI");
     match dialect {
         Dialect::Posix => {
-            format!(r#"[ -n "$TERAX_CLI" ] && "$TERAX_CLI" hook {agent} {event} || printf '{{}}'"#)
+            format!(r#"[ -n "${cli}" ] && "${cli}" hook {agent} {event} || printf '{{}}'"#)
         }
         Dialect::Cmd => {
-            format!(r#"if defined TERAX_CLI ("%TERAX_CLI%" hook {agent} {event}) else (echo {{}})"#)
+            format!(r#"if defined {cli} ("%{cli}%" hook {agent} {event}) else (echo {{}})"#)
         }
-        Dialect::PowerShell => format!(
-            r#"if ($env:TERAX_CLI) {{ & $env:TERAX_CLI hook {agent} {event} }} else {{ '{{}}' }}"#
-        ),
+        Dialect::PowerShell => {
+            format!(r#"if ($env:{cli}) {{ & $env:{cli} hook {agent} {event} }} else {{ '{{}}' }}"#)
+        }
     }
 }
 
@@ -315,7 +332,7 @@ fn hook_group(spec: &AgentSpec, event: &EventSpec, windows: bool) -> Value {
             }
         }
         Style::Gemini => {
-            hook["name"] = json!("terax");
+            hook["name"] = json!(identity::namespace());
             if let Some(timeout) = event.timeout {
                 hook["timeout"] = json!(u64::from(timeout) * 1000);
             }
@@ -328,12 +345,15 @@ fn hook_group(spec: &AgentSpec, event: &EventSpec, windows: bool) -> Value {
     group
 }
 
+/// True only for commands this fork wrote. Upstream's hooks (`$TERAX_CLI`,
+/// `notify;Terax;`, `terax;notify`, `__terax_notify`) are deliberately *not* ours:
+/// they are another application's configuration, so this fork never rewrites or
+/// removes them, even when they share the same file.
 fn command_is_ours(command: &str) -> bool {
-    LEGACY_MARKERS.iter().any(|marker| command.contains(marker))
-        || (command.contains("TERAX_CLI") && command.contains(" hook "))
+    command.contains(&identity::env("CLI")) && command.contains(" hook ")
 }
 
-/// A matcher group is ours when it exists only to run Terax commands, so a
+/// A matcher group is ours when it exists only to run this fork's commands, so a
 /// group the user added their own commands to is never taken apart.
 fn group_is_ours(group: &Value) -> bool {
     let Some(hooks) = group.get("hooks").and_then(Value::as_array) else {
@@ -424,8 +444,8 @@ fn json_after(
 }
 
 fn pi_after(existing: Option<&str>, action: Action, path: &Path) -> Result<Option<String>, String> {
-    let foreign =
-        existing.is_some_and(|text| !text.trim().is_empty() && !text.contains(PI_EXTENSION_FAMILY));
+    let foreign = existing
+        .is_some_and(|text| !text.trim().is_empty() && !text.contains(&pi_extension_family()));
     match action {
         Action::Install if foreign => Err(format!(
             "{} is not managed by Terax; refusing to overwrite",
@@ -459,7 +479,7 @@ fn home_path(dir: &str, file: &str) -> Result<PathBuf, String> {
 
 fn config_path(agent: &str) -> Result<PathBuf, String> {
     if agent == "pi" {
-        return home_path(PI_EXTENSION_DIR, PI_EXTENSION_FILE);
+        return home_path(PI_EXTENSION_DIR, &pi_extension_file());
     }
     let spec = find(agent)?;
     home_path(spec.dir, spec.file)
@@ -649,7 +669,7 @@ pub fn emit_conout_marker(agent: &str, event: &str) {
     use std::io::Write;
     use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
 
-    if std::env::var_os("TERAX_TERMINAL").is_none() {
+    if std::env::var_os(identity::env("TERMINAL")).is_none() {
         return;
     }
     unsafe {
@@ -703,15 +723,15 @@ mod tests {
     fn commands_resolve_the_cli_through_the_environment_for_every_shell() {
         assert_eq!(
             hook_command(Dialect::Posix, "codex", "Stop"),
-            r#"[ -n "$TERAX_CLI" ] && "$TERAX_CLI" hook codex Stop || printf '{}'"#
+            r#"[ -n "$TERAX_WORKSPACE_FORK_CLI" ] && "$TERAX_WORKSPACE_FORK_CLI" hook codex Stop || printf '{}'"#
         );
         assert_eq!(
             hook_command(Dialect::Cmd, "gemini", "AfterAgent"),
-            r#"if defined TERAX_CLI ("%TERAX_CLI%" hook gemini AfterAgent) else (echo {})"#
+            r#"if defined TERAX_WORKSPACE_FORK_CLI ("%TERAX_WORKSPACE_FORK_CLI%" hook gemini AfterAgent) else (echo {})"#
         );
         assert_eq!(
             hook_command(Dialect::PowerShell, "claude", "Stop"),
-            r#"if ($env:TERAX_CLI) { & $env:TERAX_CLI hook claude Stop } else { '{}' }"#
+            r#"if ($env:TERAX_WORKSPACE_FORK_CLI) { & $env:TERAX_WORKSPACE_FORK_CLI hook claude Stop } else { '{}' }"#
         );
     }
 
@@ -722,7 +742,7 @@ mod tests {
                 for event in agent.events {
                     let group = hook_group(agent, event, windows);
                     let command = group["hooks"][0]["command"].as_str().unwrap();
-                    assert!(command.contains("TERAX_CLI"), "{command}");
+                    assert!(command.contains("TERAX_WORKSPACE_FORK_CLI"), "{command}");
                     assert!(
                         command.chars().all(
                             |c| c.is_ascii_alphanumeric() || " \"$%{}()[]&|'-=_:\\".contains(c)
@@ -771,7 +791,7 @@ mod tests {
         assert!(hook.get("async").is_none());
         assert!(hook.get("shell").is_none());
         assert_eq!(unix["hooks"]["SessionEnd"][0]["hooks"][0]["timeout"], 5);
-        assert!(commands(&unix, "Stop")[0].starts_with("[ -n \"$TERAX_CLI\" ]"));
+        assert!(commands(&unix, "Stop")[0].starts_with("[ -n \"$TERAX_WORKSPACE_FORK_CLI\" ]"));
 
         let windows = parsed(&install("claude", None, true));
         let hook = &windows["hooks"]["Stop"][0]["hooks"][0];
@@ -779,7 +799,7 @@ mod tests {
         assert!(hook["command"]
             .as_str()
             .unwrap()
-            .starts_with("if ($env:TERAX_CLI)"));
+            .starts_with("if ($env:TERAX_WORKSPACE_FORK_CLI)"));
     }
 
     #[test]
@@ -810,7 +830,7 @@ mod tests {
         assert!(hook["command"]
             .as_str()
             .unwrap()
-            .starts_with("if defined TERAX_CLI"));
+            .starts_with("if defined TERAX_WORKSPACE_FORK_CLI"));
     }
 
     #[test]
@@ -844,10 +864,14 @@ mod tests {
         let unix = parsed(&install("gemini", None, false));
         assert_eq!(unix["hooks"].as_object().unwrap().len(), 5);
         assert_eq!(unix["hooks"]["BeforeAgent"][0]["matcher"], "*");
-        assert_eq!(unix["hooks"]["AfterAgent"][0]["hooks"][0]["name"], "terax");
+        assert_eq!(
+            unix["hooks"]["AfterAgent"][0]["hooks"][0]["name"],
+            identity::namespace()
+        );
         assert!(commands(&unix, "AfterAgent")[0].contains("hook gemini AfterAgent"));
         let windows = parsed(&install("gemini", None, true));
-        assert!(commands(&windows, "Notification")[0].starts_with("if defined TERAX_CLI"));
+        assert!(commands(&windows, "Notification")[0]
+            .starts_with("if defined TERAX_WORKSPACE_FORK_CLI"));
     }
 
     #[test]
@@ -902,7 +926,8 @@ mod tests {
                     let ours = commands(&value, event.event)
                         .iter()
                         .filter(|command| {
-                            command.contains("TERAX_CLI") || command.contains("hook ")
+                            command.contains("TERAX_WORKSPACE_FORK_CLI")
+                                || command.contains("hook ")
                         })
                         .count();
                     assert_eq!(ours, usize::from(event.wanted), "{agent} {}", event.event);
@@ -937,6 +962,124 @@ mod tests {
         }
     }
 
+    /// Coexistence: an installed upstream Terax writes its own hook groups into the same
+    /// agent configuration files (`$TERAX_CLI`, `notify;Terax;`, `__terax_notify`). Those
+    /// groups belong to the other application: installing or removing this fork's hooks
+    /// must leave them exactly as they were.
+    #[test]
+    fn upstream_hook_groups_are_foreign_and_never_rewritten_or_removed() {
+        let upstream_group = |event: &str| {
+            format!(
+                r#"{{ "hooks": [ {{ "type": "command", "command": "[ -n \"$TERAX_CLI\" ] && \"$TERAX_CLI\" hook claude {event} || printf '{{}}'", "timeout": 30 }} ] }}"#
+            )
+        };
+        let user_group = r#"{ "hooks": [ { "type": "command", "command": "notify-send done" } ] }"#;
+        let existing = format!(
+            "{{\n  \"hooks\": {{\n    \"Stop\": [\n      {},\n      {user_group}\n    ],\n    \"Notification\": [\n      {}\n    ]\n  }}\n}}\n",
+            upstream_group("Stop"),
+            upstream_group("Notification")
+        );
+        let before: Value = parsed(&existing);
+        let upstream_before = before["hooks"]["Stop"].as_array().unwrap()[0].clone();
+
+        // The upstream command is not ours, so it is never reconciled away.
+        let upstream_command =
+            r#"[ -n "$TERAX_CLI" ] && "$TERAX_CLI" hook claude Stop || printf '{}'"#;
+        assert!(!command_is_ours(upstream_command));
+        assert!(!command_is_ours(
+            r#"[ -n "$TERAX_TERMINAL" ] && printf '\033]777;notify;Terax;claude;Stop\007' || true"#
+        ));
+        assert!(command_is_ours(&hook_command(
+            Dialect::Posix,
+            "claude",
+            "Stop"
+        )));
+
+        for agent in ["claude", "codex", "gemini"] {
+            for windows in [false, true] {
+                let installed = install(agent, Some(&existing), windows);
+                let value = parsed(&installed);
+                let upstream_now = value["hooks"]["Stop"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|group| serde_json::to_string(group).unwrap().contains("$TERAX_CLI"))
+                    .unwrap_or_else(|| panic!("{agent} windows={windows}: upstream group removed"));
+                assert_eq!(upstream_now, &upstream_before, "{agent} windows={windows}");
+
+                let removed = json_after(
+                    spec(agent),
+                    Some(&installed),
+                    Action::Uninstall,
+                    windows,
+                    &path(),
+                )
+                .unwrap()
+                .unwrap();
+                let value: Value = parsed(&removed);
+                assert!(
+                    commands(&value, "Stop")
+                        .iter()
+                        .any(|c| c.contains("$TERAX_CLI")),
+                    "{agent} windows={windows}: uninstall removed the upstream hook"
+                );
+                assert!(
+                    commands(&value, "Notification")
+                        .iter()
+                        .any(|c| c.contains("$TERAX_CLI")),
+                    "{agent} windows={windows}: uninstall removed the upstream notification hook"
+                );
+                assert!(
+                    serde_json::to_string(&value)
+                        .unwrap()
+                        .contains("notify-send done"),
+                    "{agent} windows={windows}: uninstall removed the user's own hook"
+                );
+            }
+        }
+    }
+
+    /// Coexistence on disk: our Pi extension is a *different file* next to upstream's, and a
+    /// file with foreign contents at our path is refused instead of overwritten.
+    #[test]
+    fn the_pi_extension_leaves_upstreams_file_alone_and_refuses_foreign_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let extensions = dir.path().join("extensions");
+        std::fs::create_dir_all(&extensions).unwrap();
+        let upstream_body = "// terax-pi-notifications-v2\nexport default 1;\n";
+        let upstream = extensions.join(format!(
+            "{}-notifications.ts",
+            crate::modules::identity::upstream().namespace
+        ));
+        std::fs::write(&upstream, upstream_body).unwrap();
+        let ours = extensions.join(pi_extension_file());
+        assert_ne!(ours, upstream, "our extension must not be upstream's file");
+
+        let plan = plan_at("pi", Action::Install, &ours, None, false).unwrap();
+        apply_plan(&plan).unwrap();
+        assert_eq!(std::fs::read_to_string(&upstream).unwrap(), upstream_body);
+        let installed = std::fs::read_to_string(&ours).unwrap();
+        assert!(installed.contains(&format!("// {}{}", pi_extension_family(), PI_VERSION)));
+        assert!(installed.contains(&identity::env("CLI")));
+
+        // A file that is not ours is refused, never silently replaced.
+        let foreign = plan_at(
+            "pi",
+            Action::Install,
+            &ours,
+            Some(upstream_body.into()),
+            false,
+        );
+        assert!(
+            foreign.is_err(),
+            "foreign extension content must be refused"
+        );
+
+        let uninstall = plan_at("pi", Action::Uninstall, &ours, Some(installed), false).unwrap();
+        assert_eq!(uninstall.after, None);
+        assert_eq!(std::fs::read_to_string(&upstream).unwrap(), upstream_body);
+    }
+
     #[test]
     fn installed_hook_definitions_are_byte_stable_across_versions() {
         let group = |agent: &str, event: &str, windows: bool| {
@@ -945,10 +1088,14 @@ mod tests {
             hook_group(spec, event, windows)
         };
         let posix = |agent: &str, event: &str| {
-            format!(r#"[ -n "$TERAX_CLI" ] && "$TERAX_CLI" hook {agent} {event} || printf '{{}}'"#)
+            format!(
+                r#"[ -n "$TERAX_WORKSPACE_FORK_CLI" ] && "$TERAX_WORKSPACE_FORK_CLI" hook {agent} {event} || printf '{{}}'"#
+            )
         };
         let cmd = |agent: &str, event: &str| {
-            format!(r#"if defined TERAX_CLI ("%TERAX_CLI%" hook {agent} {event}) else (echo {{}})"#)
+            format!(
+                r#"if defined TERAX_WORKSPACE_FORK_CLI ("%TERAX_WORKSPACE_FORK_CLI%" hook {agent} {event}) else (echo {{}})"#
+            )
         };
 
         assert_eq!(
@@ -990,7 +1137,7 @@ mod tests {
             group("claude", "Stop", true),
             json!({ "hooks": [{
                 "type": "command",
-                "command": r#"if ($env:TERAX_CLI) { & $env:TERAX_CLI hook claude Stop } else { '{}' }"#,
+                "command": r#"if ($env:TERAX_WORKSPACE_FORK_CLI) { & $env:TERAX_WORKSPACE_FORK_CLI hook claude Stop } else { '{}' }"#,
                 "shell": "powershell"
             }] })
         );
@@ -998,7 +1145,7 @@ mod tests {
             group("gemini", "AfterAgent", false),
             json!({
                 "matcher": "*",
-                "hooks": [{ "type": "command", "name": "terax", "command": posix("gemini", "AfterAgent") }]
+                "hooks": [{ "type": "command", "name": identity::namespace(), "command": posix("gemini", "AfterAgent") }]
             })
         );
     }
@@ -1050,12 +1197,14 @@ mod tests {
             .join("\n")
     }
 
+    /// Upstream's older hooks (OSC markers, the `__terax_notify` CONOUT$ helper) belong to
+    /// the other application. They are not "migrated": our group is added and theirs stays.
     #[test]
-    fn legacy_hooks_are_migrated_not_duplicated() {
+    fn upstream_legacy_hooks_are_left_in_place_not_migrated() {
         let legacy = json!({
             "hooks": {
                 "Notification": [
-                    { "hooks": [ { "type": "command", "command": "[ -n \"$TERAX_TERMINAL\" ] && printf '{\"terminalSequence\":\"\\u001b]777;notify;Terax;attention\\u0007\"}' || true" } ] }
+                    { "hooks": [ { "type": "command", "command": "[ -n \"$TERAX_WORKSPACE_FORK_TERMINAL\" ] && printf '{\"terminalSequence\":\"\\u001b]777;notify;Terax;attention\\u0007\"}' || true" } ] }
                 ],
                 "Stop": [
                     { "hooks": [ { "type": "command", "command": "\"C:\\\\Terax\\\\terax.exe\" __terax_notify claude finished" } ] },
@@ -1064,14 +1213,23 @@ mod tests {
             }
         });
         let out = parsed(&install("claude", Some(&legacy.to_string()), false));
-        assert_eq!(commands(&out, "Notification").len(), 1);
-        assert!(commands(&out, "Notification")[0].contains("TERAX_CLI"));
+        let notification = commands(&out, "Notification");
+        assert!(
+            notification
+                .iter()
+                .any(|command| command.contains(&identity::env("CLI"))),
+            "{notification:?}"
+        );
+        // The upstream hook is another application's configuration: left byte for byte.
+        assert_eq!(notification.len(), 2, "{notification:?}");
+        assert!(notification
+            .iter()
+            .any(|command| command.contains("notify;Terax;attention")));
         let stop = commands(&out, "Stop");
-        assert_eq!(stop.len(), 2);
         assert!(stop.contains(&"mine".to_string()));
         assert!(stop
             .iter()
-            .all(|command| !command.contains("__terax_notify")));
+            .any(|command| command.contains("__terax_notify")));
     }
 
     #[test]
@@ -1138,7 +1296,11 @@ mod tests {
         let fresh = plan_at("claude", Action::Install, &path, None, false).unwrap();
         assert!(fresh.changed);
         assert_eq!(fresh.before, None);
-        assert!(fresh.after.as_deref().unwrap().contains("TERAX_CLI"));
+        assert!(fresh
+            .after
+            .as_deref()
+            .unwrap()
+            .contains("TERAX_WORKSPACE_FORK_CLI"));
 
         let again = plan_at("claude", Action::Install, &path, fresh.after.clone(), false).unwrap();
         assert!(!again.changed);
@@ -1268,7 +1430,7 @@ mod tests {
             .is_symlink());
         assert!(std::fs::read_to_string(&managed)
             .unwrap()
-            .contains("TERAX_CLI"));
+            .contains("TERAX_WORKSPACE_FORK_CLI"));
         let mode = std::fs::metadata(&managed).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
     }
@@ -1276,10 +1438,10 @@ mod tests {
     #[test]
     fn the_pi_extension_calls_the_cli_and_stays_inert_elsewhere() {
         let extension = pi_extension();
-        assert!(extension.contains("process.env.TERAX_CLI"));
-        assert!(extension.contains("process.env.TERAX_PANE_ID"));
+        assert!(extension.contains(&format!("process.env.{}", identity::env("CLI"))));
+        assert!(extension.contains(&format!("process.env.{}", identity::env("PANE_ID"))));
         assert!(extension.contains(r#"["hook", "pi", event]"#));
-        assert!(extension.starts_with("// terax-pi-notifications-v2"));
+        assert!(extension.starts_with(&format!("// {}{}", pi_extension_family(), PI_VERSION)));
         assert!(extension.contains("windowsHide: true"));
         assert!(!extension.contains("777"));
         for event in ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"] {
@@ -1292,13 +1454,13 @@ mod tests {
     }
 
     #[test]
-    fn pi_install_replaces_only_terax_owned_files() {
-        let p = Path::new("/x/terax-notifications.ts");
+    fn pi_install_replaces_only_fork_owned_files() {
+        let p = Path::new("/x/fork-extensions/ext.ts");
         assert_eq!(
             pi_after(None, Action::Install, p).unwrap().as_deref(),
             Some(pi_extension().as_str())
         );
-        let v1 = "// terax-pi-notifications-v1\nexport default () => {}\n";
+        let v1 = "// terax-workspace-pi-notifications-v1\nexport default () => {}\n";
         assert_eq!(
             pi_after(Some(v1), Action::Install, p).unwrap().as_deref(),
             Some(pi_extension().as_str())
@@ -1327,7 +1489,7 @@ mod tests {
     #[test]
     fn pi_plan_install_and_uninstall_round_trip_on_disk() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("ext").join(PI_EXTENSION_FILE);
+        let path = dir.path().join("ext").join(pi_extension_file());
         let install = plan_at("pi", Action::Install, &path, None, false).unwrap();
         apply_plan(&install).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), pi_extension());

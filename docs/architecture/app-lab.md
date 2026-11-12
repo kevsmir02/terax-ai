@@ -52,6 +52,12 @@ the app with `--no-bundle`; no RPM/DEB/AppImage and no `terax-cli` sidecar are i
 Xvfb a window manager is required for focus/visibility and transparency will not work; a real
 session is the supported target.
 
+**Automated run.** `.github/workflows/linux-app-smoke.yml` executes this scenario on Xvfb +
+openbox in a hosted runner, after `--self-test` proves the refusals, and uploads `report.json`,
+`page.log` and the app/build logs as the `linux-app-smoke` artifact. It runs nightly, on demand,
+and on pull requests labelled `linux-smoke`; it is evidence, not a required check
+(`docs/contributing/testing.md`, "CI").
+
 **Host stack** is recorded in the report's `environment` (never asserted): `/etc/os-release`,
 `uname -r`, architecture, `XDG_SESSION_TYPE`/`XDG_CURRENT_DESKTOP`, the live Wayland/X11 display
 names, GDK scale variables, the text-scaling factor, matched monospace/sans fonts, the
@@ -60,20 +66,33 @@ from `/proc`, and the observed page `devicePixelRatio` from the last phase. Load
 recorded at start and end.
 
 **Isolation** (`scripts/linux_profile.py`, shared with `scripts/pty-smoke`): the run gets a
-per-run identifier (`app.crynta.terax.app-lab-<hex>`), its own `HOME` **and** its own
+per-run identifier (`<fork identifier>.app-lab-<hex>`, derived from
+`src/modules/identity/namespace.json`), its own `HOME` **and** its own
 `XDG_DATA_HOME`/`XDG_CONFIG_HOME`/`XDG_CACHE_HOME`/`XDG_STATE_HOME` under `<output>/home`, while
 `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`, `DISPLAY` and `DBUS_SESSION_BUS_ADDRESS` keep coming from the
 live session. `XDG_CACHE_HOME` is mandatory: the control server writes
-`$XDG_CACHE_HOME/terax/control.json` and `terax/run/<pid>/bin/terax`, which are keyed by product
-name, *not* by identifier — inheriting the real cache directory would overwrite the installed
-app's live descriptor. The preflight refuses (before the build and again before the launch) the
-product identifier, an identifier outside the `app.crynta.terax.*` namespace, a missing/relative
-or out-of-output `HOME`/`XDG_*` directory, the installed app's cache directory, and a bench launch
-without `TERAX_BENCH_ISOLATED=1`. `--self-test` exercises every case and then launches the real
-bench binary without that variable, asserting it exits nonzero with the guard's message. The
-profile is removed before and after the run; `linux_profile.cleanup` refuses paths outside the
-output directory. `python3 -m unittest discover -s scripts/tests` covers the same invariants
-(allow and deny) without a build.
+`$XDG_CACHE_HOME/terax-workspace/control.json` and `terax-workspace/run/<pid>/bin/terax`, which are
+keyed by the fork namespace, *not* by identifier — inheriting the real cache directory would
+overwrite the installed application's live descriptor. The preflight refuses (before the build and
+again before the launch) the fork product identifier, **any upstream Terax identifier**, an
+identifier outside the fork product namespace, a missing/relative or out-of-output `HOME`/`XDG_*`
+directory, the installed app's cache directory, and a bench launch without
+`TERAX_BENCH_ISOLATED=1`. `--self-test` exercises every case, proves the coexistence checker both
+passes on an untouched upstream tree and fails on a modified one, and then launches the real bench
+binary without that variable, asserting it exits nonzero with the guard's message. The profile is
+removed before and after the run; `linux_profile.cleanup` refuses paths outside the output
+directory. `python3 -m unittest discover -s scripts/tests` covers the same invariants (allow and
+deny) without a build.
+
+**Coexistence** (`scripts/namespace_sentinels.py`): before the launch the runner writes a synthetic
+*installed upstream Terax* into the same disposable profile — its app config/data/state files, its
+`control.json` and per-pid launcher under `$XDG_CACHE_HOME/terax/`, its shell-integration files, its
+`conf.d/terax.fish`, and the hook groups it owns in `~/.claude/settings.json`,
+`~/.codex/hooks.json`, `~/.gemini/settings.json` and `.pi/agent/extensions/terax-notifications.ts`.
+After the app exits, every file and every upstream directory tree is re-hashed. The manifest records
+`isolation.upstreamStateUnchanged`, the list of any changes, and the fork's own state
+(`isolation.fork`): the descriptor it published, its data directory and its shell-integration
+directory. A changed, deleted or newly created upstream file fails the run (exit 3).
 
 **The workflow** (in `src/bench/driver.ts`): a real login shell spawns in the first tab; a written
 marker is echoed back and asserted to appear exactly once; a second terminal tab opens; the first

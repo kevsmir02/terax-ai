@@ -18,6 +18,79 @@ cargo nextest run --locked        # CI uses nextest
 
 If you do not have `cargo-nextest` installed, `cargo test --locked` is the local fallback. Install nextest with `cargo install cargo-nextest`.
 
+## CI
+
+`.github/workflows/ci.yml` runs on pull requests and pushes to `main`:
+
+| Job | What it runs |
+| --- | --- |
+| `frontend` | `pnpm lint`, `pnpm check-types`, `pnpm test`, `pnpm build`, `pnpm check:dist` (sourcemapped build into `dist-graph/`: startup dependency graph **and** duplicate-version packages), `pnpm size`, plus advisory `pnpm audit`/`react-compiler-healthcheck`/`pnpm knip` |
+| `rust` | `cargo check/clippy/nextest --locked` on Linux, a locked dependency-graph check, advisory `cargo fmt --check` and `cargo machete`, fish/bash/zsh shell integration |
+| `rust-platforms` | the same check/nextest pair on Windows, macOS and `ubuntu-24.04-arm` |
+| `terminal-platforms` | Vitest terminal suite on Windows/macOS, Playwright pixel parity on macOS |
+| `coverage` | `cargo llvm-cov nextest --locked` |
+| `repo-guards` | `python3 -m unittest discover -s scripts/tests` |
+
+`repo-guards` is the contract job: `scripts/tests` holds the disposable-profile invariants of the
+real-app runners **and** `scripts/tests/test_ci_workflows.py`, which fails if a workflow stops
+pinning the Rust toolchain, reads a Node version from anywhere but `.nvmrc`, installs without
+`--frozen-lockfile`/`--locked`, adds an auto-merge or release publish step to `ci.yml`, drops the
+Windows/macOS jobs, or lets the Linux smoke job leave the disposable `app.crynta.terax.app-lab-*`
+profile. Run it locally before touching `.github/`:
+
+```bash
+python3 -m pip install -r scripts/tests/requirements.txt   # PyYAML: validates the workflow YAML
+python3 -m unittest discover -s scripts/tests -v
+```
+
+The YAML validation fails rather than skips when PyYAML is missing, and both workflows that run
+these tests install `scripts/tests/requirements.txt` first, so a green run always means the workflow
+files were actually parsed.
+
+`pnpm check:dist` is not a pass over whatever `dist/` happens to exist: it builds a production
+build with sourcemaps into the gitignored `dist-graph/` and checks both halves of the built graph -
+the startup graph forbidden chunks/packages, and packages bundled in more than one version (which
+needs the sourcemaps). It exits non-zero if the build produced no sourcemaps, so the duplicate half
+cannot silently stop running.
+
+Toolchains are pinned in `rust-toolchain.toml` (exact `1.99.1`, with `clippy` and `rustfmt`) and
+`.nvmrc` (Node major, bare file — no comments, because `setup-node` reads the whole thing) for
+local `rustc`, `nvm` and `fnm`. `actions/setup-node` reads `.nvmrc` directly, so Node cannot drift;
+Rust has no equivalent action input, so each workflow passes the channel explicitly as
+`toolchain: "1.99.1"` and the guard test fails when any of them disagrees with the file. The Node
+major is pinned rather than the patch release so CI picks up Node security updates with the runner
+image; `package.json` `engines` still promises `>=22` for local work. A toolchain bump is therefore
+one reviewed change. `pnpm` itself is pinned exactly by `packageManager` in `package.json`, and
+both lockfiles are enforced (`--frozen-lockfile`, `--locked`, and `git diff --exit-code --
+Cargo.lock` after `cargo metadata --locked`).
+
+`cargo fmt --all --check` is advisory: the tree is not rustfmt-clean, so making it blocking needs
+its own reformatting change first. `pnpm analyze:eager` is not a CI step because
+`src/app/eager-budget.test.ts` (inside `pnpm test`) already fails on an eager-graph regression.
+
+Ordinary CI never publishes or merges: no release upload, no auto-merge, read-only permissions.
+Publishing stays on `release.yml` and tag pushes.
+
+### Linux real-app smoke job
+
+`.github/workflows/linux-app-smoke.yml` runs the real WebKitGTK application through
+`scripts/app-lab/run.py --scenario workflow --profile debug` on Xvfb + openbox, after proving the
+disposable-profile refusals with `--self-test`. It is **evidence, not a required check**: it runs
+nightly (05:17 UTC), on demand (`workflow_dispatch`), and on pull requests that carry the
+`linux-smoke` label, and a PR without the label skips it before a runner is provisioned. It has a
+45-minute job timeout and a 20-minute smoke step, one attempt per run (the runner retries a lost
+launch itself, `MAX_ATTEMPTS = 3`), so it cannot become a hanging or flaky gate. Do not add it to
+branch protection until it has been observed green on a hosted runner. It runs the same
+`scripts/tests` invariants as `repo-guards` before it builds anything.
+
+On failure — and on success, for the record — it uploads `report.json`, `page.log`, `app.log`,
+`build.log` and `openbox.log` as the `linux-app-smoke` artifact. Every launch uses
+`--identifier app.crynta.terax.app-lab-ci`, a private `HOME` and private `XDG_*` tree under the
+output directory, and the app-lab preflight plus the bench binary's own guard refuse anything else,
+so the job cannot touch a production profile even on a self-hosted machine with one installed.
+Reproduce locally with `pnpm profile:app:linux` (needs a real Fedora Wayland session; see
+`docs/architecture/app-lab.md`).
+
 ## What must have a test
 
 `CONTRIBUTING.md` requires a test for any change that touches behavior in these load-bearing paths:

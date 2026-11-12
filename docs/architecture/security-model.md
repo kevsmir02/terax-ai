@@ -103,6 +103,27 @@ The terminal parses OSC sequences from the PTY byte stream:
 
 The agent detector (`src-tauri/src/modules/pty/agent_detect.rs`) is armed by `OSC 133;C;<cmd>` or by a self-armed marker and emits `terax:agent-signal` events. It is driven **only by OSC sequences**, never by raw output, so a repainting TUI never flaps.
 
+## Fork identity and namespace isolation
+
+This fork runs next to an installed upstream Terax and must not read, import, overwrite or
+delete its state. Every fork-owned name (bundle identifier, app data/config/cache/state dirs,
+control descriptor and per-pid launcher directory, shell integration, child-shell environment,
+hook ownership markers, Pi extension, git refs and task-worktree state) comes from one table:
+`src/modules/identity/namespace.json`. The full inventory, the old→new mapping and the reasons
+are in [namespace-isolation.md](namespace-isolation.md).
+
+Rules that follow from it:
+
+- Never hardcode the product identifier or the `terax` directory name; use
+  `modules::identity` (Rust) / `linux_profile` (runners) / the table (frontend checks).
+- The agent-read denylist refuses **both** this fork's cache directory and the upstream one:
+  each holds a live control token.
+- There is no silent migration. Upstream settings, data, descriptors, shell-integration files
+  and hook groups are foreign: install/uninstall/reset paths must leave them byte identical,
+  and a foreign file at one of our paths is refused rather than replaced.
+- Lab and bench runs use disposable identifiers derived from the table and refuse the fork
+  product identifier *and* any upstream identifier.
+
 ## Invariants
 
 - The deny-list in `security.ts` applies on both read and write. Never bypass it.
@@ -115,5 +136,6 @@ The agent detector (`src-tauri/src/modules/pty/agent_detect.rs`) is armed by `OS
 
 - [`TERAX.md`](../../TERAX.md) - the architecture source of truth
 - [`docs/README.md`](../README.md) - index of contributor guides
+- [Namespace isolation](namespace-isolation.md) - fork identity inventory and coexistence rules
 - [Two-process model](two-process-model.md) - IPC boundary and command catalog
 - [AI subsystem](ai-subsystem.md) - tools, approval flow, and provider handling

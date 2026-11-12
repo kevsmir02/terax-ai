@@ -6,7 +6,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Kbd } from "@/components/ui/kbd";
-import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { useShortcutHint } from "@/modules/shortcuts";
@@ -31,7 +30,6 @@ import {
   Grok02Icon,
   MistralIcon,
   Message01Icon,
-  Mic01Icon,
   PlugIcon,
   ServerStack01Icon,
   Search01Icon,
@@ -50,7 +48,6 @@ import {
   MODELS,
   providerNeedsKey,
   PROVIDERS,
-  STT_PROVIDER_LABELS,
   type ModelCapabilities,
   type ModelId,
   type ModelInfo,
@@ -126,36 +123,6 @@ export function AiStatusBarControls() {
       >
         <HugeiconsIcon icon={Add01Icon} size={13} strokeWidth={2} />
       </IconBtn>
-
-      {c.voice.supported && (
-        <IconBtn
-          title={
-            !c.voice.hasKey
-              ? `Voice needs a ${STT_PROVIDER_LABELS[c.voice.sttProvider]} key`
-              : c.voice.recording
-                ? "Stop & transcribe"
-                : c.voice.transcribing
-                  ? "Transcribing…"
-                  : "Voice input"
-          }
-          onClick={() =>
-            c.voice.recording ? c.voice.stop() : void c.voice.start()
-          }
-          disabled={c.isBusy || c.voice.transcribing || !c.voice.hasKey}
-          className={cn(
-            c.voice.recording &&
-            "bg-destructive/10 text-destructive hover:bg-destructive/15",
-          )}
-        >
-          {c.voice.recording ? (
-            <span className="size-2 terax-blink rounded-full bg-destructive" />
-          ) : c.voice.transcribing ? (
-            <Spinner className="size-3" />
-          ) : (
-            <HugeiconsIcon icon={Mic01Icon} size={13} strokeWidth={1.75} />
-          )}
-        </IconBtn>
-      )}
 
       <ModelDropdown />
 

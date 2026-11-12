@@ -29,7 +29,7 @@
     "format:check": "biome format ./src",
     "analyze:bundle": "ANALYZE=true vite build",
     "analyze:eager": "node scripts/eager-graph.mjs src/main.tsx && node scripts/eager-graph.mjs src/settings/main.tsx",
-    "check:dist": "node scripts/dist-graph.mjs",
+    "check:dist": "vite build --outDir dist-graph --sourcemap --emptyOutDir && node scripts/dist-graph.mjs dist-graph",
     "size": "size-limit",
     "knip": "knip",
     "profile:renderer:macos": "python3 scripts/renderer-profile/run.py",
