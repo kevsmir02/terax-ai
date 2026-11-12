@@ -121,6 +121,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--toggle", action="append", default=[], metavar="NAME=VALUE", help="experiment toggle: localStorage terax:bench:NAME (repeatable)")
     p.add_argument("--local-storage", action="append", default=[], metavar="KEY=VALUE", help="raw localStorage entry (VALUE 'null' removes), e.g. terax:terminal-canvas-park-ms=off")
     p.add_argument("--window", default="1280x820", help="window size in points, WxH")
+    p.add_argument("--pdf-hold-ms", type=int, default=0, help="preview: keep the representative PDF open this long after its sample, so the named reader checks (docs/architecture/pdf-reader.md) can be run against the real window")
     p.add_argument("--instrument", action="store_true", help="patch WebGPU/DOM prototypes with lifecycle counters (calls, wrappers created/finalized, canvas re-parenting); compare with an uninstrumented run")
     p.add_argument("--gc", nargs="?", const="private", choices=["private", "alloc"], help="after the idle tail, request a full garbage collection and sample +2 s/+10 s: 'private' (default) is WebKit's testing SPI, 'alloc' is allocation pressure from the page (what an in-app valve could do)")
     p.add_argument("--tick", type=float, help="idle, fs-churn: take a full sample (with the layer tree and the page event log) every this many seconds (fs-churn default 30)")
@@ -929,6 +930,8 @@ def scenario_json_linux(
             },
             "pagePt": {key: files[key].get("page") for key in ("text", "zoomed-a4", "large-page")},
         }
+        if args.pdf_hold_ms > 0:
+            scenario["pdf"]["holdMs"] = args.pdf_hold_ms
     if args.scenario in ("resource", "stress") and fixtures:
         node = shutil.which("node")
         if not node:
@@ -1002,12 +1005,14 @@ def build_startup_entry(kind: str, launch: int, event: dict, spawned_wall_s: flo
 # ---------------------------------------------------------------------------------------------
 
 LIMITATIONS_LINUX = [
-    "PDF: the fixture documents are generated and verified by "
-    "scripts/app-lab/pdf_fixtures.py, but the reader functions themselves (navigation, zoom, "
-    "search, text selection inside the page) cannot be driven from this harness: WebKitGTK hands "
-    "the PDF to its own separate document (the built-in PDF.js viewer at "
-    "webkit-pdfjs-viewer://), which the app page cannot script or even read. Those checks are "
-    "named manual checks in docs/architecture/pdf-reader.md, not automated passes.",
+    "PDF: the fixtures are generated and verified by scripts/app-lab/pdf_fixtures.py, and the "
+    "phase exercises the app's own delivery gate, the bytes the asset server served (recorded "
+    "natively), the document boundary and the tab lifecycle. The reader functions (navigation, "
+    "zoom, search, text selection inside the page) cannot be driven from this harness: WebKitGTK "
+    "hands the PDF to its own separate document (the built-in PDF.js viewer at "
+    "webkit-pdfjs-viewer://), which the app page cannot script or even read, and WebKitGTK "
+    "exposes no screenshot/input seam. Those checks are named manual checks in "
+    "docs/architecture/pdf-reader.md, not automated passes.",
     "Audio and video codecs are not exercised: the only media fixture is a 64x64 PNG decoded by "
     "the HTML preview.",
     "GPU/VRAM use is not per-process attributable on Linux: /proc exposes no per-process GPU "

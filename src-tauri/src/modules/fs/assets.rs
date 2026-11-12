@@ -503,6 +503,10 @@ enum DeliveryStage {
     Reserved,
 }
 
+/// Serves one asset request the way `serve` does, as a test entry point: a delivery error becomes
+/// the same response the handler hands to WebKit (`serve` itself keeps the error so the bench probe
+/// can record why a request was refused).
+#[cfg(test)]
 fn respond(
     grants: &AssetGrants,
     owner: &str,

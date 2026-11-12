@@ -341,7 +341,7 @@ def build(directory: Path) -> dict:
                 A4,
                 {
                     "shape": "larger than the text-read ceiling",
-                    "expected": "not previewed: the text read ceiling answers first",
+                    "expected": "delivery gate: explicit choice first, then one whole-file response",
                 },
             ),
             "corrupt": {

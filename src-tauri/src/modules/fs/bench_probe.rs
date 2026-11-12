@@ -31,6 +31,8 @@ struct Entry {
     range: Option<String>,
     content_range: Option<String>,
     accept_ranges: bool,
+    /// The client asked for the explicit above-the-ceiling load (`?override=1`).
+    explicit: bool,
     /// Why the handler refused the request, if it did.
     error: Option<String>,
 }
@@ -46,12 +48,13 @@ static LOG: Mutex<Option<Log>> = Mutex::new(None);
 
 /// Records one asset request/response pair from `assets::serve`.
 ///
-/// The error side is `(status, message)` rather than `assets::AssetError` so this probe stays a
-/// sibling of the handler instead of widening its private types.
+/// `result` is the borrowed view of the delivery outcome, and the error side is `(status,
+/// message)` rather than `assets::AssetError` so this probe stays a sibling of the handler
+/// instead of widening its private types.
 pub fn record(
     owner: &str,
     request: &Request<Vec<u8>>,
-    result: &Result<tauri::http::Response<Vec<u8>>, (u16, String)>,
+    result: &Result<&tauri::http::Response<Vec<u8>>, (u16, String)>,
 ) {
     let mut file = request
         .uri()
@@ -70,6 +73,12 @@ pub fn record(
         .get("Range")
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
+    // Only the presence of the explicit choice is recorded: the query also carries the grant
+    // token, which must never reach a report.
+    let explicit = request
+        .uri()
+        .query()
+        .is_some_and(|query| query.split('&').any(|pair| pair == "override=1"));
     let mut log = LOG.lock().unwrap();
     let log = log.get_or_insert_with(Log::default);
     log.seq += 1;
@@ -93,6 +102,7 @@ pub fn record(
                 range,
                 content_range: header("Content-Range"),
                 accept_ranges: response.headers().contains_key("Accept-Ranges"),
+                explicit,
                 error: None,
             }
         }
@@ -107,6 +117,7 @@ pub fn record(
             range,
             content_range: None,
             accept_ranges: false,
+            explicit,
             error: Some(error.clone()),
         },
     };

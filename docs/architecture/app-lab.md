@@ -148,6 +148,29 @@ The step list and the observed signals (`blurExercised`, minimize `visibility`, 
 ride the final `done` sync as `preview` next to `workflow`; the fixture server's counters
 (`fixtureLoads`, `redirectHits`, `pings`) are recorded as `previewServer`.
 
+**PDF documents** (`pdfDocuments` in `src/bench/driver.ts`, issue #30). The same preview
+scenario opens five generated documents through the app's file planner and asserts what the
+application can actually own:
+
+- the app's delivery gate: a 12 MiB document above the 10 MiB whole-file read ceiling shows the
+  explicit-choice notice, mounts no frame and sends no request until "Load anyway" is used; then
+  exactly one `200` response carries the whole file with `override=1`;
+- the transport, recorded natively by `fs::bench_probe`/`bench_asset_log` (bench-only): method,
+  content type, status, bytes, the client's `Range`, advertised `Accept-Ranges` and the live grant
+  count — the app page cannot read the document, so the request log is the honest witness;
+- the document boundary: the frame commits a cross-origin document (`contentDocument` null, its
+  location refused), which is also why no reader function can be asserted from the page;
+- the error paths (`corrupt.pdf` is served and must not destabilise the app; `not-a-pdf.pdf` opens
+  as text because classification is by content) and the lifecycle (a hidden tab, tab close and
+  grant release).
+
+Fixtures are written and re-verified by `scripts/app-lab/pdf_fixtures.py` (poppler as the
+independent check) into the run's workspace, never the repository, and the manifest travels in the
+report with its verification. `--pdf-hold-ms N` keeps `text.pdf` on screen for `N` milliseconds
+after its sample so the named manual reader checks in `docs/architecture/pdf-reader.md` can be run
+against the real window; the reader functions themselves are not automated (WebKitGTK offers no
+input or screenshot seam, and the viewer's document is cross-origin).
+
 **Focus is advisory on Linux.** Wayland lets the compositor decide focus (`set_focus` is a hint)
 and WebKitGTK exposes no occlusion state, so `qualify()` does not fail the workflow or preview
 scenario on focus: `native.appActive`/`key` are recorded per phase and summarised as a

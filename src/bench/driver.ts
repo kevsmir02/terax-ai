@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { setWindowVibrancy } from "@/modules/settings/store";
+import { ASSET_DELIVERY } from "@/modules/preview/lib/assetDelivery";
 import { PDF_PAGE_LIMIT_BYTES, pdfPageDecision } from "@/modules/preview/lib/limits";
 import { whenSessionReady, writeToSession } from "@/modules/terminal";
 import type { Tab } from "@/modules/tabs";
@@ -10,7 +11,7 @@ import {
 import { collectDiagnostics } from "./diagnostics";
 import { nativeWindow, reportError, reportPhase } from "./report";
 import { installSmoothProbe, type SmoothSummary } from "./smoothProbe";
-import type { BenchAppApi, BenchConfig, BenchScenario } from "./types";
+import type { BenchAppApi, BenchConfig, BenchScenario, PdfFixtures } from "./types";
 
 const pause = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -1932,6 +1933,8 @@ type AssetEntry = {
   range: string | null;
   contentRange: string | null;
   acceptRanges: boolean;
+  /** The request carried the explicit `override=1` choice (above the read ceiling). */
+  explicit: boolean;
   error: string | null;
 };
 
@@ -1967,24 +1970,48 @@ function redactGrant(url: string): string {
   return url.replace(/token=[0-9a-f]+/i, "token=<grant>");
 }
 
+/** One PDF document the phase opened, and where the app's own surface put it. */
+type PdfTab = {
+  key: keyof PdfFixtures["files"];
+  name: string;
+  path: string;
+  tabId: number;
+  frame: () => HTMLIFrameElement | null;
+};
+
+type OpenedPdf = PdfTab & {
+  /**
+   * Whether a `load` event was seen after the driver first saw the frame. Recorded, never asserted:
+   * a commit that happened before this listener was attached cannot be distinguished from one that
+   * never happened, so the report does not claim the event is absent.
+   */
+  loaded: Promise<boolean>;
+};
+
 /**
- * PDF documents in the real app (issue #30). The app opens a PDF through its own file planner:
- * the editor pane classifies the file as binary, takes a media grant for it and renders an iframe
- * whose src is the app's `asset:` scheme. WebKitGTK then hands the PDF to its own separate
- * document (the built-in PDF.js viewer), so what this scenario can honestly assert is the
- * *transport* and the *lifecycle* around that document:
+ * PDF documents in the real app (issue #30). The app opens a PDF through its own file planner: the
+ * editor pane classifies the file as an asset, takes a tab-scoped media grant for it and renders
+ * `AssetPreview`, whose delivery gate (`assetDeliveryDecision`) bounds the whole-file read before
+ * an iframe with the app's `asset:` URL exists. WebKitGTK then hands the PDF to a document of its
+ * own (the built-in PDF.js viewer at `webkit-pdfjs-viewer://`), so what this scenario asserts is:
  *
- * - the tab opens and the app keeps answering (no crash, no download);
- * - the app's asset server answers with `application/pdf`, the whole file or a clamped range,
- *   never more than the file (observed natively, because the app's CSP keeps scripted reads out
- *   of `asset:` and the PDF document itself is cross-origin);
- * - the frame commits a document that is not the application's own document;
- * - closing the tab drops the grant and the frame.
+ * - the app's own gate: a PDF above the approved whole-file read ceiling is not handed to the
+ *   viewer until the explicit "Load anyway" choice, and the refusal names the limit and the
+ *   external-viewer alternative (the delivery contract, on the surface that owns it);
+ * - the transport: the asset server answers `application/pdf` with ranges advertised, observes the
+ *   explicit override, and never serves more than the file in one body — recorded natively,
+ *   because the PDF document is cross-origin and the app's CSP keeps scripted reads out of
+ *   `asset:`;
+ * - the frame commits a document the app page cannot read (a separate origin), which is exactly
+ *   why no reader function can be asserted from here;
+ * - the lifecycle: the tab opens and the app keeps answering, and closing it drops the grant and
+ *   the frame;
+ * - the error paths: a corrupt PDF and a `.pdf`-named text file.
  *
- * Navigation, zoom, search and text selection happen *inside* that separate document. Nothing in
- * this harness can drive or read them (WebKitGTK has no native input injection and the viewer's
- * document is cross-origin), so they are named manual checks in docs/architecture/pdf-reader.md
- * rather than automated passes here.
+ * Navigation, zoom, search and text selection happen *inside* that separate document. WebKitGTK
+ * gives this repository no native input injection (ticket 32) and the viewer's document is
+ * cross-origin, so those checks are named, recorded manual checks in
+ * `docs/architecture/pdf-reader.md` rather than automated passes here.
  */
 async function pdfDocuments(
   run: ScenarioRun,
@@ -2001,26 +2028,38 @@ async function pdfDocuments(
     );
   }
   const app = () => run.app();
-  const log = async (): Promise<AssetLog> => {
+  const assetLog = async (): Promise<AssetLog> => {
     try {
       return await invoke<AssetLog>("bench_asset_log");
     } catch (error) {
-      return { activeGrants: -1, dropped: 0, entries: [], error: String(error) } as AssetLog;
+      return {
+        activeGrants: -1,
+        dropped: 0,
+        entries: [],
+        error: String(error),
+      } as AssetLog;
     }
   };
   const memory = async (): Promise<MemorySummary> => {
     try {
       return memorySummary(await run.native({ cmd: "memory" }));
     } catch {
-      return { totalPss: 0, appPss: 0, webContentPss: 0, hostPss: 0, processes: 0 };
+      return {
+        totalPss: 0,
+        appPss: 0,
+        webContentPss: 0,
+        hostPss: 0,
+        processes: 0,
+      };
     }
   };
-  const mib = (bytes: number) => Math.round((bytes / (1024 * 1024)) * 10) / 10;
+  const mib = (bytes: number) =>
+    Math.round((bytes / (1024 * 1024)) * 10) / 10;
   const notes: string[] = [];
 
   // The fixture geometry must map onto the approved per-page ceiling exactly as the generator
-  // claims: it parsed the number out of the TypeScript owner, so this catches a drift between
-  // the two files before any PDF behaviour is attributed to the app.
+  // claims: it parsed the number out of the TypeScript owner, so this catches drift between the
+  // two files before any PDF behaviour is attributed to the app.
   const decisions = {
     zoomed: (facts.renders["zoomed-a4"] ?? []).map(({ zoom, bytes }) => ({
       zoom,
@@ -2050,32 +2089,14 @@ async function pdfDocuments(
       `large ${decisions.large.map((d) => `${d.zoom}x=${d.kind}`).join(" ")}`,
   );
 
-  type Opened = {
-    key: string;
-    name: string;
-    path: string;
-    tabId: number;
-    frame: () => HTMLIFrameElement | null;
-    /** Resolves when the iframe element dispatches `load` (evidence, not a pass condition). */
-    loaded: Promise<boolean>;
-  };
-  const open = async (key: string): Promise<Opened> => {
-    const path = facts.files[key as keyof typeof facts.files] ?? "";
-    const name = path.split("/").pop() ?? key;
-    const frame = () =>
-      document.querySelector<HTMLIFrameElement>(`iframe[title="${name}"]`);
-    await run.log(`[preview] pdf open: requesting a tab for ${name} (${path})`);
-    const tabId = app().openFileTab(path);
-    await run.waitFor(
-      () => app().activeId === tabId && app().tabs.some((tab) => tab.id === tabId),
-      `the ${name} tab`,
-      30_000,
-    );
-    await run.log(`[preview] pdf open: tab ${tabId} for ${name} is active`);
-    await run.waitFor(() => Boolean(frame()), `the ${name} frame`, 30_000);
-    await run.log(`[preview] pdf open: the ${name} frame exists`);
-    const element = frame() as HTMLIFrameElement;
-    const loaded = new Promise<boolean>((resolve) => {
+  const nameOf = (key: keyof PdfFixtures["files"]) =>
+    facts.files[key].split("/").pop() ?? key;
+  const frameFor = (name: string) =>
+    document.querySelector<HTMLIFrameElement>(`iframe[title="${name}"]`);
+
+  /** Watches an iframe element for a `load`; a timeout is recorded, not thrown (see `OpenedPdf`). */
+  const watchLoad = (element: HTMLIFrameElement): Promise<boolean> =>
+    new Promise<boolean>((resolve) => {
       let settled = false;
       const finish = (value: boolean) => {
         if (settled) return;
@@ -2083,48 +2104,87 @@ async function pdfDocuments(
         clearTimeout(timer);
         resolve(value);
       };
-      const timer = setTimeout(() => finish(false), 20_000);
+      const timer = setTimeout(() => finish(false), 30_000);
       element.addEventListener("load", () => finish(true), { once: true });
     });
-    return { key, name, path, tabId, frame, loaded };
-  };
-  const close = async (opened: Opened) => {
-    app().closeTab(opened.tabId);
+
+  const openTab = async (
+    key: keyof PdfFixtures["files"],
+  ): Promise<PdfTab> => {
+    const path = facts.files[key];
+    const name = nameOf(key);
+    await run.log(`[preview] pdf: requesting a tab for ${name} (${path})`);
+    const tabId = app().openFileTab(path);
     await run.waitFor(
-      () => !opened.frame() && !app().tabs.some((tab) => tab.id === opened.tabId),
-      `closing ${opened.name}`,
-      20_000,
+      () =>
+        app().activeId === tabId && app().tabs.some((tab) => tab.id === tabId),
+      `the ${name} tab`,
+      30_000,
     );
+    await run.log(`[preview] pdf: tab ${tabId} for ${name} is active`);
+    return { key, name, path, tabId, frame: () => frameFor(name) };
   };
+
+  /** Waits for the app's own surface to mount the frame, then watches its load. */
+  const waitFrame = async (opened: PdfTab): Promise<OpenedPdf> => {
+    try {
+      await run.waitFor(
+        () => Boolean(opened.frame()),
+        `the ${opened.name} frame`,
+        30_000,
+      );
+    } catch (error) {
+      throw new Error(await failed(`pdf ${opened.name} frame`, String(error)));
+    }
+    await run.log(`[preview] pdf: the ${opened.name} frame exists`);
+    return { ...opened, loaded: watchLoad(opened.frame() as HTMLIFrameElement) };
+  };
+
+  const closeTab = async (opened: PdfTab) => {
+    app().closeTab(opened.tabId);
+    try {
+      await run.waitFor(
+        () =>
+          !opened.frame() && !app().tabs.some((tab) => tab.id === opened.tabId),
+        `closing ${opened.name}`,
+        20_000,
+      );
+    } catch (error) {
+      throw new Error(await failed(`pdf ${opened.name} close`, String(error)));
+    }
+  };
+
   const servedFor = (entries: AssetEntry[], name: string) =>
     entries.filter((entry) => entry.file === name);
   /** How the webview actually read the document: whole file in one body, or byte ranges. */
   const readPath = (entries: AssetEntry[], fileBytes: number) => ({
     fileBytes,
-    wholeFileResponses: entries.filter((entry) => entry.range === null).length,
-    rangeResponses: entries.filter((entry) => entry.range !== null).length,
+    wholeFileResponses: entries.filter(
+      (entry) => entry.range === null && entry.status === 200,
+    ).length,
+    rangeResponses: entries.filter((entry) => entry.status === 206).length,
+    refusals: entries.filter((entry) => (entry.status ?? 0) >= 400).length,
     bytesServed: entries.reduce((sum, entry) => sum + entry.bytes, 0),
   });
   /** Waits for the app's asset server to have answered a request for this file. */
   const waitForServed = async (name: string, timeoutMs = 30_000) => {
     const startedAt = performance.now();
     for (;;) {
-      const entries = servedFor((await log()).entries, name);
+      const entries = servedFor((await assetLog()).entries, name);
       if (entries.length > 0) return entries;
       if (performance.now() - startedAt > timeoutMs) return entries;
       await pause(200);
     }
   };
   /**
-   * The frame committed a document that is not the app's: touching it is refused. That is the
-   * only in-page signal that the PDF replaced the application document (WebKitGTK's viewer is a
-   * separate document at `webkit-pdfjs-viewer://`), and reading it is exactly what proves no
-   * DOM-level reader assertion is possible here.
+   * What the app can and cannot see about the document it just handed to WebKit.
    *
-   * Both facts are required: the asset server answered a request for the file (the webview really
-   * asked for it), and the app page cannot read the resulting document.
+   * `contentDocument === null` means the frame committed a document from another origin: the
+   * application page cannot read its DOM, its page number, its scale or its error state. Reading
+   * `contentWindow.location` is then refused as well, which is the second, independent signal.
+   * Both are recorded as evidence rather than assumed.
    */
-  const committed = async (opened: Opened): Promise<Record<string, unknown>> => {
+  const documentEvidence = async (opened: OpenedPdf) => {
     const entries = await waitForServed(opened.name);
     let separate = false;
     try {
@@ -2137,18 +2197,36 @@ async function pdfDocuments(
     } catch {
       separate = false;
     }
+    let location = "";
+    try {
+      const view = opened.frame() as
+        | (HTMLIFrameElement & { contentWindow?: { location?: { href?: string } } })
+        | null;
+      location = String(view?.contentWindow?.location?.href ?? "");
+    } catch (error) {
+      location = `refused (${String(error).slice(0, 80)})`;
+    }
+    const src = opened.frame()?.getAttribute("src") ?? "";
+    let scheme = "";
+    try {
+      scheme = new URL(src).protocol;
+    } catch {
+      scheme = "unparseable";
+    }
     return {
       committed: separate && entries.length > 0,
       separate,
+      document: location,
+      scheme,
       served: entries.length,
       load: await opened.loaded,
-      src: redactGrant(opened.frame()?.getAttribute("src") ?? ""),
+      src: redactGrant(src),
     };
   };
 
-  const start = await log();
+  const start = await assetLog();
   await run.log(
-    `[preview] pdf phase: fixtures at ${Object.keys(facts.files).length} documents, ` +
+    `[preview] pdf phase: ${Object.keys(facts.files).length} fixtures, ` +
       `grants before=${start.activeGrants}, asset log entries=${start.entries.length}`,
   );
   const baselineMemory = await memory();
@@ -2159,23 +2237,32 @@ async function pdfDocuments(
   const served: Record<string, AssetEntry[]> = {};
   const frames: Record<string, Record<string, unknown>> = {};
   const memories: Record<string, MemorySummary> = { baseline: baselineMemory };
+  const closeGrant = async (name: string) => {
+    const after = await assetLog();
+    return {
+      file: name,
+      activeGrants: after.activeGrants,
+      baselineGrants: start.activeGrants,
+    };
+  };
 
-  // 1. The representative multi-page document.
-  const text = await open("text");
-  const textCommit = await committed(text);
+  // 1. The representative multi-page document: what the app does with a PDF it can preview.
+  const textOpened = await openTab("text");
+  const text = await waitFrame(textOpened);
+  const textEvidence = await documentEvidence(text);
   const textSrc = text.frame()?.getAttribute("src") ?? "";
   await check(
     "pdf text frame uses an app asset grant",
     textSrc.includes("token=") &&
-      decodeURIComponent(textSrc).includes(facts.files.text) &&
-      textSrc.startsWith("asset:"),
-    `src ${redactGrant(textSrc).slice(0, 96)}`,
+      decodeURIComponent(textSrc).includes(facts.files.text),
+    `src ${redactGrant(textSrc).slice(0, 96)} scheme=${textEvidence.scheme}`,
   );
   await check(
     "pdf text frame commits a separate document",
-    textCommit.committed === true,
-    `committed=${String(textCommit.committed)} separate=${String(textCommit.separate)} ` +
-      `served=${String(textCommit.served)} load=${String(textCommit.load)}`,
+    textEvidence.committed === true,
+    `committed=${String(textEvidence.committed)} separate=${String(textEvidence.separate)} ` +
+      `served=${String(textEvidence.served)} load=${String(textEvidence.load)} ` +
+      `document=${textEvidence.document}`,
   );
   // Evidence, not a check: the app's CSP has no `asset:` in connect-src, so the application page
   // cannot read the document it is showing. Recorded so the report says why the checks above are
@@ -2184,11 +2271,11 @@ async function pdfDocuments(
     .then((response) => `resolved status=${response.status}`)
     .catch((error: unknown) => `refused (${String(error).slice(0, 120)})`);
   notes.push(`scripted fetch of the granted PDF from the app page: ${scriptedRead}`);
-  served.text = servedFor((await log()).entries, text.name);
+  served.text = servedFor((await assetLog()).entries, text.name);
   memories.text = await memory();
-  frames.text = textCommit;
+  frames.text = textEvidence;
   await run.sync("pdf-text", {
-    pdf: { file: text.name, ...textCommit, memory: memories.text },
+    pdf: { file: text.name, ...textEvidence, memory: memories.text },
   });
 
   const textServed = served.text;
@@ -2211,122 +2298,221 @@ async function pdfDocuments(
       )
       .join("; ") || "no request reached the app's asset server",
   );
-  // The resource-contract question the decision turns on: does the webview pull the whole
-  // document in one response, or does it ask for ranges? Recorded for both answers.
-  const wholeFile = textServed.filter((entry) => entry.range === null);
+  // The resource-contract question the decision turns on: does the webview pull the document in
+  // one whole-file response, or does it ask for bounded ranges? Recorded either way.
   notes.push(
-    `representative PDF (${facts.sizes.text} bytes): ${wholeFile.length} whole-file response(s), ` +
-      `${textServed.length - wholeFile.length} range response(s)`,
+    `representative PDF (${facts.sizes.text} bytes): ${JSON.stringify(readPath(textServed, facts.sizes.text))}`,
   );
 
-  await close(text);
-  await run.sync("pdf-text-closed", { pdf: { file: text.name } });
+  // A hold, not a delay: with `--pdf-hold-ms` the document stays on screen so the named manual
+  // reader checks can be run against this exact window. The orchestrator is waiting for the next
+  // phase, so nothing else touches the app while it is held.
+  const holdMs = facts.holdMs ?? 0;
+  if (holdMs > 0) {
+    await run.log(
+      `[preview] pdf hold: keeping ${text.name} on screen for ${Math.round(holdMs / 1000)} s`,
+    );
+    const until = performance.now() + holdMs;
+    while (performance.now() < until) await pause(1000);
+    await run.log("[preview] pdf hold: finished");
+  }
 
-  // 2. The large-dimension document: same transport, a page whose 100 % render is far above the
-  // approved ceiling. Only opening/close stability and the app's own memory are asserted; the
-  // per-page ceiling itself is a reader contract (issue #31), not something this iframe enforces.
-  const large = await open("large-page");
-  const largeCommit = await committed(large);
-  served["large-page"] = servedFor((await log()).entries, large.name);
+  // 2. A hidden PDF tab. The web preview unloads its frame the moment the tab is hidden, so the
+  // same question applies to a document: does presentation pause and does the decoded content go
+  // away? The app page cannot read the state of a cross-origin document, so this records what is
+  // observable from the outside — the frame element, the native request log and the process
+  // memory. The result is a finding for the decision, not a pass condition of the current path.
+  const beforeHidden = await assetLog();
+  const shellTab = app().newTab();
+  try {
+    await run.waitFor(
+      () => app().activeId === shellTab,
+      "a terminal tab in front of the PDF",
+      30_000,
+    );
+    await pause(3000);
+  } catch (error) {
+    throw new Error(await failed("pdf hidden tab", String(error)));
+  }
+  const whileHidden = await assetLog();
+  const hiddenMemory = await memory();
+  const tabReturnRequests = whileHidden.entries.length;
+  const hidden = {
+    frame: Boolean(text.frame()),
+    activeTab: app().activeId,
+    pdfTab: text.tabId,
+    newRequests: whileHidden.entries.length - beforeHidden.entries.length,
+    memory: hiddenMemory,
+  };
+  await run.sync("pdf-tab-hidden", {
+    pdf: { file: text.name, ...hidden, memory: hiddenMemory },
+  });
+  app().setActiveId(text.tabId);
+  await run.waitFor(
+    () => app().activeId === text.tabId,
+    "the PDF tab again",
+    30_000,
+  );
+  await pause(1500);
+  const afterReturn = await assetLog();
+  const returned = {
+    frame: Boolean(text.frame()),
+    newRequests: afterReturn.entries.length - tabReturnRequests,
+    reloaded: afterReturn.entries.length > tabReturnRequests,
+  };
+  await run.sync("pdf-tab-returned", { pdf: { file: text.name, ...returned } });
+  notes.push(
+    `hidden PDF tab: frame ${hidden.frame ? "stayed mounted" : "unmounted"}, ` +
+      `${hidden.newRequests} new asset request(s) while hidden, WebContent ` +
+      `${mib(hiddenMemory.webContentPss)} MiB; on return ` +
+      `${returned.reloaded ? "the document was reloaded" : "the same document was still loaded"}` +
+      ` (${returned.newRequests} new request(s))`,
+  );
+  app().closeTab(shellTab);
+  await run.waitFor(
+    () => !app().tabs.some((tab) => tab.id === shellTab),
+    "closing the terminal tab",
+    20_000,
+  );
+
+  await closeTab(text);
+  await run.sync("pdf-text-closed", {
+    pdf: await closeGrant(text.name),
+  });
+
+  // 2. A page whose 100 % render is far above the approved per-page ceiling, at a file size the
+  // delivery gate still lets through. The ceiling itself is a *reader* contract (issue #31): the
+  // iframe path has no way to compute or enforce it, which is recorded rather than asserted.
+  const largeOpened = await openTab("large-page");
+  const large = await waitFrame(largeOpened);
+  const largeEvidence = await documentEvidence(large);
+  served["large-page"] = servedFor((await assetLog()).entries, large.name);
   memories.large = await memory();
-  frames["large-page"] = largeCommit;
+  frames["large-page"] = largeEvidence;
   await check(
     "large-page PDF opens without destabilising the app",
-    largeCommit.committed === true &&
+    largeEvidence.committed === true &&
       app().tabs.some((tab) => tab.id === large.tabId) &&
       memories.large.totalPss > 0,
-    `committed=${String(largeCommit.committed)} totalPss=${mib(memories.large.totalPss)} MiB ` +
+    `committed=${String(largeEvidence.committed)} totalPss=${mib(memories.large.totalPss)} MiB ` +
       `(baseline ${mib(baselineMemory.totalPss)} MiB), served ${
-        served["large-page"].map((entry) => `${entry.status} ${entry.bytes}B`).join("; ") || "-"
+        served["large-page"]
+          .map((entry) => `${entry.status} ${entry.bytes}B`)
+          .join("; ") || "-"
       }`,
   );
   await run.sync("pdf-large", {
     pdf: {
       file: large.name,
-      ...largeCommit,
+      ...largeEvidence,
       memory: memories.large,
       renders: facts.renders["large-page"],
     },
   });
-  await close(large);
+  await closeTab(large);
 
-  // 3. A PDF larger than the text read ceiling. It *does* reach the viewer: the document is served
-  // by the asset scheme, so the editor's 10 MiB text read limit never applies to it. What that
-  // means for the resource contract is recorded below rather than asserted as a pass: the measured
-  // fact is that one whole-file response carried the entire document.
-  const oversizedPath = facts.files.oversized;
-  const oversizedName = oversizedPath.split("/").pop() ?? "oversized.pdf";
-  const oversizedFrame = () =>
-    document.querySelector<HTMLIFrameElement>(`iframe[title="${oversizedName}"]`);
-  const oversizedTab = app().openFileTab(oversizedPath);
+  // 3. A PDF above the approved whole-file read ceiling: the app's delivery gate answers first.
+  // Nothing reaches the viewer until the explicit choice, and the refusal has to explain itself.
+  const oversized = await openTab("oversized");
+  const gate = () =>
+    Array.from(
+      document.querySelectorAll<HTMLElement>('[role="alert"]'),
+    ).find((node) =>
+      (node.textContent ?? "").includes("Large file needs an explicit choice"),
+    ) ?? null;
   try {
     await run.waitFor(
-      () => app().activeId === oversizedTab,
-      "the oversized PDF tab",
-      30_000,
-    );
-    await run.waitFor(
-      () => Boolean(oversizedFrame()),
-      "the oversized PDF frame",
+      () => Boolean(gate()),
+      "the oversized PDF delivery notice",
       30_000,
     );
   } catch (error) {
     throw new Error(
-      await failed("pdf above the text read ceiling opens", String(error)),
+      await failed("pdf above the read ceiling needs an explicit choice", String(error)),
     );
   }
-  const oversizedCommit = await committed({
-    key: "oversized",
-    name: oversizedName,
-    path: oversizedPath,
-    tabId: oversizedTab,
-    frame: oversizedFrame,
-    loaded: Promise.resolve(false),
-  });
-  const oversizedServed = servedFor((await log()).entries, oversizedName);
-  served.oversized = oversizedServed;
-  const fileBytes = facts.sizes.oversized ?? 0;
-  const oversized = {
-    file: oversizedName,
-    bytes: fileBytes,
-    ...oversizedCommit,
-    readPath: readPath(oversizedServed, fileBytes),
-  };  await check(
-    "pdf above the text read ceiling reaches the viewer",
-    oversizedCommit.committed === true,
-    `committed=${String(oversizedCommit.committed)} file=${fileBytes} bytes, ` +
-      `served=${JSON.stringify(oversized.readPath)} (the 10 MiB text read limit does not apply: ` +
-      "the document is served by the asset scheme)",
+  const notice = gate() as HTMLElement;
+  const noticeText = notice.textContent ?? "";
+  const noticeButton = (label: string) =>
+    Array.from(notice.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => (button.textContent ?? "").trim() === label,
+    );
+  const loadAnyway = noticeButton("Load anyway");
+  // The refusal must name the limit it applied and offer a safe alternative, in the approved
+  // numbers (never a copy declared here).
+  const readCeiling = `${mib(ASSET_DELIVERY.readBytes)} MiB`;
+  const overrideCeiling = `${mib(ASSET_DELIVERY.overrideBytes)} MiB`;
+  await check(
+    "pdf above the read ceiling needs an explicit choice",
+    !oversized.frame() &&
+      noticeText.includes(readCeiling) &&
+      noticeText.includes(overrideCeiling) &&
+      Boolean(noticeButton("Open externally")) &&
+      Boolean(loadAnyway),
+    `frame=${Boolean(oversized.frame())} ceiling=${readCeiling}/${overrideCeiling} ` +
+      `notice=${JSON.stringify(noticeText.slice(0, 200))}`,
   );
   notes.push(
-    `${oversizedName} (${fileBytes} bytes, larger than the 10 MiB text read ceiling) is served to ` +
-      `the viewer in ${oversized.readPath.wholeFileResponses} whole-file response(s) and ` +
-      `${oversized.readPath.rangeResponses} range response(s): the PDF read path has no document ` +
-      "bound of its own, and the approved 32 MiB ceiling is per rendered page, which this path " +
-      "cannot compute or enforce.",
+    `${oversized.name} (${facts.sizes.oversized} bytes) is above the approved whole-file read ` +
+      "ceiling: the app shows the explicit-choice notice and mounts no frame until it is used.",
   );
-  await run.sync("pdf-oversized", { pdf: oversized });
-  app().closeTab(oversizedTab);
-  await run.waitFor(
-    () => !app().tabs.some((tab) => tab.id === oversizedTab),
-    "closing the oversized PDF tab",
-    20_000,
+  loadAnyway?.click();
+  const oversizedFrame = await waitFrame(oversized);
+  const oversizedEvidence = await documentEvidence(oversizedFrame);
+  served.oversized = servedFor((await assetLog()).entries, oversized.name);
+  const oversizedRead = readPath(served.oversized, facts.sizes.oversized ?? 0);
+  memories.oversized = await memory();
+  frames.oversized = oversizedEvidence;
+  await check(
+    "explicit load delivers the whole PDF in one response",
+    oversizedEvidence.committed === true &&
+      oversizedRead.wholeFileResponses === 1 &&
+      served.oversized.some(
+        (entry) =>
+          entry.status === 200 &&
+          entry.explicit &&
+          entry.bytes === (facts.sizes.oversized ?? 0),
+      ),
+    `committed=${String(oversizedEvidence.committed)} read=${JSON.stringify(oversizedRead)} ` +
+      `entries=${served.oversized
+        .map(
+          (entry) =>
+            `${entry.status}${entry.explicit ? "+override" : ""} ${entry.bytes}B` +
+            ` range=${entry.range ?? "-"}`,
+        )
+        .join("; ")}`,
   );
+  notes.push(
+    `${oversized.name}: ${JSON.stringify(oversizedRead)} — one whole-file response carries the ` +
+      `entire ${mib(facts.sizes.oversized ?? 0)} MiB document after the explicit choice, and the ` +
+      "per-page render ceiling is still not computable by this path.",
+  );
+  await run.sync("pdf-oversized", {
+    pdf: {
+      file: oversized.name,
+      ...oversizedEvidence,
+      readPath: oversizedRead,
+      memory: memories.oversized,
+    },
+  });
+  await closeTab(oversized);
 
   // 4. The error paths. The app classifies a file by its *content*, not its extension, so the two
   // error fixtures exercise different paths:
   //  - corrupt.pdf is binary, so it reaches the PDF viewer, which cannot parse it. The viewer's
-  //    own error text is inside the separate document and is a manual check (M5).
+  //    own error text lives inside the separate document (manual check M5); what is asserted here
+  //    is that the app itself survives and the tab stays open.
   //  - not-a-pdf.pdf is valid UTF-8 text, so it opens in the text editor: a misnamed file never
   //    reaches a PDF renderer at all.
   const errors: Record<string, Record<string, unknown>> = {};
 
-  const corrupt = await open("corrupt");
-  const corruptCommit = await committed(corrupt);
-  served.corrupt = servedFor((await log()).entries, corrupt.name);
+  const corruptOpened = await openTab("corrupt");
+  const corrupt = await waitFrame(corruptOpened);
+  const corruptEvidence = await documentEvidence(corrupt);
+  served.corrupt = servedFor((await assetLog()).entries, corrupt.name);
   errors.corrupt = {
     file: corrupt.name,
-    ...corruptCommit,
+    ...corruptEvidence,
     served: served.corrupt.map((entry) => ({
       status: entry.status,
       mime: entry.mime,
@@ -2336,45 +2522,35 @@ async function pdfDocuments(
     tabs: app().tabs.length,
   };
   await run.sync("pdf-corrupt", { pdf: errors.corrupt });
+  const corruptSnapshot = await run.native({ cmd: "snapshot" });
   await check(
     "corrupt pdf does not destabilise the app",
     app().tabs.some((tab) => tab.id === corrupt.tabId) &&
-      (await run.native({ cmd: "snapshot" })).windowVisible !== false,
-    `tabs=${app().tabs.length} committed=${String(corruptCommit.committed)} ` +
-      `served=${JSON.stringify(errors.corrupt.served)}`,
+      corruptSnapshot.windowVisible !== false,
+    `tabs=${app().tabs.length} committed=${String(corruptEvidence.committed)} ` +
+      `served=${JSON.stringify(errors.corrupt.served)} visible=${String(corruptSnapshot.windowVisible)}`,
   );
   notes.push(
     `${corrupt.name}: served=${JSON.stringify(errors.corrupt.served)}; the viewer's error state ` +
       "is inside the separate PDF document and cannot be read from the app page (manual check M5)",
   );
-  await close(corrupt);
+  await closeTab(corrupt);
 
-  const misnamedPath = facts.files["not-a-pdf"];
-  const misnamedName = misnamedPath.split("/").pop() ?? "not-a-pdf.pdf";
-  const misnamedTab = app().openFileTab(misnamedPath);
+  const misnamed = await openTab("not-a-pdf");
   const editorText = () =>
     document.querySelector<HTMLElement>(".cm-content")?.textContent ?? "";
   try {
-    await run.waitFor(
-      () => app().activeId === misnamedTab,
-      "the misnamed .pdf tab",
-      30_000,
-    );
     await run.waitFor(
       () => editorText().includes("This file is named .pdf"),
       "the misnamed file's text",
       30_000,
     );
   } catch (error) {
-    throw new Error(
-      await failed("pdf-named text opens as text", String(error)),
-    );
+    throw new Error(await failed("pdf-named text opens as text", String(error)));
   }
-  const misnamedFrame = document.querySelector<HTMLIFrameElement>(
-    `iframe[title="${misnamedName}"]`,
-  );
+  const misnamedFrame = frameFor(misnamed.name);
   errors["not-a-pdf"] = {
-    file: misnamedName,
+    file: misnamed.name,
     openedAs: "text",
     frame: Boolean(misnamedFrame),
   };
@@ -2384,16 +2560,16 @@ async function pdfDocuments(
     `frame=${Boolean(misnamedFrame)} text=${JSON.stringify(editorText().slice(0, 80))}`,
   );
   await run.sync("pdf-not-a-pdf", { pdf: errors["not-a-pdf"] });
-  app().closeTab(misnamedTab);
+  app().closeTab(misnamed.tabId);
   await run.waitFor(
-    () => !app().tabs.some((tab) => tab.id === misnamedTab),
+    () => !app().tabs.some((tab) => tab.id === misnamed.tabId),
     "closing the misnamed .pdf tab",
     20_000,
   );
 
-  // 5. Closing a PDF tab releases its grant: the spec's "release tab-owned resources and grants
-  // on close" is observable natively, through the same probe that recorded the requests.
-  const afterAll = await log();
+  // 5. Closing a PDF tab releases its grant: the spec's "release tab-owned resources and grants on
+  // close" is observable natively, through the same probe that recorded the requests.
+  const afterAll = await assetLog();
   await check(
     "pdf close releases the media grant",
     afterAll.activeGrants === start.activeGrants,
@@ -2412,6 +2588,7 @@ async function pdfDocuments(
       bytes: entry.bytes,
       range: entry.range,
       contentRange: entry.contentRange,
+      explicit: entry.explicit,
       error: entry.error,
     }));
   }
@@ -2421,9 +2598,11 @@ async function pdfDocuments(
       baseline: mib(baselineMemory.totalPss),
       text: mib(memories.text.totalPss),
       large: mib(memories.large.totalPss),
+      oversized: mib(memories.oversized.totalPss),
       webContentBaseline: mib(baselineMemory.webContentPss),
       webContentText: mib(memories.text.webContentPss),
       webContentLarge: mib(memories.large.webContentPss),
+      webContentOversized: mib(memories.oversized.webContentPss),
     },
     decisions,
     readPaths: {

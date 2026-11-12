@@ -119,6 +119,11 @@ export type BenchScenario = {
   idleSeconds?: number;
   /** preview: the PDF fixtures the scenario opens (see scripts/app-lab/pdf_fixtures.py). */
   pdf?: PdfFixtures;
+  /**
+   * preview: keep the representative PDF on screen this long after its sample, so the named
+   * reader checks (`docs/architecture/pdf-reader.md`) can be run against the real window.
+   */
+  pdfHoldMs?: number;
 };
 
 /**
@@ -146,6 +151,8 @@ export type PdfFixtures = {
   /** Render bytes per zoom factor for the fixtures where the ceiling decision matters. */
   renders: Record<string, { zoom: number; bytes: number }[]>;
   pagePt: Record<string, { widthPt: number; heightPt: number }>;
+  /** Milliseconds the representative PDF is held on screen (see `pdfHoldMs`). */
+  holdMs?: number;
 };
 
 export type BenchConfig = {

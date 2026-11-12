@@ -89,9 +89,12 @@ Images and decoded viewers are enforced by the preview surfaces: an image raster
 above 64 MiB is refused (issue #28 owns a genuine reduced-size decode), and
 `viewerAdmission.ts` admits decoded viewers against the four-viewer and 192 MiB
 ceiling, releasing hidden viewers least-recently-used first and never evicting a
-visible one. PDF opens in the bounded frame, so the file read is bounded, but
-the 32 MiB per-page render ceiling is still contract only until issue #31, and a
-hidden media element still only pauses its own pane until issue #29. Markdown
+visible one. A PDF goes through the same whole-file delivery gate (the explicit
+choice above 10 MiB, refusal above 50 MiB), which the real application was observed
+applying in issue #30; the 32 MiB per-page render ceiling is still contract only
+until issue #31, because WebKit's own PDF document never asks this module — see
+`docs/architecture/pdf-reader.md`. A hidden media element still only pauses its own
+pane until issue #29. Markdown
 inline images go through the same asset delivery bounds but are not separate
 decoded viewers until issue #27.
 
@@ -149,9 +152,10 @@ Do not add one to the other, and do not derive one from the other.
 - **Codec and format support.** Which image/media formats actually decode is
   measured in issues #28 and #29, not implied by an extension list or by these
   numbers.
-- **The PDF reader path.** Issue #30 decides whether the current iframe can
-  meet the PDF contract and issue #31 implements the reader; these limits apply
-  either way.
+- **The PDF reader path.** Issue #30 recorded the evidence and decided that the
+  current iframe cannot meet the PDF contract, so issue #31 implements a dedicated
+  on-demand reader (`docs/architecture/pdf-reader.md`); these limits apply either
+  way.
 
 ## Using the contract
 
