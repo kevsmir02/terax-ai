@@ -6,12 +6,10 @@ import {
 } from "@/modules/terminal";
 import { useEffect, useRef } from "react";
 import { displayAgent } from "../lib/format";
-import { maybeTriggerManagedReview } from "../lib/review";
 import { routeAgentNotification } from "../lib/route";
 import type { AgentSession, AgentSignal } from "../lib/types";
 import { useWindowFocus } from "../lib/useWindowFocus";
 import { useAgentStore } from "../store/agentStore";
-import { useManagedAgentsStore } from "../store/managedAgentsStore";
 
 type Activate = (tabId: number, leafId: number) => void;
 type Ctx = {
@@ -59,7 +57,8 @@ function route(
   });
 }
 
-function handleSignal(sig: AgentSignal, ctx: Ctx): void {
+/** Applies one detector signal to the notification stores and router. */
+export function handleAgentSignal(sig: AgentSignal, ctx: Ctx): void {
   const leafId = leafIdForPty(sig.id);
   if (leafId === null) return;
   const store = useAgentStore.getState();
@@ -84,12 +83,10 @@ function handleSignal(sig: AgentSignal, ctx: Ctx): void {
       store.setStatus(leafId, "waiting");
       const session = store.sessions[leafId];
       if (session) route(session, "finished", ctx);
-      maybeTriggerManagedReview(leafId);
       return;
     }
     case "exited":
       store.finish(leafId);
-      useManagedAgentsStore.getState().remove(leafId);
       return;
   }
 }
@@ -111,7 +108,7 @@ export function AgentNotificationsBridge({
   useEffect(
     () =>
       subscribeAgentSignals((signal) =>
-        handleSignal(signal as AgentSignal, ctxRef.current),
+        handleAgentSignal(signal as AgentSignal, ctxRef.current),
       ),
     [],
   );
