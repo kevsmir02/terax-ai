@@ -1697,6 +1697,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     failed: BaseException | None = None
     workflow: dict = {}
     git_scenario: dict = {}
+    checkpoint_scenario: dict = {}
     markdown: dict = {}
     images: dict = {}
     started = time.monotonic()
@@ -1739,6 +1740,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                     manifest["samples"].append({"phase": "done", "tMonoNs": time.monotonic_ns(), "event": app_report.slim_event(event)})
                     workflow = event.get("workflow") or {}
                     git_scenario = event.get("git") or {}
+                    checkpoint_scenario = event.get("checkpoints") or {}
                     markdown = event.get("markdown") or {}
                     if event.get("images") is not None:
                         images = event["images"]
@@ -1823,6 +1825,15 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                 manifest["qualification"]["failures"].append({
                     "phase": "git-guard",
                     "reasons": ["destructive Git guard scenario failed"],
+                })
+        if args.scenario == "checkpoints":
+            checkpoint_report = checkpoint_scenario
+            manifest["checkpointScenario"] = checkpoint_report
+            if not checkpoint_report or not checkpoint_report.get("pass"):
+                manifest["qualification"]["qualified"] = False
+                manifest["qualification"]["failures"].append({
+                    "phase": "checkpoints",
+                    "reasons": ["manual checkpoint scenario failed"],
                 })
         manifest["images"] = images
         # The fixture server is the independent process previews are served by; these counters
@@ -1930,6 +1941,14 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             for step in steps:
                 if not step.get("ok"):
                     print(f"  failed: {step.get('name')}: {step.get('detail')}")
+    if args.scenario == "checkpoints":
+        steps = checkpoint_scenario.get("steps") or []
+        passed = sum(1 for step in steps if step.get("ok"))
+        print(f"checkpoints {'PASS' if checkpoint_scenario.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
+        if not checkpoint_scenario.get("pass"):
+            for step in steps:
+                if not step.get("ok"):
+                    print(f"  failed: {step.get('name')}: {step.get('detail')}")
     isolation = manifest["isolation"]
     print(
         f"coexistence {'PASS' if isolation['upstreamStateUnchanged'] else 'FAIL'}: "
@@ -1955,6 +1974,12 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         return 2
     if args.scenario == "images" and not images.get("pass"):
         print("Run failed: the images scenario reported a failing step (see page.log).", file=sys.stderr)
+        return 2
+    if args.scenario == "checkpoints" and not checkpoint_scenario.get("pass"):
+        print(
+            "Run failed: the manual checkpoint scenario reported a failing step (see page.log).",
+            file=sys.stderr,
+        )
         return 2
     if not isolation["upstreamStateUnchanged"]:
         print(
