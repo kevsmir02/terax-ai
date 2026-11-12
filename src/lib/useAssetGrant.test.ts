@@ -44,7 +44,7 @@ vi.mock("react", () => ({
     }
   },
 }));
-import { useAssetGrant } from "./useAssetGrant";
+import { useAssetGrant, useAssetGrants } from "./useAssetGrant";
 
 function render(
   path: string | null = "/repo/image.png",
@@ -52,6 +52,18 @@ function render(
 ) {
   harness.cursor = 0;
   const result = useAssetGrant(path, tabId);
+  if (harness.effect) {
+    harness.cleanup?.();
+    const effect = harness.effect;
+    harness.effect = undefined;
+    harness.cleanup = effect() || undefined;
+  }
+  return result;
+}
+
+function renderMany(paths: Array<string | null>, tabId: number | null = 1) {
+  harness.cursor = 0;
+  const result = useAssetGrants(paths, tabId);
   if (harness.effect) {
     harness.cleanup?.();
     const effect = harness.effect;
@@ -197,6 +209,85 @@ it("does not install a delayed grant for a replaced view", async () => {
   });
 });
 
+it("serves a directory grant and an explicitly allowed file from one scope", async () => {
+  harness.invoke.mockImplementation((command: string, args?: unknown) =>
+    Promise.resolve(
+      command === "asset_grant"
+        ? `token-${(args as { path: string }).path}`
+        : undefined,
+    ),
+  );
+  const paths = ["/repo/docs", "/outside/pic.png"];
+  renderMany(paths, 7);
+  // One scope owns every grant this surface asked for.
+  const grants = calls("asset_grant");
+  expect(grants).toHaveLength(2);
+  const scopes = new Set(
+    grants.map(([, args]) => (args as { scope: string }).scope),
+  );
+  expect(scopes.size).toBe(1);
+
+  await vi.waitFor(() =>
+    expect(renderMany(paths, 7).urlFor("/repo/docs/diagram.png")).toContain(
+      "token=token-/repo/docs",
+    ),
+  );
+  const current = renderMany(paths, 7);
+  expect(current.urlFor("/outside/pic.png")).toContain(
+    "token=token-/outside/pic.png",
+  );
+  expect(current.urlFor("/elsewhere/not-requested.png")).toBeUndefined();
+});
+
+it("keeps the other grants usable when one file is refused", async () => {
+  harness.invoke.mockImplementation((command: string, args?: unknown) => {
+    if (command !== "asset_grant") return Promise.resolve(undefined);
+    const path = (args as { path: string }).path;
+    return path === "/outside/private.png"
+      ? Promise.reject(new Error("sensitive path refused"))
+      : Promise.resolve(`token-${path}`);
+  });
+  renderMany(["/repo/docs", "/outside/private.png", "/outside/pic.png"], 8);
+  await vi.waitFor(() =>
+    expect(
+      renderMany(["/repo/docs", "/outside/private.png", "/outside/pic.png"], 8)
+        .error,
+    ).toContain("sensitive path refused"),
+  );
+  const current = renderMany(
+    ["/repo/docs", "/outside/private.png", "/outside/pic.png"],
+    8,
+  );
+  expect(current.urlFor("/repo/docs/a.png")).toContain(
+    "token=token-/repo/docs",
+  );
+  expect(current.urlFor("/outside/pic.png")).toContain(
+    "token=token-/outside/pic.png",
+  );
+  expect(current.urlFor("/outside/private.png")).toBeUndefined();
+});
+
+it("refuses a token whose scope was closed by a tab close", async () => {
+  const { assetScopes } = await import("./assetScopes");
+  harness.invoke.mockImplementation((command: string, args?: unknown) =>
+    Promise.resolve(
+      command === "asset_grant"
+        ? `token-${(args as { path: string }).path}`
+        : undefined,
+    ),
+  );
+  renderMany(["/repo/docs"], 11);
+  await vi.waitFor(() =>
+    expect(renderMany(["/repo/docs"], 11).urlFor("/repo/docs/a.png")).toContain(
+      "token=",
+    ),
+  );
+  assetScopes.closeTab(11);
+  expect(
+    renderMany(["/repo/docs"], 11).urlFor("/repo/docs/a.png"),
+  ).toBeUndefined();
+});
+
 it("permits the Windows media origin in both CSP directives", () => {
   const config = JSON.parse(
     readFileSync(
@@ -210,4 +301,19 @@ it("permits the Windows media origin in both CSP directives", () => {
       .find((value: string) => value.trim().startsWith(`${directive} `));
     expect(policy?.split(/\s+/)).toContain("http://asset.localhost");
   }
+});
+
+it("allows a consented remote image to load, while the policy gates it", () => {
+  const config = JSON.parse(
+    readFileSync(
+      new URL("../../src-tauri/tauri.conf.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  const img = config.app.security.csp
+    .split(";")
+    .find((value: string) => value.trim().startsWith("img-src "))
+    ?.split(/\s+/);
+  // Without `https:` the explicit "load remote images" choice would be a lie.
+  expect(img).toContain("https:");
 });

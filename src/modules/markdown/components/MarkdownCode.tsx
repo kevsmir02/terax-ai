@@ -19,6 +19,13 @@ export function markdownCodeText(children?: ReactNode): string {
   return "";
 }
 
+export type MarkdownCodeProps = {
+  className?: string;
+  children?: ReactNode;
+  /** False above the approved syntax ceiling: show code without parsing it. */
+  syntax?: boolean;
+};
+
 /**
  * Handles both inline (`code`) and fenced blocks (className "language-X").
  * Fenced blocks render highlighted code with copy and run actions; inline
@@ -27,11 +34,9 @@ export function markdownCodeText(children?: ReactNode): string {
 export function MarkdownCode({
   className,
   children,
+  syntax = true,
   ...rest
-}: {
-  className?: string;
-  children?: ReactNode;
-}) {
+}: MarkdownCodeProps) {
   const match = className?.match(/language-(\w+)/);
   if (!match) {
     return (
@@ -45,5 +50,5 @@ export function MarkdownCode({
   }
 
   const code = markdownCodeText(children).replace(/\n$/, "");
-  return <CodeBlock code={code} lang={match[1] ?? null} />;
+  return <CodeBlock code={code} lang={match[1] ?? null} syntax={syntax} />;
 }

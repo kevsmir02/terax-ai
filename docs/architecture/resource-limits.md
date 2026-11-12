@@ -91,9 +91,17 @@ above 64 MiB is refused (issue #28 owns a genuine reduced-size decode), and
 ceiling, releasing hidden viewers least-recently-used first and never evicting a
 visible one. PDF opens in the bounded frame, so the file read is bounded, but
 the 32 MiB per-page render ceiling is still contract only until issue #31, and a
-hidden media element still only pauses its own pane until issue #29. Markdown
-inline images go through the same asset delivery bounds but are not separate
-decoded viewers until issue #27.
+hidden media element still only pauses its own pane until issue #29.
+
+Markdown previews (issue #27) use the same read contract: the native read
+refuses above 10 MiB with the limit it applied, the pane offers the explicit
+"Open anyway" override up to 50 MiB, and code highlighting is off above 4 MiB.
+Their inline images go through the same asset delivery bounds; they are not
+counted as separate decoded viewers because they are bounded per image by the
+asset response. A document outside the Space root is anchored to its own
+directory; assets beyond that boundary or on the network need the explicit
+choice described in `markdown-rendering.md`, so browsing cannot pull an
+unbounded remote set on its own.
 
 This is **planned implementation, not validated support** for anything that
 needs a real WebKitGTK session: no measurement claims these ceilings are

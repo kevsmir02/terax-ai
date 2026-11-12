@@ -61,11 +61,11 @@ describe("MarkdownContent", () => {
     );
 
     const sources = imageSources(html);
-    expect(sources).toHaveLength(5);
-    expect(sources[0]).toBe(`${ASSET_PREFIX}/proj/docs/diagram.png?token=t`);
     expect(
-      sources.slice(1).filter((src) => src.startsWith(ASSET_PREFIX)),
-    ).toEqual([]);
+      sources.filter((src) => src.startsWith(ASSET_PREFIX)),
+    ).toEqual([`${ASSET_PREFIX}/proj/docs/diagram.png?token=t`]);
+    expect(html).toContain("outside the project folder blocked");
+    expect(html).toContain("protected image blocked");
   });
 
   it("drops an asset URL written into the document", () => {
@@ -85,6 +85,50 @@ describe("MarkdownContent", () => {
     const html = render("```bash\npnpm test\n```");
     expect(html).toContain("pnpm test");
     expect(html).toContain('aria-label="Run in active terminal"');
+  });
+
+  it("does not fetch a remote image until the person consents", () => {
+    const blocked = render("![remote](https://tracker.example/pixel.png)");
+    expect(imageSources(blocked)).toEqual([]);
+    expect(blocked).toContain("remote image blocked");
+
+    const allowed = render(
+      "![remote](https://tracker.example/pixel.png)",
+      { allowRemote: true },
+    );
+    expect(imageSources(allowed)).toEqual([
+      "https://tracker.example/pixel.png",
+    ]);
+  });
+
+  it("loads an outside image only with an explicit grant", () => {
+    const blocked = render("![outside](../../elsewhere/pic.png)");
+    expect(imageSources(blocked)).toEqual([]);
+    expect(blocked).toContain("outside the project folder blocked");
+
+    const allowed = render("![outside](../../elsewhere/pic.png)", {
+      grantedAssets: new Set(["/elsewhere/pic.png"]),
+    });
+    expect(imageSources(allowed)).toEqual([
+      `${ASSET_PREFIX}/elsewhere/pic.png?token=t`,
+    ]);
+  });
+
+  it("keeps protected images blocked even when a grant is offered", () => {
+    const html = render("![secret](./.env.png)", {
+      grantedAssets: new Set(["/proj/docs/.env.png"]),
+    });
+    expect(imageSources(html)).toEqual([]);
+    expect(html).toContain("protected image blocked");
+  });
+
+  it("turns code highlighting off above the approved syntax ceiling", () => {
+    expect(render("```ts\nconst a = 1;\n```")).toContain(
+      'data-syntax="on"',
+    );
+    expect(
+      render("```ts\nconst a = 1;\n```", { syntax: false }),
+    ).toContain('data-syntax="off"');
   });
 
   it("reports a failed image grant instead of hiding it", () => {

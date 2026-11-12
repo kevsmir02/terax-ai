@@ -21,6 +21,8 @@ Scenarios (`--scenario`):
   input          native key events / input-method calls into a PTY reader (pass/fail in page.log)
   workflow       Linux acceptance workflow: shell spawn, exact echo, new tab, split, switch back,
                  open a temp file and assert the editor's text (pass/fail in page.log)
+  markdown       Linux Markdown preview: Space-root assets, an outside document, a symlink escape,
+                 remote consent, inert links, cwd independence and grant revocation on close
 
 Linux currently implements `workflow` only (WebKitGTK); the measured scenarios above stay
 macOS-only until ticket 02 (sampling) and ticket 32 (input/resize/layers). On Linux the app is
@@ -76,7 +78,7 @@ SYSTEM = platform.system()
 # measured scenarios (tabs, resize, split-drag, occlusion, agents-steady, idle, fs-churn, input)
 # stay unavailable here: WebKitGTK has no occlusion signal, no layer-tree mirror and no native
 # input hook (ticket 32).
-LINUX_SCENARIOS = ("workflow", "preview", "resource", "stress", "startup")
+LINUX_SCENARIOS = ("workflow", "markdown", "preview", "resource", "stress", "startup")
 SCENARIOS = list(dict.fromkeys([*app_report.SCENARIOS, *LINUX_SCENARIOS]))
 IDENTIFIER = linux_profile.disposable_identifier("app-lab", "stable")
 PRODUCT_NAME = "Terax App Lab"
@@ -382,6 +384,7 @@ class ReportServer:
         self.fixture_loads = 0
         self.redirect_hits = 0
         self.pings = 0
+        self.markdown_remote_hits = 0
         outer = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -414,8 +417,15 @@ class ReportServer:
                         "hits": outer.pings,
                         "fixtureLoads": outer.fixture_loads,
                         "redirectHits": outer.redirect_hits,
+                        "markdownRemoteHits": outer.markdown_remote_hits,
                     }).encode()
                     self._send(200, body, "application/json")
+                elif path == "/markdown-pixel.png":
+                    # A remote image the Markdown scenario must not fetch until the person
+                    # chooses to load it. Every request is counted so "no automatic fetch"
+                    # is observed, not inferred from a missing element.
+                    outer.markdown_remote_hits += 1
+                    self._send(200, PNG_1X1, "image/png")
                 elif path in ("/preview-fixture", "/preview-redirected"):
                     # Fixture loads are served for as long as this server lives: frame teardown
                     # must never stop it.
@@ -597,6 +607,8 @@ def host_timeout(args, scenario: dict) -> float:
     name = args.scenario
     if name == "workflow":
         return 600
+    if name == "markdown":
+        return 420
     if name == "startup":
         return max(1, args.startup_repeats) * 150 + 120
     if name in ("resource", "stress"):
@@ -1091,6 +1103,81 @@ def prepare_fixtures(workspace: Path, stress: bool) -> dict:
     }
 
 
+# A remote image the Markdown scenario must not fetch until the person chooses it.
+PNG_1X1 = _png_bytes(1, 1)
+
+
+def prepare_markdown_fixtures(workspace: Path, output: Path) -> dict:
+    """Documents and assets for the Markdown acceptance scenario.
+
+    The Space root is `workspace` (the app's launch directory). A document outside it gets its
+    own directory as its boundary; `escape.png` is a symlink out of the root; `remoteDoc`
+    names the orchestrator's counted pixel, which only a deliberate choice may fetch.
+    """
+    docs = workspace / "docs"
+    docs.mkdir(parents=True, exist_ok=True)
+    outside = output / "markdown-outside"
+    shared = output / "markdown-shared"
+    outside.mkdir(parents=True, exist_ok=True)
+    shared.mkdir(parents=True, exist_ok=True)
+    pixel = _png_bytes(16, 16)
+    for path in (docs / "pixel.png", outside / "pixel.png", shared / "outside.png"):
+        path.write_bytes(pixel)
+    secret = output / "markdown-secret.png"
+    secret.write_bytes(pixel)
+    escape = docs / "escape.png"
+    if escape.exists() or escape.is_symlink():
+        escape.unlink()
+    escape.symlink_to(secret)
+
+    inside = docs / "readme.md"
+    inside.write_text(
+        "# Inside the Space\n\n"
+        "The image below is anchored to the configured Space root.\n\n"
+        "![inside](./pixel.png)\n\n"
+        "![escape](./escape.png)\n"
+    )
+    outside_doc = outside / "readme.md"
+    outside_doc.write_text(
+        "# Outside the Space\n\n"
+        "This document is not under the Space root, so its own folder is the boundary.\n\n"
+        "![own](./pixel.png)\n\n"
+        "![parent](../markdown-shared/outside.png)\n"
+    )
+    remote_doc = docs / "remote.md"
+    remote_doc.write_text(
+        "# Remote reference\n\n"
+        "![remote](MARKDOWN_REMOTE_URL)\n"
+    )
+    link_doc = docs / "links.md"
+    link_doc.write_text(
+        "# Links\n\n"
+        "[relative](./elsewhere.md)\n\n"
+        "[external](https://example.com/)\n"
+    )
+    marker = "markdown-large-marker"
+    large = docs / "large.md"
+    with large.open("w") as handle:
+        handle.write(f"# Large document\n\n{marker}\n\n![large](./pixel.png)\n\n```ts\n")
+        line = "const value = 1; // the syntax ceiling keeps this plain\n"
+        written = 0
+        target = 4 * 1024 * 1024 + 65536
+        while written < target:
+            handle.write(line)
+            written += len(line)
+        handle.write("```\n")
+    return {
+        "workspace": str(workspace),
+        "insideDoc": str(inside),
+        "outsideDoc": str(outside_doc),
+        "remoteDoc": str(remote_doc),
+        "linkDoc": str(link_doc),
+        "largeDoc": str(large),
+        "largeMarker": marker,
+        "escapeImage": str(escape),
+    }
+
+
 class FixtureServer:
     """Serves the fixture directory on 127.0.0.1 and records what was actually fetched.
 
@@ -1242,9 +1329,12 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     workspace.mkdir(parents=True, exist_ok=True)
     fixture_server = None
     fixtures = None
+    markdown_fixture = None
     file = None
     first_line = ""
-    if args.scenario in ("resource", "stress"):
+    if args.scenario == "markdown":
+        markdown_fixture = prepare_markdown_fixtures(workspace, output)
+    elif args.scenario in ("resource", "stress"):
         fixtures = prepare_fixtures(workspace, args.scenario == "stress")
         fixture_server = FixtureServer(workspace)
         fixtures["previewUrl"] = fixture_server.url("preview.html")
@@ -1261,6 +1351,13 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     load_average = [round(value, 2) for value in os.getloadavg()]
 
     server = ReportServer()
+    if args.scenario == "markdown" and markdown_fixture is not None:
+        remote_url = f"{server.url}/markdown-pixel.png"
+        remote_doc = Path(markdown_fixture["remoteDoc"])
+        remote_doc.write_text(
+            remote_doc.read_text().replace("MARKDOWN_REMOTE_URL", remote_url)
+        )
+        scenario["markdown"] = {**markdown_fixture, "remoteImage": remote_url}
     env = {**{key: value for key, value in os.environ.items() if not key.startswith(("TAURI_", "VITE_", "CARGO_"))}}
     env.update(linux_profile.profile_env(home))
     env.update(linux_profile.session_env())
@@ -1327,6 +1424,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     poller.start()
     failed: BaseException | None = None
     workflow: dict = {}
+    markdown: dict = {}
     started = time.monotonic()
 
     def take_sample(phase: str, event: dict, elapsed: float) -> dict:
@@ -1366,6 +1464,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                 if phase == "done":
                     manifest["samples"].append({"phase": "done", "tMonoNs": time.monotonic_ns(), "event": app_report.slim_event(event)})
                     workflow = event.get("workflow") or {}
+                    markdown = event.get("markdown") or {}
                     if event.get("preview") is not None:
                         # Scenario-specific evidence that is not a pass/fail step: how many
                         # frame instances were loaded, whether the blur was exercised, and what
@@ -1425,12 +1524,18 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         if server.log:
             (output / "page.log").write_text("\n".join(server.log))
         manifest["workflow"] = workflow
+        manifest["markdown"] = markdown
         # The fixture server is the independent process previews are served by; these counters
         # show it kept answering across every frame teardown.
         manifest["previewServer"] = {
             "fixtureLoads": server.fixture_loads,
             "redirectHits": server.redirect_hits,
             "pings": server.pings,
+        }
+        # Remote Markdown images are counted here: zero before consent is the evidence that
+        # rendering the document fetched nothing.
+        manifest["markdownServer"] = {
+            "remoteImageHits": server.markdown_remote_hits,
         }
         # Coexistence evidence: the hashes of the upstream installation's files, taken before
         # the launch, must still match now that the application has run and exited.
@@ -1504,6 +1609,10 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         steps = workflow.get("steps") or []
         passed = sum(1 for step in steps if step.get("ok"))
         print(f"workflow {'PASS' if workflow.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
+    if args.scenario == "markdown":
+        steps = markdown.get("steps") or []
+        passed = sum(1 for step in steps if step.get("ok"))
+        print(f"markdown {'PASS' if markdown.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
     isolation = manifest["isolation"]
     print(
         f"coexistence {'PASS' if isolation['upstreamStateUnchanged'] else 'FAIL'}: "
@@ -1520,6 +1629,9 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     print(f"\nSaved {report_path}")
     if args.scenario == "workflow" and not workflow.get("pass"):
         print("Run failed: the workflow reported a failing step (see page.log).", file=sys.stderr)
+        return 2
+    if args.scenario == "markdown" and not markdown.get("pass"):
+        print("Run failed: the Markdown scenario reported a failing step (see page.log).", file=sys.stderr)
         return 2
     if not isolation["upstreamStateUnchanged"]:
         print(

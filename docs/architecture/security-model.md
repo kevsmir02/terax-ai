@@ -36,6 +36,16 @@ Three tiers exist and must stay distinct:
 2. **Root-confined structural mutation**: `fs_move`, `fs_delete_batch`, `fs_copy`, control `open`, shell cwd. Canonicalize + `WorkspaceRegistry::is_authorized` only. Control `open` of a target outside every authorized root is still refused (retained-but-strict; a deliberate `terax open` outside the roots needs an explicit grant in a later change).
 3. **Automatic preview assets**: grant token + canonical containment + secret policy + media type + range + descriptor identity, in `src-tauri/src/modules/fs/assets.rs`.
 
+An automatic consumer never widens its own boundary. A Markdown document loads
+local images only from its Space project root, or from its own directory when
+the document lies outside that root. Anything beyond that needs an explicit
+per-file grant the person chooses in the preview (`MarkdownAssetNotice`); a
+secret path is never offered and a symlink that leaves the boundary is still
+refused natively. Remote images are not fetched on render: the transform drops
+their `src` until a deliberate "Load remote images" action. Document links never
+navigate the application webview; only a clicked external target reaches the
+native opener.
+
 The fourth tier, automatic agent reads (`fs::access::authorize_read` plus the `fs::ai` reader commands), was removed with the built-in AI stack (ticket #14). Nothing now reads a file on the user's behalf: an external agent reads files in its own process, and the application reads only what the user opened or the preview policy explicitly serves.
 
 Known limitation (RS-3, ticket #5): the external formatter runs `shell_run_command` with `cwd = dirname(edited file)` and that cwd is authorized through tier 2, so formatting a file outside every authorized root is refused even though that file can be edited. Widening it needs an explicit user grant for the formatter cwd; until then do not replace the registry check with a path-only check.
