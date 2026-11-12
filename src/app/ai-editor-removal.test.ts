@@ -15,9 +15,9 @@ import {
 import type { Tab } from "@/modules/tabs";
 
 // The built-in AI feature no longer owns editor completion, AI edit review or
-// Ask AI. Ordinary editing, CodeMirror completion and Git diff review are
-// retained, so the removal has to be visible in the surfaces that route keys
-// and commands, not just in deleted files.
+// Ask AI (ticket #13). Ordinary editing, CodeMirror completion and Git diff
+// review are retained, so the removal has to be visible in the surfaces that
+// route keys and commands and in the import graph, not just in deleted files.
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../..");
@@ -98,11 +98,12 @@ function commandIds(): string[] {
   return createCommandItems(ctx).map((item) => item.id);
 }
 
-function filesUnder(dir: string): string[] {
+function filesUnder(dir: string, includeTests = false): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) return filesUnder(full);
-    return /\.(?:ts|tsx)$/.test(entry.name) ? [full] : [];
+    if (entry.isDirectory()) return filesUnder(full, includeTests);
+    if (!/\.(?:ts|tsx)$/.test(entry.name)) return [];
+    return includeTests || !/\.test\.tsx?$/.test(entry.name) ? [full] : [];
   });
 }
 
@@ -150,10 +151,8 @@ describe("removed AI editor actions", () => {
   });
 
   it("leaves no AI diff tab kind in the tab surface", () => {
-    const self = fileURLToPath(import.meta.url);
-    const leaks = filesUnder(srcRoot).filter(
-      (file) =>
-        file !== self && readFileSync(file, "utf8").includes("ai-diff"),
+    const leaks = filesUnder(srcRoot).filter((file) =>
+      readFileSync(file, "utf8").includes("ai-diff"),
     );
     expect(leaks.map((file) => path.relative(repoRoot, file))).toEqual([]);
   });
