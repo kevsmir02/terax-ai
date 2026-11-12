@@ -319,5 +319,63 @@ class ShippedWorkflowTest(unittest.TestCase):
         self.assertIn("TERAX_VISUAL_RENDERERS", self.ci)
 
 
+class GhosttyDriftMonitorTest(unittest.TestCase):
+    """The pinned source revision is monitored where no dependency bot can follow it (issue #35).
+
+    The monitor is part of this procedure, not a second mechanism: it reads the same recorded
+    revision, and it reports drift for the monthly review. It never adopts a revision, never
+    rebuilds, and never assumes Zig tooling can be a dependency bot.
+    """
+
+    def setUp(self) -> None:
+        self.update = load_module()
+
+    def test_the_monitor_reports_how_far_the_pin_is_behind_upstream(self) -> None:
+        result = self.update.drift_gate(
+            "a" * 40,
+            {"status": "ahead", "ahead_by": 12, "behind_by": 0, "total_commits": 12},
+        )
+        self.assertEqual(result.status, "pass")
+        self.assertIn("12", result.detail)
+        self.assertIn("ghostty-org/ghostty", result.detail)
+        self.assertEqual(result.evidence["aheadBy"], 12)
+
+    def test_a_pin_that_is_the_upstream_head_reports_no_drift(self) -> None:
+        result = self.update.drift_gate("a" * 40, {"status": "identical", "ahead_by": 0, "behind_by": 0})
+        self.assertEqual(result.status, "pass")
+        self.assertIn("current", result.detail)
+
+    def test_a_pin_that_is_not_on_the_upstream_branch_fails(self) -> None:
+        # A revision the upstream project does not have cannot be an official Ghostty commit.
+        result = self.update.drift_gate(
+            "a" * 40, {"status": "diverged", "ahead_by": 3, "behind_by": 4}
+        )
+        self.assertEqual(result.status, "fail")
+        self.assertIn("not on", result.detail)
+
+    def test_no_network_is_unverified_never_current(self) -> None:
+        result = self.update.drift_gate("a" * 40, None, error="gh is not installed")
+        self.assertEqual(result.status, "unverified")
+        self.assertIn("gh is not installed", result.detail)
+        self.assertIn("compare", result.detail)
+
+    def test_the_monitor_reuses_the_recorded_pin_and_the_shipped_artifacts(self) -> None:
+        upstream = self.update.parse_upstream(self.update.UPSTREAM.read_text())
+        results = self.update.monitor_results(
+            upstream,
+            {"status": "ahead", "ahead_by": 1, "behind_by": 0},
+            artifacts=self.update.artifact_evidence(self.update.CORE),
+        )
+        names = [result.name for result in results]
+        self.assertEqual(names, list(self.update.MONITOR_ORDER))
+        for result in results:
+            self.assertNotIn(result.name, ("rebuild", "compatibility", "soak", "bench", "resource"))
+
+    def test_the_monitor_is_documented_as_the_ghostty_pin_monitor(self) -> None:
+        doc = (REPO / "docs/architecture/dependency-updates.md").read_text()
+        self.assertIn("scripts/ghostty-update/run.py --monitor", doc)
+        self.assertIn("ghostty-org/ghostty", doc)
+
+
 if __name__ == "__main__":
     unittest.main()

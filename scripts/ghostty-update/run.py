@@ -72,6 +72,12 @@ ARTIFACTS = {"simd": "ghostty-vt.wasm", "scalar": "ghostty-vt-scalar.wasm"}
 RECORDED_SOAK_BASELINE = REPO / "docs/architecture/terminal-linux-soak-2026-11-12.json"
 
 GATE_ORDER = ("identity", "artifacts", "rebuild", "compatibility", "soak", "bench", "resource")
+# `--monitor` runs the provenance checks plus a drift comparison with the upstream Ghostty project.
+# It is deliberately not part of GATE_ORDER: an accepted revision update must not depend on a
+# network answer that the update itself does not provide.
+MONITOR_ORDER = ("identity", "artifacts", "upstream-drift")
+GHOSTTY_REPO = "ghostty-org/ghostty"
+GHOSTTY_BRANCH = "main"
 
 # Absolute soak bounds, identical to the assertions `scripts/ghostty-soak.ts` makes, so the
 # procedure and the suite can never drift apart.
@@ -216,6 +222,89 @@ def artifact_gate(upstream: dict, evidence: dict) -> GateResult:
         "both artifacts match their recorded size and SHA-256",
         {"artifacts": evidence},
     )
+
+
+# --------------------------------------------------------------------------- upstream drift
+
+
+def drift_gate(pin: str, comparison: dict | None, error: str | None = None) -> GateResult:
+    """How far the pinned Ghostty revision is behind `ghostty-org/ghostty`'s head.
+
+    Drift is information for the monthly review, so an upstream that moved on is `pass`; a pin the
+    upstream project does not contain is `fail` (it cannot be an official Ghostty revision), and an
+    unreachable upstream is `unverified` - never "current" by default.
+    """
+    subject = f"{GHOSTTY_REPO}/compare/{pin[:7]}...{GHOSTTY_BRANCH}"
+    if comparison is None:
+        return GateResult(
+            "upstream-drift",
+            "unverified",
+            f"no drift answer for {subject}"
+            + (f": {error}" if error else "")
+            + f" - run `gh api repos/{GHOSTTY_REPO}/compare/{pin}...{GHOSTTY_BRANCH}` to check",
+            {"pin": pin, "repo": GHOSTTY_REPO, "error": error},
+        )
+    behind = int(comparison.get("behind_by") or 0)
+    ahead = int(comparison.get("ahead_by") or 0)
+    status = str(comparison.get("status") or "")
+    evidence = {"pin": pin, "repo": GHOSTTY_REPO, "aheadBy": ahead, "behindBy": behind, "status": status}
+    if behind > 0:
+        return GateResult(
+            "upstream-drift",
+            "fail",
+            f"the pin {pin[:7]} is not on {GHOSTTY_REPO} {GHOSTTY_BRANCH} ({behind} commits on the "
+            f"upstream side are not its ancestors): the recorded revision is not an official "
+            f"Ghostty commit",
+            evidence,
+        )
+    if ahead == 0:
+        return GateResult(
+            "upstream-drift",
+            "pass",
+            f"the pin {pin[:7]} is the current {GHOSTTY_REPO} {GHOSTTY_BRANCH} head",
+            evidence,
+        )
+    return GateResult(
+        "upstream-drift",
+        "pass",
+        f"{ahead} commits on {GHOSTTY_REPO} {GHOSTTY_BRANCH} since the pinned {pin[:7]}: review them "
+        f"in the monthly upstream review, then adopt with a rebuild or defer with a reason",
+        evidence,
+    )
+
+
+def upstream_comparison(pin: str, runner=None) -> tuple[dict | None, str | None]:
+    """`gh api` compare of the pin against the upstream branch; `(None, reason)` when unavailable."""
+    runner = runner or (lambda command: run(command, timeout=120))
+    if shutil.which("gh") is None:
+        return None, "gh is not installed"
+    code, log = runner(
+        ["gh", "api", f"repos/{GHOSTTY_REPO}/compare/{pin}...{GHOSTTY_BRANCH}"]
+    )
+    if code != 0:
+        tail = " / ".join(line.strip() for line in str(log).strip().splitlines()[-2:])
+        return None, tail or f"gh api exited {code}"
+    try:
+        return json.loads(log), None
+    except json.JSONDecodeError as error:
+        return None, f"gh api did not return JSON: {error}"
+
+
+def monitor_results(
+    upstream: dict,
+    comparison: dict | None,
+    *,
+    artifacts: dict | None = None,
+    error: str | None = None,
+) -> list[GateResult]:
+    """Provenance plus upstream drift: what the monthly review needs, and nothing that rebuilds."""
+    evidence = artifacts if artifacts is not None else artifact_evidence(CORE)
+    return [
+        GateResult("identity", "pass", f"Ghostty {upstream['commit']}, Zig {upstream['zig']}",
+                   {"commit": upstream["commit"], "zig": upstream["zig"]}),
+        artifact_gate(upstream, evidence),
+        drift_gate(upstream["commit"], comparison, error=error),
+    ]
 
 
 # --------------------------------------------------------------------------- measured gates
@@ -434,6 +523,10 @@ def render_plan(steps: list[dict]) -> str:
     lines.append("")
     lines.append("Every gate is pass, fail or unverified. An unverified gate blocks acceptance unless")
     lines.append("it is accepted by name with --accept-unverified, and the report records that it was.")
+    lines.append("")
+    lines.append("Monitoring only (the monthly review, never an adoption):")
+    lines.append("    python3 scripts/ghostty-update/run.py --monitor")
+    lines.append("    provenance, shipped artifacts, and how far the pin is behind ghostty-org/ghostty.")
     return "\n".join(lines)
 
 
@@ -593,6 +686,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip", action="append", default=[], help="gate to skip (recorded unverified)")
     parser.add_argument("--plan", action="store_true", help="print the checklist and exit")
     parser.add_argument("--check", action="store_true", help="verify provenance and artifacts only")
+    parser.add_argument(
+        "--monitor",
+        action="store_true",
+        help="verify provenance and artifacts, and report how far the pin is behind ghostty-org/ghostty",
+    )
     parser.add_argument("--compat-target", help="narrow the compatibility suite (default: src/modules/terminal)")
     return parser.parse_args()
 
@@ -611,6 +709,28 @@ def main() -> int:
 
     upstream = parse_upstream(UPSTREAM.read_text())
     pin = parse_zig_pin(ZIG_ZON.read_text())
+    if args.monitor:
+        # The monthly review's Ghostty step: provenance, artifacts, and upstream drift. No rebuild,
+        # no soak, no benchmark: adopting a revision is a separate, deliberate update run.
+        comparison, error = upstream_comparison(upstream["commit"])
+        results = monitor_results(upstream, comparison, error=error)
+        for result in results:
+            print(f"{result.status:10} {result.name:14} {result.detail}")
+        report = {
+            "scope": "pinned Ghostty source revision monitoring: recorded provenance, shipped "
+                     "artifacts and drift against ghostty-org/ghostty. Adopting a revision is the "
+                     "separate update procedure (`--rebuild`).",
+            "recordedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "revision": upstream["commit"],
+            "zig": upstream["zig"],
+            "gates": [dataclasses.asdict(result) for result in results],
+            "acceptedUnverified": list(accepted),
+            "accepted": acceptance(results, accepted) == 0,
+        }
+        (output / "ghostty-monitor.json").write_text(json.dumps(report, indent=2) + "\n")
+        print(f"\nreport: {output / 'ghostty-monitor.json'}")
+        return 0 if report["accepted"] else 1
+
     results.append(identity_gate(upstream, pin, args.revision))
     results.append(artifact_gate(upstream, artifact_evidence(CORE)))
     if args.check:

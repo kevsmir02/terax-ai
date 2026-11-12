@@ -27,6 +27,7 @@ instead of disappearing. Ticket #34 narrows platforms; it does not narrow this l
 | Sustained-output soak | five models stream 64 epochs of adversarial fixtures, reflow and presentation recycling; no plateau growth; both artifacts and both render formats; stack canary stays under half the shadow stack | `TERAX_SOAK_REPORT=<file> pnpm soak:ghostty` | `terminal-linux` |
 | Adapted-core benchmark | write/update/synchronize cost of both artifacts and both render formats; the comparison source for a Ghostty update | `pnpm bench:ghostty` | `terminal-linux` (artifacts uploaded) |
 | Ghostty revision update | revision provenance, artifact identity, a byte-identical rebuild, compatibility, soak and resource comparison against recorded evidence | `pnpm ghostty:update --plan`, then `pnpm ghostty:update` | local / release procedure |
+| Ghostty revision monitor | the recorded revision and shipped artifacts still agree, and how far the pin is behind `ghostty-org/ghostty` main (no rebuild, no Zig required) | `pnpm ghostty:monitor` | local / monthly upstream review (`docs/architecture/dependency-updates.md`) |
 | Real-app sustained output | the real Linux application with four terminal panes, two Spaces and sustained streaming, sampled from `/proc` | `python3 scripts/app-lab/run.py --scenario resource --profile release` | manual, `linux-app-smoke.yml` (workflow scenario only) |
 
 ## Evidence recorded 2026-11-12 (Linux, this checkout)
