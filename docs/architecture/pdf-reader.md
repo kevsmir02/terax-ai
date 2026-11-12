@@ -185,7 +185,7 @@ python3 scripts/app-lab/run.py --scenario preview --profile debug \
 python3 -m unittest discover -s scripts/tests          # fixtures and their contract
 ```
 
-Observed on 2026-11-12 on branch `ticket/30-pdf` (commit `9cc99a3`): `preview PASS: 29/29 steps`
+Observed on 2026-11-12 on branch `ticket/30-pdf` (the report records the revision it ran): `preview PASS: 29/29 steps`
 on two consecutive runs (one of them with `--pdf-hold-ms`, which held `text.pdf` on screen for four
 minutes), `coexistence PASS: 17 upstream files unchanged`, `pdf fixtures: 6 documents … (6 pages,
 ceiling 32 MiB/page)`. The report is written outside the repository
