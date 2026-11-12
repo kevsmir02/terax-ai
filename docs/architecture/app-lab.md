@@ -51,6 +51,11 @@ python3 scripts/app-lab/run.py --scenario preview --profile debug \
 python3 scripts/app-lab/run.py --scenario spaces --profile debug \
     --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-spaces
 
+# the quit seam (survey across Spaces, repeated close, save-then-quit, graceful
+# termination, survivor prompt, forced exit, reload without command replay)
+python3 scripts/app-lab/run.py --scenario quit --profile debug \
+    --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-quit
+
 # the image seam (real decode per format, oversized/corrupt refusal, hidden-tab and
 # close-cycle release of decoded viewers and grants)
 python3 scripts/app-lab/run.py --scenario images --profile debug \
@@ -138,7 +143,24 @@ process is asked about and canceled first (Space, tabs and dirty text still ther
 deleted; the report records that the project directory and its `spaces-keep.txt` still exist under
 `spaceDeletion`. The runner exits 2 when any step failed. The scenario does not relaunch the app:
 restart restoration (layout, cwd and file locations cold, no command replay) is verified at the
-planning seam in `src/modules/spaces/lib/restore.test.ts`.
+planning seam in `src/modules/spaces/lib/restore.test.ts`, and — for quit — by the reload pass of
+`--scenario quit` (below).
+
+**Quit** (`--scenario quit`, ticket #18): the real application quits. Two Spaces hold a dirty
+buffer (edited through CodeMirror) and a busy terminal — one job honours `SIGTERM`, one runs
+`sh -c 'trap "" TERM; exec sleep 300'`. Asking to quit opens the survey, which must name both
+Spaces, both buffers and both processes and must state that detached services keep running. A
+second close request while the dialog is open is asserted **not** to quit. Cancel keeps the window
+and both processes. Save All & Quit writes both buffers (read back from disk) and asks again with
+only the processes left. Confirming runs the bounded recovery flush, then the native graceful pass:
+the cooperating job is gone, the survivor's terminal still runs, and the survivor prompt has
+appeared. Cancelling there keeps the window open; a second round forces only after that prompt.
+Before the window would close the scenario appends one line to a replay-marker file and reloads the
+page (the boot path reaps every PTY, exactly as a relaunch would); the second pass asserts the
+Spaces and editor tabs came back, the marker still has one line — no command was replayed — and a
+quiet restored application closes without a question. The runner exits 2 when any step failed.
+A full process relaunch needs two profiles; the reload exercises the same restore path, and the
+difference is stated rather than papered over.
 
 
 **The preview** (`previewScenario`): a preview tab opens through the app's own planner

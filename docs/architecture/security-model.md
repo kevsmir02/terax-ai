@@ -162,10 +162,15 @@ two-Space independence, Save As retarget), `RecoveryStatusBar.test.tsx` /
 `src-tauri/src/modules/recovery.rs` unit tests (atomicity, private modes,
 quota refusal, revision-aware delete, corrupt-record handling) and
 `src-tauri/tests/recovery_store.rs` (restart, two-Space records through the
-native seam, refusal leaves the older record). Not exercised: a real forced kill
-of the packaged application, a packaged two-Space UI race, and the quit-time
-bounded flush UI (the manager exposes `flushAll`; the close/quit flow is ticket
-#34).
+native seam, refusal leaves the older record), and now
+`src/modules/shutdown/lib/flush.test.ts` together with
+`docs/architecture/quit-shutdown.md` (the quit-time bounded flush: a failed,
+slow or quota-paused write is reported to the quit prompt as *not saved*, text
+typed during the write stays pending, and only the durable revision counts).
+Not exercised: a real forced kill of the packaged application, a packaged
+two-Space UI race, and a real disk stall during quit (the bound is proven in
+virtual time against the manager, and the app-lab drives the survey, cancel,
+save-then-quit and the survivor prompt end to end).
 
 
 Limitation, deliberately not claimed otherwise: this coordinates **app-owned**
