@@ -28,11 +28,11 @@
  * when to offer the override; `limits.test.ts` and `assetDelivery.test.ts` read
  * the Rust source and fail if the two drift apart.
  *
- * Text ceilings, asset delivery bounds, the single-image decode ceiling and
- * decoded-viewer admission are enforced today. The PDF per-page ceiling and the
- * media playback ceiling remain the approved contract that issues #29 and
- * #30/#31 turn into enforced viewer behaviour; do not treat them as measured
- * support.
+ * Text ceilings, asset delivery bounds, the single-image decode ceiling, the
+ * PDF per-page render ceiling and decoded-viewer admission are enforced today
+ * (the PDF reader is issue #31). The media playback ceiling remains the approved
+ * contract issue #29 turns into enforced playback behaviour; do not treat it as
+ * measured support.
  */
 
 export const MIB = 1024 * 1024;

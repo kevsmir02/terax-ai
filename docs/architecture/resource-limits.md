@@ -37,7 +37,7 @@ normal use.
 | Syntax features | **4 MiB** | above this the file still opens, without highlighting/parsing |
 | Image decode | **64 MiB** decoded (RGBA8, ≈ 4096 × 4096) | maximum single-image raster |
 | PDF page render | **32 MiB** per page | A4 up to roughly 300 DPI |
-| Concurrent decoded viewers | **4** | documents, images and PDF pages together |
+| Concurrent decoded viewers | **4** | documents, images and PDF pages (rendered rasters) together |
 | Decoded-asset budget | **192 MiB** application-wide | sum over all admitted viewers |
 | Playing media | **1 per tab, 3 application-wide** | audio/video elements actually playing |
 
@@ -56,7 +56,9 @@ test fails when the copies diverge.
 | Asset delivery (read/override, chunk, outstanding reads) | `src-tauri/src/modules/fs/assets.rs` (`DeliveryLimits`) | derived from the two read ceilings; no separate asset ceiling exists |
 | 64 MiB image decode | `src/modules/preview/lib/imageViewer.ts` via `imageBudgetDecision`, fed by `src-tauri/src/modules/fs/image_probe.rs` (`fs_image_probe`) | dimensions come from the container header before the `<img>` mounts; a larger raster is never allocated |
 | 4 viewers / 192 MiB decoded | `src/modules/preview/lib/viewerAdmission.ts` via `decideViewerAdmission` | hidden viewers are evictable, a visible viewer never is |
-| PDF page and media playback | `src/modules/preview/lib/limits.ts` | still contract only; issues #30/#31 and #29 implement the readers |
+| 32 MiB PDF page render | `src/modules/preview/lib/pdfPage.ts` (arithmetic) + `pdfPageDecision` in `limits.ts` (threshold), applied by the reader before a canvas exists | refusal names the ceiling and the largest zoom that fits; issue #31 |
+| PDF page rasters vs. the decoded budget | `src/modules/preview/lib/pdfCache.ts` (cache capacity = the page ceiling) registered through `viewerAdmission.ts` | at most 4 × 32 MiB = 128 MiB across four PDF viewers, inside the 192 MiB budget |
+| Media playback | `src/modules/preview/lib/limits.ts` | still contract only; issue #29 implements the media surface |
 
 ### Enforcement today
 

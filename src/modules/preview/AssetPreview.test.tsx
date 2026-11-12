@@ -40,13 +40,14 @@ describe("AssetPreview delivery gate", () => {
     expect(html).not.toContain("<img");
   });
 
-  it("refuses a file above the override ceiling with an external viewer", () => {
+  it("leaves the PDF delivery decision to the reader that owns it", () => {
+    // The PDF surface owns the whole contract, including the above-override
+    // refusal, so the gate's state is inside the reader rather than a second,
+    // duplicate notice here (`PdfReaderView` asserts the refused state).
     const html = render({ bytes: TEXT_OVERRIDE_LIMIT_BYTES + 1, kind: "pdf" });
-    expect(html).toContain("File too large to preview");
-    expect(html).toContain("50 MiB");
-    expect(html).toContain("Open externally");
+    expect(html).toContain('data-pdf-state="loading-reader"');
     expect(html).not.toContain("<iframe");
-    expect(html).not.toContain("Load anyway");
+    expect(html).not.toContain("<img");
   });
 
   it("streams media of any size instead of refusing it", () => {
@@ -61,15 +62,34 @@ describe("AssetPreview delivery gate", () => {
     expect(html).not.toContain("too large");
   });
 
-  it("opens a small PDF in the bounded frame", () => {
+  it("hands a small PDF to the app-owned reader instead of a frame", () => {
+    // Issue #30 rejected the retained iframe on evidence: the frame's document
+    // was cross-origin, so page count, zoom, search, selection and errors were
+    // unobservable. The reader is now the app's own DOM and loads as a chunk.
     const html = render({
       path: "/repo/doc.pdf",
       kind: "pdf",
       bytes: 2048,
+      token: "t",
       url: "asset://localhost/repo/doc.pdf?token=t",
     });
-    expect(html).toContain("<iframe");
-    expect(html).toContain("token=t");
+    expect(html).not.toContain("<iframe");
+    expect(html).toContain('data-pdf-state="loading-reader"');
+    expect(html).toContain("Loading the PDF reader");
+  });
+
+  it("unloads the PDF reader while its tab is not on screen", () => {
+    const html = render({
+      path: "/repo/doc.pdf",
+      kind: "pdf",
+      bytes: 2048,
+      token: "t",
+      url: "asset://localhost/repo/doc.pdf?token=t",
+      visible: false,
+    });
+    expect(html).not.toContain("<iframe");
+    expect(html).toContain('data-pdf-state="hidden"');
+    expect(html).toContain("unloaded while this tab is not on screen");
   });
 
   it("explains a denied grant with a retry and the external fallback", () => {

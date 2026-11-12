@@ -1,22 +1,27 @@
 # PDF reader path
 
-**Status: decision recorded (issue #30), implementation not shipped.** This record answers one
-question with evidence: can the app's current embedded/iframe PDF path satisfy the accepted PDF
-contract on Fedora, or is a dedicated on-demand reader required? Ticket **#31** implements the
-reader; nothing here claims any PDF reader function is shipped or validated as a product feature.
+**Status: implemented (issue #31), verified in the real Fedora application.** Issue #30 answered
+one question with evidence — can the app's embedded/iframe PDF path satisfy the accepted PDF
+contract? — and answered it no. Issue #31 implements the dedicated reader that decision requires.
+The implementation section below states what was built, why that approach was chosen, and which
+parts are validated here versus still a named manual or release-only check.
 
 Approved ceilings referenced below live in `docs/architecture/resource-limits.md` and
 `src/modules/preview/lib/limits.ts` (**32 MiB per rendered PDF page**, 4 concurrent decoded
 viewers, 192 MiB decoded budget), approved by the primary user on 2026-11-12 in issue #4.
 
-**Validated in the real application by this ticket:** the app's own delivery gate and its explicit
-override, the bytes/content type/ranges the asset server served, the cross-origin document
-boundary, the error and misnamed-file paths, hidden-tab behaviour, tab-close grant release, memory
-observations, and profile isolation/coexistence.
+**Validated in the real application by issue #30 (the iframe path):** the app's own delivery gate
+and its explicit override, the bytes/content type/ranges the asset server served, the
+cross-origin document boundary, the error and misnamed-file paths, hidden-tab behaviour,
+tab-close grant release, memory observations, and profile isolation/coexistence.
 
-**Not validated (planned implementation, issue #31):** every PDF reader function (navigation, zoom,
-search, text selection), the 32 MiB per-page refusal, decoded-viewer admission for PDFs, and the
-dedicated reader itself.
+**Validated in the real application by issue #31 (the reader that replaced it):** page
+count/navigation, zoom with a real re-render, the 32 MiB per-page refusal and its suggested zoom,
+search match count/navigation/highlight, selectable text, the corrupt-document state, the
+whole-file gate and explicit override, hidden-tab unloading over repeated cycles, tab-close grant
+release, and the bounded raster cache's own byte counts. **Not automated in either ticket:** a
+physical drag and the OS clipboard round-trip, the visual crispness of a re-render, and a
+network capture (see "Named manual checks").
 
 ## The contract this decides
 
@@ -197,67 +202,98 @@ closed, and no frame outlived its tab.
 ```sh
 pnpm install --frozen-lockfile
 python3 scripts/app-lab/run.py --scenario preview --profile debug \
-    --target-dir /home/loba/.cache/terax-target-30 --output /tmp/terax30-evidence
+    --target-dir ~/.cache/terax-target-31 \
+    --output <evidence-dir>
 python3 -m unittest discover -s scripts/tests          # fixtures and their contract
 ```
 
-Observed on 2026-11-12 on branch `ticket/30-pdf` (the report records the revision it ran): `preview PASS: 29/29 steps`
-on two consecutive runs (one of them with `--pdf-hold-ms`, which held `text.pdf` on screen for four
-minutes), `coexistence PASS: 17 upstream files unchanged`, `pdf fixtures: 6 documents … (6 pages,
-ceiling 32 MiB/page)`. The report is written outside the repository
-(`/tmp/terax30-evidence/report.json`) with `workflow.steps`, `preview.pdf` (fixture decisions, read
-paths, per-document served entries, frames, memory) and the generated manifest with its poppler
-verification.
+### Issue #31 (the reader)
 
-## Named manual checks (not automated here)
+Observed on 2026-11-12 on branch `issue/31-pdf-reader` at revision `eed57a8` (the report records the
+revision it ran): **`preview PASS: 45/45 steps`**, with the PDF phase driving the reader's own DOM.
+The evidence is in
+`personal/terax-baseline/evidence/2026-11-12/31-pdf-reader/run11/` (`report.json`, `page.log`); the
+report carries `preview.pdf.steps` with every snapshot the driver read back.
 
-WebKitGTK gives this repository no screenshot or input seam (ticket 32), and the validation host's
-desktop was in use by another application for the whole run: the Wayland compositor declines the
-benchmark window's focus request (the report records `appActive=false` in most phases), so
-injecting input would have landed in that other application. Anyone re-running these checks should
-own the display. The four reader functions are therefore stated as manual checks a person runs at
-the display, with the exact fixtures. Each takes under two minutes
+| check (real app) | observed |
+| --- | --- |
+| page count / first page | `pages=6 page=1`, text layer `[[ page 1 of 6 ]]`, 19 spans, 639 characters |
+| delivery | one whole-file `200`, `application/pdf`, 10,708 B, no ranges, through the tab grant |
+| navigation | Next/Previous, `End`, `Home` → pages 2, 6, 1; footer text matches; no blank page |
+| zoom + paint | 200 % → canvas 1191 × 1684 = 8,022,576 B, 481/20,677 sampled pixels inked |
+| cache | two pages held, 16,045,152 B ≤ 32 MiB; a 409 % page held alone at 33,544,560 B |
+| per-page ceiling | `zoomed-a4.pdf` 400 % renders (32,090,304 B); 800 % refuses naming 32 MiB and “409 %”; the suggested 409 % then paints |
+| 72-inch page | fit 19 % renders; 100 % refuses naming 32 MiB and “64 %” |
+| search | `UNIQUE-GLOBAL-NEEDLE` → 1 match, page 4, highlighted + current; `SEARCH-NEEDLE-03` → 1 match, page 3 |
+| selection | `Selection` over a text-layer span returns the body line |
+| whole-file gate | `oversized.pdf` shows the explicit choice with **0 bytes read**; “Load anyway” reads 12,585,343 B with `override=1` |
+| corrupt document | `corrupt` state with parse reason, Retry and Open externally |
+| misnamed `.pdf` | opens as text; no reader element |
+| hidden tab ×3 | reader absent and no canvas in every cycle; returning reloads 6 pages |
+| close | no reader element; live grants back to baseline (0 → 0) |
+
+Memory was sampled while other benchmark agents shared the host (load average 16 → 5), so the
+absolute PSS figures are directional and vary with what else runs on the host: across three clean
+runs the baseline was 339-431 MiB, `text.pdf` open +42 to +64 MiB for a 10.7 KB, 6-page document
+at 162 % with a 5.2 MiB raster and the PDF.js runtime, and closing returned the process to
+about the baseline (final run: 379.7 → 425.5 → 378.5 MiB; WebContent 223.8 → 267.2 MiB).
+
+**Environment finding.** PDF.js schedules a display render on animation frames, and WebKit suspends
+those for an occluded window — including while the page still reports `visibility: visible` on this
+host. The reader's four-second fallback to print-intent scheduling (microtask-driven, same pixels
+for these documents) is what made the raster complete; the run reports
+`data-pdf-render-fallback="print"`. Without it, the pane would have said “ready” over an unpainted
+canvas — the same class of silent failure the iframe path had.
+
+### Issue #30 (the iframe path, kept as the record of why)
+
+Observed on 2026-11-12 on branch `ticket/30-pdf`: `preview PASS: 29/29 steps` on two consecutive
+runs (one with `--pdf-hold-ms`, which held `text.pdf` on screen for four minutes), `coexistence
+PASS: 17 upstream files unchanged`, `pdf fixtures: 6 documents … (6 pages, ceiling 32 MiB/page)`.
+The report was written outside the repository (`/tmp/terax30-evidence/report.json`) with
+`workflow.steps`, `preview.pdf` (fixture decisions, read paths, per-document served entries, frames,
+memory) and the generated manifest with its poppler verification.
+
+## Named manual checks (what the real-app run does not cover)
+
+WebKitGTK gives this repository no screenshot or native-input seam (ticket #32). Everything that can
+be asserted through the reader's own DOM is automated above; what remains needs a person at the
+display. Each takes under two minutes
 (`python3 scripts/app-lab/pdf_fixtures.py --output /tmp/pdf-fixtures`,
 `--pdf-hold-ms 180000` keeps `text.pdf` open in the run).
 
-**M1 — multi-page navigation.** `text.pdf`: confirm 6 pages, page 1 shows the footer
-`[[ page 1 of 6 ]]`; press `PageDown`/`End`, then `Home`.
-*Pass:* last page shows `[[ page 6 of 6 ]]`, returning shows page 1, no blank page, no crash.
+**M1 — physical keys and focus.** `text.pdf`: click the page, then press `PageDown`, `End`, `Home`
+on the keyboard; then `Ctrl+F` and type a needle.
+*Pass:* the page changes, the search field takes focus, no key is swallowed by the canvas.
+*Automated part:* the same actions are dispatched to the reader's own handlers and asserted.
 
-**M2 — zoom.** `text.pdf` at 50 % to 200 % through the viewer's controls and keyboard zoom.
-*Pass:* text stays crisp (vector re-render), the page does not go blank, horizontal scrolling
-appears instead of clipping. Under the #31 reader, additionally: `large-page.pdf` at 100 % produces
-a **refusal naming the 32 MiB page ceiling and the zoom that would fit**.
+**M2 — visual quality of a re-render.** `text.pdf` at 50 %, 100 %, 200 %, 400 %.
+*Pass:* text stays crisp (vector re-render), no blank frame, horizontal scrolling instead of
+clipping. *Automated part:* the canvas's real raster size and inked pixels are measured at 200 %,
+and the 32 MiB refusal is asserted at 800 % on `zoomed-a4.pdf` and 100 % on `large-page.pdf`.
 
-**M3 — search.** `Ctrl+F`, `UNIQUE-GLOBAL-NEEDLE`.
-*Pass:* exactly one match, on page 4; then `SEARCH-NEEDLE-03` matches on page 3, highlighted, and
-the viewer navigates to it.
+**M3 — clipboard round-trip.** Drag across a body line on page 2, copy, paste into a terminal.
+*Pass:* the pasted text is the body line (`02.01 deterministic body line for page 2`), not an image.
+*Automated part:* a DOM `Selection` over the text layer returns the document's text.
 
-**M4 — text selection.** Drag across a body line on page 2, copy, paste into a terminal or editor.
-*Pass:* the pasted text is the body line (for example `02.01 deterministic body line for page 2`),
-not an image or an empty clipboard.
+**M4 — corrupt, encrypted and unsupported documents.** Open `corrupt.pdf` (automated), then a
+password-protected PDF and one using a feature this build cannot display (no fixture exists).
+*Pass:* each shows a reason and the external viewer; the rest of the app keeps working.
+*Automated part:* the corrupt and misnamed paths; the `password`/`unsupported` states are unit
+tests only (`pdfLoad.test.ts`), because the fixture set has neither document.
 
-**M5 — corrupt and unsupported documents.** Open `corrupt.pdf`, then `not-a-pdf.pdf`.
-*Pass:* each shows a visible, explanatory state (an error inside the pane with an external-viewer
-alternative under the #31 reader), the rest of the app keeps working, nothing is downloaded or
-written. *Automated part:* the app survives and the misnamed file opens as text; the viewer's own
-error text cannot be read from the app page.
+**M5 — network silence.** With a PDF open, watch the machine's traffic (e.g. `ss -tp` /
+`nethogs`) across open, zoom and search.
+*Pass:* no request leaves the machine. *Automated part:* the native asset probe shows the only
+read is the granted document; the reader passes no remote URL and all PDF.js runtime files are
+same-origin. A network capture is not part of the harness.
 
-**M6 — lifecycle.** With `text.pdf` open, switch to another Space and back, hide/restore the
-window, then close the tab.
-*Pass:* the document is still readable after returning (a reload is acceptable and, like the web
-preview, must be disclosed), closing the tab leaves no background work, and the app does not crash.
-*Automated part:* tab close releases the frame and the grant; a hidden tab keeps the document (see
-"Hidden tab" above).
-
-**M7 — no remote or app-authority access.** With `text.pdf` open, check the app log for network
-requests and confirm the pane offers no action that runs a command.
-*Pass:* no requests leave the machine; nothing in the PDF can execute an application command.
-*Automated part:* one `asset:` request per document, a scripted read from the app page refused, and
-the document runs without app IPC.
-
-M1-M4 **have not been run**; M5-M7 are automated to the extent stated. None of them changes the
-decision below, which rests on what the application can observe, bound and recover.
+**M6 — decoded-viewer refusal.** Open enough previews to reach the 4-viewer / 192 MiB table with a
+PDF visible.
+*Pass:* the refusal names the blocking previews. *Automated part:* the table's own tests
+(`limits.test.ts`, `viewerAdmission.test.ts`) and the PDF state machine's `admission-refused` test;
+a single-pane window cannot present five visible viewers, so this cannot be reached by opening
+tabs.
 
 ## Decision
 
@@ -317,6 +353,81 @@ The reader is our document, in our pane, with the approved policy applied by cod
   revocation stays with the tab scope.
 - **Document content stays inert.** No scripting from the document, no remote resources, no
   application command surface; keep the existing CSP and the native path checks.
+
+## Implementation (issue #31)
+
+The reader is the app's own DOM in the preview surface, replacing the iframe. The order below is
+the contract, and each step is a pure function with its own test before a canvas or a byte is
+allocated:
+
+1. **Delivery gate** (`assetDeliveryDecision`, unchanged) — whole file ≤ 10 MiB loads; 10-50 MiB
+   needs the explicit "Load anyway"; above 50 MiB is refused with the external viewer. The reader
+   owns this decision now, so the refusal is its own notice rather than a second surface's.
+2. **Bytes through the existing grant and limits** — `asset_read_bytes` is a native command that
+   runs the *same* `deliver` the `asset:` protocol handler runs: the same tab-scoped token, the
+   same canonicalization and descriptor re-checks, the same `DeliveryLimits`, and the same bench
+   probe record. It reads the whole file as its unit (that is the unit the approved gate bounds)
+   and returns it to the page as an `ArrayBuffer`; there is no new read path and no range bypass.
+3. **Document load** (`pdfjs-dist`) — one lazy chunk, imported only when a *visible* PDF tab passes
+   the gate. Corrupt, encrypted, unsupported and unreadable documents are distinct outcomes
+   (`classifyPdfError`, `pdfLoad.ts`), each with a reason and the external viewer.
+4. **Per-page decision before painting** (`pdfPage.ts` → `pdfPageDecision`) — the raster is
+   computed as `ceil(widthPt × zoom × dpr) × ceil(heightPt × zoom × dpr) × 4` and the approved
+   32 MiB ceiling is applied before a canvas exists. A refusal names the ceiling and the largest
+   whole-percent zoom that fits, verified against the same arithmetic; the suggested zoom is
+   offered as a button, so the reader can never offer a zoom it would itself refuse.
+5. **Decoded-viewer admission** (`pdfViewer.ts` → `useDecodedViewer`) — the reader registers the
+   rasters it really holds (bounded cache + the page on screen, capped at the 32 MiB page ceiling)
+   with the existing 4-viewer / 192 MiB table. Hidden viewers stay evictable; a refusal names the
+   blocking previews.
+6. **Bounded raster cache** (`pdfCache.ts`) — capacity is the per-page ceiling, so four viewers can
+   hold at most 4 × 32 MiB = 128 MiB, inside the approved 192 MiB. A new zoom clears the cache (a
+   raster at the old scale is not the raster the bound describes); navigation re-renders what was
+   released. Release zeroes the canvas backing store immediately.
+7. **App-owned functions** — page number/count, previous/next, page input, keyboard
+   PageUp/PageDown/Home/End, fit-width/fit-page, zoom in/out and a percent input with a genuine
+   vector re-render, search over extracted text with match count/navigation/truncation, and a text
+   layer of absolutely positioned spans (pdf.js text-item transforms) that supports native
+   selection and copy.
+   PDF.js schedules a display render on animation frames, which WebKit suspends for an occluded
+   window. A page on screen must not stay blank because of that, so a render that makes no
+   progress for four seconds is cancelled and redone with the print intent (microtask scheduling)
+   and the fallback is reported on the reader (`data-pdf-render-fallback="print"`); a second
+   stall is an explicit failure with the external viewer. The real-app run records how many
+   renders needed the fallback.
+8. **Lifecycle** — a hidden tab unmounts the reader and destroys the pdf.js document (worker, page
+   proxies, transferred bytes); closing the tab also releases the grant through the existing tab
+   scope. Re-showing a tab reloads the document, which is disclosed (there is no attempt to keep a
+   hidden document alive).
+9. **Inert document content** — the document is data: pdf.js never executes PDF JavaScript, XFA is
+   disabled, the reader passes no remote URL, and every runtime file (standard fonts, CMaps, wasm
+   decoders, ICC profile, worker) is emitted from the installed package into the app's own `dist`
+   by `scripts/vite-pdfjs-assets.mjs`. A document cannot call an app command or fetch anything.
+
+### Why pdfjs-dist, and the tradeoff
+
+The alternatives considered:
+
+- **Keep WebKit's built-in viewer** — rejected by the evidence above; it is cross-origin and
+  reports nothing.
+- **Native render path (poppler)** — the host has `libpoppler` and `poppler-utils`, but no
+  development headers, so a Rust binding would add a system build dependency, and a CLI render
+  would write temporary rasters and depend on a runtime package the app does not ship. It also
+  moves text extraction and layout out of the app's own DOM, which is exactly what must be
+  observable.
+- **`pdfjs-dist`** — pure JavaScript, no native codec, no system package, one package and one
+  lockfile entry, and it exposes page count, viewport/scale, text items, typed parse/password
+  errors and a worker. It is the same engine WebKit's own viewer is built on, so the rendering
+  behaviour matches what Fedora users already see.
+
+The cost, recorded rather than hidden: the lazy reader chunk is **140.75 kB gzipped** and the
+on-demand worker **378.97 kB gzipped**, both now explicit `size-limit` entries
+(`dist/assets/PdfReader-*.js`, `dist/pdfjs/pdf.worker.min.mjs`). Total client JS grew from about
+1.15 MiB to **1.32 MiB gzipped**, inside the unchanged 1.5 MiB budget: no PDF code is in a startup
+chunk (`src/app/dist-budget.test.ts` stays green). The PDF.js runtime data (standard fonts, CMaps,
+wasm decoders, ICC profile, licences) is 5.1 MiB of static assets shipped offline, not JavaScript.
+Continuous-scroll reading is deliberately not implemented: the reader is paged, which is what keeps
+one page raster (not a whole document's rasters) inside the decoded budget.
 
 ## What would change this decision
 

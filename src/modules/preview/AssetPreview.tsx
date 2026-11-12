@@ -1,5 +1,5 @@
 import { openPath } from "@tauri-apps/plugin-opener";
-import { useCallback, useState } from "react";
+import { type ComponentType, useCallback, useEffect, useState } from "react";
 import { MediaPreview } from "@/modules/editor/MediaPreview";
 import { AssetDeliveryNotice } from "./AssetDeliveryNotice";
 import {
@@ -18,11 +18,22 @@ type Props = {
   bytes: number;
   /** Grant URL, or undefined while the grant is pending. */
   url: string | undefined;
+  /** The grant token, for a surface that reads bytes through IPC (the PDF reader). */
+  token?: string | undefined;
   grantError: string | undefined;
   onRetryGrant: () => void;
   visible: boolean;
   mediaActive: boolean;
 };
+
+type PdfReaderComponent = ComponentType<{
+  path: string;
+  tabId: number;
+  bytes: number;
+  token: string | undefined;
+  visible: boolean;
+  onOpenExternally: () => void;
+}>;
 
 /**
  * The delivery gate every local preview asset goes through.
@@ -39,6 +50,7 @@ export function AssetPreview({
   kind,
   bytes,
   url,
+  token,
   grantError,
   onRetryGrant,
   visible,
@@ -68,6 +80,23 @@ export function AssetPreview({
       <div className="p-4 text-xs text-muted-foreground">
         Loading media preview…
       </div>
+    );
+  }
+
+  // The PDF reader owns the whole PDF contract, including the gate's explicit
+  // choice: its state machine applies the same `assetDeliveryDecision` before
+  // any byte is read (issue #30 handed *file bytes* to the delivery gate, and
+  // issue #31 keeps that decision while giving the reader the failure surface).
+  if (kind === "pdf") {
+    return (
+      <PdfSurface
+        path={path}
+        tabId={tabId}
+        bytes={bytes}
+        token={token}
+        visible={visible}
+        onOpenExternally={openExternally}
+      />
     );
   }
 
@@ -109,13 +138,78 @@ export function AssetPreview({
       {(kind === "video" || kind === "audio") && (
         <MediaPreview kind={kind} src={source} active={mediaActive} />
       )}
-      {kind === "pdf" && (
-        <iframe
-          src={source}
-          className="h-full w-full border-none"
-          title={path.split("/").pop()}
-        />
-      )}
     </div>
+  );
+}
+
+/**
+ * Loads the reader chunk on demand and mounts it.
+ *
+ * The import happens only for a visible PDF that passed the delivery gate, so
+ * no PDF code is fetched at startup and a hidden tab pays nothing. A plain
+ * `import()` (not `React.lazy`) keeps the surface renderable in the static
+ * tests and gives the app-lab driver a real element to find while it loads.
+ */
+function PdfSurface({
+  path,
+  tabId,
+  bytes,
+  token,
+  visible,
+  onOpenExternally,
+}: {
+  path: string;
+  tabId: number;
+  bytes: number;
+  token: string | undefined;
+  visible: boolean;
+  onOpenExternally: () => void;
+}) {
+  const [Reader, setReader] = useState<PdfReaderComponent | null>(null);
+
+  useEffect(() => {
+    if (!visible || Reader) return;
+    let mounted = true;
+    void import("./PdfReader").then((module) => {
+      if (mounted) setReader(() => module.default);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [visible, Reader]);
+
+  if (!visible) {
+    return (
+      <div
+        data-pdf-state="hidden"
+        data-pdf-reader=""
+        className="flex h-full w-full items-center justify-center p-4"
+      >
+        <p className="text-xs text-muted-foreground">
+          The PDF reader is unloaded while this tab is not on screen.
+        </p>
+      </div>
+    );
+  }
+  if (!Reader) {
+    return (
+      <div
+        data-pdf-reader=""
+        data-pdf-state="loading-reader"
+        className="flex h-full w-full items-center justify-center p-4"
+      >
+        <p className="text-xs text-muted-foreground">Loading the PDF reader…</p>
+      </div>
+    );
+  }
+  return (
+    <Reader
+      path={path}
+      tabId={tabId}
+      bytes={bytes}
+      token={token}
+      visible={visible}
+      onOpenExternally={onOpenExternally}
+    />
   );
 }
