@@ -52,9 +52,9 @@ def preflight(allow_dirty: bool) -> dict:
     problems = packaging.target_problems()
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         problems.append("running as root: the candidate build must not own root-only state")
-    if packaging.which_or_none("rpmbuild") is None:
-        problems.append("rpmbuild is missing: the rpm bundle cannot be produced")
     if packaging.which_or_none("rpm") is None:
+        # The bundler writes the rpm with the `rpm` crate, but this run must be able to read
+        # the artifact back (`rpm -qip`/`-qlp`); without it there is no evidence to record.
         problems.append("rpm is missing: artifact metadata could not be verified")
     problems.extend(packaging.identity_problems())
     problems.extend(packaging.package_name_problems())

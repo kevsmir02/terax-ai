@@ -50,7 +50,11 @@ BUNDLE_TARGETS = ("rpm", "deb")
 
 # Runtime libraries the packaged app links against. Kept in one place; both the generated
 # Tauri overlay and the Arch recipe are checked against it.
-DEB_DEPENDS = ("libwebkit2gtk-4.1-0", "libgtk-3-0")
+#
+# Fedora names: `webkit2gtk4.1`, `gtk3`. Debian names: `libwebkit2gtk-4.1-0`; Debian 13's
+# time_t transition renamed GTK to `libgtk-3-0t64` (which Provides `libgtk-3-0`), so the
+# alternative covers Debian 12/13 and Ubuntu without claiming either was tested.
+DEB_DEPENDS = ("libwebkit2gtk-4.1-0", "libgtk-3-0t64 | libgtk-3-0")
 RPM_DEPENDS = ("webkit2gtk4.1", "gtk3")
 ARCH_DEPENDS = ("webkit2gtk-4.1", "gtk3")
 # Matches the webkit and GTK runtime in either ecosystem's spelling.
