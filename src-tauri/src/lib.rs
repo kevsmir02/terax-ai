@@ -293,6 +293,7 @@ pub fn run() {
             fs::assets::asset_revoke,
             fs::file::fs_write_file,
             fs::file::fs_stat,
+            fs::file::fs_file_revision,
             fs::file::fs_canonicalize,
             fs::mutate::fs_create_file,
             fs::mutate::fs_create_dir,

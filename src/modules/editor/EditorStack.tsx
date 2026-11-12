@@ -118,6 +118,7 @@ export function EditorStack({
                 ref={getRefCallback(t.id)}
                 path={t.path}
                 overrideLanguage={t.overrideLanguage}
+                visible={visible}
                 onDirtyChange={getDirtyCallback(t.id)}
                 onClose={getCloseCallback(t.id)}
                 mediaActive={visible && !windowInactive}
