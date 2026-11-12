@@ -62,7 +62,10 @@ package() {
   install -Dm644 src-tauri/icons/128x128@2x.png \
     "$pkgdir/usr/share/icons/hicolor/256x256@2/apps/terax-workspace.png"
 
-  install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/terax-workspace.desktop" <<'DESKTOP'
+  # Same desktop-entry path the RPM/DEB bundler generates (it names the file after the
+  # product); the recipe writes equivalent content by hand.
+  install -d "$pkgdir/usr/share/applications"
+  cat >"$pkgdir/usr/share/applications/Terax Workspace.desktop" <<'DESKTOP'
 [Desktop Entry]
 Categories=Development;
 Comment=Personal Linux terminal workspace (unofficial fork candidate)
@@ -72,4 +75,5 @@ Name=Terax Workspace
 Terminal=false
 Type=Application
 DESKTOP
+  chmod 644 "$pkgdir/usr/share/applications/Terax Workspace.desktop"
 }
