@@ -44,14 +44,12 @@ export type ShortcutId =
   | "view.zenMode"
   | "ai.toggle"
   | "ai.toggleMini"
-  | "ai.askSelection"
   | "agent.focusAttention"
   | "settings.open"
   | "sidebar.toggle"
   | "editor.undo"
   | "editor.redo"
   | "editor.save"
-  | "editor.aiComplete"
   | "editor.codeComplete";
 
 export type ShortcutGroup =
@@ -255,11 +253,6 @@ const SHORTCUT_META: Omit<Shortcut, "defaultBindings">[] = [
     group: "AI",
   },
   {
-    id: "ai.askSelection",
-    label: "Ask AI about selection",
-    group: "AI",
-  },
-  {
     id: "agent.focusAttention",
     label: "Jump to agent needing attention",
     group: "AI",
@@ -314,11 +307,6 @@ const SHORTCUT_META: Omit<Shortcut, "defaultBindings">[] = [
   {
     id: "editor.save",
     label: "Save file",
-    group: "Editor",
-  },
-  {
-    id: "editor.aiComplete",
-    label: "Trigger AI completion",
     group: "Editor",
   },
   {

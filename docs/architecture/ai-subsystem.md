@@ -76,7 +76,7 @@ Auto-send after approval uses `lastAssistantMessageIsCompleteWithApprovalRespons
 
 ## Edit diffs
 
-AI-proposed file edits open in an `ai-diff` tab. The user accepts or rejects per hunk. Only after acceptance does the `write_file` or `edit` tool actually run. This keeps the approval UI decoupled from the tool execution.
+The AI edit-review diff tab (`ai-diff` tab kind) was removed together with AI completion and Ask AI. Proposals no longer open an editor tab; file-mutating tools keep their in-chat approval card, and ordinary changes are reviewed in `git-diff` tabs with hunk staging.
 
 ## Live context bridge
 
