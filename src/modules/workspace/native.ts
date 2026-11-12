@@ -2,9 +2,8 @@
  * Neutral native file/workspace commands.
  *
  * This is the shared contract for retained features (Spaces, explorer,
- * editor-adjacent tooling). It replaces the generic half of the legacy
- * `src/modules/ai/lib/native.ts` barrel, which still re-exports AI-only
- * members and overrides `readFile` with the policy-guarded `ai_read_file`.
+ * editor-adjacent tooling). It replaced the generic half of the built-in AI
+ * native barrel, which was removed with the AI chat feature (ticket #12).
  *
  * Trust tiers are deliberate — do not collapse them:
  *  - `readFile`/`writeFile` here call `fs_read_file`/`fs_write_file`, the

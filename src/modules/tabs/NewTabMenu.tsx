@@ -19,7 +19,6 @@ import {
   ComputerTerminal02Icon,
   GitBranchIcon,
   Globe02Icon,
-  IncognitoIcon,
   PencilEdit02Icon,
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
@@ -29,7 +28,6 @@ import { useRef, useState } from "react";
 type Props = {
   onNew: () => void;
   onNewBlock: () => void;
-  onNewPrivate: () => void;
   onNewPreview: () => void;
   onNewEditor: () => void;
   onNewGitGraph: () => void;
@@ -39,7 +37,6 @@ type Props = {
 export function NewTabMenu({
   onNew,
   onNewBlock,
-  onNewPrivate,
   onNewPreview,
   onNewEditor,
   onNewGitGraph,
@@ -47,7 +44,6 @@ export function NewTabMenu({
 }: Props) {
   const terminalHint = useShortcutHint("tab.new");
   const blockHint = useShortcutHint("tab.newBlock");
-  const privateHint = useShortcutHint("tab.newPrivate");
   const editorHint = useShortcutHint("tab.newEditor");
   const previewHint = useShortcutHint("tab.newPreview");
   const [menuOpen, setMenuOpen] = useState(false);
@@ -133,17 +129,6 @@ export function NewTabMenu({
                   strokeWidth={1.75}
                   className="text-muted-foreground"
                 />
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={onNewPrivate}>
-                <HugeiconsIcon
-                  icon={IncognitoIcon}
-                  size={14}
-                  strokeWidth={1.75}
-                />
-                <span className="flex-1">Privacy</span>
-                <span className="text-xs text-muted-foreground">
-                  {privateHint}
-                </span>
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={onNewEditor}>
                 <HugeiconsIcon

@@ -1,4 +1,3 @@
-import { notifyDocumentSaved } from "@/modules/lsp";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { currentWorkspaceEnv } from "@/modules/workspace";
 import { invoke } from "@tauri-apps/api/core";
@@ -151,10 +150,9 @@ export function useDocument({ path, visible, onDirtyChange }: Options) {
       // buffer dirty and `save()` answers false for close guards.
       savedRef.current = result.writtenText;
       setDirty(bufferRef.current !== result.writtenText);
-      notifyDocumentSaved(path);
       return result.complete;
     },
-    [path],
+    [],
   );
 
   const applySaveResult = useCallback(

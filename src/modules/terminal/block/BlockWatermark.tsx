@@ -1,5 +1,4 @@
 import { cn } from "@/lib/utils";
-import { useShortcutLabel } from "@/modules/shortcuts";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import {
   blockWatermarkState,
@@ -51,44 +50,20 @@ export function BlockWatermark({ leafId, subscribe }: Props) {
       <div className="grid grid-cols-[auto_auto] items-center gap-x-12 gap-y-3 text-[13px]">
         <Hint label="Browse your command history" keys="↑" />
         <Hint label="Autocomplete paths and commands" keys="Tab" />
-        <Hint
-          label="Switch between Shell and AI"
-          shortcut="terminal.toggleInput"
-        />
-        <Hint label="Open the AI assistant" shortcut="ai.toggle" />
       </div>
     </div>
   );
 }
 
-function Hint(props: {
-  label: string;
-  keys?: string;
-  shortcut?: Parameters<typeof useShortcutLabel>[0];
-}) {
+function Hint(props: { label: string; keys: string }) {
   return (
     <>
       <span className="justify-self-start text-muted-foreground/60">
         {props.label}
       </span>
       <span className="flex items-center gap-1 justify-self-end">
-        {props.shortcut ? (
-          <ShortcutKeys id={props.shortcut} />
-        ) : (
-          <Key>{props.keys}</Key>
-        )}
+        <Key>{props.keys}</Key>
       </span>
-    </>
-  );
-}
-
-function ShortcutKeys({ id }: { id: Parameters<typeof useShortcutLabel>[0] }) {
-  const tokens = useShortcutLabel(id).split(" ");
-  return (
-    <>
-      {tokens.map((t) => (
-        <Key key={t}>{t}</Key>
-      ))}
     </>
   );
 }

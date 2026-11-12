@@ -78,7 +78,6 @@ type Props = {
   onRevealInTerminal?: (path: string) => void;
   onOpenInSourceControl?: (path: string) => void;
   onOpenGitHistory?: (path: string) => void;
-  onAttachToAgent?: (path: string) => void;
   pathDropTarget?: TerminalPathDropTarget;
   gitStatus?: GitStatusSnapshot | null;
   /**
@@ -221,8 +220,7 @@ export const FileExplorer = memo(
       onRevealInTerminal,
       onOpenInSourceControl,
       onOpenGitHistory,
-      onAttachToAgent,
-      pathDropTarget,
+          pathDropTarget,
       gitStatus,
       visible = true,
     },
@@ -740,7 +738,6 @@ export const FileExplorer = memo(
           onRevealInTerminal={onRevealInTerminal}
           onOpenInSourceControl={onOpenInSourceControl}
           onOpenGitHistory={onOpenGitHistory}
-          onAttachToAgent={onAttachToAgent}
         />
 
         {!isSearchActive ? (
@@ -977,13 +974,6 @@ export const FileExplorer = memo(
                     }
                   >
                     Copy Relative Path
-                  </ContextMenuItem>
-                  <ContextMenuSeparator />
-                  <ContextMenuItem
-                    className={COMPACT_ITEM}
-                    onSelect={() => onAttachToAgent?.(menuTarget.path)}
-                  >
-                    Attach to Agent
                   </ContextMenuItem>
                   <ContextMenuSeparator />
                   <ContextMenuItem

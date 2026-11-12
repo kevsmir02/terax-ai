@@ -16,6 +16,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import {
   agentHooksStatus,
   HOOK_AGENTS,
+  type HookAgent,
   type HooksStatus,
 } from "@/modules/control/lib/hooksConfig";
 import { useMemo, useState } from "react";
@@ -26,7 +27,6 @@ import { useAgentStore } from "../store/agentStore";
 
 type Props = {
   onActivate: (tabId: number, leafId: number) => void;
-  onActivateLocal: () => void;
 };
 
 function relativeTime(ts: number): string {
@@ -87,7 +87,7 @@ function HookAgentRow({
   label,
   status,
 }: {
-  id: string;
+  id: HookAgent;
   label: string;
   status: HooksStatus | null;
 }) {
@@ -158,21 +158,18 @@ function NotificationRow({
   );
 }
 
-export function NotificationBell({ onActivate, onActivateLocal }: Props) {
+export function NotificationBell({ onActivate }: Props) {
   const [open, setOpen] = useState(false);
   const [hooks, setHooks] = useState<Record<string, HooksStatus | null>>({});
   const [alertsOpen, setAlertsOpen] = useState(false);
   const sessions = useAgentStore((s) => s.sessions);
-  const localAgent = useAgentStore((s) => s.localAgent);
   const notifications = useAgentStore((s) => s.notifications);
   const markAllRead = useAgentStore((s) => s.markAllRead);
   const clearNotifications = useAgentStore((s) => s.clearNotifications);
 
   const active = useMemo(() => Object.values(sessions), [sessions]);
-  const activeCount = active.length + (localAgent ? 1 : 0);
-  const waitingCount =
-    active.filter((s) => s.status === "waiting").length +
-    (localAgent?.status === "waiting" ? 1 : 0);
+  const activeCount = active.length;
+  const waitingCount = active.filter((s) => s.status === "waiting").length;
   // attention maps to an active waiting session, so only completed events add
   // to the badge to avoid double-counting.
   const unreadDone = notifications.filter(
@@ -204,14 +201,8 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
     setOpen(false);
   };
 
-  const activateLocal = () => {
-    onActivateLocal();
-    setOpen(false);
-  };
-
   const activateNotification = (n: AgentNotification) => {
-    if (n.source === "local") activateLocal();
-    else activate(n.tabId, n.leafId);
+    activate(n.tabId, n.leafId);
   };
 
   const empty = activeCount === 0 && notifications.length === 0;
@@ -268,17 +259,10 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
           <div className="border-t border-border/60 px-3 py-5 text-center text-xs leading-relaxed text-muted-foreground">
             No agent activity yet.
             <br />
-            Run the Terax agent or a coding agent to track it here.
+            Run a coding agent to track it here.
           </div>
         ) : (
           <div className="max-h-80 overflow-y-auto border-t border-border/60 p-1">
-            {localAgent ? (
-              <StatusRow
-                agent={localAgent.agent}
-                status={localAgent.status}
-                onClick={activateLocal}
-              />
-            ) : null}
             {active.map((s) => (
               <StatusRow
                 key={s.leafId}

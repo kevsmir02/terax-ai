@@ -1,15 +1,4 @@
 import {
-  type CustomEndpoint,
-  DEFAULT_MODEL_ID,
-  isKnownModelId,
-  LMSTUDIO_DEFAULT_BASE_URL,
-  MLX_DEFAULT_BASE_URL,
-  type ModelId,
-  migrateLegacyCompatEndpoint,
-  OLLAMA_DEFAULT_BASE_URL,
-  OPENAI_COMPATIBLE_DEFAULT_BASE_URL,
-} from "@/modules/ai/config";
-import {
   type AgentLaunchCommands,
   DEFAULT_AGENT_LAUNCH_COMMANDS,
   normalizeAgentLaunchCommands,
@@ -130,25 +119,10 @@ export type Preferences = {
   backgroundOpacity: number;
   backgroundBlur: number;
   windowVibrancy: boolean;
-  defaultModelId: ModelId;
   editorTheme: EditorThemePref;
   editorFontSize: number;
-  customInstructions: string;
   autostart: boolean;
   restoreWindowState: boolean;
-  lmstudioBaseURL: string;
-  lmstudioModelId: string;
-  mlxBaseURL: string;
-  mlxModelId: string;
-  ollamaBaseURL: string;
-  ollamaModelId: string;
-  openaiCompatibleBaseURL: string;
-  openaiCompatibleModelId: string;
-  openaiCompatibleContextLimit: number;
-  customEndpoints: CustomEndpoint[];
-  openrouterModelId: string;
-  favoriteModelIds: string[];
-  recentModelIds: string[];
   vimMode: boolean;
   editorWordWrap: boolean;
   editorWordWrapColumn: number;
@@ -182,12 +156,9 @@ export type Preferences = {
   editorFormatterByLang: Record<string, EditorFormatter>;
   /** Shell template for the "custom" formatter; {file} is the quoted path. */
   editorCustomFormatCommand: string;
-  lspActivation: Record<string, LspActivation>;
-  lspCustomServers: LspCustomServer[];
 };
 
 export type EditorFormatter =
-  | "lsp"
   | "biome"
   | "prettier"
   | "ruff"
@@ -198,18 +169,6 @@ export type EditorFormatter =
   | "zigfmt"
   | "custom";
 
-export type LspActivation = "enabled" | "dismissed";
-
-export type LspCustomServer = {
-  id: string;
-  name: string;
-  command: string;
-  args: string[];
-  /** languageResolver id -> LSP languageId */
-  languages: Record<string, string>;
-  rootMarkers: string[];
-};
-
 const STORE_PATH = "terax-settings.json";
 const KEY_THEME = "theme";
 const KEY_THEME_ID = "themeId";
@@ -218,25 +177,10 @@ const KEY_BG_IMAGE_ID = "backgroundImageId";
 const KEY_BG_OPACITY = "backgroundOpacity";
 const KEY_BG_BLUR = "backgroundBlur";
 const KEY_WINDOW_VIBRANCY = "windowVibrancy";
-const KEY_DEFAULT_MODEL = "defaultModelId";
 const KEY_EDITOR_THEME = "editorTheme";
 const KEY_EDITOR_FONT_SIZE = "editorFontSize";
-const KEY_CUSTOM_INSTRUCTIONS = "customInstructions";
 const KEY_AUTOSTART = "autostart";
 const KEY_RESTORE_WINDOW = "restoreWindowState";
-const KEY_LMSTUDIO_BASE_URL = "lmstudioBaseURL";
-const KEY_LMSTUDIO_MODEL_ID = "lmstudioModelId";
-const KEY_MLX_BASE_URL = "mlxBaseURL";
-const KEY_MLX_MODEL_ID = "mlxModelId";
-const KEY_OLLAMA_BASE_URL = "ollamaBaseURL";
-const KEY_OLLAMA_MODEL_ID = "ollamaModelId";
-const KEY_OPENAI_COMPAT_BASE_URL = "openaiCompatibleBaseURL";
-const KEY_OPENAI_COMPAT_MODEL_ID = "openaiCompatibleModelId";
-const KEY_OPENAI_COMPAT_CONTEXT_LIMIT = "openaiCompatibleContextLimit";
-const KEY_CUSTOM_ENDPOINTS = "customEndpoints";
-const KEY_OPENROUTER_MODEL_ID = "openrouterModelId";
-const KEY_FAVORITE_MODELS = "favoriteModelIds";
-const KEY_RECENT_MODELS = "recentModelIds";
 const KEY_VIM_MODE = "vimMode";
 const KEY_EDITOR_WORD_WRAP = "editorWordWrap";
 const KEY_EDITOR_WORD_WRAP_COLUMN = "editorWordWrapColumn";
@@ -269,8 +213,6 @@ const KEY_EDITOR_FORMAT_ON_SAVE = "editorFormatOnSave";
 const KEY_EDITOR_FORMATTER = "editorFormatter";
 const KEY_EDITOR_FORMATTER_BY_LANG = "editorFormatterByLang";
 const KEY_EDITOR_CUSTOM_FORMAT_COMMAND = "editorCustomFormatCommand";
-const KEY_LSP_ACTIVATION = "lspActivation";
-const KEY_LSP_CUSTOM_SERVERS = "lspCustomServers";
 
 const TERMINAL_FONT_SIZE_DEFAULT = 14;
 const TERMINAL_FONT_SIZE_MIN = 8;
@@ -305,29 +247,14 @@ export const DEFAULT_PREFERENCES: Preferences = {
   backgroundImageId: null,
   backgroundOpacity: 0.5,
   backgroundBlur: 0,
-  defaultModelId: DEFAULT_MODEL_ID,
   editorTheme: EDITOR_THEME_AUTO,
   editorFontSize: EDITOR_FONT_SIZE_DEFAULT,
-  customInstructions: "",
   autostart: false,
   // Off by default: a translucent window keeps the compositor blending the
   // whole frame every present. An explicitly stored choice (either value)
   // always wins; only an absent key falls back to this.
   windowVibrancy: false,
   restoreWindowState: true,
-  lmstudioBaseURL: LMSTUDIO_DEFAULT_BASE_URL,
-  lmstudioModelId: "",
-  mlxBaseURL: MLX_DEFAULT_BASE_URL,
-  mlxModelId: "",
-  ollamaBaseURL: OLLAMA_DEFAULT_BASE_URL,
-  ollamaModelId: "",
-  openaiCompatibleBaseURL: OPENAI_COMPATIBLE_DEFAULT_BASE_URL,
-  openaiCompatibleModelId: "",
-  openaiCompatibleContextLimit: 128_000,
-  customEndpoints: [],
-  openrouterModelId: "",
-  favoriteModelIds: [],
-  recentModelIds: [],
   vimMode: false,
   editorWordWrap: false,
   editorWordWrapColumn: EDITOR_WORD_WRAP_COLUMN_DEFAULT,
@@ -356,11 +283,9 @@ export const DEFAULT_PREFERENCES: Preferences = {
   editorAutoSave: false,
   editorAutoSaveDelay: 1000,
   editorFormatOnSave: false,
-  editorFormatter: "lsp",
+  editorFormatter: "custom",
   editorFormatterByLang: {},
   editorCustomFormatCommand: "",
-  lspActivation: {},
-  lspCustomServers: [],
 };
 
 const store = new LazyStore(STORE_PATH, { defaults: {}, autoSave: 200 });
@@ -375,6 +300,34 @@ async function writePref<T>(key: string, value: T): Promise<void> {
   await store.set(key, value);
   await store.save();
   await emit(PREFS_CHANGED_EVENT, { key, value });
+}
+
+// `lsp` was the stored default before language servers were removed. A stale
+// value must not reach the formatter registry, where it would resolve to
+// nothing; map it (and anything unrecognised) to the no-op "custom" choice.
+const REMOVED_FORMATTER_ID = "lsp";
+
+function normalizeEditorFormatter(
+  value: unknown,
+  fallback: EditorFormatter,
+): EditorFormatter {
+  if (typeof value !== "string" || value === REMOVED_FORMATTER_ID)
+    return fallback;
+  return value as EditorFormatter;
+}
+
+function normalizeFormatterByLang(
+  value: unknown,
+): Record<string, EditorFormatter> {
+  if (!value || typeof value !== "object") return {};
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(
+        ([, formatter]) =>
+          typeof formatter === "string" && formatter !== REMOVED_FORMATTER_ID,
+      )
+      .map(([lang, formatter]) => [lang, formatter as EditorFormatter]),
+  );
 }
 
 export async function loadPreferences(): Promise<Preferences> {
@@ -397,12 +350,6 @@ export async function loadPreferences(): Promise<Preferences> {
     backgroundBlur: clampBlur(
       get<number>(KEY_BG_BLUR) ?? DEFAULT_PREFERENCES.backgroundBlur,
     ),
-    defaultModelId: ((): ModelId => {
-      const stored = get<string>(KEY_DEFAULT_MODEL);
-      return stored && isKnownModelId(stored)
-        ? stored
-        : DEFAULT_PREFERENCES.defaultModelId;
-    })(),
     editorTheme: ((): EditorThemePref => {
       const stored = get<string>(KEY_EDITOR_THEME);
       if (stored === EDITOR_THEME_AUTO || isEditorThemeId(stored))
@@ -412,53 +359,12 @@ export async function loadPreferences(): Promise<Preferences> {
     editorFontSize: clampEditorFontSize(
       get<number>(KEY_EDITOR_FONT_SIZE) ?? DEFAULT_PREFERENCES.editorFontSize,
     ),
-    customInstructions:
-      get<string>(KEY_CUSTOM_INSTRUCTIONS) ??
-      DEFAULT_PREFERENCES.customInstructions,
     autostart: get<boolean>(KEY_AUTOSTART) ?? DEFAULT_PREFERENCES.autostart,
     restoreWindowState:
       get<boolean>(KEY_RESTORE_WINDOW) ??
       DEFAULT_PREFERENCES.restoreWindowState,
     windowVibrancy:
       get<boolean>(KEY_WINDOW_VIBRANCY) ?? DEFAULT_PREFERENCES.windowVibrancy,
-    lmstudioBaseURL:
-      get<string>(KEY_LMSTUDIO_BASE_URL) ?? DEFAULT_PREFERENCES.lmstudioBaseURL,
-    lmstudioModelId:
-      get<string>(KEY_LMSTUDIO_MODEL_ID) ?? DEFAULT_PREFERENCES.lmstudioModelId,
-    mlxBaseURL: get<string>(KEY_MLX_BASE_URL) ?? DEFAULT_PREFERENCES.mlxBaseURL,
-    mlxModelId: get<string>(KEY_MLX_MODEL_ID) ?? DEFAULT_PREFERENCES.mlxModelId,
-    ollamaBaseURL:
-      get<string>(KEY_OLLAMA_BASE_URL) ?? DEFAULT_PREFERENCES.ollamaBaseURL,
-    ollamaModelId:
-      get<string>(KEY_OLLAMA_MODEL_ID) ?? DEFAULT_PREFERENCES.ollamaModelId,
-    openaiCompatibleBaseURL:
-      get<string>(KEY_OPENAI_COMPAT_BASE_URL) ??
-      DEFAULT_PREFERENCES.openaiCompatibleBaseURL,
-    openaiCompatibleModelId:
-      get<string>(KEY_OPENAI_COMPAT_MODEL_ID) ??
-      DEFAULT_PREFERENCES.openaiCompatibleModelId,
-    openaiCompatibleContextLimit:
-      get<number>(KEY_OPENAI_COMPAT_CONTEXT_LIMIT) ??
-      DEFAULT_PREFERENCES.openaiCompatibleContextLimit,
-    customEndpoints: (() => {
-      const stored = get<CustomEndpoint[]>(KEY_CUSTOM_ENDPOINTS);
-      if (stored && stored.length > 0) return stored;
-      return migrateLegacyCompatEndpoint(
-        get<string>(KEY_OPENAI_COMPAT_BASE_URL) ?? "",
-        get<string>(KEY_OPENAI_COMPAT_MODEL_ID) ?? "",
-        get<number>(KEY_OPENAI_COMPAT_CONTEXT_LIMIT) ?? 128_000,
-        crypto.randomUUID().slice(0, 8),
-      );
-    })(),
-    openrouterModelId:
-      get<string>(KEY_OPENROUTER_MODEL_ID) ??
-      DEFAULT_PREFERENCES.openrouterModelId,
-    favoriteModelIds: (
-      get<string[]>(KEY_FAVORITE_MODELS) ?? DEFAULT_PREFERENCES.favoriteModelIds
-    ).filter(isKnownModelId),
-    recentModelIds: (
-      get<string[]>(KEY_RECENT_MODELS) ?? DEFAULT_PREFERENCES.recentModelIds
-    ).filter(isKnownModelId),
     vimMode: get<boolean>(KEY_VIM_MODE) ?? DEFAULT_PREFERENCES.vimMode,
     editorWordWrap:
       get<boolean>(KEY_EDITOR_WORD_WRAP) ?? DEFAULT_PREFERENCES.editorWordWrap,
@@ -537,41 +443,17 @@ export async function loadPreferences(): Promise<Preferences> {
     editorFormatOnSave:
       get<boolean>(KEY_EDITOR_FORMAT_ON_SAVE) ??
       DEFAULT_PREFERENCES.editorFormatOnSave,
-    editorFormatter:
-      get<EditorFormatter>(KEY_EDITOR_FORMATTER) ??
+    editorFormatter: normalizeEditorFormatter(
+      get<unknown>(KEY_EDITOR_FORMATTER),
       DEFAULT_PREFERENCES.editorFormatter,
-    editorFormatterByLang:
-      get<Record<string, EditorFormatter>>(KEY_EDITOR_FORMATTER_BY_LANG) ??
-      DEFAULT_PREFERENCES.editorFormatterByLang,
+    ),
+    editorFormatterByLang: normalizeFormatterByLang(
+      get<unknown>(KEY_EDITOR_FORMATTER_BY_LANG),
+    ),
     editorCustomFormatCommand:
       get<string>(KEY_EDITOR_CUSTOM_FORMAT_COMMAND) ??
       DEFAULT_PREFERENCES.editorCustomFormatCommand,
-    lspActivation:
-      get<Record<string, LspActivation>>(KEY_LSP_ACTIVATION) ??
-      DEFAULT_PREFERENCES.lspActivation,
-    lspCustomServers:
-      get<LspCustomServer[]>(KEY_LSP_CUSTOM_SERVERS) ??
-      DEFAULT_PREFERENCES.lspCustomServers,
   };
-}
-
-export async function setLspActivation(
-  id: string,
-  value: LspActivation | null,
-): Promise<void> {
-  const current =
-    ((await store.get(KEY_LSP_ACTIVATION)) as Record<string, LspActivation>) ??
-    {};
-  const next = { ...current };
-  if (value === null) delete next[id];
-  else next[id] = value;
-  await writePref(KEY_LSP_ACTIVATION, next);
-}
-
-export async function setLspCustomServers(
-  value: LspCustomServer[],
-): Promise<void> {
-  await writePref(KEY_LSP_CUSTOM_SERVERS, value);
 }
 
 export async function setTheme(value: ThemePref): Promise<void> {
@@ -614,10 +496,6 @@ export async function setBackgroundBlur(value: number): Promise<void> {
   await writePref(KEY_BG_BLUR, clampBlur(value));
 }
 
-export async function setDefaultModel(value: ModelId): Promise<void> {
-  await writePref(KEY_DEFAULT_MODEL, value);
-}
-
 export async function setEditorTheme(value: EditorThemePref): Promise<void> {
   await writePref(KEY_EDITOR_THEME, value);
 }
@@ -634,10 +512,6 @@ export async function setEditorFontSize(value: number): Promise<void> {
   await writePref(KEY_EDITOR_FONT_SIZE, clampEditorFontSize(value));
 }
 
-export async function setCustomInstructions(value: string): Promise<void> {
-  await writePref(KEY_CUSTOM_INSTRUCTIONS, value);
-}
-
 export async function setAutostart(value: boolean): Promise<void> {
   await writePref(KEY_AUTOSTART, value);
 }
@@ -648,65 +522,6 @@ export async function setRestoreWindowState(value: boolean): Promise<void> {
 
 export async function setWindowVibrancy(value: boolean): Promise<void> {
   await writePref(KEY_WINDOW_VIBRANCY, value);
-}
-
-export async function setLmstudioBaseURL(value: string): Promise<void> {
-  await writePref(KEY_LMSTUDIO_BASE_URL, value);
-}
-
-export async function setLmstudioModelId(value: string): Promise<void> {
-  await writePref(KEY_LMSTUDIO_MODEL_ID, value);
-}
-
-export async function setMlxBaseURL(value: string): Promise<void> {
-  await writePref(KEY_MLX_BASE_URL, value);
-}
-
-export async function setMlxModelId(value: string): Promise<void> {
-  await writePref(KEY_MLX_MODEL_ID, value);
-}
-
-export async function setOllamaBaseURL(value: string): Promise<void> {
-  await writePref(KEY_OLLAMA_BASE_URL, value);
-}
-
-export async function setOllamaModelId(value: string): Promise<void> {
-  await writePref(KEY_OLLAMA_MODEL_ID, value);
-}
-
-export async function setOpenaiCompatibleBaseURL(value: string): Promise<void> {
-  await writePref(KEY_OPENAI_COMPAT_BASE_URL, value);
-}
-
-export async function setOpenaiCompatibleModelId(value: string): Promise<void> {
-  await writePref(KEY_OPENAI_COMPAT_MODEL_ID, value);
-}
-
-export async function setOpenaiCompatibleContextLimit(
-  value: number,
-): Promise<void> {
-  const clamped = Number.isFinite(value)
-    ? Math.max(1_000, Math.round(value))
-    : DEFAULT_PREFERENCES.openaiCompatibleContextLimit;
-  await writePref(KEY_OPENAI_COMPAT_CONTEXT_LIMIT, clamped);
-}
-
-export async function setCustomEndpoints(
-  value: CustomEndpoint[],
-): Promise<void> {
-  await writePref(KEY_CUSTOM_ENDPOINTS, value);
-}
-
-export async function setOpenrouterModelId(value: string): Promise<void> {
-  await writePref(KEY_OPENROUTER_MODEL_ID, value);
-}
-
-export async function setFavoriteModelIds(value: string[]): Promise<void> {
-  await writePref(KEY_FAVORITE_MODELS, value);
-}
-
-export async function setRecentModelIds(value: string[]): Promise<void> {
-  await writePref(KEY_RECENT_MODELS, value);
 }
 
 export async function setVimMode(value: boolean): Promise<void> {
@@ -925,25 +740,10 @@ export async function onPreferencesChange(
     [KEY_BG_OPACITY]: "backgroundOpacity",
     [KEY_BG_BLUR]: "backgroundBlur",
     [KEY_WINDOW_VIBRANCY]: "windowVibrancy",
-    [KEY_DEFAULT_MODEL]: "defaultModelId",
     [KEY_EDITOR_THEME]: "editorTheme",
     [KEY_EDITOR_FONT_SIZE]: "editorFontSize",
-    [KEY_CUSTOM_INSTRUCTIONS]: "customInstructions",
     [KEY_AUTOSTART]: "autostart",
     [KEY_RESTORE_WINDOW]: "restoreWindowState",
-    [KEY_LMSTUDIO_BASE_URL]: "lmstudioBaseURL",
-    [KEY_LMSTUDIO_MODEL_ID]: "lmstudioModelId",
-    [KEY_MLX_BASE_URL]: "mlxBaseURL",
-    [KEY_MLX_MODEL_ID]: "mlxModelId",
-    [KEY_OLLAMA_BASE_URL]: "ollamaBaseURL",
-    [KEY_OLLAMA_MODEL_ID]: "ollamaModelId",
-    [KEY_OPENAI_COMPAT_BASE_URL]: "openaiCompatibleBaseURL",
-    [KEY_OPENAI_COMPAT_MODEL_ID]: "openaiCompatibleModelId",
-    [KEY_OPENAI_COMPAT_CONTEXT_LIMIT]: "openaiCompatibleContextLimit",
-    [KEY_CUSTOM_ENDPOINTS]: "customEndpoints",
-    [KEY_OPENROUTER_MODEL_ID]: "openrouterModelId",
-    [KEY_FAVORITE_MODELS]: "favoriteModelIds",
-    [KEY_RECENT_MODELS]: "recentModelIds",
     [KEY_VIM_MODE]: "vimMode",
     [KEY_EDITOR_WORD_WRAP]: "editorWordWrap",
     [KEY_EDITOR_WORD_WRAP_COLUMN]: "editorWordWrapColumn",
@@ -975,8 +775,6 @@ export async function onPreferencesChange(
     [KEY_EDITOR_FORMATTER]: "editorFormatter",
     [KEY_EDITOR_FORMATTER_BY_LANG]: "editorFormatterByLang",
     [KEY_EDITOR_CUSTOM_FORMAT_COMMAND]: "editorCustomFormatCommand",
-    [KEY_LSP_ACTIVATION]: "lspActivation",
-    [KEY_LSP_CUSTOM_SERVERS]: "lspCustomServers",
   };
   // Same-process writes still fire onChange immediately; cross-window writes
   // arrive via the Tauri event emitted by writePref().
@@ -995,16 +793,4 @@ export async function onPreferencesChange(
     unsubLocal();
     unsubEvent();
   };
-}
-
-// API key changes are stored in OS keychain (not the prefs store),
-// so we broadcast via a Tauri event for cross-window listeners.
-const KEYS_CHANGED_EVENT = "terax://ai-keys-changed";
-
-export async function emitKeysChanged(): Promise<void> {
-  await emit(KEYS_CHANGED_EVENT);
-}
-
-export function onKeysChanged(cb: () => void): Promise<UnlistenFn> {
-  return listen(KEYS_CHANGED_EVENT, () => cb());
 }
