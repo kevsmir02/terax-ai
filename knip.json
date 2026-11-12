@@ -5,11 +5,13 @@
     "src/components/ai-elements/**"
   ],
   "ignoreDependencies": [
-    "@tauri-apps/plugin-log",
-    "@tauri-apps/plugin-window-state",
     "@fontsource-variable/inter",
     "@fontsource/jetbrains-mono",
-    "@smoke-driver"
+    "@smoke-driver",
+    "@tauri-apps/plugin-log",
+    "@tauri-apps/plugin-process",
+    "@tauri-apps/plugin-updater",
+    "@tauri-apps/plugin-window-state"
   ],
   "ignoreBinaries": [
     "footprint",
