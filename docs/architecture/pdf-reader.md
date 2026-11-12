@@ -76,7 +76,7 @@ isolated disposable profile, driving the shipped React shell through the app's o
 
 ```sh
 python3 scripts/app-lab/run.py --scenario preview --profile debug \
-    --target-dir /home/loba/.cache/terax-target-30 --output /tmp/terax30-final
+    --target-dir /home/loba/.cache/terax-target-30 --output /tmp/terax30-evidence
 ```
 
 The PDF phase reports per-step PASS/FAIL in `page.log` and in the report's `workflow.steps`. The
@@ -132,17 +132,17 @@ cannot make reliable, bound or recover.
 
 ### Resource observations
 
-From `/tmp/terax30-final/report.json` (this host was also running another agent's build, so the
-absolute figures are directional; the deltas are the observation). Whole-application PSS is from
-`/proc/<pid>/smaps_rollup`, WebContent is the `web_content` role:
+From `/tmp/terax30-evidence/report.json` (this host was also running another agent's build, so the
+absolute figures are directional and vary between runs; the deltas are the observation).
+Whole-application PSS is from `/proc/<pid>/smaps_rollup`, WebContent is the `web_content` role:
 
 | phase | total PSS | WebContent | note |
 | --- | --- | --- | --- |
-| PDF baseline | 404.9 MiB | 237.8 MiB | after the web-preview phases |
-| `text.pdf` open (10,708 B, 6 pages) | 413.2 MiB | 247.7 MiB | +8.3 MiB for a 10 KB document |
-| tab hidden (3 s) | 419.8 MiB | 252.0 MiB | frame still mounted, +4.3 MiB WebContent |
-| `text.pdf` closed | 422.2 MiB | 256.3 MiB | not returned to baseline |
-| `oversized.pdf` open (12,585,343 B) | 437.0 MiB | 267.9 MiB | whole file decoded after the explicit choice |
+| PDF baseline | 415.5 MiB | 245.8 MiB | after the web-preview phases |
+| `text.pdf` open (10,708 B, 6 pages) | 420.6 MiB | 252.3 MiB | +5.1 MiB for a 10 KB document |
+| tab hidden (3 s) | 425.9 MiB | 255.6 MiB | frame still mounted, nothing released |
+| `text.pdf` closed | 427.2 MiB | 259.3 MiB | not returned to the baseline |
+| `oversized.pdf` open (12,585,343 B) | 442.0 MiB | 270.3 MiB | +21.4 MiB over the reference document |
 
 Delivery, observed natively (whole-file responses are `200` with no `Range` header; range responses
 would be a clamped `206`):
@@ -181,15 +181,15 @@ closed, and no frame outlived its tab.
 ```sh
 pnpm install --frozen-lockfile
 python3 scripts/app-lab/run.py --scenario preview --profile debug \
-    --target-dir /home/loba/.cache/terax-target-30 --output /tmp/terax30-final
+    --target-dir /home/loba/.cache/terax-target-30 --output /tmp/terax30-evidence
 python3 -m unittest discover -s scripts/tests          # fixtures and their contract
 ```
 
-Observed on 2026-11-12 on branch `ticket/30-pdf`: `preview PASS: 29/29
-steps` on two consecutive runs (one of them with `--pdf-hold-ms`, which keeps `text.pdf` on screen
-for the manual checks), `coexistence PASS: 17 upstream files unchanged`, `pdf fixtures: 6 documents
-… (6 pages, ceiling 32 MiB/page)`. The report is written outside the repository
-(`/tmp/terax30-final/report.json`) with `workflow.steps`, `preview.pdf` (fixture decisions, read
+Observed on 2026-11-12 on branch `ticket/30-pdf` (commit `9cc99a3`): `preview PASS: 29/29 steps`
+on two consecutive runs (one of them with `--pdf-hold-ms`, which held `text.pdf` on screen for four
+minutes), `coexistence PASS: 17 upstream files unchanged`, `pdf fixtures: 6 documents … (6 pages,
+ceiling 32 MiB/page)`. The report is written outside the repository
+(`/tmp/terax30-evidence/report.json`) with `workflow.steps`, `preview.pdf` (fixture decisions, read
 paths, per-document served entries, frames, memory) and the generated manifest with its poppler
 verification.
 
