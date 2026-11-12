@@ -25,10 +25,9 @@ function term(over: Partial<Extract<Tab, { kind: "terminal" }>>): Tab {
 }
 
 describe("serializeTabs", () => {
-  it("drops private terminals and transient kinds", () => {
+  it("drops transient kinds", () => {
     const tabs: Tab[] = [
       term({ id: 1 }),
-      term({ id: 3, private: true }),
       {
         id: 5,
         kind: "git-diff",

@@ -57,7 +57,6 @@ function serializeNode(node: PaneNode, activeLeafId: number): SerializedNode {
 export function isSerializableTab(tab: Tab): boolean {
   switch (tab.kind) {
     case "terminal":
-      return !tab.private;
     case "editor":
     case "preview":
     case "markdown":

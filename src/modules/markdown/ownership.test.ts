@@ -21,28 +21,16 @@ const TEXT_SHIMMER = path.join(srcRoot, "components/text-shimmer.tsx");
 const AI_OWNED = ["src/modules/ai", "src/components/ai-elements"];
 
 /**
- * Old AI-owned entry points that are now aliases, and the modules the
- * architecture guide says still import them. Test files that guard the aliases
- * are listed explicitly so a new consumer has to be added here on purpose.
+ * The AI-owned element aliases that used to re-export the Markdown renderer
+ * were deleted with the built-in chat feature (ticket #12). Nothing may point
+ * at those paths again.
  */
-const LEGACY_ENTRY_POINTS: Record<string, readonly string[]> = {
-  "src/components/ai-elements/markdown-code": [
-    "src/modules/ai/components/AiChat",
-    "src/components/ai-elements/message",
-    "src/components/ai-elements/markdown-compat.test",
-  ],
-  "src/components/ai-elements/chat-code": [
-    "src/components/ai-elements/message",
-    "src/components/ai-elements/markdown-compat.test",
-  ],
-  "src/components/ai-elements/chat-code-lezer": [
-    "src/components/ai-elements/markdown-compat.test",
-  ],
-  "src/components/ai-elements/shimmer": [
-    "src/components/ai-elements/reasoning",
-    "src/components/ai-elements/markdown-compat.test",
-  ],
-};
+const LEGACY_ENTRY_POINTS = [
+  "src/components/ai-elements/markdown-code",
+  "src/components/ai-elements/chat-code",
+  "src/components/ai-elements/chat-code-lezer",
+  "src/components/ai-elements/shimmer",
+];
 
 function filesUnder(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -103,34 +91,16 @@ describe("rendered Markdown ownership", () => {
     expect(leaks).toEqual([]);
   });
 
-  it("accounts for every remaining consumer of an old AI entry point", () => {
-    const importers = new Map<string, string[]>(
-      Object.keys(LEGACY_ENTRY_POINTS).map((id) => [id, []]),
-    );
-    for (const file of filesUnder(srcRoot)) {
-      const from = path
-        .relative(repoRoot, file)
-        .split(path.sep)
-        .join("/")
-        .replace(/\.(?:ts|tsx)$/, "");
-      for (const spec of specifiersOf(file)) {
+  it("has no consumer of a removed AI element alias", () => {
+    const importers = filesUnder(srcRoot).flatMap((file) =>
+      specifiersOf(file).flatMap((spec) => {
         const id = moduleId(spec, file);
-        if (id !== null && importers.has(id)) importers.get(id)?.push(from);
-      }
-    }
-
-    expect(
-      Object.fromEntries(
-        [...importers].map(([id, files]) => [id, files.sort()]),
-      ),
-    ).toEqual(
-      Object.fromEntries(
-        Object.entries(LEGACY_ENTRY_POINTS).map(([id, files]) => [
-          id,
-          [...files].sort(),
-        ]),
-      ),
+        return id !== null && LEGACY_ENTRY_POINTS.includes(id)
+          ? [`${path.relative(repoRoot, file)} -> ${spec}`]
+          : [];
+      }),
     );
+    expect(importers).toEqual([]);
   });
 
   it("keeps the markdown tab kind behind its lazy boundary", () => {

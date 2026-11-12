@@ -44,8 +44,6 @@ export type TerminalTab = TabBase & {
   paneTree: PaneNode;
   activeLeafId: number;
   blocks?: boolean;
-  /** AI agent cannot read buffer / context of this terminal. */
-  private?: boolean;
   /** User-set label that overrides the cwd-derived name. Survives cd. */
   customTitle?: string;
 };
@@ -815,37 +813,6 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     [setActiveId, setTabs],
   );
 
-  const newAgentTab = useCallback(
-    (cwd: string | undefined, title: string) => {
-      const { tabId, leafIds: agentLeafIds } = newAgentGroupTab(cwd, title, 1);
-      return { tabId, leafId: agentLeafIds[0] };
-    },
-    [newAgentGroupTab],
-  );
-
-  const newPrivateTab = useCallback(
-    (cwd?: string) => {
-      const tabId = nextIdRef.current++;
-      const leafId = nextIdRef.current++;
-      setTabs((t) => [
-        ...t,
-        {
-          id: tabId,
-          kind: "terminal",
-          spaceId: activeSpaceIdRef.current,
-          title: "private",
-          cwd,
-          paneTree: { kind: "leaf", id: leafId, cwd },
-          activeLeafId: leafId,
-          private: true,
-        },
-      ]);
-      setActiveId(tabId);
-      return tabId;
-    },
-    [setTabs, setActiveId],
-  );
-
   /**
    * Opens a file in an editor tab.
    *
@@ -1407,9 +1374,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     setOverrideLanguage,
     newTab,
     newBlockTab,
-    newAgentTab,
     newAgentGroupTab,
-    newPrivateTab,
     openFileTab,
     pinTab,
     newPreviewTab,
