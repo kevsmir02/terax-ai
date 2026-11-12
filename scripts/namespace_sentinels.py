@@ -30,8 +30,9 @@ FORK_NS = linux_profile.NAMESPACE
 
 # Upstream hook commands, exactly as the other installation writes them into shared agent
 # configuration. This fork must treat them as foreign and never rewrite or remove them.
+_UPSTREAM_CLI = f"{linux_profile.UPSTREAM_ENV_PREFIX}_CLI"
 _UPSTREAM_HOOK = (
-    '[ -n "$TERAX_CLI" ] && "$TERAX_CLI" hook claude Stop || printf \'{}\''
+    f'[ -n "${_UPSTREAM_CLI}" ] && "${_UPSTREAM_CLI}" hook claude Stop || printf \'{{}}\''
 )
 _UPSTREAM_PI = "// terax-pi-notifications-v2\nexport default function () {}\n"
 
@@ -175,6 +176,12 @@ def verify(home: Path, manifest: dict) -> list[str]:
     return problems
 
 
+def _entries(directory: Path) -> list[str]:
+    if not directory.exists():
+        return []
+    return sorted(path.name for path in directory.iterdir())
+
+
 def fork_state(home: Path) -> dict:
     """What the fork's own namespaces look like after a run (evidence, not an assertion)."""
     home = Path(home)
@@ -190,6 +197,9 @@ def fork_state(home: Path) -> dict:
         "shellIntegration": str(cache / "shell-integration"),
         "shellIntegrationExists": (cache / "shell-integration").is_dir(),
         "isUpstreamCacheDir": cache.name == UPSTREAM_NS,
+        "dataDirEntries": _entries(home / ".local" / "share"),
+        "configDirEntries": _entries(home / ".config"),
+        "cacheDirEntries": _entries(home / ".cache"),
         "stateDir": str(home / linux_profile.home_state_dir_name()),
         "hookEnvPrefix": linux_profile.IDENTITY["envPrefix"],
     }

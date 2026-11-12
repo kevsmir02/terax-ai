@@ -17,7 +17,7 @@ terax hook <agent> <event>
 
 The app must already be running. A command launched inside a Terax pane targets that pane's space, even if another space or tab has UI focus. An external client without pane context falls back to the active UI context.
 
-`terax hook` is the entry point agent hooks call. It reads the hook JSON from stdin and delivers it with `TERAX_WORKSPACE_FORK_PANE_ID`. It does nothing outside a Terax pane, never exits non-zero, and prints `{}` unless it is returning a permission decision. `TERAX_HOOK_TIMEOUT` (seconds, default 600, at most 900) bounds how long it waits for a decision, `TERAX_HOOK_WAIT=0` disables waiting, and `TERAX_HOOK_DEBUG=1` prints why a delivery failed to stderr.
+`terax hook` is the entry point agent hooks call. It reads the hook JSON from stdin and delivers it with `TERAX_WORKSPACE_FORK_PANE_ID`. It does nothing outside a Terax pane, never exits non-zero, and prints `{}` unless it is returning a permission decision. `TERAX_WORKSPACE_FORK_HOOK_TIMEOUT` (seconds, default 600, at most 900) bounds how long it waits for a decision, `TERAX_WORKSPACE_FORK_HOOK_WAIT=0` disables waiting, and `TERAX_WORKSPACE_FORK_HOOK_DEBUG=1` prints why a delivery failed to stderr. All names come from `src/modules/identity/namespace.json`; a shell that only carries upstream's `TERAX_*` variables is another installation's and leaves the hook inert.
 
 ## Components
 

@@ -41,6 +41,8 @@ PRODUCT_IDENTIFIER = IDENTITY["appIdentifier"]
 NAMESPACE = IDENTITY["namespace"]
 UPSTREAM_IDENTIFIER = IDENTITY["upstream"]["appIdentifier"]
 UPSTREAM_NAMESPACE = IDENTITY["upstream"]["namespace"]
+# The upstream application's variable prefix (`TERAX`), used to recognise its shells.
+UPSTREAM_ENV_PREFIX = IDENTITY["upstream"]["envPrefix"]
 
 
 def home_state_dir_name() -> str:

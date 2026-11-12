@@ -297,9 +297,9 @@ fn hook_command(dialect: Dialect, agent: &str, event: &str) -> String {
         Dialect::Cmd => {
             format!(r#"if defined {cli} ("%{cli}%" hook {agent} {event}) else (echo {{}})"#)
         }
-        Dialect::PowerShell => format!(
-            r#"if ($env:{cli}) {{ & $env:{cli} hook {agent} {event} }} else {{ '{{}}' }}"#
-        ),
+        Dialect::PowerShell => {
+            format!(r#"if ($env:{cli}) {{ & $env:{cli} hook {agent} {event} }} else {{ '{{}}' }}"#)
+        }
     }
 }
 
@@ -444,8 +444,8 @@ fn json_after(
 }
 
 fn pi_after(existing: Option<&str>, action: Action, path: &Path) -> Result<Option<String>, String> {
-    let foreign =
-        existing.is_some_and(|text| !text.trim().is_empty() && !text.contains(&pi_extension_family()));
+    let foreign = existing
+        .is_some_and(|text| !text.trim().is_empty() && !text.contains(&pi_extension_family()));
     match action {
         Action::Install if foreign => Err(format!(
             "{} is not managed by Terax; refusing to overwrite",
@@ -669,7 +669,7 @@ pub fn emit_conout_marker(agent: &str, event: &str) {
     use std::io::Write;
     use windows_sys::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
 
-    if std::env::var_os("TERAX_WORKSPACE_FORK_TERMINAL").is_none() {
+    if std::env::var_os(identity::env("TERMINAL")).is_none() {
         return;
     }
     unsafe {
@@ -870,7 +870,8 @@ mod tests {
         );
         assert!(commands(&unix, "AfterAgent")[0].contains("hook gemini AfterAgent"));
         let windows = parsed(&install("gemini", None, true));
-        assert!(commands(&windows, "Notification")[0].starts_with("if defined TERAX_WORKSPACE_FORK_CLI"));
+        assert!(commands(&windows, "Notification")[0]
+            .starts_with("if defined TERAX_WORKSPACE_FORK_CLI"));
     }
 
     #[test]
@@ -925,7 +926,8 @@ mod tests {
                     let ours = commands(&value, event.event)
                         .iter()
                         .filter(|command| {
-                            command.contains("TERAX_WORKSPACE_FORK_CLI") || command.contains("hook ")
+                            command.contains("TERAX_WORKSPACE_FORK_CLI")
+                                || command.contains("hook ")
                         })
                         .count();
                     assert_eq!(ours, usize::from(event.wanted), "{agent} {}", event.event);
@@ -987,7 +989,11 @@ mod tests {
         assert!(!command_is_ours(
             r#"[ -n "$TERAX_TERMINAL" ] && printf '\033]777;notify;Terax;claude;Stop\007' || true"#
         ));
-        assert!(command_is_ours(&hook_command(Dialect::Posix, "claude", "Stop")));
+        assert!(command_is_ours(&hook_command(
+            Dialect::Posix,
+            "claude",
+            "Stop"
+        )));
 
         for agent in ["claude", "codex", "gemini"] {
             for windows in [false, true] {
@@ -998,9 +1004,7 @@ mod tests {
                     .unwrap()
                     .iter()
                     .find(|group| serde_json::to_string(group).unwrap().contains("$TERAX_CLI"))
-                    .unwrap_or_else(|| {
-                        panic!("{agent} windows={windows}: upstream group removed")
-                    });
+                    .unwrap_or_else(|| panic!("{agent} windows={windows}: upstream group removed"));
                 assert_eq!(upstream_now, &upstream_before, "{agent} windows={windows}");
 
                 let removed = json_after(
@@ -1059,8 +1063,17 @@ mod tests {
         assert!(installed.contains(&identity::env("CLI")));
 
         // A file that is not ours is refused, never silently replaced.
-        let foreign = plan_at("pi", Action::Install, &ours, Some(upstream_body.into()), false);
-        assert!(foreign.is_err(), "foreign extension content must be refused");
+        let foreign = plan_at(
+            "pi",
+            Action::Install,
+            &ours,
+            Some(upstream_body.into()),
+            false,
+        );
+        assert!(
+            foreign.is_err(),
+            "foreign extension content must be refused"
+        );
 
         let uninstall = plan_at("pi", Action::Uninstall, &ours, Some(installed), false).unwrap();
         assert_eq!(uninstall.after, None);
@@ -1075,10 +1088,14 @@ mod tests {
             hook_group(spec, event, windows)
         };
         let posix = |agent: &str, event: &str| {
-            format!(r#"[ -n "$TERAX_WORKSPACE_FORK_CLI" ] && "$TERAX_WORKSPACE_FORK_CLI" hook {agent} {event} || printf '{{}}'"#)
+            format!(
+                r#"[ -n "$TERAX_WORKSPACE_FORK_CLI" ] && "$TERAX_WORKSPACE_FORK_CLI" hook {agent} {event} || printf '{{}}'"#
+            )
         };
         let cmd = |agent: &str, event: &str| {
-            format!(r#"if defined TERAX_WORKSPACE_FORK_CLI ("%TERAX_WORKSPACE_FORK_CLI%" hook {agent} {event}) else (echo {{}})"#)
+            format!(
+                r#"if defined TERAX_WORKSPACE_FORK_CLI ("%TERAX_WORKSPACE_FORK_CLI%" hook {agent} {event}) else (echo {{}})"#
+            )
         };
 
         assert_eq!(
@@ -1210,7 +1227,9 @@ mod tests {
             .any(|command| command.contains("notify;Terax;attention")));
         let stop = commands(&out, "Stop");
         assert!(stop.contains(&"mine".to_string()));
-        assert!(stop.iter().any(|command| command.contains("__terax_notify")));
+        assert!(stop
+            .iter()
+            .any(|command| command.contains("__terax_notify")));
     }
 
     #[test]
@@ -1277,7 +1296,11 @@ mod tests {
         let fresh = plan_at("claude", Action::Install, &path, None, false).unwrap();
         assert!(fresh.changed);
         assert_eq!(fresh.before, None);
-        assert!(fresh.after.as_deref().unwrap().contains("TERAX_WORKSPACE_FORK_CLI"));
+        assert!(fresh
+            .after
+            .as_deref()
+            .unwrap()
+            .contains("TERAX_WORKSPACE_FORK_CLI"));
 
         let again = plan_at("claude", Action::Install, &path, fresh.after.clone(), false).unwrap();
         assert!(!again.changed);
@@ -1418,11 +1441,7 @@ mod tests {
         assert!(extension.contains(&format!("process.env.{}", identity::env("CLI"))));
         assert!(extension.contains(&format!("process.env.{}", identity::env("PANE_ID"))));
         assert!(extension.contains(r#"["hook", "pi", event]"#));
-        assert!(extension.starts_with(&format!(
-            "// {}{}",
-            pi_extension_family(),
-            PI_VERSION
-        )));
+        assert!(extension.starts_with(&format!("// {}{}", pi_extension_family(), PI_VERSION)));
         assert!(extension.contains("windowsHide: true"));
         assert!(!extension.contains("777"));
         for event in ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"] {

@@ -45,7 +45,13 @@ class SentinelTest(unittest.TestCase):
         self.assertIn(".claude/settings.json", names)
         self.assertIn(".pi/agent/extensions/terax-notifications.ts", names)
         upstream_hooks = json.loads((self.home / ".claude/settings.json").read_text())
-        self.assertIn("$TERAX_CLI", json.dumps(upstream_hooks))
+        serialized = json.dumps(upstream_hooks)
+        # Derived from the table, not a literal: the sentinel must carry upstream's own CLI
+        # variable so the fork's install/uninstall sees it as foreign.
+        self.assertIn(f"${linux_profile.UPSTREAM_ENV_PREFIX}_CLI", serialized)
+        self.assertNotIn(
+            f"${linux_profile.IDENTITY['envPrefix']}_", serialized
+        )
 
     def test_a_modified_or_deleted_file_is_detected(self) -> None:
         control = self.home / ".cache" / linux_profile.UPSTREAM_NAMESPACE / "control.json"

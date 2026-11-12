@@ -580,7 +580,10 @@ mod unix {
         #[test]
         fn zsh_starts_from_the_integration_dir_and_forgets_a_stale_user_zdotdir() {
             let mut cmd = CommandBuilder::new("/bin/zsh");
-            cmd.env(identity::env("USER_ZDOTDIR"), "/left/over/from/a/parent/terminal");
+            cmd.env(
+                identity::env("USER_ZDOTDIR"),
+                "/left/over/from/a/parent/terminal",
+            );
             apply_shell_init(&mut cmd, &Shell::Zsh, "/bin/zsh");
             let zdotdir = cmd.get_env("ZDOTDIR").expect("ZDOTDIR is set");
             assert!(Path::new(zdotdir).ends_with("shell-integration/zsh"));
@@ -588,11 +591,11 @@ mod unix {
             match std::env::var("ZDOTDIR") {
                 Ok(user) if !user.is_empty() && Path::new(&user) != Path::new(zdotdir) => {
                     assert_eq!(
-                        cmd.get_env(&identity::env("USER_ZDOTDIR")),
+                        cmd.get_env(identity::env("USER_ZDOTDIR")),
                         Some(std::ffi::OsStr::new(&user))
                     );
                 }
-                _ => assert_eq!(cmd.get_env(&identity::env("USER_ZDOTDIR")), None),
+                _ => assert_eq!(cmd.get_env(identity::env("USER_ZDOTDIR")), None),
             }
             for file in [".zshenv", ".zprofile", ".zshrc", ".zlogin"] {
                 assert!(Path::new(zdotdir).join(file).is_file(), "{file}");
@@ -996,7 +999,16 @@ mod windows {
 
     fn integration_root() -> Result<PathBuf, String> {
         let home = dirs::home_dir().ok_or_else(|| "could not resolve home dir".to_string())?;
-        let root = home.join(".cache").join("terax").join("shell-integration");
+        integration_root_in(&home)
+    }
+
+    /// This fork writes its integration wrappers into its own cache directory; the upstream
+    /// application's `~/.cache/terax/shell-integration` is another application's state.
+    fn integration_root_in(home: &Path) -> Result<PathBuf, String> {
+        let root = home
+            .join(".cache")
+            .join(crate::modules::identity::namespace())
+            .join("shell-integration");
         fs::create_dir_all(&root).map_err(|e| format!("create {}: {e}", root.display()))?;
         Ok(root)
     }
@@ -1152,7 +1164,10 @@ mod windows {
                     "/home/vinicios/repo".to_string(),
                     "--exec".to_string(),
                     "env".to_string(),
-                    format!("{}=/home/vinicios/.config/zsh", identity::env("USER_ZDOTDIR")),
+                    format!(
+                        "{}=/home/vinicios/.config/zsh",
+                        identity::env("USER_ZDOTDIR")
+                    ),
                     "ZDOTDIR=/home/vinicios/.cache/terax/shell-integration/zsh".to_string(),
                     "/usr/bin/zsh".to_string(),
                     "-l".to_string(),
@@ -1388,7 +1403,10 @@ mod tests {
             command.get_env(identity::env("CONTROL_TOKEN")),
             Some(OsStr::new("secret"))
         );
-        assert_eq!(command.get_env(identity::env("PANE_ID")), Some(OsStr::new("42")));
+        assert_eq!(
+            command.get_env(identity::env("PANE_ID")),
+            Some(OsStr::new("42"))
+        );
         assert_eq!(
             command.get_env(identity::env("CLI")),
             Some(OsStr::new("/app/terax-cli"))
@@ -1417,18 +1435,19 @@ mod tests {
         apply_common(&mut command, None, true, Some(&control));
 
         for upstream in [
-            "TERAX_TERMINAL",
-            "TERAX_BLOCKS",
-            "TERAX_CLI",
-            "TERAX_CONTROL_ADDR",
-            "TERAX_CONTROL_TOKEN",
-            "TERAX_PANE_ID",
-            "TERAX_USER_ZDOTDIR",
+            "TERMINAL",
+            "BLOCKS",
+            "CLI",
+            "CONTROL_ADDR",
+            "CONTROL_TOKEN",
+            "PANE_ID",
+            "USER_ZDOTDIR",
         ] {
+            let name = identity::upstream_env(upstream);
             assert_eq!(
-                command.get_env(upstream),
+                command.get_env(&name),
                 None,
-                "{upstream} must not describe this fork's shell"
+                "{name} must not describe this fork's shell"
             );
         }
         for ours in [

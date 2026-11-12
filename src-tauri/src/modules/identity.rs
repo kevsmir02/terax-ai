@@ -24,6 +24,7 @@ const TABLE: &str = include_str!("../../../src/modules/identity/namespace.json")
 pub struct Upstream {
     pub app_identifier: String,
     pub namespace: String,
+    pub env_prefix: String,
 }
 
 #[derive(Deserialize, Debug, PartialEq, Eq)]
@@ -72,6 +73,12 @@ pub fn upstream() -> &'static Upstream {
     &table().upstream
 }
 
+/// An environment variable of the upstream application, e.g. `upstream_env("CLI")` ->
+/// `TERAX_CLI`. A child shell carrying one of these belongs to the other installation.
+pub fn upstream_env(suffix: &str) -> String {
+    format!("{}_{suffix}", table().upstream.env_prefix)
+}
+
 /// True when `identifier` belongs to the upstream application (its own profile).
 pub fn is_upstream_identifier(identifier: &str) -> bool {
     identifier == table().upstream.app_identifier
@@ -113,7 +120,9 @@ mod tests {
         assert!(table.final_identity_ticket > 0);
         assert!(!table.note.is_empty());
         assert_ne!(table.app_identifier, table.upstream.app_identifier);
-        assert!(!table.app_identifier.starts_with(&table.upstream.app_identifier));
+        assert!(!table
+            .app_identifier
+            .starts_with(&table.upstream.app_identifier));
         assert_ne!(table.namespace, table.upstream.namespace);
         assert_ne!(table.env_prefix, "TERAX");
     }
@@ -144,6 +153,25 @@ mod tests {
         );
         assert!(!prefix.ends_with('_'));
         assert_eq!(env("CLI"), format!("{prefix}_CLI"));
+    }
+
+    #[test]
+    fn the_upstream_variables_are_named_so_a_shell_can_be_refused() {
+        assert_eq!(upstream_env("CLI"), "TERAX_CLI");
+        assert_eq!(upstream_env("CONTROL_ADDR"), "TERAX_CONTROL_ADDR");
+        // For every variable this fork sets, the upstream variable of the same role is a
+        // different name: a fork shell never advertises the other application's protocol.
+        for suffix in [
+            "CLI",
+            "CONTROL_ADDR",
+            "CONTROL_TOKEN",
+            "PANE_ID",
+            "TERMINAL",
+            "BLOCKS",
+            "USER_ZDOTDIR",
+        ] {
+            assert_ne!(env(suffix), upstream_env(suffix), "{suffix}");
+        }
     }
 
     #[test]

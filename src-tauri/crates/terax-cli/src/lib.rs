@@ -18,15 +18,42 @@ pub mod hook;
 
 /// The fork's identity table (see `modules::identity` in the app). The CLI must find the
 /// descriptor of *this* application only: the upstream `terax` directory belongs to another
-/// installation, so reading it (or writing it) would be silently reaching into its state.
+/// installation, so reading it (or writing it) would be silently reaching into its state. The
+/// variable names are derived from the table too, so a rename cannot leave the CLI speaking a
+/// name the application no longer sets.
 const IDENTITY_TABLE: &str = include_str!("../../../../src/modules/identity/namespace.json");
 
-fn namespace() -> String {
-    let table: Value = serde_json::from_str(IDENTITY_TABLE).expect("valid identity table");
-    table["namespace"]
+fn identity() -> &'static Value {
+    static TABLE: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| serde_json::from_str(IDENTITY_TABLE).expect("valid identity table"))
+}
+
+fn namespace() -> &'static str {
+    identity()["namespace"]
         .as_str()
         .expect("identity table namespace")
-        .to_string()
+}
+
+fn env_prefix() -> &'static str {
+    identity()["envPrefix"]
+        .as_str()
+        .expect("identity table envPrefix")
+}
+
+/// An environment variable of this fork, e.g. `env_name("CLI")` -> `TERAX_WORKSPACE_FORK_CLI`.
+fn env_name(suffix: &str) -> String {
+    format!("{}_{suffix}", env_prefix())
+}
+
+/// An environment variable of the upstream application, e.g. `upstream_env("CLI")` ->
+/// `TERAX_CLI`. A shell carrying one of these belongs to the other installation.
+fn upstream_env(suffix: &str) -> String {
+    format!(
+        "{}_{suffix}",
+        identity()["upstream"]["envPrefix"]
+            .as_str()
+            .expect("identity table upstream envPrefix")
+    )
 }
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -117,7 +144,7 @@ fn run(args: Vec<OsString>) -> Result<(), CliError> {
         }
         Action::Request { method, params } => {
             let endpoint = load_endpoint()?;
-            let caller = env::var("TERAX_WORKSPACE_FORK_PANE_ID")
+            let caller = env::var(env_name("PANE_ID"))
                 .ok()
                 .and_then(|value| value.parse::<u32>().ok());
             let request = ControlRequest {
@@ -297,16 +324,22 @@ fn usage_error(message: impl Into<String>) -> CliError {
 fn load_endpoint() -> Result<ControlDescriptor, CliError> {
     // A shell that carries only the upstream application's variables belongs to that
     // application. Refuse with a message instead of talking to its control server.
-    if env::var_os("TERAX_CONTROL_ADDR").is_some() || env::var_os("TERAX_CLI").is_some() {
+    let upstream_control = upstream_env("CONTROL_ADDR");
+    let upstream_cli = upstream_env("CLI");
+    if env::var_os(&upstream_control).is_some() || env::var_os(&upstream_cli).is_some() {
         return Err(CliError::new(
             "invalid_environment",
-            "this shell belongs to a different Terax installation (TERAX_CONTROL_ADDR/TERAX_CLI); \
-             run that application's own CLI",
+            format!(
+                "this shell belongs to a different Terax installation ({upstream_control}/{upstream_cli}); \
+                 run that application's own CLI"
+            ),
             EXIT_PROTOCOL,
         ));
     }
-    let env_address = env::var("TERAX_WORKSPACE_FORK_CONTROL_ADDR").ok();
-    let env_token = env::var("TERAX_WORKSPACE_FORK_CONTROL_TOKEN").ok();
+    let fork_control = env_name("CONTROL_ADDR");
+    let fork_token = env_name("CONTROL_TOKEN");
+    let env_address = env::var(&fork_control).ok();
+    let env_token = env::var(&fork_token).ok();
     let (descriptor, require_live_process) = match (env_address, env_token) {
         (Some(address), Some(token)) => (
             ControlDescriptor {
@@ -347,7 +380,7 @@ fn load_endpoint() -> Result<ControlDescriptor, CliError> {
         _ => {
             return Err(CliError::new(
                 "invalid_environment",
-                "TERAX_WORKSPACE_FORK_CONTROL_ADDR and TERAX_WORKSPACE_FORK_CONTROL_TOKEN must be set together",
+                format!("{fork_control} and {fork_token} must be set together"),
                 EXIT_PROTOCOL,
             ));
         }
@@ -605,11 +638,28 @@ mod tests {
     fn the_descriptor_lives_in_the_fork_namespace_not_upstreams() {
         let table: Value = serde_json::from_str(IDENTITY_TABLE).expect("identity table");
         assert_eq!(namespace(), table["namespace"].as_str().unwrap());
-        assert_ne!(namespace(), table["upstream"]["namespace"].as_str().unwrap());
+        assert_ne!(
+            namespace(),
+            table["upstream"]["namespace"].as_str().unwrap()
+        );
         assert_ne!(
             dirs::cache_dir().map(|dir| dir.join(namespace())),
             dirs::cache_dir().map(|dir| dir.join("terax"))
         );
+    }
+
+    #[test]
+    fn environment_names_are_derived_from_the_table_not_literals() {
+        let table = identity();
+        let prefix = table["envPrefix"].as_str().unwrap();
+        assert_eq!(env_name("CLI"), format!("{prefix}_CLI"));
+        assert_eq!(env_name("HOOK_TIMEOUT"), format!("{prefix}_HOOK_TIMEOUT"));
+        assert_eq!(
+            upstream_env("CLI"),
+            format!("{}_CLI", table["upstream"]["envPrefix"].as_str().unwrap())
+        );
+        assert_ne!(env_name("CLI"), upstream_env("CLI"));
+        assert_ne!(env_name("CONTROL_ADDR"), upstream_env("CONTROL_ADDR"));
     }
 
     #[test]
@@ -740,8 +790,7 @@ mod tests {
 
     #[test]
     fn loopback_parsing_rejects_hostnames_and_remote_hosts() {
-        let error =
-            parse_loopback_address("localhost:4312").expect_err("reject hostname");
+        let error = parse_loopback_address("localhost:4312").expect_err("reject hostname");
         assert_eq!(error.code, "invalid_endpoint");
         let error = parse_loopback_address("127.0.0.1").expect_err("reject missing port");
         assert_eq!(error.code, "invalid_endpoint");

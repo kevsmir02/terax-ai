@@ -21,6 +21,7 @@ Every name below is derived from `src/modules/identity/namespace.json`:
 | `envPrefix` | `TERAX_WORKSPACE_FORK` | every environment variable the app sets for a child shell |
 | `upstream.appIdentifier` | `app.crynta.terax` | the identity this fork refuses to run under or read |
 | `upstream.namespace` | `terax` | the directory this fork refuses to write |
+| `upstream.envPrefix` | `TERAX` | the variables that identify an upstream-owned shell (`TERAX_CLI`, `TERAX_CONTROL_ADDR`) |
 
 Readers: `src-tauri/src/modules/identity.rs` (Rust app), `src-tauri/crates/terax-cli`
 (CLI descriptor lookup), `scripts/linux_profile.py` and `scripts/namespace_sentinels.py`
@@ -48,6 +49,7 @@ a literal; tests compare that literal against the table (Rust
 | Control/env handshake (`TERAX_CONTROL_ADDR`, `TERAX_CONTROL_TOKEN`, `TERAX_PANE_ID`) | `TERAX_*` | `TERAX_WORKSPACE_FORK_*` | cross-process: a fork CLI reading an upstream address/token would talk to the other app's server |
 | CLI variable (`TERAX_CLI`) | `TERAX_CLI` | `TERAX_WORKSPACE_FORK_CLI` | persisted inside shared agent configs; setting it would make upstream's installed hooks invoke whichever CLI is on `PATH` |
 | Hook ownership markers | `$TERAX_CLI … hook …`, `notify;Terax;`, `terax;notify`, `__terax_notify` | only commands containing `TERAX_WORKSPACE_FORK_CLI` are ours | the ownership predicate used to claim upstream's commands, so uninstall removed the *other* application's hooks. Upstream commands are now foreign and are never rewritten or removed |
+| Hook tuning (`TERAX_HOOK_TIMEOUT`, `TERAX_HOOK_WAIT`, `TERAX_HOOK_DEBUG`) | `TERAX_HOOK_*` | `TERAX_WORKSPACE_FORK_HOOK_*` | read from the child shell's environment; a user value set for the other installation must not silently retune this one |
 | Gemini hook label | `"name": "terax"` | `"name": "terax-workspace"` | label written into a shared settings file |
 | Pi extension | `.pi/agent/extensions/terax-notifications.ts`, header `// terax-pi-notifications-v2` | `<ns>-notifications.ts`, header `// <ns>-pi-notifications-v<version>` | shared extensions directory; the stale-version check must only consider our own family, and foreign content at our path is refused instead of overwritten |
 | OSC 777 notification marker | `ESC ]777;notify;Terax;<agent>;<event>` | same sequence, parsed read-only | written into terminal output by hook configs the user may still have from upstream. Reading it is interop, writing nothing; no state is touched |

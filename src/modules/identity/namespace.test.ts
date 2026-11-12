@@ -15,7 +15,7 @@ interface NamespaceTable {
   appIdentifier: string;
   namespace: string;
   envPrefix: string;
-  upstream: { appIdentifier: string; namespace: string };
+  upstream: { appIdentifier: string; namespace: string; envPrefix: string };
 }
 
 const table = readJson<NamespaceTable>("src/modules/identity/namespace.json");
@@ -26,6 +26,7 @@ describe("fork identity namespace", () => {
     expect(table.appIdentifier).not.toBe(table.upstream.appIdentifier);
     expect(table.appIdentifier.startsWith(table.upstream.appIdentifier)).toBe(false);
     expect(table.namespace).not.toBe(table.upstream.namespace);
+    expect(table.envPrefix).not.toBe(table.upstream.envPrefix);
   });
 
   it("matches the Tauri config literal", () => {
