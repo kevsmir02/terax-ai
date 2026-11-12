@@ -4,6 +4,27 @@ Status: **planned scope implemented for discovery only.** Nothing here downloads
 installs one, prompts for privilege or relaunches the application. Those are ticket #39
 (install/readiness handoff) and #40/#39 (final identity and release trust) inputs.
 
+## What this build is allowed to do
+
+Discovery only, enforced in two independent places:
+
+| Layer | Today |
+| --- | --- |
+| Code | `checkForUpdate` GETs the manifest endpoint with `fetch`; `requestDownload` requires approval and returns `not-implemented` (ticket #39). |
+| Tauri capability | `src-tauri/capabilities/desktop.json` grants **no** `updater:` permission, so no window can call the plugin's `check`, `download`, `install` or `download_and_install` command. |
+
+The updater plugin is still initialized in `src-tauri/src/lib.rs`, and its blanket set
+(`updater:default`) expands to `allow-check`, `allow-download`, `allow-install` and
+`allow-download-and-install` (the crate's own `permissions/default.toml`). Granting that set
+exposes an install command that no gated path can justify, so the shipped capability does not
+carry it. `scripts/tests/test_capabilities.py` parses the capability files and the plugin's
+permission list and fails if any window is granted an updater command again — including a
+`updater:allow-check` grant, because discovery does not use the native plugin at all.
+
+Removing the grant is not a substitute for #39. When the readiness recheck, package-tool handoff
+and privilege interval exist, #39 adds the one narrow permission that path needs *and* updates
+that test in the same change; the test is what makes a re-grant a deliberate, reviewed decision.
+
 ## Release contract
 
 `src/modules/updater/releaseContract.json` is the single source of the fork's release
