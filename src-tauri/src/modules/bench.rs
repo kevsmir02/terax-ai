@@ -845,14 +845,15 @@ mod platform {
             .unwrap_or_default()
     }
 
-    /// WebKitGTK's helper names. `/proc/<pid>/comm` truncates to 15 bytes ("WebKitWebProces"),
-    /// so this compares prefixes; cmdline normally gives the full name.
+    /// WebKitGTK's helper names. `/proc/<pid>/comm` truncates to 15 bytes
+    /// ("WebKitWebProces", "WebKitNetworkPr"), so this compares a prefix that both the full
+    /// cmdline name and the truncated comm satisfy.
     fn role_name(command: &str) -> Option<&'static str> {
-        if command.starts_with("WebKitWebProcess") {
+        if command.starts_with("WebKitWebProces") {
             Some("web_content")
-        } else if command.starts_with("WebKitNetworkProcess") {
+        } else if command.starts_with("WebKitNetworkPr") {
             Some("networking")
-        } else if command.starts_with("WebKitGPUProcess") {
+        } else if command.starts_with("WebKitGPUProces") {
             Some("gpu")
         } else {
             None
@@ -944,8 +945,11 @@ mod platform {
             assert_eq!(role_name("WebKitWebProcess"), Some("web_content"));
             assert_eq!(role_name("WebKitWebProces"), Some("web_content"));
             assert_eq!(role_name("WebKitNetworkProcess"), Some("networking"));
+            assert_eq!(role_name("WebKitNetworkPr"), Some("networking"));
             assert_eq!(role_name("WebKitGPUProcess"), Some("gpu"));
+            assert_eq!(role_name("WebKitGPUProces"), Some("gpu"));
             assert_eq!(role_name("terax"), None);
+            assert_eq!(role_name("WebKitWebProcessWrapper"), Some("web_content"));
             assert_eq!(command_of(b"/usr/libexec/webkit2gtk-4.1/WebKitWebProcess\0-x\0"), "WebKitWebProcess");
             assert_eq!(command_of(b""), "");
         }

@@ -72,7 +72,8 @@ or out-of-output `HOME`/`XDG_*` directory, the installed app's cache directory, 
 without `TERAX_BENCH_ISOLATED=1`. `--self-test` exercises every case and then launches the real
 bench binary without that variable, asserting it exits nonzero with the guard's message. The
 profile is removed before and after the run; `linux_profile.cleanup` refuses paths outside the
-output directory.
+output directory. `python3 -m unittest discover -s scripts/tests` covers the same invariants
+(allow and deny) without a build.
 
 **The workflow** (in `src/bench/driver.ts`): a real login shell spawns in the first tab; a written
 marker is echoed back and asserted to appear exactly once; a second terminal tab opens; the first
