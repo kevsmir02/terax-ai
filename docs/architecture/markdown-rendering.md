@@ -137,6 +137,14 @@ ownership.
 - `src/modules/markdown/lib/assetPath.test.ts` - boundary/policy outcomes.
 - `src/modules/markdown/lib/codeBlockRunner.test.ts` - the run-in-terminal seam
   reports refusal instead of success when no terminal is published.
+- `scripts/app-lab/run.py --scenario markdown` - the real WebKitGTK seam: the
+  Space-root image, the refused symlink escape, cwd independence, an outside
+  document's own folder, the explicit outside grant, a counted remote pixel that
+  stays at zero requests until the "Load remote images" action, an inert relative
+  link, a hostile document that executes nothing, the syntax ceiling, grant
+  revocation on close and a read that lands after its document closed. Steps and
+  counters are in the report's `markdown` / `markdownServer` blocks; the
+  scenario is documented in `docs/architecture/app-lab.md`.
 - `src/modules/markdown/ownership.test.ts` - the retained renderer never imports
   the AI feature, every consumer of an old entry point is accounted for, the
   markdown tab kind stays behind its dynamic import, and Streamdown is still
