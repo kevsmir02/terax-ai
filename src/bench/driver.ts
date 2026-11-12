@@ -76,10 +76,7 @@ class ScenarioRun {
     extra: Record<string, unknown> = {},
   ): Promise<void> {
     for (let attempt = 1; ; attempt++) {
-      if (
-        !this.scenario.unfocused &&
-        (this.scenario.name !== "occlusion" || !phase.endsWith("-hidden"))
-      )
+      if (!this.scenario.unfocused && !phase.endsWith("-hidden"))
         await this.ensureFront();
       const app = this.app();
       const layers = await this.layerTree(phase);
@@ -102,6 +99,11 @@ class ScenarioRun {
     await fetch(`${this.reportUrl}/log`, { method: "POST", body: line }).catch(
       () => undefined,
     );
+  }
+
+  /** An absolute URL of the orchestrator's own HTTP server (it also serves the preview fixture). */
+  url(path: string): string {
+    return `${this.reportUrl}${path}`;
   }
 
   /**
@@ -461,7 +463,12 @@ async function splitLayout(
   if (kinds[1] === "s") await fill(second, false);
   else await run.startAgent(second, "--history 3000");
   await pause(2000);
-  return { tabId: first.tabId, leaves: [first.leafId, second], dir, promptMarker };
+  return {
+    tabId: first.tabId,
+    leaves: [first.leafId, second],
+    dir,
+    promptMarker,
+  };
 }
 
 /** Copies of the shell prompt and of the agent's live region in the scrollback of both panes. */
@@ -586,7 +593,10 @@ async function dragWithPointer(
       if (wait > 0) await pause(wait);
       const now = performance.now();
       lateMax = Math.max(lateMax, now - due);
-      index = Math.min(events, Math.max(index + 1, Math.floor(((now - began) * hz) / 1000)));
+      index = Math.min(
+        events,
+        Math.max(index + 1, Math.floor(((now - began) * hz) / 1000)),
+      );
       fire("pointermove", document, position(index), 1);
       sent += 1;
     }
@@ -636,7 +646,9 @@ async function splitDragScenario(run: ScenarioRun): Promise<void> {
     const vertical = layout.dir === "col";
     const x0 = rect.left + rect.width / 2;
     const y0 = rect.top + rect.height / 2;
-    const room = vertical ? el.parentElement?.clientHeight ?? 600 : el.parentElement?.clientWidth ?? 1000;
+    const room = vertical
+      ? (el.parentElement?.clientHeight ?? 600)
+      : (el.parentElement?.clientWidth ?? 1000);
     const swing = room * amplitude;
     const events = Math.round(seconds * hz);
     // Alternating drift: the divider never creeps toward its limit over the cycles.
@@ -648,9 +660,7 @@ async function splitDragScenario(run: ScenarioRun): Promise<void> {
       const offset =
         swing * Math.sin((2 * Math.PI * index) / (hz * (seconds / 2))) * ease +
         drift * swing * (index / events);
-      return vertical
-        ? { x: x0, y: y0 + offset }
-        : { x: x0 + offset, y: y0 };
+      return vertical ? { x: x0, y: y0 + offset } : { x: x0 + offset, y: y0 };
     };
     const { result: drag, smooth } = await smoothly(() =>
       dragWithPointer(el, position, events, hz),
@@ -1050,13 +1060,16 @@ async function workflowScenario(
 
   const first = await run.booted();
   await run.sync("workflow-shell", { token });
-  const booted = run.app().tabs.some(
-    (tab) => tab.id === first.tabId && tab.kind === "terminal",
-  );
+  const booted = run
+    .app()
+    .tabs.some((tab) => tab.id === first.tabId && tab.kind === "terminal");
   await check(
     "shell spawn",
     booted,
-    `tab ${first.tabId} leaf ${first.leafId} in ${run.app().tabs.map((tab) => tab.kind).join(",")}`,
+    `tab ${first.tabId} leaf ${first.leafId} in ${run
+      .app()
+      .tabs.map((tab) => tab.kind)
+      .join(",")}`,
   );
 
   // 1. The written marker, echoed back by the real shell through the real PTY.
@@ -1086,9 +1099,9 @@ async function workflowScenario(
   await check(
     "new tab",
     second.tabId !== first.tabId &&
-      run.app().tabs.some(
-        (tab) => tab.id === second.tabId && tab.kind === "terminal",
-      ),
+      run
+        .app()
+        .tabs.some((tab) => tab.id === second.tabId && tab.kind === "terminal"),
     `tab ${second.tabId} leaf ${second.leafId}, ${run.app().tabs.length} tabs`,
   );
 
@@ -1097,15 +1110,26 @@ async function workflowScenario(
   await pause(500);
   const splitLeaf = run.app().splitActivePane(first.tabId, "row");
   if (splitLeaf === null) {
-    throw new Error(await failed("split pane", "the application refused the split"));
+    throw new Error(
+      await failed("split pane", "the application refused the split"),
+    );
   }
   try {
     await run.sessionReady(splitLeaf);
   } catch (error) {
-    throw new Error(await failed("split pane", `no session in the new leaf: ${String(error)}`));
+    throw new Error(
+      await failed(
+        "split pane",
+        `no session in the new leaf: ${String(error)}`,
+      ),
+    );
   }
   const panes = document.querySelectorAll("[data-pane-leaf]").length;
-  await check("split pane", panes >= 2, `leaf ${splitLeaf}, ${panes} pane leaves`);
+  await check(
+    "split pane",
+    panes >= 2,
+    `leaf ${splitLeaf}, ${panes} pane leaves`,
+  );
   await run.sync("workflow-split", { token, leafId: splitLeaf, panes });
 
   // 4. Switch away and back: the first tab still owns the split and its scrollback.
@@ -1143,7 +1167,12 @@ async function workflowScenario(
       30_000,
     );
   } catch (error) {
-    throw new Error(await failed("opened file text", `${String(error)}: ${editorText().slice(0, 120)}`));
+    throw new Error(
+      await failed(
+        "opened file text",
+        `${String(error)}: ${editorText().slice(0, 120)}`,
+      ),
+    );
   }
   const tab = fileTab();
   await check(
@@ -1165,6 +1194,375 @@ async function workflowScenario(
   return { workflow: { token, pass, steps, fileTabId } };
 }
 
+/** One beat or teardown notice posted by the served preview fixture page (see run.py). */
+type PreviewFixtureMessage = {
+  source: "terax-preview-fixture";
+  kind: "beat" | "pagehide";
+  instance: string;
+  href: string;
+  seq: number;
+  redirected: boolean;
+  visibility: string;
+  native: { tauri: boolean; internals: boolean; invoke: string };
+  topNav: { attempted: boolean; error: string | null };
+};
+
+/**
+ * The preview acceptance scenario: a real dev-server page in the real webview's iframe, with the
+ * app's own tab/Space/window actions around it. The fixture page reports over `postMessage`, so
+ * teardown is observed as the frame's page really stopping, not as an attribute change.
+ *
+ * The orchestrator serves the fixture and, for the `preview-blur` phase, opens a separate
+ * application window so the app loses OS focus while its window stays visible.
+ */
+async function previewScenario(
+  run: ScenarioRun,
+): Promise<Record<string, unknown>> {
+  const steps: WorkflowStep[] = [];
+  const check = async (name: string, ok: boolean, detail: string) => {
+    steps.push({ name, ok, detail });
+    await run.log(`[preview] ${ok ? "PASS" : "FAIL"} ${name}: ${detail}`);
+  };
+  const failed = async (name: string, detail: string) => {
+    await check(name, false, detail);
+    return `preview step failed: ${name}: ${detail}`;
+  };
+
+  const messages: PreviewFixtureMessage[] = [];
+  const receive = (event: MessageEvent) => {
+    const data = event.data as PreviewFixtureMessage | null;
+    if (data?.source === "terax-preview-fixture") messages.push(data);
+  };
+  window.addEventListener("message", receive);
+
+  const frame = () => document.querySelector('iframe[title="Preview"]');
+  const beats = () => messages.filter((message) => message.kind === "beat");
+  const lastBeat = () => beats()[beats().length - 1] ?? null;
+  const instances = () => [...new Set(beats().map((beat) => beat.instance))];
+  const waitForBeat = (
+    predicate: (message: PreviewFixtureMessage) => boolean,
+    what: string,
+    timeoutMs = 30_000,
+  ) => run.waitFor(() => beats().some(predicate), what, timeoutMs);
+  const pauseBeats = async (ms: number) => {
+    const before = beats().length;
+    await pause(ms);
+    return beats().length - before;
+  };
+  const notice = (reason: string) =>
+    document.querySelector(`[data-preview-reloaded="${reason}"]`);
+
+  try {
+    const first = await run.booted();
+    const fixture = run.url("/preview-fixture?redirect=1");
+    const previewId = run.app().openPreviewTab(fixture);
+    try {
+      await run.waitFor(() => Boolean(frame()), "the preview frame", 40_000);
+      await waitForBeat(() => true, "the fixture page's first report");
+    } catch (error) {
+      throw new Error(await failed("open preview", String(error)));
+    }
+    await check(
+      "open preview",
+      run.app().activeId === previewId,
+      `tab ${previewId}, src ${(frame()?.getAttribute("src") ?? "").slice(0, 72)}`,
+    );
+
+    // The server answers with a redirect and the frame follows it. A redirect is navigation of
+    // the frame only: the application's own document must stay where it is.
+    try {
+      await waitForBeat(
+        (message) => message.redirected,
+        "the redirected preview page",
+      );
+    } catch (error) {
+      throw new Error(await failed("redirect inside frame", String(error)));
+    }
+    const appHref = location.href;
+    const redirected = lastBeat();
+    await check(
+      "redirect inside frame",
+      Boolean(
+        redirected?.href.includes("/preview-redirected") &&
+          !appHref.includes("/preview-redirected") &&
+          location.href === appHref,
+      ),
+      `frame ${redirected?.href} app ${location.href}`,
+    );
+
+    // The frame is a separate, untrusted document: it has no Tauri globals even though the app
+    // page does, and its sandbox refuses to move the top-level window.
+    await check(
+      "native access refused",
+      redirected?.native.tauri === false &&
+        redirected?.native.internals === false &&
+        redirected?.native.invoke === "undefined" &&
+        "__TAURI_INTERNALS__" in window,
+      `${JSON.stringify(redirected?.native)} parentHasIpc=${"__TAURI_INTERNALS__" in window}`,
+    );
+    await check(
+      "top navigation refused",
+      redirected?.topNav.attempted === true &&
+        location.href === appHref &&
+        !location.href.includes("preview-escape"),
+      `attempted=${redirected?.topNav.attempted} error=${redirected?.topNav.error ?? "-"} app=${location.href}`,
+    );
+
+    const instance = redirected?.instance ?? "";
+    await run.sync("preview-active", { instance, frames: 1 });
+
+    // Inactive tab: the frame goes away and the page stops reporting in the same turn.
+    run.select(first.tabId);
+    try {
+      await run.waitFor(
+        () => !frame(),
+        "the frame to unload on a tab switch",
+        5000,
+      );
+    } catch (error) {
+      throw new Error(await failed("tab switch unloads", String(error)));
+    }
+    const beatsAfterSwitch = beats().length;
+    await run.sync("preview-tab-hidden", { instance });
+    const afterTab = await pauseBeats(1500);
+    await check(
+      "tab switch unloads",
+      !frame() && beats().length === beatsAfterSwitch,
+      `${afterTab} beats after teardown, ${beatsAfterSwitch} before`,
+    );
+
+    // Viewing a preview never owns the independent server process.
+    const ping = await fetch(run.url("/preview-ping"))
+      .then((response) => response.json())
+      .catch((error) => ({ error: String(error) }));
+    await check(
+      "dev server survives teardown",
+      ping?.pong === true,
+      JSON.stringify(ping),
+    );
+
+    // Returning re-mounts a fresh document and explains the reload where it happens.
+    run.select(previewId);
+    try {
+      await waitForBeat(
+        (message) => message.instance !== instance && message.redirected,
+        "the reloaded preview page",
+      );
+    } catch (error) {
+      throw new Error(await failed("tab return reloads", String(error)));
+    }
+    const tabNotice = notice("tab-inactive");
+    await check(
+      "tab return reloads",
+      Boolean(frame()) && instances().length >= 2,
+      `instances ${instances().join(",")}`,
+    );
+    await check(
+      "tab reload disclosed",
+      Boolean(tabNotice) &&
+        (tabNotice?.textContent ?? "").includes("Preview reloaded") &&
+        (tabNotice?.textContent ?? "").toLowerCase().includes("lost"),
+      JSON.stringify(tabNotice?.textContent?.slice(0, 160) ?? null),
+    );
+    await run.sync("preview-tab-returned", {
+      instances: instances().length,
+    });
+
+    // Inactive Space: every frame of the Space that left the screen unloads.
+    const spaceA =
+      run.app().tabs.find((tab) => tab.id === previewId)?.spaceId ?? "";
+    const beforeSpace = lastBeat()?.instance ?? "";
+    run.app().newSpace();
+    try {
+      await run.waitFor(
+        () => !frame(),
+        "the frame to unload on a Space switch",
+        8000,
+      );
+    } catch (error) {
+      throw new Error(await failed("space switch unloads", String(error)));
+    }
+    const beatsAfterSpace = beats().length;
+    await run.sync("preview-space-hidden", { spaceA });
+    const afterSpace = await pauseBeats(1500);
+    await check(
+      "space switch unloads",
+      !frame() && beats().length === beatsAfterSpace,
+      `${afterSpace} beats after teardown, ${beatsAfterSpace} before`,
+    );
+
+    run.app().setActiveSpace(spaceA);
+    try {
+      await waitForBeat(
+        (message) => message.instance !== beforeSpace && message.redirected,
+        "the reloaded preview page after returning to the Space",
+      );
+    } catch (error) {
+      throw new Error(await failed("space return reloads", String(error)));
+    }
+    const spaceNotice = notice("space-inactive");
+    await check(
+      "space return reloads",
+      Boolean(frame()) && instances().length >= 3,
+      `instances ${instances().join(",")}`,
+    );
+    await check(
+      "space reload disclosed",
+      Boolean(spaceNotice) &&
+        (spaceNotice?.textContent ?? "").includes("another Space"),
+      JSON.stringify(spaceNotice?.textContent?.slice(0, 120) ?? null),
+    );
+    await run.sync("preview-space-returned", {
+      instances: instances().length,
+    });
+
+    // Focus loss while the window is still visible is NOT a teardown reason. The orchestrator
+    // opens another application for this phase.
+    let blurExercised = false;
+    const beforeBlur = lastBeat()?.instance ?? "";
+    await run.sync("preview-blur");
+    try {
+      await run.waitFor(
+        () => !document.hasFocus(),
+        "another window to take focus",
+        8000,
+      );
+      blurExercised = !document.hasFocus();
+    } catch {
+      blurExercised = false;
+    }
+    if (blurExercised) {
+      const blurBeats = await pauseBeats(1500);
+      await check(
+        "visible blur keeps the frame",
+        Boolean(frame()) &&
+          (lastBeat()?.instance ?? "") === beforeBlur &&
+          document.visibilityState === "visible",
+        `hasFocus=${document.hasFocus()} visibility=${document.visibilityState} beats=${blurBeats} instance=${beforeBlur}`,
+      );
+    } else {
+      await run.log(
+        "[preview] SKIP visible blur: no other window could take focus on this desktop",
+      );
+    }
+
+    // A supported hidden signal (the window is unmapped) unloads immediately, and restoring
+    // re-mounts. This is the hidden/minimized path the Linux session can actually report.
+    const hide = await run.native({ cmd: "hide", mode: "orderout" });
+    try {
+      await run.waitFor(
+        () => !frame(),
+        "the frame to unload while the window is hidden",
+        8000,
+      );
+    } catch (error) {
+      throw new Error(await failed("hidden window unloads", String(error)));
+    }
+    const hidden = {
+      hide,
+      visibility: document.visibilityState,
+      hasFocus: document.hasFocus(),
+      snapshot: await run.native({ cmd: "snapshot" }),
+    };
+    await run.sync("preview-window-hidden", { hide: hidden });
+    await check(
+      "hidden window unloads",
+      hide.ok === true &&
+        !frame() &&
+        hidden.visibility !== "visible" &&
+        hidden.snapshot.windowVisible === false,
+      JSON.stringify({
+        visibility: hidden.visibility,
+        windowVisible: hidden.snapshot.windowVisible,
+      }),
+    );
+
+    const beforeRestore = lastBeat()?.instance ?? "";
+    const show = await run.native({ cmd: "show", mode: "orderout" });
+    try {
+      await waitForBeat(
+        (message) => message.instance !== beforeRestore && message.redirected,
+        "the preview page after the window is shown",
+      );
+    } catch (error) {
+      throw new Error(await failed("show reloads", String(error)));
+    }
+    await run.sync("preview-window-restored", { show });
+    await check(
+      "show reloads",
+      Boolean(frame()) && show.ok === true,
+      `instances ${instances().join(",")}`,
+    );
+
+    // Minimize: whatever signal this desktop reports is what the lifecycle must follow. On
+    // Wayland the compositor does not report iconification to the client, so this records the
+    // observed case instead of assuming a minimize is visible to the application.
+    const minimize = await run.native({ cmd: "hide", mode: "miniaturize" });
+    await pause(2000);
+    const minimized = {
+      visibility: document.visibilityState,
+      hasFocus: document.hasFocus(),
+      frameLoaded: Boolean(frame()),
+      snapshot: await run.native({ cmd: "snapshot" }),
+    };
+    const signalReported = minimized.visibility !== "visible";
+    await run.sync("preview-minimized", { minimize, minimized });
+    await check(
+      "minimize follows the reported signal",
+      minimized.frameLoaded !== signalReported,
+      `reportedHidden=${signalReported} visibility=${minimized.visibility} frameLoaded=${minimized.frameLoaded} miniaturized=${minimized.snapshot.miniaturized}`,
+    );
+    await run.log(
+      `[preview] SIGNAL minimize reported=${signalReported} (Wayland compositors do not report iconification; occlusion is not available on Linux either)`,
+    );
+    const restored = await run.native({ cmd: "show", mode: "miniaturize" });
+    await pause(1500);
+    await run.sync("preview-minimize-restored", { restored });
+
+    // Closing the tab also releases the frame, and the dev server outlives it again.
+    const framesBeforeClose = instances().length;
+    run.app().closeTab(previewId);
+    try {
+      await run.waitFor(
+        () => !frame() && !run.app().tabs.some((tab) => tab.id === previewId),
+        "the closed preview tab",
+        8000,
+      );
+    } catch (error) {
+      throw new Error(await failed("close releases the frame", String(error)));
+    }
+    const pingAfterClose = await fetch(run.url("/preview-ping"))
+      .then((response) => response.json())
+      .catch((error) => ({ error: String(error) }));
+    await check(
+      "close releases the frame and keeps the server",
+      !frame() && pingAfterClose?.pong === true,
+      `instances before close ${framesBeforeClose}, ping ${JSON.stringify(pingAfterClose)}`,
+    );
+    await run.sync("preview-closed", { instances: instances().length });
+
+    const pass = steps.every((step) => step.ok);
+    await run.log(
+      `[preview] ${pass ? "PASS" : "FAIL"} summary: ${steps.filter((step) => !step.ok).length} failures of ${steps.length}`,
+    );
+    return {
+      workflow: { pass, steps },
+      preview: {
+        instances: instances().length,
+        messages: messages.length,
+        blurExercised,
+        minimize: {
+          reportedHidden: signalReported,
+          visibility: minimized.visibility,
+          miniaturized: minimized.snapshot.miniaturized,
+        },
+      },
+    };
+  } finally {
+    window.removeEventListener("message", receive);
+  }
+}
+
 const SCENARIOS: Record<
   BenchScenario["name"],
   (run: ScenarioRun) => Promise<unknown>
@@ -1178,6 +1576,7 @@ const SCENARIOS: Record<
   "fs-churn": fsChurnScenario,
   input: inputScenario,
   workflow: workflowScenario,
+  preview: previewScenario,
 };
 
 let started = false;
@@ -1193,11 +1592,9 @@ export async function startBenchDriver(app: () => BenchAppApi): Promise<void> {
   try {
     await pause(1500);
     await run.sync("blank", { identifier: config.identifier });
-    const summary = (
-      (await SCENARIOS[config.scenario.name](run)) as
-        | Record<string, unknown>
-        | undefined
-    );
+    const summary = (await SCENARIOS[config.scenario.name](run)) as
+      | Record<string, unknown>
+      | undefined;
     await run.sync("done", summary ?? {});
   } catch (error) {
     console.error("[bench] scenario failed:", error);

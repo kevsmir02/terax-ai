@@ -661,7 +661,8 @@ export default function App() {
           return;
         }
         toast("Terminal is busy", {
-          description: "Open a new tab to go there, or exit the running program.",
+          description:
+            "Open a new tab to go there, or exit the running program.",
         });
       });
     },
@@ -1427,6 +1428,9 @@ export default function App() {
               splitActivePane={splitActivePane}
               closeTab={closeTab}
               openFileTab={(path, pin = true) => openFileTab(path, pin)}
+              openPreviewTab={openPreviewTab}
+              newSpace={handleNewSpace}
+              setActiveSpace={(id) => useSpaces.getState().setActive(id)}
               readBuffer={(leafId, maxLines) =>
                 terminalRefs.current.get(leafId)?.getBuffer(maxLines) ?? null
               }
@@ -1548,6 +1552,10 @@ export default function App() {
                         tabs={tabs}
                         activeId={activeId}
                         activeTab={activeTab}
+                        activeSpaceId={activeSpaceId ?? DEFAULT_SPACE_ID}
+                        subscribeWindowPresentation={
+                          subscribeWindowPresentation
+                        }
                         registerTerminalHandle={registerTerminalHandle}
                         onSearchReady={handleSearchReady}
                         onCwd={handleTerminalCwd}

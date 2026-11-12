@@ -4,6 +4,7 @@ import { AiDiffStack, EditorStack, GitDiffStack } from "@/modules/editor";
 import { GitHistoryStack } from "@/modules/git-history";
 import { MarkdownStack } from "@/modules/markdown";
 import { PreviewStack } from "@/modules/preview";
+import type { PresentationSubscription } from "@/modules/preview/lib/windowVisibility";
 import type { Tab } from "@/modules/tabs";
 import { TerminalStack } from "@/modules/terminal";
 
@@ -17,6 +18,10 @@ type Props = {
   tabs: Tab[];
   activeId: number;
   activeTab: Tab | undefined;
+  /** The Space on screen; previews in every other Space unload their frames. */
+  activeSpaceId: string;
+  /** Shared native window-presentation feed (occlusion/sleep), optional. */
+  subscribeWindowPresentation?: PresentationSubscription;
   registerTerminalHandle: TerminalStackProps["registerHandle"];
   onSearchReady: TerminalStackProps["onSearchReady"];
   onCwd: TerminalStackProps["onCwd"];
@@ -48,6 +53,8 @@ export function WorkspaceSurface({
   tabs,
   activeId,
   activeTab,
+  activeSpaceId,
+  subscribeWindowPresentation,
   registerTerminalHandle,
   onSearchReady,
   onCwd,
@@ -113,6 +120,8 @@ export function WorkspaceSurface({
         <PreviewStack
           tabs={tabs}
           activeId={activeId}
+          activeSpaceId={activeSpaceId}
+          subscribePresentation={subscribeWindowPresentation}
           registerHandle={registerPreviewHandle}
           onUrlChange={onPreviewUrlChange}
         />

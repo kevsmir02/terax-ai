@@ -302,6 +302,39 @@ def descendants(root: int, table: dict[int, tuple[int, str]]) -> list[int]:
 # Orchestration
 # ---------------------------------------------------------------------------------------------
 
+PREVIEW_FIXTURE = """<!doctype html>
+<html><head><meta charset="utf-8"><title>preview fixture</title></head>
+<body><h1>preview fixture</h1><p id="state"></p>
+<script>
+const instance = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+const native = {
+  tauri: typeof window.__TAURI__ !== "undefined",
+  internals: typeof window.__TAURI_INTERNALS__ !== "undefined",
+  invoke: typeof (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke),
+};
+// A sandboxed frame without allow-top-navigation* must not be able to move the app window.
+const topNav = { attempted: false, error: null };
+try { topNav.attempted = true; window.top.location.href = "http://127.0.0.1:1/preview-escape"; }
+catch (error) { topNav.error = String(error); }
+let seq = 0;
+function payload(kind) {
+  return {
+    source: "terax-preview-fixture", kind, instance, href: location.href, seq: seq++,
+    redirected: location.pathname === "/preview-redirected", visibility: document.visibilityState,
+    native, topNav,
+  };
+}
+function post(kind) { try { window.parent.postMessage(payload(kind), "*"); } catch (error) {} }
+setInterval(function () { post("beat"); }, 200);
+post("beat");
+addEventListener("pagehide", function () { post("pagehide"); });
+document.getElementById("state").textContent = instance + " " + location.pathname;
+if (location.search.indexOf("redirect=1") !== -1) {
+  setTimeout(function () { location.href = "/preview-redirected?from=fixture"; }, 600);
+}
+</script></body></html>
+"""
+
 
 class ReportServer:
     """Receives phase events. A handler thread blocks until the main thread has sampled."""
@@ -309,6 +342,9 @@ class ReportServer:
     def __init__(self):
         self.events: queue.Queue = queue.Queue()
         self.log: list[str] = []
+        self.fixture_loads = 0
+        self.redirect_hits = 0
+        self.pings = 0
         outer = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -319,10 +355,39 @@ class ReportServer:
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Access-Control-Allow-Headers", "*")
 
+            def _send(self, status: int, body: bytes, content_type: str) -> None:
+                self.send_response(status)
+                self._cors()
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
             def do_OPTIONS(self):
                 self.send_response(204)
                 self._cors()
                 self.end_headers()
+
+            def do_GET(self):
+                path = self.path.split("?")[0]
+                if path == "/preview-ping":
+                    outer.pings += 1
+                    body = json.dumps({
+                        "pong": True,
+                        "hits": outer.pings,
+                        "fixtureLoads": outer.fixture_loads,
+                        "redirectHits": outer.redirect_hits,
+                    }).encode()
+                    self._send(200, body, "application/json")
+                elif path in ("/preview-fixture", "/preview-redirected"):
+                    # Fixture loads are served for as long as this server lives: frame teardown
+                    # must never stop it.
+                    outer.fixture_loads += 1
+                    if path == "/preview-redirected":
+                        outer.redirect_hits += 1
+                    self._send(200, PREVIEW_FIXTURE.encode(), "text/html")
+                else:
+                    self._send(404, b"not found", "text/plain")
 
             def do_POST(self):
                 body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
@@ -378,10 +443,10 @@ def main() -> int:
         raise SystemExit(f"The app lab requires macOS or Linux, not {SYSTEM}.")
     if not args.scenario and not args.build_only:
         raise SystemExit("--scenario is required")
-    if SYSTEM == "Linux" and not args.build_only and args.scenario != "workflow":
+    if SYSTEM == "Linux" and not args.build_only and args.scenario not in ("workflow", "preview"):
         raise SystemExit(
-            "On Linux only the workflow scenario is implemented so far (ticket 02 owns the "
-            "measured scenarios, ticket 32 input/resize/layers)."
+            "On Linux only the workflow and preview scenarios are implemented so far (ticket 02 "
+            "owns the measured scenarios, ticket 32 input/resize/layers)."
         )
     source = (args.source or REPO).resolve()
     output = (args.output or Path(tempfile.mkdtemp(prefix="terax-app-lab-"))).resolve()
@@ -742,7 +807,7 @@ def run(args, app: Path, source: Path, output: Path) -> int:
 
 
 def scenario_json_linux(args, file: Path, first_line: str, workspace: Path) -> dict:
-    """The workflow scenario as the driver receives it (Linux; no synthetic agent)."""
+    """The workflow/preview scenario as the driver receives it (Linux; no synthetic agent)."""
     local: dict[str, str | None] = {}
     for entry in args.local_storage:
         key, _, value = entry.partition("=")
@@ -754,6 +819,14 @@ def scenario_json_linux(args, file: Path, first_line: str, workspace: Path) -> d
     # fetches api.github.com and can raise a dialog over the window. Preseed the throttle.
     local.setdefault("terax:updater:last-check", str(int(time.time() * 1000)))
     width, height = (float(value) for value in args.window.lower().split("x"))
+    if args.scenario == "preview":
+        # The driver builds the fixture URL from TERAX_BENCH_REPORT_URL; the server serves it.
+        return {
+            "name": "preview",
+            "window": {"width": width, "height": height},
+            "cwds": {"shell": str(workspace)},
+            "localStorage": local,
+        }
     return {
         "name": "workflow",
         "window": {"width": width, "height": height},
@@ -762,6 +835,29 @@ def scenario_json_linux(args, file: Path, first_line: str, workspace: Path) -> d
         "cwds": {"shell": str(workspace)},
         "localStorage": local,
     }
+
+
+def open_focus_stealer() -> dict:
+    """Opens a separate application window so the app loses focus while staying visible.
+
+    Wayland offers no way to take focus from a process, but a newly mapped toplevel usually
+    takes it; the scenario driver records whether a blur was actually observed, so a desktop
+    that refuses to hand focus over is reported instead of assumed.
+    """
+    for tool in ("zenity", "yad"):
+        binary = shutil.which(tool)
+        if not binary:
+            continue
+        try:
+            process = subprocess.Popen(
+                [binary, "--info", "--text=Terax preview focus probe", "--timeout=6"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as error:
+            return {"tool": None, "reason": f"{tool}: {error}"}
+        return {"tool": tool, "pid": process.pid}
+    return {"tool": None, "reason": "no zenity or yad on this host"}
 
 
 def run_linux(args, binary: Path, source: Path, output: Path) -> int:
@@ -862,6 +958,16 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                     manifest["samples"].append({"phase": "done", "tMonoNs": time.monotonic_ns(), "event": app_report.slim_event(event)})
                     workflow = event.get("workflow") or {}
                     break
+                if phase == "preview-blur":
+                    # The window must lose OS focus while staying visible, so a separate
+                    # application window is opened. The driver records whether a blur was
+                    # actually observed instead of assuming it.
+                    focus_stealer = open_focus_stealer()
+                    manifest["focusStealer"] = focus_stealer
+                    if not focus_stealer.get("tool"):
+                        manifest["qualification"]["advisories"].append(
+                            "visible blur could not be exercised: no zenity/yad on this host"
+                        )
                 reasons = app_report.qualify(args.scenario, phase, event)
                 manifest["samples"].append({
                     "phase": phase, "tMonoNs": time.monotonic_ns(),
@@ -895,6 +1001,13 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         if server.log:
             (output / "page.log").write_text("\n".join(server.log))
         manifest["workflow"] = workflow
+        # The fixture server is the independent process previews are served by; these counters
+        # show it kept answering across every frame teardown.
+        manifest["previewServer"] = {
+            "fixtureLoads": server.fixture_loads,
+            "redirectHits": server.redirect_hits,
+            "pings": server.pings,
+        }
         manifest["environment"]["loadAverageEnd"] = [round(value, 2) for value in os.getloadavg()]
         unfocused = [
             sample["phase"] for sample in manifest["samples"]

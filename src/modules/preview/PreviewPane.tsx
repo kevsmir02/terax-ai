@@ -18,6 +18,12 @@ import {
   PreviewAddressBar,
   type PreviewAddressBarHandle,
 } from "./PreviewAddressBar";
+import {
+  previewFrameLifecycle,
+  previewReloadNotice,
+  reloadNoticeAfter,
+  type PreviewFrameUnloadReason,
+} from "./lib/frameLifecycle";
 import { isAllowedPreviewUrl, loopbackPreviewOrigin } from "./lib/previewUrl";
 
 export type PreviewPaneHandle = {
@@ -28,40 +34,61 @@ export type PreviewPaneHandle = {
 
 type Props = {
   url: string;
+  /** The tab that owns this frame is the active tab of its Space. */
   visible: boolean;
+  /** The tab's Space is the active Space. */
+  spaceActive: boolean;
+  /** A supported window-visibility signal says the window is visible (focus is not one). */
+  windowVisible: boolean;
   onUrlChange: (url: string) => void;
 };
 
-// Tear the iframe down after this much invisibility — a background dev
-// server page can hold hundreds of MB inside the WebView.
-const SUSPEND_AFTER_MS = 30_000;
-
 export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
-  function PreviewPane({ url, visible, onUrlChange }, ref) {
+  function PreviewPane(
+    { url, visible, spaceActive, windowVisible, onUrlChange },
+    ref,
+  ) {
     // `nonce` is part of the iframe `key`. Bumping it remounts the iframe,
     // which is the only reliable cross-origin reload (calling
     // contentWindow.location.reload() throws on cross-origin frames).
     const [nonce, setNonce] = useState(0);
-    const [loaded, setLoaded] = useState(visible);
     const [dismissedCookieOrigin, setDismissedCookieOrigin] = useState<
       string | null
     >(null);
     const addressRef = useRef<PreviewAddressBarHandle>(null);
 
+    // The frame exists only while it is on screen: inactive tab/Space or a
+    // hidden window tears it down in this render, not after a grace period.
+    const lifecycle = previewFrameLifecycle({
+      tabActive: visible,
+      spaceActive,
+      windowVisible,
+    });
+    // Remembers why the frame went away so the reload (and the state it lost)
+    // can be explained where it re-mounts.
+    const [reloadNotice, setReloadNotice] =
+      useState<PreviewFrameUnloadReason | null>(null);
+    const previousLifecycle = useRef(lifecycle);
     useEffect(() => {
-      if (visible) {
-        setLoaded(true);
-        return;
-      }
-      const t = setTimeout(() => setLoaded(false), SUSPEND_AFTER_MS);
-      return () => clearTimeout(t);
-    }, [visible]);
+      const next = reloadNoticeAfter(
+        previousLifecycle.current,
+        lifecycle,
+        reloadNotice,
+      );
+      previousLifecycle.current = lifecycle;
+      if (next !== reloadNotice) setReloadNotice(next);
+    }, [lifecycle, reloadNotice]);
+
+    const reload = () => setNonce((n) => n + 1);
+    const submit = (next: string) => {
+      setReloadNotice(null);
+      onUrlChange(next);
+    };
 
     useImperativeHandle(
       ref,
       () => ({
         reload: () => {
-          setLoaded(true);
           setNonce((n) => n + 1);
         },
         focusAddressBar: () => addressRef.current?.focus(),
@@ -87,8 +114,8 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
         <PreviewAddressBar
           ref={addressRef}
           url={url}
-          onSubmit={onUrlChange}
-          onReload={() => setNonce((n) => n + 1)}
+          onSubmit={submit}
+          onReload={reload}
         />
         {showXfoHint ? (
           <div className="flex h-7 shrink-0 items-center gap-1.5 border-b border-border/60 bg-amber-500/8 px-3 text-[11px] text-amber-600 dark:text-amber-400">
@@ -144,6 +171,12 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
             </button>
           </div>
         ) : null}
+        {lifecycle.mounted && reloadNotice ? (
+          <PreviewReloadNotice
+            reason={reloadNotice}
+            onDismiss={() => setReloadNotice(null)}
+          />
+        ) : null}
         <div
           className={
             url
@@ -152,9 +185,11 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
           }
         >
           {url && !allowed ? (
-            <p className="p-4 text-sm text-destructive">This URL cannot be loaded in preview.</p>
+            <p className="p-4 text-sm text-destructive">
+              This URL cannot be loaded in preview.
+            </p>
           ) : url ? (
-            loaded ? (
+            lifecycle.mounted ? (
               <iframe
                 key={`${url}#${nonce}`}
                 src={url}
@@ -171,12 +206,7 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
                 allow="clipboard-read; clipboard-write; fullscreen"
               />
             ) : (
-              <SuspendedState
-                onReload={() => {
-                  setLoaded(true);
-                  setNonce((n) => n + 1);
-                }}
-              />
+              <UnloadedState reason={lifecycle.reason} />
             )
           ) : (
             <EmptyState />
@@ -187,27 +217,78 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
   },
 );
 
-function SuspendedState({ onReload }: { onReload: () => void }) {
+/**
+ * Shown where the frame re-mounts: the page reloads from its own server and anything held only
+ * in the old document is gone. Dismissible because it describes a past event, not a current
+ * problem.
+ */
+export function PreviewReloadNotice({
+  reason,
+  onDismiss,
+}: {
+  reason: PreviewFrameUnloadReason;
+  onDismiss: () => void;
+}) {
+  const notice = previewReloadNotice(reason);
   return (
-    <div className="flex h-full w-full flex-col items-center justify-center gap-3 px-6 text-center">
+    <div
+      role="status"
+      data-preview-reloaded={reason}
+      className="flex shrink-0 items-start gap-1.5 border-b border-border/60 bg-muted/60 px-3 py-1.5 text-[11px] text-muted-foreground"
+    >
+      <HugeiconsIcon
+        icon={InformationCircleIcon}
+        size={12}
+        strokeWidth={1.75}
+        className="mt-0.5 shrink-0"
+      />
+      <div className="min-w-0 flex-1 space-y-0.5">
+        <p className="font-medium text-foreground">{notice.title}</p>
+        <p className="leading-relaxed">{notice.detail}</p>
+        <p className="leading-relaxed opacity-75">{notice.limitation}</p>
+      </div>
+      <button
+        type="button"
+        aria-label="Dismiss preview reload notice"
+        title="Dismiss"
+        onClick={onDismiss}
+        className="flex size-5 shrink-0 items-center justify-center rounded hover:bg-accent/60 hover:text-foreground"
+      >
+        <HugeiconsIcon icon={Cancel01Icon} size={10} strokeWidth={2} />
+      </button>
+    </div>
+  );
+}
+
+/**
+ * The frame's placeholder while it is unloaded. The pane itself is hidden in every unloaded
+ * state (inactive tab, inactive Space, hidden window), so this is only ever on screen for the
+ * render in which the frame returns — the real explanation of the lost state is the notice
+ * above the fresh frame.
+ */
+function UnloadedState({ reason }: { reason: PreviewFrameUnloadReason }) {
+  const cause =
+    reason === "space-inactive"
+      ? "this Space is inactive"
+      : reason === "window-hidden"
+        ? "the window is hidden"
+        : "another tab is active";
+  return (
+    <div
+      data-preview-unloaded={reason}
+      className="flex h-full w-full flex-col items-center justify-center gap-3 px-6 text-center"
+    >
       <div className="flex size-10 items-center justify-center rounded-2xl border border-border/60 bg-card text-muted-foreground">
         <HugeiconsIcon icon={Globe02Icon} size={18} strokeWidth={1.5} />
       </div>
       <div className="space-y-1">
         <p className="text-[12.5px] font-medium text-foreground">
-          Preview suspended
+          Preview unloaded
         </p>
         <p className="max-w-xs text-[11px] leading-relaxed text-muted-foreground">
-          Released to free memory after sitting in the background.
+          Unloaded while {cause}. It reloads automatically when you return.
         </p>
       </div>
-      <button
-        type="button"
-        onClick={onReload}
-        className="rounded-md border border-border/60 bg-card px-3 py-1 text-[11px] hover:bg-accent/50"
-      >
-        Reload
-      </button>
     </div>
   );
 }

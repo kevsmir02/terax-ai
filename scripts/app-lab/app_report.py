@@ -19,7 +19,7 @@ if str(_RENDERER_PROFILE) not in sys.path:
 import lab_report  # noqa: E402
 from lab_report import MIB, interval, slope, table  # noqa: E402
 
-SCENARIOS = ["tabs", "resize", "split-drag", "occlusion", "agents-steady", "idle", "fs-churn", "input", "workflow"]
+SCENARIOS = ["tabs", "resize", "split-drag", "occlusion", "agents-steady", "idle", "fs-churn", "input", "workflow", "preview"]
 ROLES = ["host", "web_content", "gpu", "networking"]
 ROLE_LABELS = {"host": "host", "web_content": "WebContent", "gpu": "GPU", "networking": "Network", "workload": "PTY-procs", "web_content_prewarmed": "WC-prewarm"}
 # Footprint categories worth a column; everything else is rolled into the process total.
@@ -189,11 +189,11 @@ def qualify(scenario: str, phase: str, event: dict) -> list[str]:
     """Reasons this sample is not valid evidence for the phase it claims to measure."""
     if phase in ("blank", "setup", "done", "error"):
         return []
-    if scenario == "workflow":
+    if scenario in ("workflow", "preview"):
         # Wayland cannot be told to hand focus to a window (gtk_window_present/set_focus are
-        # hints) and WebKitGTK exposes no occlusion state, so focus is advisory for this
-        # scenario: the app's own actions and the page's rendered text are the evidence. The
-        # orchestrator records the focus state as an advisory instead (see run.py).
+        # hints) and WebKitGTK exposes no occlusion state, so focus is advisory for these
+        # scenarios: the app's own actions and the page's rendered behaviour are the evidence.
+        # The orchestrator records the focus state as an advisory instead (see run.py).
         return []
     native = event.get("native") or {}
     diag = event.get("diag") or {}
