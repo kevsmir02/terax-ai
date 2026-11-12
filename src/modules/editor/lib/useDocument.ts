@@ -330,6 +330,18 @@ export function useDocument({ path, visible, onDirtyChange }: Options) {
     return false;
   }, [io, path, setConflictNow]);
 
+  /**
+   * Runs an app-owned format sequence (baseline check, external formatter,
+   * read-back) exclusively with respect to saves. An autosave requested while
+   * the formatter runs waits for the read-back and then writes against the
+   * revision it adopted, instead of racing the formatter with a stale baseline
+   * and conflicting with our own app-owned sequence.
+   */
+  const runFormatStep = useCallback(
+    <T>(step: () => Promise<T>): Promise<T> => saveQueue.run(step),
+    [saveQueue],
+  );
+
   // Adopt externally formatted disk content as the saved baseline before the
   // matching editor dispatch lands, so the buffer never flashes dirty. The
   // formatter's own revision must become the known one, or the next save would
@@ -423,6 +435,7 @@ export function useDocument({ path, visible, onDirtyChange }: Options) {
     adoptDiskText,
     openAnyway,
     canFormatOnDisk,
+    runFormatStep,
     conflict,
     overwriteConflict,
     reloadConflict,

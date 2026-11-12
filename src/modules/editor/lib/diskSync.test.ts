@@ -494,6 +494,42 @@ describe("app-owned format steps", () => {
     expect(disk.read(note)).toBe("someone else\n");
   });
 
+  it("holds queued saves for the whole format step so autosave cannot interleave", async () => {
+    const disk = fakeDisk();
+    disk.put(note, "baseline\n");
+    const queue = createSaveQueue();
+    let expected = disk.revisionOf(note) as string;
+    const order: string[] = [];
+
+    const format = queue.run(async () => {
+      order.push("format:start");
+      // Stand-in for the external formatter rewriting the file and the
+      // read-back adopting its revision.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      disk.edit(note, "formatted\n");
+      expected = disk.revisionOf(note) as string;
+      order.push("format:end");
+    });
+    // Autosave fires while the formatter is running: it must wait, then write
+    // against the formatter's revision instead of conflicting with it.
+    const save = queue.run(async () => {
+      order.push("save:start");
+      const result = await commitBuffer(disk.io, {
+        path: note,
+        expectedRevision: expected,
+        buffer: () => "typed during format\n",
+      });
+      if (result.status !== "saved") {
+        throw new Error(`unexpected conflict: ${JSON.stringify(result)}`);
+      }
+      return result;
+    });
+
+    await Promise.all([format, save]);
+    expect(order).toEqual(["format:start", "format:end", "save:start"]);
+    expect(disk.read(note)).toBe("typed during format\n");
+  });
+
   it("refuses to format a file that disappeared", async () => {
     const disk = fakeDisk();
     disk.put(note, "baseline\n");

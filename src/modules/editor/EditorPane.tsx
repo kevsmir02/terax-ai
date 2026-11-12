@@ -132,6 +132,7 @@ export const EditorPane = memo(
       adoptDiskText,
       openAnyway,
       canFormatOnDisk,
+      runFormatStep,
       conflict,
       overwriteConflict,
       reloadConflict,
@@ -145,6 +146,8 @@ export const EditorPane = memo(
     adoptDiskTextRef.current = adoptDiskText;
     const canFormatOnDiskRef = useRef(canFormatOnDisk);
     canFormatOnDiskRef.current = canFormatOnDisk;
+    const runFormatStepRef = useRef(runFormatStep);
+    runFormatStepRef.current = runFormatStep;
     const cmRef = useRef<ReactCodeMirrorRef>(null);
     const themeExt = useEditorThemeExt();
     const vimMode = usePreferencesStore((s) => s.vimMode);
@@ -248,20 +251,40 @@ export const EditorPane = memo(
       if (prefs.editorFormatOnSave && formatter !== "lsp") {
         // The formatter rewrites the file itself, so it must start from the
         // revision this buffer just saved: a change in between becomes the same
-        // conflict round as a save instead of a blind rewrite. The formatter
-        // process is an independent writer either way.
-        if (!(await canFormatOnDiskRef.current())) return;
-        const error = await runExternalFormatter(
-          formatter,
-          pathRef.current,
-          prefs.editorCustomFormatCommand,
-        );
-        if (error) {
-          toast.error(`${formatter} format failed`, { description: error });
-        } else {
+        // conflict round as a save instead of a blind rewrite. Holding the save
+        // queue for the check, the formatter and the read-back also keeps an
+        // autosave from interleaving its own app-owned write with the
+        // formatter's; a save requested meanwhile runs after the read-back
+        // adopts the formatter's revision. The formatter process is still an
+        // independent writer nothing here can lock out.
+        const outcome = await runFormatStepRef.current(async () => {
+          if (!(await canFormatOnDiskRef.current())) {
+            return { status: "blocked" as const };
+          }
+          const error = await runExternalFormatter(
+            formatter,
+            pathRef.current,
+            prefs.editorCustomFormatCommand,
+          );
+          if (error) return { status: "failed" as const, error };
           const readBack = await readFileText(pathRef.current);
-          if (readBack !== null && view && view.state.doc === docAtSave) {
-            applyFormattedContent(view, adoptDiskTextRef.current(readBack));
+          if (readBack === null) return { status: "unreadable" as const };
+          return {
+            status: "formatted" as const,
+            text: adoptDiskTextRef.current(readBack),
+          };
+        });
+        if (outcome.status === "failed") {
+          toast.error(`${formatter} format failed`, {
+            description: outcome.error,
+          });
+        } else if (outcome.status === "unreadable") {
+          toast.error(`${formatter} format could not be read back`, {
+            description: "The file changed while it was being formatted.",
+          });
+        } else if (outcome.status === "formatted") {
+          if (view && view.state.doc === docAtSave) {
+            applyFormattedContent(view, outcome.text);
           }
         }
       }
