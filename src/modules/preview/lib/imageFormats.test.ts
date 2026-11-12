@@ -20,9 +20,9 @@ describe("image routing", () => {
       "ico",
       "avif",
     ]) {
-      expect(imageFormatForPath(`/repo/photo.${extension.toUpperCase()}`)).not.toBe(
-        null,
-      );
+      expect(
+        imageFormatForPath(`/repo/photo.${extension.toUpperCase()}`),
+      ).not.toBe(null);
     }
   });
 
