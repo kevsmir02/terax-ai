@@ -9,14 +9,14 @@ Terax runs shells, reads and writes files, and sends data to AI providers. The s
 The main trust boundaries are:
 
 1. **IPC boundary** - commands registered in `src-tauri/src/lib.rs`, gated by `src-tauri/capabilities/default.json`.
-2. **File-system boundary** - AI tools go through `src/modules/ai/lib/security.ts`; PTY spawn goes through the workspace authorization registry.
+2. **File-system boundary** - automatic consumers (agent reads, Markdown/media preview) go through the shared secret-path policy in `src/modules/workspace/policy.ts` and its native mirror; structural mutations and PTY spawn go through the workspace authorization registry. Explicit user editing is deliberately not policy-gated (see "File access tiers").
 3. **Network boundary** - AI HTTP proxy in `src-tauri/src/modules/net.rs` with SSRF and DNS-rebinding defenses.
 4. **Secret-storage boundary** - keys live in the OS keychain, never on disk or in `localStorage`.
 5. **Terminal escape-sequence boundary** - OSC sequences are parsed and acted on, but never blindly trusted to mutate state.
 
 ## Secret-path deny-list
 
-`src/modules/ai/lib/security.ts` refuses reads and writes of obvious secret paths. This applies **on both read and write** and must never be bypassed.
+The shared guard is `src/modules/workspace/policy.ts`; its data is `src/modules/workspace/pathPolicy.json` and the native mirror is `src-tauri/src/modules/fs/access_policy.rs`, which `include_str!`s the same JSON. It refuses automatic reads and writes of obvious secret paths and must never be bypassed by an automatic consumer.
 
 Blocked categories include:
 
@@ -27,6 +27,28 @@ Blocked categories include:
 The comparison surface normalizes paths: backslashes to forward slashes, strips Windows drive letters, strips NTFS alternate data streams, strips trailing dots/spaces, lowercases, and collapses duplicate slashes. Protected directories are matched as exact path or descendant, not raw substring.
 
 `checkReadableCanonical` and `checkWritableCanonical` also canonicalize the path and re-check the resolved form so a symlink at an innocent path pointing into `~/.ssh` is caught.
+
+The legacy `src/modules/ai/lib/security.ts` entry point still exists and re-exports these guards for the agent code that has not migrated; the only part it still owns is `checkShellCommand` (the approval-UI heuristic).
+
+## File access tiers
+
+Four tiers exist and must stay distinct:
+
+1. **Explicit user editing** — `fs_read_file`, `fs_write_file`, `fs_stat`, `fs_canonicalize`, `fs_create_*`, `fs_rename`, `fs_delete`, explorer search/read. No registry, no secret policy. Editing `key.pem`, `.env`, `~/.ssh/config` or any file outside the project root works by design (the editor uses these commands, not the agent reader).
+2. **Root-confined structural mutation** — `fs_move`, `fs_delete_batch`, `fs_copy`, control `open`, shell cwd. Canonicalize + `WorkspaceRegistry::is_authorized` only. Control `open` of a target outside every authorized root is still refused (retained-but-strict; a deliberate `terax open` outside the roots needs an explicit grant in a later change).
+3. **Automatic preview assets** — grant token + canonical containment + secret policy + media type + range, in `src-tauri/src/modules/fs/assets.rs`.
+4. **Automatic agent reads** — `fs::access::authorize_read` (literal + canonical secret policy, then registry) plus fd pinning in `fs::ai`.
+
+Known limitation (RS-3, ticket #5): the external formatter runs `shell_run_command` with `cwd = dirname(edited file)` and that cwd is authorized through tier 2, so formatting a file outside every authorized root is refused even though the file can be edited. Widening it needs an explicit user grant for the formatter cwd; until then do not replace the registry check with a path-only check.
+
+## Legacy AI-owned consumers of shared contracts
+
+Retained code no longer imports either legacy entry point. These AI-owned files still do, so deleting them with the agent (ticket #11/#13) must not remove `src/modules/workspace/{native,policy}.ts`, `src/modules/workspace/pathPolicy.json`, `src-tauri/src/modules/fs/{access,access_policy}.rs`:
+
+- `src/modules/ai/lib/native.ts` (barrel kept for the agent) — `readProjectMemory`, `readDir`/`grep`/`glob` (`ai_*`), `shellSession*`, `shellBg*`, and a `readFile` override pinned to the policy-guarded `ai_read_file`.
+- Importers of that barrel: `ai/lib/transport.ts`, `ai/store/planStore.ts`, `ai/tools/{edit,fs,search,shell}.ts`, `ai/components/AgentRunBridge.tsx`.
+- Importers of `src/modules/ai/lib/security.ts`: `ai/components/AgentRunBridge.tsx`, `ai/lib/transport.ts`, `ai/tools/{edit,fs,search,shell,terminal}.ts`.
+- Rust: `src/modules/fs/ai.rs` (reader/walk commands) and `src/modules/fs/project_memory.rs` use `fs::access` + `fs::access_policy`; `fs::assets` (retained) uses `fs::access_policy` and `fs::access::opened_path`.
 
 ## Workspace authorization registry
 

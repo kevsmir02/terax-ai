@@ -1,3 +1,5 @@
+mod access;
+mod access_policy;
 pub mod ai;
 pub mod assets;
 pub mod clipboard;
@@ -9,7 +11,6 @@ pub mod index;
 mod local_file;
 pub mod mutate;
 pub mod project_memory;
-mod read_policy;
 pub mod search;
 pub mod supersede;
 pub mod tree;

@@ -1,5 +1,5 @@
 import { MarkdownCode } from "@/components/ai-elements/markdown-code";
-import { checkReadable } from "@/modules/ai/lib/security";
+import { checkReadable } from "@/modules/workspace/policy";
 import { cn } from "@/lib/utils";
 import { useAssetGrant } from "@/lib/useAssetGrant";
 import {

@@ -86,7 +86,7 @@ export function previewBoundary(
 
 export type LocalImagePolicy = {
   boundary: string;
-  /** False for secret paths; the AI tools' read guard in production. */
+  /** False for secret paths; the shared read guard in production (`modules/workspace/policy`). */
   isReadable: (absolutePath: string) => boolean;
 };
 
