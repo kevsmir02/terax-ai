@@ -31,7 +31,9 @@ function fakeDocument(): FakeRoot {
     createElement: () => ({ style: { cssText: "" }, remove: vi.fn() }),
     body: { appendChild: vi.fn() },
   });
-  vi.stubGlobal("getComputedStyle", () => ({ backgroundColor: "rgb(20, 20, 20)" }));
+  vi.stubGlobal("getComputedStyle", () => ({
+    backgroundColor: "rgb(20, 20, 20)",
+  }));
   vi.stubGlobal("requestAnimationFrame", (cb: () => void) => cb());
   return root as unknown as FakeRoot;
 }
@@ -107,7 +109,11 @@ describe("vibrancy application", () => {
       (c) => c[0] === "window_set_backdrop",
     );
     expect(backdrop).toHaveLength(2);
-    expect(backdrop[1][1]).toEqual({ enabled: true, dark: false, background: undefined });
+    expect(backdrop[1][1]).toEqual({
+      enabled: true,
+      dark: false,
+      background: undefined,
+    });
   });
 
   it("keeps an existing NSVisualEffectView across a dark-mode flip", async () => {
@@ -137,7 +143,12 @@ describe("vibrancy application", () => {
     const backdrop = core.invoke.mock.calls.filter(
       (c) => c[0] === "window_set_backdrop",
     );
-    expect(backdrop).toEqual([["window_set_backdrop", { enabled: false, dark: true, background: "#141414" }]]);
+    expect(backdrop).toEqual([
+      [
+        "window_set_backdrop",
+        { enabled: false, dark: true, background: "#141414" },
+      ],
+    ]);
   });
 
   it("repaints opaque when the native side fails so the webview is never see-through", async () => {
@@ -182,7 +193,10 @@ describe("vibrancy application", () => {
     let releaseFirst: (() => void) | undefined;
     core.invoke.mockImplementation((cmd: string) => {
       if (cmd === "window_backdrop_kind") return Promise.resolve("vibrancy");
-      if (core.invoke.mock.calls.filter((c) => c[0] === "window_set_backdrop").length === 1) {
+      if (
+        core.invoke.mock.calls.filter((c) => c[0] === "window_set_backdrop")
+          .length === 1
+      ) {
         return new Promise<void>((resolve) => {
           releaseFirst = resolve;
         });
@@ -194,7 +208,8 @@ describe("vibrancy application", () => {
     const second = vibrancy.applyVibrancy(false, true);
 
     const backdropCalls = () =>
-      core.invoke.mock.calls.filter((c) => c[0] === "window_set_backdrop").length;
+      core.invoke.mock.calls.filter((c) => c[0] === "window_set_backdrop")
+        .length;
     await new Promise((r) => setTimeout(r, 0));
     expect(backdropCalls()).toBe(1);
 

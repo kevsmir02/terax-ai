@@ -184,15 +184,15 @@ describe("SpaceDeleteGuard", () => {
     const guard = new SpaceDeleteGuard(deps);
     await guard.request("a");
 
-    await expect(
-      guard.confirm({ savedDirtyIds: [1] }),
-    ).resolves.toMatchObject({ status: "needs-confirmation" });
+    await expect(guard.confirm({ savedDirtyIds: [1] })).resolves.toMatchObject({
+      status: "needs-confirmation",
+    });
     expect(commit).not.toHaveBeenCalled();
 
     dirty = false;
-    await expect(
-      guard.confirm({ savedDirtyIds: [1] }),
-    ).resolves.toMatchObject({ status: "deleted" });
+    await expect(guard.confirm({ savedDirtyIds: [1] })).resolves.toMatchObject({
+      status: "deleted",
+    });
     expect(commit).toHaveBeenCalledOnce();
   });
 

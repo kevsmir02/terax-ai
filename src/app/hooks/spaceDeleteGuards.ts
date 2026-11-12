@@ -87,7 +87,9 @@ export class SpaceDeleteGuard {
     this.pendingTransaction = null;
   }
 
-  confirm(options: { savedDirtyIds?: readonly number[] } = {}): Promise<SpaceDeleteResult> {
+  confirm(
+    options: { savedDirtyIds?: readonly number[] } = {},
+  ): Promise<SpaceDeleteResult> {
     if (this.pendingTransaction === null) {
       return Promise.resolve({ status: "idle" });
     }
@@ -141,12 +143,7 @@ export class SpaceDeleteGuard {
 
   private evaluate(spaceId: string): Promise<CloseManyHazards> {
     return evaluateCloseHazards(
-      () =>
-        spaceHazardSnapshot(
-          this.deps.tabs(),
-          spaceId,
-          this.deps.isDirty,
-        ),
+      () => spaceHazardSnapshot(this.deps.tabs(), spaceId, this.deps.isDirty),
       this.deps.isBusy,
       this.deps.confirmRunning(),
     );
@@ -180,7 +177,9 @@ export function spaceDeleteMessage(
       busyLeafIds.length === 1
         ? "1 process may still be running"
         : `${busyLeafIds.length} processes may still be running`;
-    parts.push(`Deleting closes their tabs; ${process} and would be terminated.`);
+    parts.push(
+      `Deleting closes their tabs; ${process} and would be terminated.`,
+    );
   }
   return parts.join(" ");
 }

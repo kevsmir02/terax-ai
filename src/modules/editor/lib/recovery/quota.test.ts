@@ -82,7 +82,11 @@ describe("pausing instead of evicting", () => {
   it("resumes only once the pending draft fits again", () => {
     const used = RECOVERY_LIMITS.totalBytes - MiB;
     expect(
-      canResume({ pendingBytes: MiB, usedBytes: used, limits: RECOVERY_LIMITS }),
+      canResume({
+        pendingBytes: MiB,
+        usedBytes: used,
+        limits: RECOVERY_LIMITS,
+      }),
     ).toBe(true);
     expect(
       canResume({

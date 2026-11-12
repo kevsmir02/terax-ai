@@ -15,9 +15,7 @@ type AgentStoreState = {
   start: (leafId: number, tabId: number, agent: string) => void;
   setStatus: (leafId: number, status: AgentStatus) => void;
   finish: (leafId: number) => void;
-  pushNotification: (
-    n: Omit<AgentNotification, "id" | "at" | "read">,
-  ) => void;
+  pushNotification: (n: Omit<AgentNotification, "id" | "at" | "read">) => void;
   markAllRead: () => void;
   clearNotifications: () => void;
 };

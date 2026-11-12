@@ -20,10 +20,7 @@ const SESSION_ID = newSessionId();
  * ask the manager about the same buffer the mounted editor wrote under; without
  * it, a draft would be looked up under an id nobody used and would look saved.
  */
-export function recoveryBufferIdFor(
-  spaceId: string,
-  tabId: number,
-): string {
+export function recoveryBufferIdFor(spaceId: string, tabId: number): string {
   return bufferIdFor({ sessionId: SESSION_ID, spaceId, tabId });
 }
 

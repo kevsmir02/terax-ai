@@ -45,7 +45,10 @@ describe("TerminalResizeSync", () => {
       [70, 41],
     ] as const) {
       sync.request(cols, rows);
-      expect(pty[pty.length - 1]).toEqual({ cols: model.cols, rows: model.rows });
+      expect(pty[pty.length - 1]).toEqual({
+        cols: model.cols,
+        rows: model.rows,
+      });
     }
     // The repeated size was not delivered twice.
     expect(pty).toHaveLength(3);

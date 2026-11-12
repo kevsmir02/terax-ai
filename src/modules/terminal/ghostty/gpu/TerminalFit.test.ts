@@ -69,7 +69,10 @@ describe("fitTerminalViewport right gutter", () => {
     const metrics = metricsAt(1);
     const cell = metrics.deviceCellWidth;
     for (const width of [2 * cell, 2 * cell + 5, 2 * cell + GUTTER - 1]) {
-      expect(fitTerminalViewport(width, 100, metrics, null, GUTTER)?.cols, `${width}px`).toBe(2);
+      expect(
+        fitTerminalViewport(width, 100, metrics, null, GUTTER)?.cols,
+        `${width}px`,
+      ).toBe(2);
     }
     expect(fitTerminalViewport(cell, 100, metrics, null, GUTTER)).toBeNull();
   });
@@ -93,7 +96,8 @@ describe("fitTerminalViewport right gutter", () => {
     // Cells of 9 px at scale 1: 3 columns need 27 + 14 = 41 px.
     const metrics = metricsAt(1);
     expect(metrics.deviceCellWidth).toBe(9);
-    const cols = (width: number) => fitTerminalViewport(width, 100, metrics, null, GUTTER)?.cols;
+    const cols = (width: number) =>
+      fitTerminalViewport(width, 100, metrics, null, GUTTER)?.cols;
     expect([31, 32, 40].map(cols)).toEqual([2, 2, 2]);
     expect([41, 49].map(cols)).toEqual([3, 3]);
   });

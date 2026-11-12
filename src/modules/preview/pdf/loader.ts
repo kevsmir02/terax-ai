@@ -15,8 +15,9 @@ import {
  * startup chunk. Everything it fetches is same-origin and shipped from
  * `node_modules/pdfjs-dist` by `scripts/vite-pdfjs-assets.mjs`: standard fonts,
  * CMaps, the wasm image decoders, the ICC profile and the worker. No document
- * can make the reader fetch a remote URL, and `isEvalSupported: false` keeps
- * PDF.js from evaluating code embedded in a document.
+ * can make the reader fetch a remote URL, and the document-authority surfaces
+ * are off: no scripting manager, `enableXfa: false`, and no document-provided
+ * base URL.
  */
 
 const BASE = import.meta.env.BASE_URL || "/";

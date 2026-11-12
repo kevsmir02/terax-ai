@@ -96,7 +96,9 @@ describe("GlyphRasterizer private-use symbols", () => {
     const { transforms } = stub({ left: 0, right: 27, advance: 8.4 });
     const glyph = new GlyphRasterizer(METRICS).rasterize("\ueb99", 0);
     expect(transforms).toContain("scale 0.667");
-    expect(glyph.width).toBeLessThanOrEqual(2 * METRICS.deviceCellWidth + 2 * 2 + 1);
+    expect(glyph.width).toBeLessThanOrEqual(
+      2 * METRICS.deviceCellWidth + 2 * 2 + 1,
+    );
   });
 
   it("draws the version control icons as designed", () => {

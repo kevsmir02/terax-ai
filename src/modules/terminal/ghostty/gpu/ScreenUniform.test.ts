@@ -307,11 +307,15 @@ describe("shader uniform layout", () => {
     // fragment stage recolours only the ink inside it, so a roomy glyph that reaches past the
     // block keeps its own colour there; the background pass widens the block over a wide
     // character.
-    expect(GLYPH_SHADER).toMatch(/output\.cursor_box = vec4f\(\s*f32\(span\.x \* screen\.cell_size\.x\)/);
+    expect(GLYPH_SHADER).toMatch(
+      /output\.cursor_box = vec4f\(\s*f32\(span\.x \* screen\.cell_size\.x\)/,
+    );
     expect(GLYPH_SHADER).toMatch(
       /local_position\.x < cursor_box\.z && local_position\.y < cursor_box\.w\) \{\s*color = vec4f\(screen\.cursor_text\.rgb, 1\.0\);/,
     );
-    expect(GLYPH_SHADER).not.toMatch(/output\.color = vec4f\(screen\.cursor_text/);
+    expect(GLYPH_SHADER).not.toMatch(
+      /output\.color = vec4f\(screen\.cursor_text/,
+    );
     expect(GLYPH_SHADER).toMatch(/FLAG_CURSOR_BLOCK/);
     expect(BACKGROUND_SHADER).toMatch(/cursor_columns\(cursor_at\)/);
   });

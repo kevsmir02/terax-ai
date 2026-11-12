@@ -64,7 +64,9 @@ export function hooksReviewReducer(
 
 /** Only a reviewed plan that has something to write can be confirmed. */
 export function confirmable(state: HooksReviewState): boolean {
-  return state.phase === "reviewing" && state.plan !== null && state.plan.changed;
+  return (
+    state.phase === "reviewing" && state.plan !== null && state.plan.changed
+  );
 }
 
 export type HooksReviewSummary = {

@@ -41,10 +41,7 @@ import {
 import { listBuiltinThemes } from "@/modules/theme/themes";
 import { DEFAULT_THEME_ID } from "@/modules/theme/types";
 import { validateTheme } from "@/modules/theme/validateTheme";
-import {
-  type Backdrop,
-  getBackdropKind,
-} from "@/modules/theme/vibrancy";
+import { type Backdrop, getBackdropKind } from "@/modules/theme/vibrancy";
 import { Edit02Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { getCurrentWindow } from "@tauri-apps/api/window";

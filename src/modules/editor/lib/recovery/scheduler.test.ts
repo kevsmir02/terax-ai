@@ -124,12 +124,11 @@ describe("recovery coalescing", () => {
       expect(covering.length, `nothing durable by ${t + 2000}`).toBeGreaterThan(
         0,
       );
-      const newest = Math.max(
-        ...covering.map((w) => Number(w.text.slice(1))),
-      );
-      expect(newest, `edit at ${t} not durable by ${t + 2000}`).toBeGreaterThanOrEqual(
-        t,
-      );
+      const newest = Math.max(...covering.map((w) => Number(w.text.slice(1))));
+      expect(
+        newest,
+        `edit at ${t} not durable by ${t + 2000}`,
+      ).toBeGreaterThanOrEqual(t);
     }
   });
 

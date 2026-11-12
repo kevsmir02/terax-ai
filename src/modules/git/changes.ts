@@ -11,7 +11,10 @@ export type GitChangeFilter = {
   kinds?: readonly GitChangeKind[];
 };
 
-type Entry = { handler: GitChangeHandler; kinds: ReadonlySet<GitChangeKind> | null };
+type Entry = {
+  handler: GitChangeHandler;
+  kinds: ReadonlySet<GitChangeKind> | null;
+};
 
 /**
  * Fans backend events out to per-repository handlers. Pure and synchronous so

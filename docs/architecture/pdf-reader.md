@@ -425,7 +425,9 @@ on-demand worker **378.97 kB gzipped**, both now explicit `size-limit` entries
 (`dist/assets/PdfReader-*.js`, `dist/pdfjs/pdf.worker.min.mjs`). Total client JS grew from about
 1.15 MiB to **1.32 MiB gzipped**, inside the unchanged 1.5 MiB budget: no PDF code is in a startup
 chunk (`src/app/dist-budget.test.ts` stays green). The PDF.js runtime data (standard fonts, CMaps,
-wasm decoders, ICC profile, licences) is 5.1 MiB of static assets shipped offline, not JavaScript.
+wasm decoders, ICC profile) is 5.1 MiB of static assets shipped offline, not JavaScript. Version and
+licence (Apache-2.0, matching this repository) are recorded here rather than copied into `dist`; the
+worker carries its inline `@licstart` notice.
 Continuous-scroll reading is deliberately not implemented: the reader is paged, which is what keeps
 one page raster (not a whole document's rasters) inside the decoded budget.
 

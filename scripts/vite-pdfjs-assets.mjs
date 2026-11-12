@@ -12,8 +12,10 @@
 // worker has its own `size-limit` entry so it stays a visible, bounded cost
 // rather than hiding outside the client-JS budget.
 //
-// The wasm/JS pair is verbatim from `pdfjs-dist` (Apache-2.0); its licence files
-// are emitted alongside it.
+// The wasm/JS pair is verbatim from `pdfjs-dist` (Apache-2.0, the same licence
+// as this repository). The package's own licence files are not copied into
+// `dist`: the worker carries its inline `@licstart` notice and the reader chunk
+// records the package version and licence in `docs/architecture/pdf-reader.md`.
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";

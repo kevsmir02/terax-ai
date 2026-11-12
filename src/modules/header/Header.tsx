@@ -137,9 +137,7 @@ export function Header({
           <HugeiconsIcon icon={CommandIcon} size={14} strokeWidth={1.75} />
         </Button>
 
-        {!IS_MAC && (
-          <NotificationBell onActivate={onActivateAgent} />
-        )}
+        {!IS_MAC && <NotificationBell onActivate={onActivateAgent} />}
       </div>
 
       {!IS_MAC && (

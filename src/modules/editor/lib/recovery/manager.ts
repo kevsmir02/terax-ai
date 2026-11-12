@@ -56,7 +56,10 @@ export type RecoveryRemoveOutcome = { removed: boolean; totalBytes: number };
 export type RecoveryStorage = {
   list(): Promise<RecoveryRecord[]>;
   write(record: RecoveryRecord): Promise<RecoveryWriteOutcome>;
-  remove(bufferId: string, upToRevision: number): Promise<RecoveryRemoveOutcome>;
+  remove(
+    bufferId: string,
+    upToRevision: number,
+  ): Promise<RecoveryRemoveOutcome>;
   usage(): Promise<number>;
 };
 
@@ -159,7 +162,11 @@ const HISTORY_LIMIT = 8;
 
 function failureOf(error: unknown): RecoveryStorageFailure {
   if (typeof error === "object" && error !== null) {
-    const raw = error as { kind?: unknown; reason?: unknown; message?: unknown };
+    const raw = error as {
+      kind?: unknown;
+      reason?: unknown;
+      message?: unknown;
+    };
     // `quota` is the native tag today; `paused` is accepted as the same refusal
     // so renaming it on the Rust side cannot silently turn a pause into a
     // generic "failed" state. The reason vocabulary is shared (see
@@ -174,7 +181,9 @@ function failureOf(error: unknown): RecoveryStorageFailure {
       return {
         kind: "unavailable",
         message:
-          typeof raw.message === "string" ? raw.message : "Recovery storage is unavailable.",
+          typeof raw.message === "string"
+            ? raw.message
+            : "Recovery storage is unavailable.",
       };
     }
     if (typeof raw.message === "string" && raw.message) {
@@ -230,7 +239,8 @@ export function createRecoveryManager(
     const newest = state.pending ?? state.persisted;
     const base = {
       bufferId: state.bufferId,
-      bufferRevision: state.pending?.revision ?? state.persisted?.revision ?? null,
+      bufferRevision:
+        state.pending?.revision ?? state.persisted?.revision ?? null,
       durableRevision: state.persisted?.revision ?? null,
       bytes:
         state.pending === null
@@ -266,7 +276,10 @@ export function createRecoveryManager(
     if (newest === null) {
       return { ...base, kind: "idle" };
     }
-    if (state.pending !== null && state.pending.revision > (state.persisted?.revision ?? 0)) {
+    if (
+      state.pending !== null &&
+      state.pending.revision > (state.persisted?.revision ?? 0)
+    ) {
       return { ...base, kind: "pending" };
     }
     if (state.persisted !== null) {
@@ -277,7 +290,10 @@ export function createRecoveryManager(
 
   const setStatus = (state: BufferState) => notify(state);
 
-  const enqueue = (state: BufferState, op: () => Promise<void>): Promise<void> => {
+  const enqueue = (
+    state: BufferState,
+    op: () => Promise<void>,
+  ): Promise<void> => {
     const run = state.chain.then(op, op);
     state.chain = run.then(
       () => undefined,
@@ -352,7 +368,8 @@ export function createRecoveryManager(
       // revision while the write waited its turn.
       if (state.disposed) return;
       if (isStaleCompletion(record, state)) {
-        if (state.pending?.revision === record.bufferRevision) state.pending = null;
+        if (state.pending?.revision === record.bufferRevision)
+          state.pending = null;
         setStatus(state);
         return;
       }
@@ -484,7 +501,10 @@ export function createRecoveryManager(
       if (state.history.length > HISTORY_LIMIT) state.history.shift();
       state.pending = { revision, text };
       // Text that has shrunk back inside the per-file bound resumes recovery.
-      if (state.paused === "file-limit" && recordBytes(recordFor(state, revision, text)) <= limits.perFileBytes) {
+      if (
+        state.paused === "file-limit" &&
+        recordBytes(recordFor(state, revision, text)) <= limits.perFileBytes
+      ) {
         state.paused = null;
         state.coalescer.cancel();
         state.coalescer = freshCoalescer(state);
@@ -505,7 +525,8 @@ export function createRecoveryManager(
       return null;
     },
     async saved({ writtenText, resolvedRevision }) {
-      const resolved = resolvedRevision ?? resolveSavedRevision(state, writtenText);
+      const resolved =
+        resolvedRevision ?? resolveSavedRevision(state, writtenText);
       if (resolved === null) {
         setStatus(state);
         return;

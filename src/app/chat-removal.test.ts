@@ -10,17 +10,17 @@ import {
   type CommandPaletteActionContext,
 } from "@/modules/command-palette/commands";
 import { StatusBar } from "@/modules/statusbar";
-import { MAC_DEFAULTS, WIN_LINUX_DEFAULTS } from "@/modules/shortcuts/shortcutDefaults";
+import {
+  MAC_DEFAULTS,
+  WIN_LINUX_DEFAULTS,
+} from "@/modules/shortcuts/shortcutDefaults";
 import {
   type KeyBinding,
   matchBinding,
   SHORTCUTS,
 } from "@/modules/shortcuts/shortcuts";
 import type { Tab } from "@/modules/tabs";
-import {
-  normalizeSettingsTab,
-  SETTINGS_TABS,
-} from "@/settings/lib/tabRouting";
+import { normalizeSettingsTab, SETTINGS_TABS } from "@/settings/lib/tabRouting";
 import { traceEager } from "../../scripts/eager-graph.mjs";
 
 // Built-in AI chat, its composer, conversations and provider/model selection
@@ -148,7 +148,11 @@ function moduleId(spec: string, fromFile: string): string | null {
 describe("removed built-in chat entry points", () => {
   it("keeps the chat, composer and input-mode shortcuts out of the keymap", () => {
     const ids = SHORTCUTS.map((shortcut) => shortcut.id) as string[];
-    for (const removed of ["ai.toggle", "ai.toggleMini", "terminal.toggleInput"])
+    for (const removed of [
+      "ai.toggle",
+      "ai.toggleMini",
+      "terminal.toggleInput",
+    ])
       expect(ids).not.toContain(removed);
     for (const { table } of PLATFORMS) {
       expect(Object.keys(table)).not.toContain("ai.toggle");
@@ -207,9 +211,9 @@ describe("no built-in conversation or AI-session startup work", () => {
       path.relative(repoRoot, file).split(path.sep).join("/"),
     );
     expect(eager.filter((file) => file.includes("modules/ai"))).toEqual([]);
-    expect(eager.filter((file) => file.includes("components/ai-elements"))).toEqual(
-      [],
-    );
+    expect(
+      eager.filter((file) => file.includes("components/ai-elements")),
+    ).toEqual([]);
     expect([...hits.keys()]).toEqual([]);
   });
 
@@ -236,8 +240,9 @@ describe("no built-in conversation or AI-session startup work", () => {
       readFileSync(path.join(repoRoot, "package.json"), "utf8"),
     ) as { dependencies?: Record<string, string> };
     const deps = Object.keys(manifest.dependencies ?? {});
-    expect(deps.filter((name) => name === "ai" || name.startsWith("@ai-sdk/")))
-      .toEqual([]);
+    expect(
+      deps.filter((name) => name === "ai" || name.startsWith("@ai-sdk/")),
+    ).toEqual([]);
     expect(deps).not.toContain("use-stick-to-bottom");
     expect(deps).not.toContain("zod");
   });

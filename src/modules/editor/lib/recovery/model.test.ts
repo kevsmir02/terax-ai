@@ -72,7 +72,13 @@ describe("original-file identity", () => {
   });
 
   it("has no identity for unknown or foreign revisions", () => {
-    for (const value of [null, "", "r2:aa:1:0-0", "nonsense", `r1:${"ab".repeat(32)}:12:`]) {
+    for (const value of [
+      null,
+      "",
+      "r2:aa:1:0-0",
+      "nonsense",
+      `r1:${"ab".repeat(32)}:12:`,
+    ]) {
       expect(diskIdentityOf(value)).toBeNull();
     }
   });

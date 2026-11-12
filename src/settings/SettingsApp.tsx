@@ -2,7 +2,10 @@ import { Toaster } from "@/components/ui/sonner";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { WindowControls } from "@/components/WindowControls";
 import { IS_MAC, USE_CUSTOM_WINDOW_CONTROLS } from "@/lib/platform";
-import { normalizeSettingsTab, type SettingsTab } from "@/settings/lib/tabRouting";
+import {
+  normalizeSettingsTab,
+  type SettingsTab,
+} from "@/settings/lib/tabRouting";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { WindowActivityBridge } from "@/modules/theme";
 import {

@@ -138,7 +138,10 @@ export function RecoveryDraftBanner({
       </div>
 
       {comparing && (
-        <Dialog open onOpenChange={(open) => (open ? undefined : setComparing(false))}>
+        <Dialog
+          open
+          onOpenChange={(open) => (open ? undefined : setComparing(false))}
+        >
           <DialogContent className="max-w-2xl">
             <DialogHeader>
               <DialogTitle>Recovered draft</DialogTitle>

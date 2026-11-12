@@ -9,11 +9,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import {
-  parseRecord,
-  type RecoveryRecord,
-  RECOVERY_LIMITS,
-} from "./model";
+import { parseRecord, type RecoveryRecord, RECOVERY_LIMITS } from "./model";
 import type {
   RecoveryRemoveOutcome,
   RecoveryStorage,

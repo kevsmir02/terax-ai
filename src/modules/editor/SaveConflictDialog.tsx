@@ -72,7 +72,9 @@ export function SaveConflictDialog({
   // A fresh conflict round remounts this dialog (the caller keys it by the
   // reviewed revision), so the destination never carries over from a round the
   // user did not see.
-  const [copyPath, setCopyPath] = useState(() => siblingCopyPath(conflict.path));
+  const [copyPath, setCopyPath] = useState(() =>
+    siblingCopyPath(conflict.path),
+  );
 
   const canOverwrite = conflict.reviewedRevision !== null;
 
@@ -106,7 +108,10 @@ export function SaveConflictDialog({
         </div>
 
         <div className="flex flex-col gap-1">
-          <Label htmlFor={copyPathId} className="text-[11px] text-muted-foreground">
+          <Label
+            htmlFor={copyPathId}
+            className="text-[11px] text-muted-foreground"
+          >
             Save a copy elsewhere
           </Label>
           <div className="flex items-center gap-2">

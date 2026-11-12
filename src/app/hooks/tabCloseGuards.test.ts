@@ -198,11 +198,13 @@ describe("evaluateCloseHazards", () => {
 });
 
 describe("saveThenClose", () => {
-  function deps(over: {
-    save?: () => Promise<boolean>;
-    dirty?: boolean;
-    exists?: boolean;
-  } = {}) {
+  function deps(
+    over: {
+      save?: () => Promise<boolean>;
+      dirty?: boolean;
+      exists?: boolean;
+    } = {},
+  ) {
     let dirty = over.dirty ?? true;
     const close = vi.fn();
     const defaultSave = async () => {
@@ -292,9 +294,7 @@ describe("saveAllForClose", () => {
       dirty = true;
       return true;
     });
-    await expect(
-      saveAllForClose([1], save, () => dirty),
-    ).resolves.toBe(false);
+    await expect(saveAllForClose([1], save, () => dirty)).resolves.toBe(false);
   });
 });
 

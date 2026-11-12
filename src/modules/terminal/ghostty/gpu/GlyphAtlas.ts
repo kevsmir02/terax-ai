@@ -184,7 +184,11 @@ export class GlyphAtlas {
       (aware ? GLYPH_ENTRY_FLAG_NEIGHBOUR : 0) |
       (symbol ? GLYPH_ENTRY_FLAG_SYMBOL : 0);
     for (let variant = 0; variant < variants; variant += 1) {
-      const glyph = this.rasterizer.rasterize(text, style, variant === 1 || !aware);
+      const glyph = this.rasterizer.rasterize(
+        text,
+        style,
+        variant === 1 || !aware,
+      );
       if (!this.place(index + variant, glyph, extra)) return ATLAS_FULL;
     }
     this.count += variants;
@@ -194,7 +198,11 @@ export class GlyphAtlas {
   }
 
   /** Allocates, uploads and records one rasterized glyph as table entry `index`. */
-  private place(index: number, glyph: RasterizedGlyph, extraFlags: number): boolean {
+  private place(
+    index: number,
+    glyph: RasterizedGlyph,
+    extraFlags: number,
+  ): boolean {
     const plane = glyph.intrinsicColor
       ? (this.color ?? this.createColorPlane())
       : this.requirePlane(this.coverage);

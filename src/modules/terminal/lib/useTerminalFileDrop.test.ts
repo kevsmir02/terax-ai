@@ -2,7 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const native = vi.hoisted(() => ({ invoke: vi.fn(), ptyId: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }));
-vi.mock("./terminalSessionApi", () => ({ ptyIdForLeaf: native.ptyId, pasteIntoSession: vi.fn() }));
+vi.mock("./terminalSessionApi", () => ({
+  ptyIdForLeaf: native.ptyId,
+  pasteIntoSession: vi.fn(),
+}));
 beforeEach(() => {
   native.invoke.mockReset().mockResolvedValue("/bin/bash");
   native.ptyId.mockReset().mockReturnValue(9);
@@ -38,7 +41,9 @@ describe("createTerminalPathDropTarget", () => {
 
     expect(target.dropPath(["/repo/My File.ts"], 40, 50)).toBe(true);
     expect(setTarget).toHaveBeenCalledWith(null);
-    await vi.waitFor(() => expect(paste).toHaveBeenCalledWith(11, "'/repo/My File.ts' "));
+    await vi.waitFor(() =>
+      expect(paste).toHaveBeenCalledWith(11, "'/repo/My File.ts' "),
+    );
   });
 
   it("pastes multiple dropped paths quoted", async () => {
@@ -53,7 +58,9 @@ describe("createTerminalPathDropTarget", () => {
     expect(target.dropPath(["/repo/a.ts", "/repo/b file.ts"], 40, 50)).toBe(
       true,
     );
-    await vi.waitFor(() => expect(paste).toHaveBeenCalledWith(11, "/repo/a.ts '/repo/b file.ts' "));
+    await vi.waitFor(() =>
+      expect(paste).toHaveBeenCalledWith(11, "/repo/a.ts '/repo/b file.ts' "),
+    );
   });
 
   it("clears stale state when a drop misses every terminal", () => {
@@ -94,7 +101,11 @@ it.each([true, false])(
 it("uses PowerShell quoting for a Unix PowerShell session", async () => {
   native.invoke.mockResolvedValue("/usr/bin/pwsh");
   const paste = vi.fn(() => true);
-  const target = createTerminalPathDropTarget({ leafIdAtPoint: () => 3, paste, setTarget: vi.fn() });
+  const target = createTerminalPathDropTarget({
+    leafIdAtPoint: () => 3,
+    paste,
+    setTarget: vi.fn(),
+  });
   target.dropPath(["/tmp/a\\b"], 1, 2);
   await vi.waitFor(() => expect(paste).toHaveBeenCalledWith(3, "/tmp/a\\b "));
   expect(native.invoke).toHaveBeenCalledWith("pty_session_shell", { id: 9 });
@@ -102,7 +113,11 @@ it("uses PowerShell quoting for a Unix PowerShell session", async () => {
 
 it("discards a shell lookup after the destination PTY changes", async () => {
   const paste = vi.fn(() => true);
-  const target = createTerminalPathDropTarget({ leafIdAtPoint: () => 3, paste, setTarget: vi.fn() });
+  const target = createTerminalPathDropTarget({
+    leafIdAtPoint: () => 3,
+    paste,
+    setTarget: vi.fn(),
+  });
   target.dropPath(["/tmp/file"], 1, 2);
   native.ptyId.mockReturnValue(10);
   await Promise.resolve();

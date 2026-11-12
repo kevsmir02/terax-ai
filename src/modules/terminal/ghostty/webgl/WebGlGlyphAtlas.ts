@@ -220,7 +220,9 @@ export class WebGlGlyphAtlas {
     if (grapheme === null) {
       const constrained = !roomy && isNeighbourAware(codepoint);
       // Constrained forms live under negative keys beside the roomy ones.
-      const key = constrained ? -(codepoint * 4 + style) - 1 : codepoint * 4 + style;
+      const key = constrained
+        ? -(codepoint * 4 + style) - 1
+        : codepoint * 4 + style;
       const cached = this.simpleGlyphs.get(key);
       if (cached) return cached;
       const entry = this.rasterize(
@@ -325,7 +327,10 @@ export class WebGlGlyphAtlas {
     flags: number,
     roomy = true,
   ): WebGlGlyphEntry {
-    if (isExtendedSymbol(text.codePointAt(0) ?? 0) && extendedSymbolsPending()) {
+    if (
+      isExtendedSymbol(text.codePointAt(0) ?? 0) &&
+      extendedSymbolsPending()
+    ) {
       return NULL_GLYPH;
     }
     const context = this.rasterContext;

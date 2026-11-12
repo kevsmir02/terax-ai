@@ -46,7 +46,9 @@ export function isLineSelected(
 ): boolean {
   const pick = selection.get(hunk.id);
   if (!pick) return false;
-  return pick.all ? hunk.lines[lineIndex]?.kind !== "context" : pick.lines.has(lineIndex);
+  return pick.all
+    ? hunk.lines[lineIndex]?.kind !== "context"
+    : pick.lines.has(lineIndex);
 }
 
 function withPick(

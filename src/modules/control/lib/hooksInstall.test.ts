@@ -11,7 +11,8 @@ import {
 const activation: HookActivation = {
   restartRequired: true,
   trustRequired: true,
-  summary: "The file is configured; Claude Code still has to load and trust it.",
+  summary:
+    "The file is configured; Claude Code still has to load and trust it.",
   steps: ["Restart the session.", "Approve the group that calls the fork CLI."],
   verified: false,
 };
@@ -66,7 +67,9 @@ describe("agent hook review state machine", () => {
   });
 
   it("never confirms a plan that has no changes to write", () => {
-    const state = reviewed(plan({ changed: false, before: "same", after: "same" }));
+    const state = reviewed(
+      plan({ changed: false, before: "same", after: "same" }),
+    );
     expect(state.phase).toBe("reviewing");
     expect(confirmable(state)).toBe(false);
   });
@@ -136,7 +139,8 @@ describe("agent hook review summary", () => {
 
   it("labels a removal and an unchanged file", () => {
     expect(
-      hooksReviewSummary(plan({ action: "uninstall", after: null })).actionLabel,
+      hooksReviewSummary(plan({ action: "uninstall", after: null }))
+        .actionLabel,
     ).toBe("Remove hooks");
     expect(
       hooksReviewSummary(plan({ changed: false, after: plan().before }))
@@ -181,7 +185,13 @@ describe("agent hook review summary", () => {
     );
     expect(summary.readyLabel).toBe("Configured — restart required");
     const none = hooksReviewSummary(
-      plan({ activation: { ...activation, trustRequired: false, restartRequired: false } }),
+      plan({
+        activation: {
+          ...activation,
+          trustRequired: false,
+          restartRequired: false,
+        },
+      }),
     );
     expect(none.readyLabel).toBe("Configured");
   });
