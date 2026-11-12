@@ -1,5 +1,9 @@
 import type { CloseManyPending } from "@/app/hooks/tabCloseGuards";
 import {
+  spaceDeleteMessage,
+  type SpaceDeleteTransaction,
+} from "@/app/hooks/spaceDeleteGuards";
+import {
   type AppCloseBlocker,
   canOptOutOfAppClosePrompt,
 } from "@/app/hooks/useAppCloseGuard";
@@ -22,8 +26,10 @@ import { useId, useState } from "react";
 type Props = {
   tabs: Tab[];
   pendingCloseTab: number | null;
+  closeSaveState: "idle" | "saving" | "incomplete";
   onCancelClose: () => void;
   onConfirmClose: () => void;
+  onSaveAndClose: () => void;
   pendingTerminalCloseTab: number | null;
   onCancelTerminalClose: () => void;
   onConfirmTerminalClose: () => void;
@@ -32,8 +38,17 @@ type Props = {
   onConfirmDeleteClose: () => void;
   pendingCloseMany: CloseManyPending | null;
   closeManyConfirming: boolean;
+  closeManyIncomplete: boolean;
   onCancelCloseMany: () => void;
   onConfirmCloseMany: () => void;
+  onSaveAndCloseMany: () => void;
+  pendingSpaceDelete: SpaceDeleteTransaction | null;
+  spaceName: string;
+  spaceDeleteSaving: boolean;
+  spaceDeleteIncomplete: boolean;
+  onCancelSpaceDelete: () => void;
+  onConfirmSpaceDelete: () => void;
+  onSaveAndDeleteSpace: () => void;
   pendingAppClose: AppCloseBlocker | null;
   onCancelAppClose: () => void;
   onConfirmAppClose: () => void;
@@ -104,10 +119,10 @@ function closeManyMessage(pending: CloseManyPending, tabs: Tab[]): string {
       busyCount === 1
         ? "a process is running"
         : `${busyCount} processes are running`;
-    return `${dirty} and ${busy}. Closing will discard the changes and terminate the ${busyCount === 1 ? "process" : "processes"}. Close anyway?`;
+    return `${dirty} and ${busy}. Save them before closing, or close anyway to discard the changes and terminate the ${busyCount === 1 ? "process" : "processes"}.`;
   }
   if (dirtyCount > 0) {
-    return `${dirtyCount} tabs have unsaved changes. Closing will discard them. Close anyway?`;
+    return `${dirtyCount} tabs have unsaved changes. Save them before closing, or close anyway to discard them.`;
   }
   const process =
     busyCount === 1 ? "A process is" : `${busyCount} processes are`;
@@ -120,8 +135,10 @@ function closeManyMessage(pending: CloseManyPending, tabs: Tab[]): string {
 export function CloseDialogs({
   tabs,
   pendingCloseTab,
+  closeSaveState,
   onCancelClose,
   onConfirmClose,
+  onSaveAndClose,
   pendingTerminalCloseTab,
   onCancelTerminalClose,
   onConfirmTerminalClose,
@@ -130,8 +147,17 @@ export function CloseDialogs({
   onConfirmDeleteClose,
   pendingCloseMany,
   closeManyConfirming,
+  closeManyIncomplete,
   onCancelCloseMany,
   onConfirmCloseMany,
+  onSaveAndCloseMany,
+  pendingSpaceDelete,
+  spaceName,
+  spaceDeleteSaving,
+  spaceDeleteIncomplete,
+  onCancelSpaceDelete,
+  onConfirmSpaceDelete,
+  onSaveAndDeleteSpace,
   pendingAppClose,
   onCancelAppClose,
   onConfirmAppClose,
@@ -178,16 +204,34 @@ export function CloseDialogs({
               {tabs.find((t) => t.id === pendingCloseTab)?.title
                 ? `"${
                     tabs.find((t) => t.id === pendingCloseTab)?.title
-                  }" has unsaved changes. Close anyway?`
-                : "This file has unsaved changes. Close anyway?"}
+                  }" has unsaved changes.`
+                : "This file has unsaved changes."}{" "}
+              {closeSaveState === "incomplete"
+                ? "The save did not complete: newer edits, a file conflict or a write failure is still unsaved, so the tab stays open."
+                : "Save them, or close and discard them."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel onClick={onCancelClose}>
               Cancel
             </AlertDialogCancel>
-            <AlertDialogAction onClick={onConfirmClose}>
-              Close Anyway
+            <AlertDialogAction
+              variant="destructive"
+              onClick={(event) => {
+                event.preventDefault();
+                onConfirmClose();
+              }}
+            >
+              Discard & Close
+            </AlertDialogAction>
+            <AlertDialogAction
+              disabled={closeSaveState === "saving"}
+              onClick={(event) => {
+                event.preventDefault();
+                onSaveAndClose();
+              }}
+            >
+              {closeSaveState === "saving" ? "Saving..." : "Save & Close"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -263,6 +307,9 @@ export function CloseDialogs({
             </AlertDialogTitle>
             <AlertDialogDescription>
               {pendingCloseMany ? closeManyMessage(pendingCloseMany, tabs) : ""}
+              {closeManyIncomplete
+                ? " Some changes were not saved (newer edits, a conflict or a write failure), so nothing was closed."
+                : ""}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -270,6 +317,7 @@ export function CloseDialogs({
               Cancel
             </AlertDialogCancel>
             <AlertDialogAction
+              variant="destructive"
               disabled={closeManyConfirming}
               onClick={(event) => {
                 event.preventDefault();
@@ -277,6 +325,67 @@ export function CloseDialogs({
               }}
             >
               {closeManyConfirming ? "Checking..." : "Close Anyway"}
+            </AlertDialogAction>
+            {pendingCloseMany !== null &&
+              pendingCloseMany.dirtyIds.length > 0 && (
+                <AlertDialogAction
+                  disabled={closeManyConfirming}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    onSaveAndCloseMany();
+                  }}
+                >
+                  {closeManyConfirming ? "Checking..." : "Save & Close All"}
+                </AlertDialogAction>
+              )}
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={pendingSpaceDelete !== null}
+        onOpenChange={(open) => !open && onCancelSpaceDelete()}
+      >
+        <AlertDialogContent data-space-delete-dialog>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Space?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingSpaceDelete
+                ? spaceDeleteMessage(pendingSpaceDelete, tabs, spaceName)
+                : ""}
+              {spaceDeleteIncomplete
+                ? " The save did not complete (newer edits, a file conflict or a write failure), so the Space and its tabs stay as they are."
+                : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={onCancelSpaceDelete}>
+              Cancel
+            </AlertDialogCancel>
+            {pendingSpaceDelete !== null &&
+              pendingSpaceDelete.hazards.dirtyIds.length > 0 && (
+                <AlertDialogAction
+                  disabled={spaceDeleteSaving}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    onSaveAndDeleteSpace();
+                  }}
+                >
+                  {spaceDeleteSaving ? "Saving..." : "Save & Delete"}
+                </AlertDialogAction>
+              )}
+            <AlertDialogAction
+              variant="destructive"
+              disabled={spaceDeleteSaving}
+              onClick={(event) => {
+                event.preventDefault();
+                onConfirmSpaceDelete();
+              }}
+            >
+              {pendingSpaceDelete !== null &&
+              pendingSpaceDelete.hazards.dirtyIds.length > 0
+                ? "Delete Without Saving"
+                : "Delete Space"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -28,6 +28,24 @@ export type BenchAppApi = {
   newTabInSpace: (spaceId: string, cwd?: string) => number;
   /** Opens the web preview pane (the app's own planner); returns the tab id. */
   openPreview: (url: string) => number;
+  /** Space lifecycle (the app's own guards, not direct disposal). */
+  requestCloseTab: (id: number) => void;
+  cancelPendingClose: () => void;
+  confirmDiscardTab: () => void;
+  saveAndCloseTab: () => void;
+  requestDeleteSpace: (id: string) => void;
+  cancelDeleteSpace: () => void;
+  confirmDeleteSpace: () => void;
+  saveAndDeleteSpace: () => void;
+  pendingGuards: () => {
+    closeTabId: number | null;
+    terminalTabId: number | null;
+    spaceDeleteId: string | null;
+    closeSaveState: "idle" | "saving" | "incomplete";
+    spaceDeleteIncomplete: boolean;
+  };
+  /** Inserts text through the editor's real editing path (dirty buffer, drafts, saves). */
+  editEditor: (tabId: number, text: string) => void;
 };
 
 /** One scenario, as written by scripts/app-lab/run.py into TERAX_BENCH_SCENARIO. */
@@ -42,6 +60,7 @@ export type BenchScenario = {
     | "fs-churn"
     | "input"
     | "workflow"
+    | "spaces"
     | "preview"
     | "resource"
     | "stress"

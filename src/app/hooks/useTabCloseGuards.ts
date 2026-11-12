@@ -6,6 +6,8 @@ import {
   evaluateCloseHazards,
   hasCloseManyHazards,
   hasNewCloseManyHazards,
+  saveAllForClose,
+  saveThenClose,
 } from "@/app/hooks/tabCloseGuards";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
@@ -28,6 +30,9 @@ type Params = {
   disposeTab: (id: number) => void;
   disposeDeletedTabs: (ids: number[]) => void;
   disposeTabs: (anchorId: number, plan: CloseTabsPlan) => void;
+  /** Resolves true only when the buffer is fully persisted. */
+  saveTab: (id: number) => Promise<boolean>;
+  isTabDirty: (id: number) => boolean;
 };
 
 /**
@@ -41,6 +46,8 @@ export function useTabCloseGuards({
   disposeTab,
   disposeDeletedTabs,
   disposeTabs,
+  saveTab,
+  isTabDirty,
 }: Params) {
   const tabsRef = useRef(tabs);
   const activeIdRef = useRef(activeId);
@@ -58,7 +65,17 @@ export function useTabCloseGuards({
   const [pendingCloseMany, setPendingCloseMany] =
     useState<CloseManyPending | null>(null);
   const [closeManyConfirming, setCloseManyConfirming] = useState(false);
+  const [closeManyIncomplete, setCloseManyIncomplete] = useState(false);
+  const [closeSaveState, setCloseSaveState] = useState<
+    "idle" | "saving" | "incomplete"
+  >("idle");
   const closeManyRequestRef = useRef(0);
+  const saveTabRef = useRef(saveTab);
+  const isTabDirtyRef = useRef(isTabDirty);
+  useLayoutEffect(() => {
+    saveTabRef.current = saveTab;
+    isTabDirtyRef.current = isTabDirty;
+  }, [saveTab, isTabDirty]);
 
   const handleClose = useCallback(
     async (id: number) => {
@@ -67,6 +84,7 @@ export function useTabCloseGuards({
       if (nextActiveInSpace(tabs, id) === null) return;
       const t = tabs.find((x) => x.id === id);
       if (t?.kind === "editor" && t.dirty) {
+        setCloseSaveState("idle");
         setPendingCloseTab(id);
         return;
       }
@@ -156,6 +174,7 @@ export function useTabCloseGuards({
     if (pendingCloseMany === null) return;
     const requestId = ++closeManyRequestRef.current;
     setCloseManyConfirming(true);
+    setCloseManyIncomplete(false);
     const hazards = await evaluateCloseMany(pendingCloseMany.plan.closeIds);
     if (requestId !== closeManyRequestRef.current) return;
     if (hasNewCloseManyHazards(pendingCloseMany, hazards)) {
@@ -171,10 +190,53 @@ export function useTabCloseGuards({
     setCloseManyConfirming(false);
   }, [pendingCloseMany, disposeTabs, evaluateCloseMany, withCurrentActive]);
 
+  /** Saves the affected buffers first; any incomplete save keeps the dialog open. */
+  const saveAndCloseMany = useCallback(async () => {
+    if (pendingCloseMany === null) return;
+    const requestId = ++closeManyRequestRef.current;
+    setCloseManyConfirming(true);
+    setCloseManyIncomplete(false);
+    try {
+      const complete = await saveAllForClose(
+        pendingCloseMany.dirtyIds,
+        (id) => saveTabRef.current(id),
+        (id) => isTabDirtyRef.current(id),
+      );
+      if (requestId !== closeManyRequestRef.current) return;
+      const hazards = await evaluateCloseMany(pendingCloseMany.plan.closeIds);
+      if (requestId !== closeManyRequestRef.current) return;
+      if (
+        !complete ||
+        hasNewCloseManyHazards(pendingCloseMany, hazards)
+      ) {
+        setPendingCloseMany({ ...pendingCloseMany, ...hazards });
+        setCloseManyIncomplete(!complete);
+        return;
+      }
+      disposeTabs(
+        pendingCloseMany.anchorId,
+        withCurrentActive(pendingCloseMany.plan),
+      );
+      setPendingCloseMany(null);
+    } catch {
+      setCloseManyIncomplete(true);
+    } finally {
+      if (requestId === closeManyRequestRef.current) {
+        setCloseManyConfirming(false);
+      }
+    }
+  }, [
+    pendingCloseMany,
+    disposeTabs,
+    evaluateCloseMany,
+    withCurrentActive,
+  ]);
+
   const cancelCloseMany = useCallback(() => {
     closeManyRequestRef.current += 1;
     setPendingCloseMany(null);
     setCloseManyConfirming(false);
+    setCloseManyIncomplete(false);
   }, []);
 
   const confirmClose = useCallback(() => {
@@ -182,11 +244,43 @@ export function useTabCloseGuards({
       disposeTab(pendingCloseTab);
       setPendingCloseTab(null);
     }
+    setCloseSaveState("idle");
   }, [pendingCloseTab, disposeTab]);
 
   const cancelClose = useCallback(() => {
     setPendingCloseTab(null);
+    setCloseSaveState("idle");
   }, []);
+
+  /**
+   * Save then close. The tab closes only when the save covered the buffer and
+   * the buffer still has nothing newer; otherwise it stays open and the dialog
+   * says why. Closing is never inferred from the save's success alone.
+   */
+  const saveAndClose = useCallback(async (): Promise<void> => {
+    const id = pendingCloseTab;
+    if (id === null) return;
+    setCloseSaveState("saving");
+    try {
+      const result = await saveThenClose(
+        {
+          save: (tabId) => saveTabRef.current(tabId),
+          isDirty: (tabId) => isTabDirtyRef.current(tabId),
+          exists: (tabId) => tabsRef.current.some((tab) => tab.id === tabId),
+          close: (tabId) => disposeTab(tabId),
+        },
+        id,
+      );
+      if (result === "closed" || result === "gone") {
+        setPendingCloseTab(null);
+        setCloseSaveState("idle");
+        return;
+      }
+      setCloseSaveState("incomplete");
+    } catch {
+      setCloseSaveState("incomplete");
+    }
+  }, [pendingCloseTab, disposeTab]);
 
   const confirmTerminalClose = useCallback(() => {
     if (pendingTerminalCloseTab !== null) disposeTab(pendingTerminalCloseTab);
@@ -227,16 +321,20 @@ export function useTabCloseGuards({
     pendingDeleteTabs,
     pendingCloseMany,
     closeManyConfirming,
+    closeManyIncomplete,
+    closeSaveState,
     handleClose,
     handleCloseTabsToRight,
     handleCloseOtherTabs,
     confirmClose,
     cancelClose,
+    saveAndClose,
     confirmTerminalClose,
     cancelTerminalClose,
     confirmDeleteClose,
     cancelDeleteClose,
     confirmCloseMany,
+    saveAndCloseMany,
     cancelCloseMany,
     handlePathsDeleted,
   };

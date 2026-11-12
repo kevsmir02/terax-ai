@@ -47,6 +47,10 @@ python3 scripts/app-lab/run.py --scenario workflow --profile debug \
 python3 scripts/app-lab/run.py --scenario preview --profile debug \
     --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-preview
 
+# the Spaces lifecycle seam (shared checkout, switch, close guards, Space deletion)
+python3 scripts/app-lab/run.py --scenario spaces --profile debug \
+    --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-spaces
+
 # prove both refusals without running a scenario (preflight + the binary's isolation guard)
 python3 scripts/app-lab/run.py --scenario workflow --self-test
 ```
@@ -116,6 +120,21 @@ the marker still in scrollback; a temp file opens through the app's own tab plan
 and the editor's rendered text is asserted. Each step emits `[workflow] PASS|FAIL …` to
 `page.log`; the structured summary (`token`, `pass`, `steps`) rides the final `done` sync, the
 report stores it under `workflow`, and the runner exits 2 when any step failed.
+
+**The Spaces lifecycle** (`--scenario spaces`): two Spaces are created on one real checkout and the
+rendered `[data-shared-root]` badge is asserted; a shell in the first Space streams five lines
+while the app switches to the second Space, and after switching back the scrollback holds all five
+while the hidden terminal tab reported `visibility: hidden` (presentation off, output processing
+on). The scenario then drives the app's own close guards: a tab whose shell runs `sleep 30` opens
+the running-process dialog and cancel keeps it; an editor buffer edited through the real CodeMirror
+path opens the unsaved-changes dialog, cancel keeps it dirty, and Save & Close reads the persisted
+text back from disk before the tab disappears. A third Space with a dirty buffer and a running
+process is asked about and canceled first (Space, tabs and dirty text still there), then saved and
+deleted; the report records that the project directory and its `spaces-keep.txt` still exist under
+`spaceDeletion`. The runner exits 2 when any step failed. The scenario does not relaunch the app:
+restart restoration (layout, cwd and file locations cold, no command replay) is verified at the
+planning seam in `src/modules/spaces/lib/restore.test.ts`.
+
 
 **The preview** (`previewScenario`): a preview tab opens through the app's own planner
 (`openPreviewTab`) at `/preview-fixture?redirect=1`, which the orchestrator serves. The fixture page
@@ -219,6 +238,7 @@ not.
 | `idle` | one idle shell for 30 s |
 | `input` | real key events and input-method calls into a raw-mode PTY reader; pass/fail lines in `page.log` (no measurements) |
 | `workflow` (Linux) | acceptance workflow: shell spawn, exact echo, new tab, split, switch back, open a file and assert its rendered text; now sampled like the measured scenarios |
+| `spaces` (Linux) | Space lifecycle: one checkout shared by two Spaces and its rendered indication, a switch that keeps hidden terminal output flowing while presentation stops, the running-process and unsaved-buffer close guards, and Space deletion that resolves dirty buffers/processes, leaves the project directory intact, and cancel leaving everything as it was |
 | `resource` (Linux) | idle terminal for `--idle-seconds` (5), then 2 Spaces, 4 terminal panes, `--agents` (2) busy synthetic agents, several text files, one active local preview; `--streams` (2) streaming panes for `--stream-seconds`, `--close-cycles` editor open/close cycles, `--cycles` hide/show cycles, then +10/+30 s settle |
 | `stress` (Linux) | the same shape with 4 agents, 4 streaming panes and the 4 MiB close-cycle file; a separate, clearly described workload |
 | `startup` (Linux) | boot only; `--startup-repeats` (3) launches — the first cold (fresh profile), the rest warm (same profile) |

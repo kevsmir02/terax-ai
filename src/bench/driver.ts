@@ -229,6 +229,31 @@ class ScenarioRun {
     this.app().setActiveId(tabId);
   }
 
+  /** Switches to a Space and returns the active tab id there, warming a cold tab. */
+  async switchSpace(spaceId: string): Promise<number> {
+    this.app().setActiveSpace(spaceId);
+    await this.waitFor(
+      () => this.app().activeSpaceId === spaceId,
+      `Space ${spaceId}`,
+      10_000,
+    );
+    const active = this.app().tabs.find(
+      (tab) => tab.id === this.app().activeId,
+    );
+    if (active?.spaceId !== spaceId) {
+      const tabs = this.app().tabs.filter((tab) => tab.spaceId === spaceId);
+      if (tabs.length === 0) throw new Error(`Space ${spaceId} has no tab`);
+      this.app().setActiveId(tabs[tabs.length - 1].id);
+      await this.waitFor(() => {
+        const tab = this.app().tabs.find(
+          (tab) => tab.id === this.app().activeId,
+        );
+        return tab?.spaceId === spaceId;
+      }, `an active tab in Space ${spaceId}`);
+    }
+    return this.app().activeId;
+  }
+
   async native(
     action: Record<string, unknown>,
   ): Promise<Result & Record<string, unknown>> {
@@ -1913,6 +1938,307 @@ async function previewScenario(
   }
 }
 
+/**
+ * Space lifecycle in the real application: one checkout shared by two Spaces,
+ * a switch that keeps a hidden terminal's output flowing, the tab close guards,
+ * and Space deletion that leaves the project directory alone.
+ */
+async function spacesScenario(run: ScenarioRun): Promise<unknown> {
+  const { scenario } = run;
+  const workspace = scenario.workspace;
+  const file = scenario.file;
+  const firstLine = scenario.fileText;
+  if (!workspace || !file || !firstLine)
+    throw new Error(
+      "the spaces scenario needs a workspace, a file and its text (scripts/app-lab/run.py creates them)",
+    );
+
+  const steps: WorkflowStep[] = [];
+  const check = async (name: string, ok: boolean, detail: string) => {
+    steps.push({ name, ok, detail });
+    await run.log(`[spaces] ${ok ? "PASS" : "FAIL"} ${name}: ${detail}`);
+  };
+  const failed = async (name: string, detail: string) => {
+    await check(name, false, detail);
+    return `spaces step failed: ${name}: ${detail}`;
+  };
+  const pageText = () => document.body.textContent ?? "";
+  const guards = () => run.app().pendingGuards();
+  const buffer = (leafId: number) => run.app().readBuffer(leafId, 500) ?? "";
+  const readFile = (path: string) =>
+    invoke<{ kind: string; content?: string }>("fs_read_file", {
+      path,
+      workspace: { kind: "local" },
+      force: false,
+    }).then((result) => (result.kind === "text" ? result.content ?? "" : ""));
+  const statOk = (path: string) =>
+    invoke("fs_stat", { path, workspace: { kind: "local" } }).then(
+      () => true,
+      () => false,
+    );
+  const editorText = () =>
+    document.querySelector(".cm-content")?.textContent ?? "";
+
+  const first = await run.booted();
+  const spaceA = run.app().activeSpaceId;
+  if (!spaceA) throw new Error("the application reports no active Space");
+
+  // 1. Two Spaces on one checkout, with the shared relationship indicated.
+  const spaceB = run.app().createSpace("Lab shared", workspace);
+  run.app().newTabInSpace(spaceB, workspace);
+  await run.switchSpace(spaceB);
+  const activeB = run.app().tabs.find((tab) => tab.id === run.app().activeId);
+  if (activeB?.kind !== "terminal")
+    throw new Error("the second Space did not open a terminal tab");
+  await run.sessionReady(activeB.activeLeafId);
+  const badge = document.querySelector("[data-shared-root]");
+  const badgeRoot = (badge?.getAttribute("data-shared-root") ?? "").replace(
+    /\/+$/,
+    "",
+  );
+  await check(
+    "shared checkout indication",
+    badge !== null && badgeRoot === workspace.replace(/\/+$/, ""),
+    `badge ${badge ? badgeRoot : "missing"}; spaces ${run.app().spaces.map((s) => s.id).join(",")}`,
+  );
+  await run.sync("spaces-shared", { spaceA, spaceB, shared: badge !== null });
+
+  // 2. Switching away must not stop a terminal that is no longer on screen.
+  const marker = `HIDDEN-${Date.now().toString(36)}`;
+  writeToSession(
+    first.leafId,
+    `for n in 1 2 3 4 5; do printf '%s-%s\\n' '${marker}' "$n"; sleep 0.25; done\r`,
+  );
+  await run.switchSpace(spaceB);
+  await pause(1800);
+  const hiddenTab = document.querySelector(
+    `[data-terminal-tab="${first.tabId}"]`,
+  ) as HTMLElement | null;
+  const presentationHidden =
+    hiddenTab?.getAttribute("aria-hidden") === "true" &&
+    hiddenTab.style.visibility === "hidden";
+  await run.switchSpace(spaceA);
+  run.select(first.tabId);
+  await pause(700);
+  const seen = (buffer(first.leafId).match(new RegExp(`${marker}-[0-9]`, "g")) ?? [])
+    .length;
+  await check(
+    "switch keeps hidden output flowing",
+    seen >= 5 && presentationHidden,
+    `${seen}/5 output lines; presentation hidden ${presentationHidden}`,
+  );
+  await run.sync("spaces-switched", {
+    seen,
+    presentationHidden,
+    activeSpaceId: run.app().activeSpaceId,
+  });
+
+  // 3. Closing a tab with a live process asks first; cancel keeps the tab.
+  await run.switchSpace(spaceB);
+  const busyTab = await run.newShellTab();
+  writeToSession(busyTab.leafId, "sleep 30\r");
+  await pause(800);
+  run.app().requestCloseTab(busyTab.tabId);
+  try {
+    await run.waitFor(
+      () => guards().terminalTabId === busyTab.tabId,
+      "the running-process close guard",
+      10_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("tab close with a running process", String(error)));
+  }
+  const terminalPrompt = pageText();
+  await check(
+    "tab close with a running process asks first",
+    terminalPrompt.includes("Close Terminal?") &&
+      terminalPrompt.includes("A process is running") &&
+      run.app().tabs.some((tab) => tab.id === busyTab.tabId),
+    `dialog: ${terminalPrompt.includes("Close Terminal?")}`,
+  );
+  run.app().cancelPendingClose();
+  await run.waitFor(() => guards().terminalTabId === null, "the canceled guard");
+  await check(
+    "cancel keeps the running terminal",
+    run.app().tabs.some((tab) => tab.id === busyTab.tabId),
+    `tabs ${run.app().tabs.length}`,
+  );
+  writeToSession(busyTab.leafId, "\u0003");
+  await pause(300);
+
+  // 4. A dirty buffer closes only after a complete save; cancel keeps it dirty.
+  const dirtyTabId = run.app().openFileTab(file, true, spaceB);
+  try {
+    await run.waitFor(
+      () =>
+        run.app().tabs.some((tab) => tab.id === dirtyTabId) &&
+        editorText().includes(firstLine),
+      "the opened file",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("dirty buffer close", String(error)));
+  }
+  run.app().editEditor(dirtyTabId, "lab typed line\n");
+  const dirty = () =>
+    run.app().tabs.find((tab) => tab.id === dirtyTabId)?.kind === "editor" &&
+    (run.app().tabs.find((tab) => tab.id === dirtyTabId) as { dirty: boolean })
+      .dirty;
+  await run.waitFor(dirty, "the dirty buffer");
+  run.app().requestCloseTab(dirtyTabId);
+  await run.waitFor(
+    () => guards().closeTabId === dirtyTabId,
+    "the unsaved-buffer close guard",
+    10_000,
+  );
+  const dirtyPrompt = pageText();
+  await check(
+    "dirty buffer close offers saving",
+    dirtyPrompt.includes("Unsaved Changes") &&
+      dirtyPrompt.includes("Save & Close"),
+    `dialog: ${dirtyPrompt.includes("Save & Close")}`,
+  );
+  run.app().cancelPendingClose();
+  await run.waitFor(() => guards().closeTabId === null, "the canceled close guard");
+  await check(
+    "cancel keeps the dirty buffer",
+    dirty(),
+    `tab ${dirtyTabId} still dirty`,
+  );
+
+  run.app().requestCloseTab(dirtyTabId);
+  await run.waitFor(
+    () => guards().closeTabId === dirtyTabId,
+    "the unsaved-buffer close guard again",
+    10_000,
+  );
+  run.app().saveAndCloseTab();
+  try {
+    await run.waitFor(
+      () => !run.app().tabs.some((tab) => tab.id === dirtyTabId),
+      "the saved tab to close",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("save and close", String(error)));
+  }
+  const savedText = await readFile(file);
+  await check(
+    "save and close persists before closing",
+    savedText.includes("lab typed line"),
+    `${savedText.length} bytes on disk`,
+  );
+  await run.sync("spaces-tab-close", { dirtyTabId, saved: true });
+
+  // 5. Space deletion resolves dirty buffers and processes, then removes only
+  //    saved organization; cancel leaves the work and the folder intact.
+  const spaceC = run.app().createSpace("Lab delete", workspace);
+  run.app().newTabInSpace(spaceC, workspace);
+  await run.switchSpace(spaceC);
+  const activeC = run.app().tabs.find((tab) => tab.id === run.app().activeId);
+  if (activeC?.kind !== "terminal")
+    throw new Error("the deletion Space did not open a terminal tab");
+  await run.sessionReady(activeC.activeLeafId);
+  writeToSession(activeC.activeLeafId, "sleep 30\r");
+  const deletedDirtyTab = run.app().openFileTab(file, true, spaceC);
+  await run.waitFor(
+    () =>
+      run.app().tabs.some((tab) => tab.id === deletedDirtyTab) &&
+      editorText().includes("lab typed line"),
+    "the file in the deletion Space",
+    20_000,
+  );
+  run.app().editEditor(deletedDirtyTab, "deletion draft\n");
+  await run.waitFor(
+    () =>
+      run.app().tabs.find((tab) => tab.id === deletedDirtyTab)?.kind ===
+        "editor" &&
+      (
+        run.app().tabs.find((tab) => tab.id === deletedDirtyTab) as {
+          dirty: boolean;
+        }
+      ).dirty,
+    "the dirty buffer in the deletion Space",
+  );
+
+  run.app().requestDeleteSpace(spaceC);
+  try {
+    await run.waitFor(
+      () => guards().spaceDeleteId === spaceC,
+      "the Space deletion guard",
+      10_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("Space delete guard", String(error)));
+  }
+  const deletePrompt = pageText();
+  await check(
+    "Space delete summarizes unsaved work and processes",
+    deletePrompt.includes("Delete Space?") &&
+      deletePrompt.includes("unsaved changes") &&
+      deletePrompt.includes("may still be running") &&
+      deletePrompt.includes("Files and worktrees on disk are not deleted"),
+    `dialog text ${deletePrompt.includes("Delete Space?")}`,
+  );
+  run.app().cancelDeleteSpace();
+  await run.waitFor(
+    () => guards().spaceDeleteId === null,
+    "the canceled Space deletion",
+  );
+  await check(
+    "cancel keeps the Space, its tabs and its dirty buffer",
+    run.app().spaces.some((space) => space.id === spaceC) &&
+      run.app().tabs.some((tab) => tab.spaceId === spaceC && tab.id === deletedDirtyTab && tab.kind === "editor" && tab.dirty),
+    `spaces ${run.app().spaces.length}, tabs ${run.app().tabs.length}`,
+  );
+  await run.sync("spaces-delete-canceled", { spaceC });
+
+  run.app().requestDeleteSpace(spaceC);
+  await run.waitFor(
+    () => guards().spaceDeleteId === spaceC,
+    "the Space deletion guard again",
+    10_000,
+  );
+  run.app().saveAndDeleteSpace();
+  try {
+    await run.waitFor(
+      () => !run.app().spaces.some((space) => space.id === spaceC),
+      "the Space to be deleted",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("save and delete Space", String(error)));
+  }
+  await check(
+    "deleting the Space removes saved organization only",
+    !run.app().tabs.some((tab) => tab.spaceId === spaceC) &&
+      (await statOk(workspace)) &&
+      run.app().spaces.some((space) => space.id === spaceA),
+    `project folder ${(await statOk(workspace)) ? "present" : "MISSING"}`,
+  );
+  await run.sync("spaces-deleted", {
+    projectDirExists: await statOk(workspace),
+    remainingSpaces: run.app().spaces.length,
+  });
+
+  const pass = steps.every((step) => step.ok);
+  await run.log(
+    `[spaces] ${pass ? "PASS" : "FAIL"} summary: ${steps.filter((step) => !step.ok).length} failures of ${steps.length}`,
+  );
+  return {
+    workflow: {
+      pass,
+      steps,
+      spaceA,
+      spaceB,
+      shared: badge !== null,
+      hiddenOutputLines: seen,
+      presentationHidden,
+      projectDirExists: await statOk(workspace),
+    },
+  };
+}
+
 const SCENARIOS: Record<
   BenchScenario["name"],
   (run: ScenarioRun) => Promise<unknown>
@@ -1926,6 +2252,7 @@ const SCENARIOS: Record<
   "fs-churn": fsChurnScenario,
   input: inputScenario,
   workflow: workflowScenario,
+  spaces: spacesScenario,
   preview: previewScenario,
   resource: resourceScenario,
   stress: resourceScenario,

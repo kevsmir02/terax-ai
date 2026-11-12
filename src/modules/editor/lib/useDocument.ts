@@ -332,6 +332,12 @@ export function useDocument({ path, visible, onDirtyChange, buffer }: Options) {
     return saveNow();
   }, [clearAutoSaveTimer, saveNow]);
 
+  /** The buffer's own text against its last persisted baseline, synchronously. */
+  const isDirty = useCallback(
+    () => bufferRef.current !== savedRef.current,
+    [],
+  );
+
   /**
    * Coordinates an app-owned format step: the file the formatter is about to
    * rewrite must still be the revision this buffer last saved. When it is not,
@@ -519,6 +525,7 @@ export function useDocument({ path, visible, onDirtyChange, buffer }: Options) {
     dirty,
     onChange,
     save,
+    isDirty,
     reload,
     adoptDiskText,
     openAnyway,
@@ -538,5 +545,6 @@ export function useDocument({ path, visible, onDirtyChange, buffer }: Options) {
     applyRecoveredText,
     saveDraftCopy,
     dismissDraft,
+    discardRecovery: () => recoveryRef.current.discard(),
   };
 }
