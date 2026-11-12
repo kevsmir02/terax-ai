@@ -138,4 +138,4 @@ Rules that follow from it:
 - [`docs/README.md`](../README.md) - index of contributor guides
 - [Namespace isolation](namespace-isolation.md) - fork identity inventory and coexistence rules
 - [Two-process model](two-process-model.md) - IPC boundary and command catalog
-- [AI subsystem](ai-subsystem.md) - tools, approval flow, and provider handling
+- [Built-in AI subsystem](ai-subsystem.md) - removed client surfaces and inert native compatibility

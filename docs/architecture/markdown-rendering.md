@@ -55,23 +55,12 @@ Known follow-ups owned by other tickets, do not fix them here:
   (spec: Preview access boundaries),
 - preview consent/lifecycle policy and unload/close behaviour (preview tickets).
 
-## Compatibility entry points (AI-owned, aliases only)
+## Removed AI-owned entry points
 
-These files no longer own anything; they re-export the retained owners so
-unmigrated agent components compile. Delete them only after the listed
-consumers are gone.
-
-| file | re-exports | remaining consumers |
-| --- | --- | --- |
-| `src/components/ai-elements/markdown-code.tsx` | `MarkdownCode`, `markdownCodeText` | `modules/ai/components/AiChat.tsx`, `components/ai-elements/message.tsx` |
-| `src/components/ai-elements/chat-code.tsx` | `CodeBlock as ChatCodeBlock`, `CodeStreamingProvider as ChatStreamingProvider` | `components/ai-elements/message.tsx` (`ChatStreamingProvider`; the `ChatCodeBlock` alias has no in-tree importer) |
-| `src/components/ai-elements/chat-code-lezer.ts` | `highlight`, `isHighlightable`, `HighlightedNode` | none (kept for unmigrated imports) |
-| `src/components/ai-elements/shimmer.tsx` | `TextShimmer as Shimmer` | `components/ai-elements/reasoning.tsx` |
-
-`src/components/ai-elements/markdown-compat.test.tsx` locks those aliases to the
-retained components, and `src/modules/markdown/ownership.test.ts` fails if the
-retained Markdown module ever imports the AI feature again or if a consumer
-appears that is not listed above.
+The aliases under `src/components/ai-elements/` were deleted with the built-in
+chat feature (ticket #12). `src/modules/markdown/ownership.test.ts` fails if the
+retained Markdown module imports the removed AI feature again, or if any source
+still imports one of the deleted alias paths.
 
 ## What must not be deleted with the AI feature
 

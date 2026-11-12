@@ -15,8 +15,6 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const srcAlias = join(root, "src");
 
 export const DEFAULT_WATCH = [
-  "@ai-sdk",
-  "ai",
   "streamdown",
   "@codemirror",
   "@uiw",

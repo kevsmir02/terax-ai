@@ -36,7 +36,6 @@ import {
   ComputerTerminal02Icon,
   GitCompareIcon,
   Globe02Icon,
-  IncognitoIcon,
   Message02Icon,
   PencilEdit02Icon,
   Tick02Icon,
@@ -62,7 +61,6 @@ type Props = {
   onSelect: (id: number) => void;
   onNew: () => void;
   onNewBlock: () => void;
-  onNewPrivate: () => void;
   onNewPreview: () => void;
   onNewEditor: () => void;
   onNewGitGraph: () => void;
@@ -88,7 +86,6 @@ export function TabBar({
   onSelect,
   onNew,
   onNewBlock,
-  onNewPrivate,
   onNewPreview,
   onNewEditor,
   onNewGitGraph,
@@ -588,7 +585,6 @@ export function TabBar({
         <NewTabMenu
           onNew={onNew}
           onNewBlock={onNewBlock}
-          onNewPrivate={onNewPrivate}
           onNewPreview={onNewPreview}
           onNewEditor={onNewEditor}
           onNewGitGraph={onNewGitGraph}
@@ -683,16 +679,6 @@ export function TabIcon({ tab }: { tab: Tab }) {
     return (
       <HugeiconsIcon
         icon={Globe02Icon}
-        size={14}
-        strokeWidth={2}
-        className="shrink-0"
-      />
-    );
-  }
-  if (tab.kind === "terminal" && tab.private) {
-    return (
-      <HugeiconsIcon
-        icon={IncognitoIcon}
         size={14}
         strokeWidth={2}
         className="shrink-0"

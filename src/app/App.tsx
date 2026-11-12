@@ -9,7 +9,6 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { consumeLaunchFiles, getLaunchDir } from "@/lib/launchDir";
 import { IS_MAC } from "@/lib/platform";
 import { quoteShellArg } from "@/lib/shellQuote";
-import { usePresence } from "@/lib/usePresence";
 import { useZoom } from "@/lib/useZoom";
 import { isMarkdownPath } from "@/lib/utils";
 import {
@@ -19,15 +18,6 @@ import {
   nextAttentionTarget,
   validateAgentLaunchCommand,
 } from "@/modules/agents";
-import {
-  AgentRunBridge,
-  AiMiniWindow,
-  LocalAgentNotificationsBridge,
-  useAiBootstrap,
-  useAiLiveBridge,
-  useChatStore,
-} from "@/modules/ai";
-import { AiComposerProvider } from "@/modules/ai/lib/composer";
 import { native } from "@/modules/workspace/native";
 import {
   CommandPalette,
@@ -54,6 +44,7 @@ import { setCodeBlockRunner } from "@/modules/markdown/lib/codeBlockRunner";
 import type { PreviewPaneHandle } from "@/modules/preview";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { usePreferencesBootstrap } from "@/modules/settings/usePreferencesBootstrap";
 import { setShowHidden } from "@/modules/settings/store";
 import {
   type ShortcutHandlers,
@@ -134,10 +125,7 @@ import {
   useState,
 } from "react";
 import { CloseDialogs } from "./components/CloseDialogs";
-import {
-  TOGGLE_BLOCK_INPUT_EVENT,
-  WorkspaceInputBar,
-} from "./components/WorkspaceInputBar";
+import { WorkspaceInputBar } from "./components/WorkspaceInputBar";
 import { WorkspaceSurface } from "./components/WorkspaceSurface";
 import { useAppCloseGuard } from "./hooks/useAppCloseGuard";
 import {
@@ -171,9 +159,7 @@ export default function App() {
     setActiveSpaceForNewTabs,
     newTab,
     newBlockTab,
-    newAgentTab,
     newAgentGroupTab,
-    newPrivateTab,
     openFileTab,
     pinTab,
     newPreviewTab,
@@ -351,16 +337,7 @@ export default function App() {
     },
     [],
   );
-  const miniOpen = useChatStore((s) => s.mini.open);
-  const miniPresence = usePresence(miniOpen, 200);
-  const openMini = useChatStore((s) => s.openMini);
-  const toggleMini = useChatStore((s) => s.toggleMini);
-  const focusInput = useChatStore((s) => s.focusInput);
-  const openPanel = useChatStore((s) => s.openPanel);
-  const panelOpen = useChatStore((s) => s.panelOpen);
-  const setLive = useChatStore((s) => s.setLive);
-
-  const { hasComposer, keysLoaded } = useAiBootstrap();
+  usePreferencesBootstrap();
 
   const activeTab = tabs.find((t) => t.id === activeId);
   const isTerminalTab = activeTab?.kind === "terminal";
@@ -529,43 +506,9 @@ export default function App() {
     setActive(spaces[next].id);
   }, []);
 
-  const togglePanelAndFocus = useCallback(() => {
-    if (!hasComposer) {
-      void openSettingsWindow("models");
-      return;
-    }
-    if (panelOpen) {
-      useChatStore.getState().closePanel();
-    } else {
-      openPanel();
-      focusInput(null);
-    }
-  }, [hasComposer, panelOpen, openPanel, focusInput]);
-
-  const handleAttachFileToAgent = useCallback(
-    (path: string) => {
-      if (!hasComposer) {
-        void openSettingsWindow("models");
-        return;
-      }
-      // Dispatch a window event the composer listens for. Same pattern as
-      // selections — keeps file-explorer decoupled from the AI module.
-      window.dispatchEvent(
-        new CustomEvent<string>("terax:ai-attach-file", { detail: path }),
-      );
-      openPanel();
-      focusInput(null);
-    },
-    [hasComposer, openPanel, focusInput],
-  );
-
   const openNewTab = useCallback(() => {
     newTab(inheritedCwdForNewTab());
   }, [newTab, inheritedCwdForNewTab]);
-
-  const openNewPrivateTab = useCallback(() => {
-    newPrivateTab(inheritedCwdForNewTab());
-  }, [newPrivateTab, inheritedCwdForNewTab]);
 
   const openNewBlockTab = useCallback(() => {
     newBlockTab(inheritedCwdForNewTab());
@@ -857,7 +800,6 @@ export default function App() {
       "commandPalette.content": () => openCommandPalette("content"),
       "tab.new": openNewTab,
       "tab.newBlock": openNewBlockTab,
-      "tab.newPrivate": openNewPrivateTab,
       "tab.newPreview": () => openPreviewTab(""),
       "tab.newEditor": () => setNewEditorOpen(true),
       "tab.close": handleCloseTabOrPane,
@@ -883,22 +825,12 @@ export default function App() {
       "terminal.clear": () => {
         clearFocusedTerminal();
       },
-      "terminal.toggleInput": () =>
-        window.dispatchEvent(new CustomEvent(TOGGLE_BLOCK_INPUT_EVENT)),
       "blocks.prev": () => navigateFocusedBlocks(-1),
       "blocks.next": () => navigateFocusedBlocks(1),
       "search.focus": () => {
         const editor = editorRefs.current.get(activeId);
         if (editor) editor.openSearch();
         else searchInlineRef.current?.focus();
-      },
-      "ai.toggle": togglePanelAndFocus,
-      "ai.toggleMini": () => {
-        if (!hasComposer) {
-          void openSettingsWindow("models");
-          return;
-        }
-        toggleMini();
       },
       "agent.focusAttention": () => {
         const t = nextAttentionTarget();
@@ -928,7 +860,6 @@ export default function App() {
       handleCloseTabOrPane,
       openNewTab,
       openNewBlockTab,
-      openNewPrivateTab,
       openPreviewTab,
       activeSpaceId,
       selectByIndex,
@@ -936,9 +867,6 @@ export default function App() {
       focusNextPaneInTab,
       swapActivePane,
       toggleSourceControl,
-      hasComposer,
-      togglePanelAndFocus,
-      toggleMini,
       toggleSidebar,
       toggleExplorerFocus,
       toggleHiddenFiles,
@@ -971,11 +899,7 @@ export default function App() {
           (e.target as HTMLElement | null) ?? document.activeElement;
         return !isTerminalSurfaceTarget(target);
       }
-      if (
-        id === "terminal.toggleInput" ||
-        id === "blocks.prev" ||
-        id === "blocks.next"
-      ) {
+      if (id === "blocks.prev" || id === "blocks.next") {
         return !(activeTab?.kind === "terminal" && activeTab.blocks === true);
       }
       if (id === "sidebar.toggle") {
@@ -1055,11 +979,6 @@ export default function App() {
   );
 
   const onActivateAgent = activateAgentTarget;
-
-  const onActivateLocalAgent = useCallback(() => {
-    openPanel();
-    focusInput(null);
-  }, [openPanel, focusInput]);
 
   const handleLeafExit = useCallback(
     (leafId: number, _code: number) => {
@@ -1212,7 +1131,6 @@ export default function App() {
             home,
             openNewTab,
             openNewBlock: openNewBlockTab,
-            openNewPrivate: openNewPrivateTab,
             openNewEditor: () => setNewEditorOpen(true),
             openNewPreview: () => openPreviewTab(""),
             openGitGraph: openGitGraphFromContext,
@@ -1224,7 +1142,6 @@ export default function App() {
             focusExplorerSearch: () => explorerRef.current?.focusSearch(),
             toggleSidebar,
             toggleHiddenFiles,
-            toggleAi: togglePanelAndFocus,
             openSettings: () => void openSettingsWindow(),
             openKeyboardShortcuts: () => void openSettingsWindow("shortcuts"),
             spaces: useSpaces.getState().spaces,
@@ -1243,7 +1160,6 @@ export default function App() {
       home,
       openNewTab,
       openNewBlockTab,
-      openNewPrivateTab,
       openPreviewTab,
       openGitGraphFromContext,
       toggleSourceControl,
@@ -1251,7 +1167,6 @@ export default function App() {
       splitActivePaneInActiveTab,
       toggleSidebar,
       toggleHiddenFiles,
-      togglePanelAndFocus,
       activeSpaceId,
       handleNewSpace,
     ],
@@ -1345,18 +1260,6 @@ export default function App() {
     return () => setCodeBlockRunner(null);
   }, [insertHistoryCommand]);
 
-  useAiLiveBridge({
-    setLive,
-    activeId,
-    tabs,
-    explorerRoot,
-    launchCwd,
-    home,
-    openPreviewTab,
-    newAgentTab,
-    terminalRefs,
-  });
-
   const shell = (
     <ThemeProvider>
       <TooltipProvider>
@@ -1387,7 +1290,6 @@ export default function App() {
               onSelect={setActiveId}
               onNew={openNewTab}
               onNewBlock={openNewBlockTab}
-              onNewPrivate={openNewPrivateTab}
               onNewPreview={() => openPreviewTab("")}
               onNewEditor={() => setNewEditorOpen(true)}
               onNewGitGraph={openGitGraphFromContext}
@@ -1401,7 +1303,6 @@ export default function App() {
               onToggleSidebar={toggleSidebar}
               onOpenCommandPalette={() => openCommandPalette("commands")}
               onActivateAgent={onActivateAgent}
-              onActivateLocalAgent={onActivateLocalAgent}
               onOpenSettings={() => void openSettingsWindow()}
               spaceSwitcher={spaceSwitcher}
               searchTarget={searchTarget}
@@ -1458,7 +1359,6 @@ export default function App() {
                             handleOpenRepositoryInSourceControl
                           }
                           onOpenGitHistory={handleOpenGitHistoryForPath}
-                          onAttachToAgent={handleAttachFileToAgent}
                           pathDropTarget={terminalPathDropTarget}
                           visible={!sidebarCollapsed}
                         />
@@ -1512,14 +1412,7 @@ export default function App() {
 
                     <WorkspaceInputBar
                       isBlockTab={isBlockTab}
-                      isTerminalTab={isTerminalTab}
                       activeLeafId={activeLeafId}
-                      cwd={activeCwd}
-                      home={home}
-                      hasComposer={hasComposer}
-                      panelOpen={panelOpen}
-                      keysLoaded={keysLoaded}
-                      onConnect={() => void openSettingsWindow("models")}
                     />
                   </div>
                 </div>
@@ -1534,12 +1427,6 @@ export default function App() {
               home={home}
               onCd={sendCd}
               onWorkspaceChange={handleWorkspaceChange}
-              onOpenMini={openMini}
-              onOpenAi={togglePanelAndFocus}
-              hasComposer={hasComposer}
-              privateActive={
-                activeTab?.kind === "terminal" && activeTab.private === true
-              }
             />
           )}
 
@@ -1557,16 +1444,6 @@ export default function App() {
           />
           <Toaster position="bottom-right" />
 
-          {hasComposer ? (
-            <>
-              <AgentRunBridge />
-              <LocalAgentNotificationsBridge />
-            </>
-          ) : null}
-
-          {hasComposer && miniPresence.mounted ? (
-            <AiMiniWindow state={miniPresence.state} />
-          ) : null}
           {switcherState && (
             <TabSwitcherHud tabs={spaceTabs} state={switcherState} />
           )}
@@ -1615,5 +1492,5 @@ export default function App() {
     </ThemeProvider>
   );
 
-  return <AiComposerProvider>{shell}</AiComposerProvider>;
+  return shell;
 }
