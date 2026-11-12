@@ -1645,6 +1645,9 @@ async function previewScenario(
     const spaceA =
       run.app().tabs.find((tab) => tab.id === previewId)?.spaceId ?? "";
     const spaceB = run.app().createSpace("Lab B", null);
+    // Creating a Space does not switch to it; the frame must unload because this Space
+    // becomes inactive, so the switch is part of the fixture.
+    run.app().setActiveSpace(spaceB);
     try {
       await run.waitFor(
         () => !frame(),
