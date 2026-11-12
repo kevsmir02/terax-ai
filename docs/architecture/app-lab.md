@@ -29,6 +29,80 @@ Build time on an M4 (10 cores): cold release build including every dependency 2 
 after a frontend or app change 88 to 90 s (the frontend itself 6 s). `--reuse-build` skips
 the build, `--build-only` stops after it, `--app` runs a prebuilt `.app`.
 
+### Linux (WebKitGTK): the workflow seam
+
+`--scenario workflow` is the one Linux scenario so far: it drives the real WebKitGTK app through
+the actions this program's acceptance seam needs and asserts what the page renders.
+
+```sh
+# build (debug binary, private target dir, no bundle) and run the workflow
+pnpm profile:app:linux
+# equivalent, with explicit paths
+python3 scripts/app-lab/run.py --scenario workflow --profile debug \
+    --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run
+
+# prove both refusals without running a scenario (preflight + the binary's isolation guard)
+python3 scripts/app-lab/run.py --scenario workflow --self-test
+```
+
+**Prerequisites** (Fedora 44 KDE Plasma Wayland is the primary host):
+`webkit2gtk4.1-devel`, `gtk3-devel`, `librsvg2-devel`, `openssl-devel` (the same set CI installs
+for `cargo check`), Rust stable, Node 22+, pnpm, and a live graphical session. The runner launches
+the app with `--no-bundle`; no RPM/DEB/AppImage and no `terax-cli` sidecar are involved. Under
+Xvfb a window manager is required for focus/visibility and transparency will not work; a real
+session is the supported target.
+
+**Host stack** is recorded in the report's `environment` (never asserted): `/etc/os-release`,
+`uname -r`, architecture, `XDG_SESSION_TYPE`/`XDG_CURRENT_DESKTOP`, the live Wayland/X11 display
+names, GDK scale variables, the text-scaling factor, matched monospace/sans fonts, the
+webkit2gtk/GTK package versions (rpm, dpkg or `pkg-config`), the CPU model, logical CPUs and RAM
+from `/proc`, and the observed page `devicePixelRatio` from the last phase. Load average is
+recorded at start and end.
+
+**Isolation** (`scripts/linux_profile.py`, shared with `scripts/pty-smoke`): the run gets a
+per-run identifier (`app.crynta.terax.app-lab-<hex>`), its own `HOME` **and** its own
+`XDG_DATA_HOME`/`XDG_CONFIG_HOME`/`XDG_CACHE_HOME`/`XDG_STATE_HOME` under `<output>/home`, while
+`XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`, `DISPLAY` and `DBUS_SESSION_BUS_ADDRESS` keep coming from the
+live session. `XDG_CACHE_HOME` is mandatory: the control server writes
+`$XDG_CACHE_HOME/terax/control.json` and `terax/run/<pid>/bin/terax`, which are keyed by product
+name, *not* by identifier — inheriting the real cache directory would overwrite the installed
+app's live descriptor. The preflight refuses (before the build and again before the launch) the
+product identifier, an identifier outside the `app.crynta.terax.*` namespace, a missing/relative
+or out-of-output `HOME`/`XDG_*` directory, the installed app's cache directory, and a bench launch
+without `TERAX_BENCH_ISOLATED=1`. `--self-test` exercises every case and then launches the real
+bench binary without that variable, asserting it exits nonzero with the guard's message. The
+profile is removed before and after the run; `linux_profile.cleanup` refuses paths outside the
+output directory. `python3 -m unittest discover -s scripts/tests` covers the same invariants
+(allow and deny) without a build.
+
+**The workflow** (in `src/bench/driver.ts`): a real login shell spawns in the first tab; a written
+marker is echoed back and asserted to appear exactly once; a second terminal tab opens; the first
+tab's active pane splits and the new leaf gets a live session; the app switches away and back with
+the marker still in scrollback; a temp file opens through the app's own tab planner (`openFileTab`)
+and the editor's rendered text is asserted. Each step emits `[workflow] PASS|FAIL …` to
+`page.log`; the structured summary (`token`, `pass`, `steps`) rides the final `done` sync, the
+report stores it under `workflow`, and the runner exits 2 when any step failed.
+
+**Focus is advisory on Linux.** Wayland lets the compositor decide focus (`set_focus` is a hint)
+and WebKitGTK exposes no occlusion state, so `qualify()` does not fail the workflow on focus:
+`native.appActive`/`key` are recorded per phase and summarised as a `qualification.advisories`
+entry. The snapshot's process ids come from a `/proc` scan of the app's descendants
+(`bench.rs`, Linux `platform` module), not from WebKit private API.
+
+**Not sampled yet (ticket 02 owns it):** per-category memory (`footprint`/`vmmap` equivalents:
+`smaps_rollup`, Pss), the WebContent/GPU/Networking pid role table beyond the snapshot, the 1 Hz
+counter timeline, whole-app baselines and metrics/compare output. **Not implemented yet (ticket
+32):** native key/IME input, stepped/live resize, synthetic divider drags, the composited layer
+tree, forced GC, hidden-window cycles (`hide`/`show` exist but no scenario uses them) and soak
+scenarios. `resize`, `split-drag`, `occlusion`, `input`, `tabs`, `idle`, `agents-steady` and
+`fs-churn` refuse to run on Linux rather than pretend to measure.
+
+**Environment knobs:** `--window WxH` (logical size, default 1280x820), `--local-storage
+KEY=VALUE` (the updater throttle is preseeded automatically so no dialog covers the window),
+`--toggle NAME=VALUE`, `--identifier` (reproduction), `--reuse-build`, `--app <binary>`, and
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` for a broken GL path (pass it through the environment; the
+pty-smoke runner has `--disable-dmabuf` for the same workaround).
+
 Keep the machine awake and unlocked and do not touch the keyboard: the benchmark window must
 stay visible, key and active. The orchestrator holds a display-sleep assertion
 (`caffeinate -d -i -u`), refuses to start while another benchmark window (renderer lab, a second
@@ -135,7 +209,9 @@ when garbage collection runs, so single samples vary between runs.
 
 ## Limits
 
-macOS only, one display (2048x1152 points at 100 Hz here), fresh profile with default
-preferences (vibrancy off), no AI panel traffic, a synthetic agent instead of Codex. Footprint
-figures vary between runs because garbage collection timing decides when dead native objects
-are released; compare medians of repeats and prefer the timeline floor and the after-GC value.
+macOS for the measured scenarios: one display (2048x1152 points at 100 Hz here), fresh profile
+with default preferences (vibrancy off), no AI panel traffic, a synthetic agent instead of Codex.
+Footprint figures vary between runs because garbage collection timing decides when dead native
+objects are released; compare medians of repeats and prefer the timeline floor and the after-GC
+value. Linux currently only has the `workflow` acceptance scenario (WebKitGTK, Wayland): it
+records the host stack and the workflow evidence, and no memory/CPU metrics or baseline yet.

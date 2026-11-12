@@ -38,6 +38,7 @@
     "profile:renderer:agents": "python3 scripts/renderer-profile/run.py --workload agents",
     "profile:renderer:idle": "python3 scripts/renderer-profile/run.py --workload idle",
     "profile:app": "python3 scripts/app-lab/run.py",
+    "profile:app:linux": "python3 scripts/app-lab/run.py --scenario workflow --profile debug",
     "test:ipc:macos": "python3 scripts/ipc-profile/run.py"
   },
   "dependencies": {

@@ -710,7 +710,285 @@ mod platform {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+mod platform {
+    //! WebKitGTK has no public API for the web/network/GPU process ids and no occlusion state,
+    //! so the ids come from a `/proc` scan of this process's descendants and visibility is the
+    //! window's own state. Focus cannot be forced on Wayland: activation is advisory there.
+    //! Input, live resize, layers and GC stay macOS-only (ticket 32).
+
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    pub async fn run(
+        _app: AppHandle,
+        window: WebviewWindow,
+        action: WindowAction,
+    ) -> Result<Value, String> {
+        match action {
+            WindowAction::Snapshot => Ok(snapshot(&window)),
+            WindowAction::SetSize { width, height } => {
+                window
+                    .set_size(tauri::LogicalSize::new(width, height))
+                    .map_err(|error| format!("set_size: {error}"))?;
+                tokio::time::sleep(Duration::from_millis(120)).await;
+                Ok(snapshot(&window))
+            }
+            WindowAction::Activate => {
+                let started = Instant::now();
+                window.show().map_err(|error| format!("show: {error}"))?;
+                // A Wayland compositor decides where focus goes; this is only a request.
+                let _ = window.set_focus();
+                tokio::time::sleep(Duration::from_millis(120)).await;
+                let state = snapshot(&window);
+                Ok(json!({
+                    "ok": state["windowVisible"],
+                    "ms": started.elapsed().as_secs_f64() * 1000.0,
+                    "focused": state["key"],
+                    "focus": "advisory",
+                }))
+            }
+            WindowAction::Sleep { ms } => {
+                tokio::time::sleep(Duration::from_secs_f64(ms.max(0.0) / 1000.0)).await;
+                Ok(json!({"ok": true}))
+            }
+            WindowAction::Hide { mode } => {
+                window.hide().map_err(|error| format!("hide: {error}"))?;
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let state = snapshot(&window);
+                Ok(json!({"ok": !state["windowVisible"].as_bool().unwrap_or(true), "mode": mode, "state": state}))
+            }
+            WindowAction::Show { mode } => {
+                window.show().map_err(|error| format!("show: {error}"))?;
+                let _ = window.set_focus();
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let state = snapshot(&window);
+                Ok(json!({"ok": state["windowVisible"], "mode": mode, "state": state}))
+            }
+            WindowAction::ResizeSteps { .. } => Err(
+                "stepped/live resize is macOS-only for now (ticket 32); window sizing is setSize"
+                    .to_string(),
+            ),
+            WindowAction::Gc => {
+                Err("a forced full GC is not available on WebKitGTK (ticket 32)".to_string())
+            }
+            WindowAction::Layers => {
+                Err("the composited layer tree is macOS-only for now (ticket 32)".to_string())
+            }
+            WindowAction::Key { .. } | WindowAction::Text { .. } => Err(
+                "native key/input-method events are macOS-only for now (ticket 32)".to_string(),
+            ),
+        }
+    }
+
+    fn snapshot(window: &WebviewWindow) -> Value {
+        let visible = window.is_visible().unwrap_or(false);
+        let focused = window.is_focused().unwrap_or(false);
+        let scale = window.scale_factor().unwrap_or(1.0);
+        let inner = window.inner_size().map(|size| (size.width, size.height)).unwrap_or((0, 0));
+        let position = window
+            .outer_position()
+            .map(|position| (position.x, position.y))
+            .unwrap_or((0, 0));
+        let pids = resolve_webkit_pids(&scan_processes(), std::process::id());
+        json!({
+            "hostPid": std::process::id(),
+            "webContentPid": pids.web_content,
+            "gpuPid": pids.gpu,
+            "networkingPid": pids.networking,
+            "webContentPrewarmedPids": pids.prewarmed,
+            "windowVisible": visible,
+            // WebKitGTK hands the application no occlusion signal; visibility is what exists.
+            "occlusionVisible": visible,
+            "key": focused,
+            // Wayland does not tell an application that it is the active one either.
+            "appActive": focused,
+            "miniaturized": window.is_minimized().unwrap_or(false),
+            "scale": scale,
+            "frame": [position.0, position.1, inner.0, inner.1],
+            "platform": "linux",
+        })
+    }
+
+    #[derive(Debug, Default, Clone, PartialEq, Eq)]
+    pub(super) struct WebKitPids {
+        pub(super) web_content: u32,
+        pub(super) gpu: u32,
+        pub(super) networking: u32,
+        /// Extra web processes the pool started ahead of time (WebKitGTK prewarms one).
+        pub(super) prewarmed: Vec<u32>,
+    }
+
+    struct ProcInfo {
+        pid: u32,
+        ppid: u32,
+        command: String,
+    }
+
+    /// `/proc/<pid>/stat`: `pid (comm) state ppid ...`; `comm` may itself contain spaces and
+    /// parentheses, so the field after the *last* `)` is the state and the next one the ppid.
+    fn parse_ppid(stat: &str) -> Option<u32> {
+        let rest = &stat[stat.rfind(')')? + 1..];
+        rest.split_whitespace().nth(1)?.parse().ok()
+    }
+
+    /// Basename of the first `argv[0]`-shaped entry of a NUL-separated cmdline.
+    fn command_of(cmdline: &[u8]) -> String {
+        cmdline
+            .split(|byte| *byte == 0)
+            .find(|part| !part.is_empty())
+            .map(|part| {
+                let text = String::from_utf8_lossy(part);
+                let name = text.rsplit('/').next().unwrap_or(&text);
+                name.to_string()
+            })
+            .unwrap_or_default()
+    }
+
+    /// WebKitGTK's helper names. `/proc/<pid>/comm` truncates to 15 bytes
+    /// ("WebKitWebProces", "WebKitNetworkPr"), so this compares a prefix that both the full
+    /// cmdline name and the truncated comm satisfy.
+    fn role_name(command: &str) -> Option<&'static str> {
+        if command.starts_with("WebKitWebProces") {
+            Some("web_content")
+        } else if command.starts_with("WebKitNetworkPr") {
+            Some("networking")
+        } else if command.starts_with("WebKitGPUProces") {
+            Some("gpu")
+        } else {
+            None
+        }
+    }
+
+    /// Attribute the helpers to this app by ancestry: a sandbox wrapper (bwrap) may sit between
+    /// the host and the web process, so the walk follows every descendant, not direct children.
+    fn resolve_webkit_pids(processes: &[ProcInfo], host: u32) -> WebKitPids {
+        let mut children: std::collections::HashMap<u32, Vec<u32>> = Default::default();
+        for process in processes {
+            children.entry(process.ppid).or_default().push(process.pid);
+        }
+        let mut found = WebKitPids::default();
+        let mut stack = vec![host];
+        while let Some(pid) = stack.pop() {
+            if let Some(kids) = children.get(&pid) {
+                stack.extend(kids);
+            }
+            let Some(process) = processes.iter().find(|process| process.pid == pid) else {
+                continue;
+            };
+            match role_name(&process.command) {
+                Some("web_content") if found.web_content == 0 => found.web_content = pid,
+                Some("web_content") => found.prewarmed.push(pid),
+                Some("gpu") if found.gpu == 0 => found.gpu = pid,
+                Some("networking") if found.networking == 0 => found.networking = pid,
+                _ => {}
+            }
+        }
+        found.prewarmed.sort_unstable();
+        found
+    }
+
+    /// One pass over `/proc`: pid, parent and the helper's name (cmdline, `comm` as fallback).
+    fn scan_processes() -> Vec<ProcInfo> {
+        let mut processes = Vec::new();
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            return processes;
+        };
+        for entry in entries.flatten() {
+            let Some(pid) = entry.file_name().to_str().and_then(|name| name.parse().ok()) else {
+                continue;
+            };
+            let base = entry.path();
+            let Ok(stat) = std::fs::read_to_string(base.join("stat")) else {
+                continue;
+            };
+            let Some(ppid) = parse_ppid(&stat) else {
+                continue;
+            };
+            let cmdline = std::fs::read(base.join("cmdline")).unwrap_or_default();
+            let mut command = command_of(&cmdline);
+            if command.is_empty() {
+                command = std::fs::read_to_string(base.join("comm"))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+            }
+            processes.push(ProcInfo { pid, ppid, command });
+        }
+        processes
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn proc(pid: u32, ppid: u32, command: &str) -> ProcInfo {
+            ProcInfo {
+                pid,
+                ppid,
+                command: command.to_string(),
+            }
+        }
+
+        #[test]
+        fn ppid_survives_spaces_and_parentheses_in_comm() {
+            assert_eq!(
+                parse_ppid("42 (WebKitWebProc (x)) S 7 42 42 0 -1"),
+                Some(7)
+            );
+            assert_eq!(parse_ppid("42 (bash) R 1 42 42 0 -1"), Some(1));
+            assert_eq!(parse_ppid("garbage"), None);
+        }
+
+        #[test]
+        fn helper_roles_match_truncated_comm_and_full_cmdline_names() {
+            assert_eq!(role_name("WebKitWebProcess"), Some("web_content"));
+            assert_eq!(role_name("WebKitWebProces"), Some("web_content"));
+            assert_eq!(role_name("WebKitNetworkProcess"), Some("networking"));
+            assert_eq!(role_name("WebKitNetworkPr"), Some("networking"));
+            assert_eq!(role_name("WebKitGPUProcess"), Some("gpu"));
+            assert_eq!(role_name("WebKitGPUProces"), Some("gpu"));
+            assert_eq!(role_name("terax"), None);
+            assert_eq!(role_name("WebKitWebProcessWrapper"), Some("web_content"));
+            assert_eq!(command_of(b"/usr/libexec/webkit2gtk-4.1/WebKitWebProcess\0-x\0"), "WebKitWebProcess");
+            assert_eq!(command_of(b""), "");
+        }
+
+        #[test]
+        fn helpers_are_attributed_through_sandbox_wrappers() {
+            let table = [
+                proc(100, 1, "terax"),
+                // bwrap -> web process: the helper is a grandchild of the host.
+                proc(101, 100, "bwrap"),
+                proc(102, 101, "WebKitWebProcess"),
+                proc(103, 102, "WebKitWebProcess"), // prewarmed
+                proc(104, 100, "WebKitNetworkProcess"),
+                proc(105, 100, "WebKitGPUProcess"),
+                // Another app's helpers must not be attributed.
+                proc(200, 1, "other-app"),
+                proc(201, 200, "WebKitWebProcess"),
+            ];
+            let pids = resolve_webkit_pids(&table, 100);
+            assert_eq!(
+                pids,
+                WebKitPids {
+                    web_content: 102,
+                    gpu: 105,
+                    networking: 104,
+                    prewarmed: vec![103],
+                }
+            );
+        }
+
+        #[test]
+        fn no_helpers_is_not_an_error() {
+            let table = [proc(100, 1, "terax")];
+            assert_eq!(resolve_webkit_pids(&table, 100), WebKitPids::default());
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 mod platform {
     use super::*;
 
