@@ -7,7 +7,7 @@ import { EDITOR_THEME_EXT } from "./themes";
 
 describe("resolveDisplayName", () => {
   it.each(["/project/script.luau", "C:\\project\\SCRIPT.LUAU"])(
-    "loads Luau highlighting without changing its LSP identity: %s",
+    "loads Luau highlighting without changing its canonical id: %s",
     async (path) => {
       expect(resolveDisplayName(path)).toBe("Luau");
       const result = await resolveLanguage(path);
