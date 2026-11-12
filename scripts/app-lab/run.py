@@ -422,6 +422,11 @@ def main() -> int:
             "measured scenarios wait for ticket 32 (WebKitGTK has no occlusion signal, layer tree "
             "or native input hook)."
         )
+    if SYSTEM == "Darwin" and args.scenario not in app_report.SCENARIOS:
+        raise SystemExit(
+            f"The Linux scenarios ({', '.join(LINUX_SCENARIOS)}) are measured with /proc sampling "
+            "and do not run on macOS; use the macOS measured scenarios."
+        )
     source = (args.source or REPO).resolve()
     output = (args.output or Path(tempfile.mkdtemp(prefix="terax-app-lab-"))).resolve()
     output.mkdir(parents=True, exist_ok=True)
