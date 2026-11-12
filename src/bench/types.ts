@@ -18,12 +18,6 @@ export type BenchAppApi = {
   closeTab: (id: number) => void;
   /** Opens a file in an editor tab (the app's own planner); returns the tab id. */
   openFileTab: (path: string, pin?: boolean, spaceId?: string) => number;
-  /** Opens a web preview tab at `url` (the app's own preview planner); returns the tab id. */
-  openPreviewTab: (url: string) => number;
-  /** Creates a Space (with its first terminal tab) and activates it; returns the Space id. */
-  newSpace: () => string;
-  /** Activates an existing Space. */
-  setActiveSpace: (id: string) => void;
   readBuffer: (leafId: number, maxLines?: number) => string | null;
   /** Spaces (workspaces) the application knows about. */
   spaces: { id: string; name: string }[];

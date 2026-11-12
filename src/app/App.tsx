@@ -1286,9 +1286,6 @@ export default function App() {
               openFileTab={(path, pin = true, spaceId) =>
                 openFileTab(path, pin, spaceId ? { spaceId } : undefined)
               }
-              openPreviewTab={openPreviewTab}
-              newSpace={handleNewSpace}
-              setActiveSpace={(id) => useSpaces.getState().setActive(id)}
               readBuffer={(leafId, maxLines) =>
                 terminalRefs.current.get(leafId)?.getBuffer(maxLines) ?? null
               }

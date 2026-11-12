@@ -1515,7 +1515,7 @@ async function previewScenario(
   try {
     const first = await run.booted();
     const fixture = run.url("/preview-fixture?redirect=1");
-    const previewId = run.app().openPreviewTab(fixture);
+    const previewId = run.app().openPreview(fixture);
     try {
       await run.waitFor(() => Boolean(frame()), "the preview frame", 40_000);
       await waitForBeat(() => true, "the fixture page's first report");
@@ -1644,7 +1644,7 @@ async function previewScenario(
     // the cause is asserted in the plain Space switch below.
     const spaceA =
       run.app().tabs.find((tab) => tab.id === previewId)?.spaceId ?? "";
-    const spaceB = run.app().newSpace();
+    const spaceB = run.app().createSpace("Lab B", null);
     try {
       await run.waitFor(
         () => !frame(),
