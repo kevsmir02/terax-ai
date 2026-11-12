@@ -61,6 +61,12 @@ the startup graph forbidden chunks/packages, and packages bundled in more than o
 needs the sourcemaps). It exits non-zero if the build produced no sourcemaps, so the duplicate half
 cannot silently stop running.
 
+Dependency updates and upstream imports have their own contracts, both enforced inside
+`scripts/tests`: `docs/architecture/dependency-updates.md` (every manifest has a bounded,
+major-free bot; every required check names a real CI job; every exact pin has a monitor) and
+`docs/architecture/upstream-imports.md` (the two remotes stay distinct, only upstream commits are
+imported, an import runs its gates and never pushes).
+
 Toolchains are pinned in `rust-toolchain.toml` (exact `1.99.1`, with `clippy` and `rustfmt`) and
 `.nvmrc` (Node major, bare file — no comments, because `setup-node` reads the whole thing) for
 local `rustc`, `nvm` and `fnm`. `actions/setup-node` reads `.nvmrc` directly, so Node cannot drift;
