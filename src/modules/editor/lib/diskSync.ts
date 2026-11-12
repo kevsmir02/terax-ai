@@ -17,7 +17,8 @@
  *  - Save As refuses a destination that exists when it is checked. A file an
  *    external program creates between that check and the write is outside the
  *    same guarantee (there is no atomic no-clobber create in this protocol).
- *  - Durable unsaved-text recovery (drafts) is not part of this module.
+ *  - Durable unsaved-text recovery (drafts) is a separate module
+ *    (`./recovery/`): it never writes a project file and never authorises one.
  */
 
 /** Why a save was refused. Mirrors `ConflictReason` in `fs/save.rs`. */
