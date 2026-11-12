@@ -9,7 +9,6 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { consumeLaunchFiles, getLaunchDir } from "@/lib/launchDir";
 import { IS_MAC } from "@/lib/platform";
 import { quoteShellArg } from "@/lib/shellQuote";
-import { usePresence } from "@/lib/usePresence";
 import { useZoom } from "@/lib/useZoom";
 import { isMarkdownPath } from "@/lib/utils";
 import {
@@ -17,19 +16,8 @@ import {
   AgentNotificationsBridge,
   findAgentLauncher,
   nextAttentionTarget,
-  validateAgentLaunchCommand,
+  resolveAgentLaunchCommand,
 } from "@/modules/agents";
-import {
-  AgentRunBridge,
-  AiMiniWindow,
-  LocalAgentNotificationsBridge,
-  SelectionAskAi,
-  useAiBootstrap,
-  useAiLiveBridge,
-  useChatStore,
-  useSelectionAskAi,
-} from "@/modules/ai";
-import { AiComposerProvider } from "@/modules/ai/lib/composer";
 import { native } from "@/modules/workspace/native";
 import {
   CommandPalette,
@@ -41,6 +29,7 @@ import { useControlBridge } from "@/modules/control";
 import {
   type EditorPaneHandle,
   NewEditorDialog,
+  setFileNavigator,
   useApplyEditorFontSize,
   useEditorFileSync,
 } from "@/modules/editor";
@@ -51,16 +40,15 @@ import {
   type SearchInlineHandle,
   type SearchTarget,
 } from "@/modules/header";
-import { setLspNavigator } from "@/modules/lsp";
 import { setCodeBlockRunner } from "@/modules/markdown/lib/codeBlockRunner";
 import type { PreviewPaneHandle } from "@/modules/preview";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { usePreferencesBootstrap } from "@/modules/settings/usePreferencesBootstrap";
 import { setShowHidden } from "@/modules/settings/store";
 import {
   type ShortcutHandlers,
   type ShortcutId,
-  shouldDisableAskSelection,
   shouldDisablePaneSwapShortcut,
   tabDigit,
   useGlobalShortcuts,
@@ -137,10 +125,7 @@ import {
   useState,
 } from "react";
 import { CloseDialogs } from "./components/CloseDialogs";
-import {
-  TOGGLE_BLOCK_INPUT_EVENT,
-  WorkspaceInputBar,
-} from "./components/WorkspaceInputBar";
+import { WorkspaceInputBar } from "./components/WorkspaceInputBar";
 import { WorkspaceSurface } from "./components/WorkspaceSurface";
 import { useAppCloseGuard } from "./hooks/useAppCloseGuard";
 import {
@@ -174,17 +159,13 @@ export default function App() {
     setActiveSpaceForNewTabs,
     newTab,
     newBlockTab,
-    newAgentTab,
     newAgentGroupTab,
-    newPrivateTab,
     openFileTab,
     pinTab,
     newPreviewTab,
     newMarkdownTab,
     setMarkdownView,
     setOverrideLanguage,
-    openAiDiffTab,
-    closeAiDiffTab,
     openGitDiffTab,
     openCommitHistoryTab,
     openCommitFileDiffTab,
@@ -261,6 +242,13 @@ export default function App() {
 
   const activeSpaceId = useSpaces((s) => s.activeId);
   const spacesHydrated = useSpaces((s) => s.hydrated);
+  // Space identity by name only: agent notifications carry the Space's own
+  // name, never a path, cwd or open file.
+  const spaceList = useSpaces((s) => s.spaces);
+  const spaceNames = useMemo(
+    () => Object.fromEntries(spaceList.map((space) => [space.id, space.name])),
+    [spaceList],
+  );
   const activeSpaceIdRef = useRef(activeSpaceId);
   useLayoutEffect(() => {
     tabsRef.current = tabs;
@@ -356,17 +344,7 @@ export default function App() {
     },
     [],
   );
-  const miniOpen = useChatStore((s) => s.mini.open);
-  const miniPresence = usePresence(miniOpen, 200);
-  const openMini = useChatStore((s) => s.openMini);
-  const toggleMini = useChatStore((s) => s.toggleMini);
-  const focusInput = useChatStore((s) => s.focusInput);
-  const openPanel = useChatStore((s) => s.openPanel);
-  const panelOpen = useChatStore((s) => s.panelOpen);
-  const setLive = useChatStore((s) => s.setLive);
-  const respondToApproval = useChatStore((s) => s.respondToApproval);
-
-  const { hasComposer, keysLoaded } = useAiBootstrap();
+  usePreferencesBootstrap();
 
   const activeTab = tabs.find((t) => t.id === activeId);
   const isTerminalTab = activeTab?.kind === "terminal";
@@ -535,85 +513,9 @@ export default function App() {
     setActive(spaces[next].id);
   }, []);
 
-  const captureActiveSelection = useCallback((): string | null => {
-    const t = tabs.find((x) => x.id === activeId);
-    if (!t) return null;
-    if (t.kind === "terminal") {
-      const lid = t.activeLeafId;
-      return terminalRefs.current.get(lid)?.getSelection() ?? null;
-    }
-    if (t.kind === "editor") {
-      return editorRefs.current.get(activeId)?.getSelection() ?? null;
-    }
-    return null;
-  }, [tabs, activeId]);
-
-  const togglePanelAndFocus = useCallback(() => {
-    if (!hasComposer) {
-      void openSettingsWindow("models");
-      return;
-    }
-    if (panelOpen) {
-      useChatStore.getState().closePanel();
-    } else {
-      openPanel();
-      focusInput(null);
-    }
-  }, [hasComposer, panelOpen, openPanel, focusInput]);
-
-  const attachSelection = useChatStore((s) => s.attachSelection);
-
-  const handleAttachFileToAgent = useCallback(
-    (path: string) => {
-      if (!hasComposer) {
-        void openSettingsWindow("models");
-        return;
-      }
-      // Dispatch a window event the composer listens for. Same pattern as
-      // selections — keeps file-explorer decoupled from the AI module.
-      window.dispatchEvent(
-        new CustomEvent<string>("terax:ai-attach-file", { detail: path }),
-      );
-      openPanel();
-      focusInput(null);
-    },
-    [hasComposer, openPanel, focusInput],
-  );
-
-  const askFromSelection = useCallback(() => {
-    if (!hasComposer) {
-      void openSettingsWindow("models");
-      return;
-    }
-    const selection = captureActiveSelection();
-    if (!selection || !selection.trim()) {
-      focusInput(null);
-      return;
-    }
-    const source: "terminal" | "editor" =
-      activeTab?.kind === "editor" ? "editor" : "terminal";
-    attachSelection(selection, source);
-  }, [
-    hasComposer,
-    captureActiveSelection,
-    focusInput,
-    attachSelection,
-    activeTab,
-  ]);
-
-  const { askPopup, setAskPopup, onAskFromSelection } = useSelectionAskAi({
-    captureActiveSelection,
-    askFromSelection,
-  });
-  const askPresence = usePresence(Boolean(askPopup), 120);
-
   const openNewTab = useCallback(() => {
     newTab(inheritedCwdForNewTab());
   }, [newTab, inheritedCwdForNewTab]);
-
-  const openNewPrivateTab = useCallback(() => {
-    newPrivateTab(inheritedCwdForNewTab());
-  }, [newPrivateTab, inheritedCwdForNewTab]);
 
   const openNewBlockTab = useCallback(() => {
     newBlockTab(inheritedCwdForNewTab());
@@ -621,7 +523,7 @@ export default function App() {
 
   const launchAgentGroup = useCallback(
     (request: AgentLaunchRequest) => {
-      const command = validateAgentLaunchCommand(request.command);
+      const command = resolveAgentLaunchCommand(request.agent, request.command);
       if (!command.ok) return;
       const launcher = findAgentLauncher(request.agent);
       const title =
@@ -906,7 +808,6 @@ export default function App() {
       "commandPalette.content": () => openCommandPalette("content"),
       "tab.new": openNewTab,
       "tab.newBlock": openNewBlockTab,
-      "tab.newPrivate": openNewPrivateTab,
       "tab.newPreview": () => openPreviewTab(""),
       "tab.newEditor": () => setNewEditorOpen(true),
       "tab.close": handleCloseTabOrPane,
@@ -932,8 +833,6 @@ export default function App() {
       "terminal.clear": () => {
         clearFocusedTerminal();
       },
-      "terminal.toggleInput": () =>
-        window.dispatchEvent(new CustomEvent(TOGGLE_BLOCK_INPUT_EVENT)),
       "blocks.prev": () => navigateFocusedBlocks(-1),
       "blocks.next": () => navigateFocusedBlocks(1),
       "search.focus": () => {
@@ -941,15 +840,6 @@ export default function App() {
         if (editor) editor.openSearch();
         else searchInlineRef.current?.focus();
       },
-      "ai.toggle": togglePanelAndFocus,
-      "ai.toggleMini": () => {
-        if (!hasComposer) {
-          void openSettingsWindow("models");
-          return;
-        }
-        toggleMini();
-      },
-      "ai.askSelection": onAskFromSelection,
       "agent.focusAttention": () => {
         const t = nextAttentionTarget();
         if (t) activateAgentTarget(t.tabId, t.leafId);
@@ -967,8 +857,6 @@ export default function App() {
       "editor.save": () => {
         void editorRefs.current.get(activeId)?.save();
       },
-      "editor.aiComplete": () =>
-        editorRefs.current.get(activeId)?.triggerAiComplete(),
       "editor.codeComplete": () =>
         editorRefs.current.get(activeId)?.triggerCodeComplete(),
     }),
@@ -980,7 +868,6 @@ export default function App() {
       handleCloseTabOrPane,
       openNewTab,
       openNewBlockTab,
-      openNewPrivateTab,
       openPreviewTab,
       activeSpaceId,
       selectByIndex,
@@ -988,10 +875,6 @@ export default function App() {
       focusNextPaneInTab,
       swapActivePane,
       toggleSourceControl,
-      hasComposer,
-      togglePanelAndFocus,
-      toggleMini,
-      onAskFromSelection,
       toggleSidebar,
       toggleExplorerFocus,
       toggleHiddenFiles,
@@ -1013,19 +896,9 @@ export default function App() {
         id === "editor.undo" ||
         id === "editor.redo" ||
         id === "editor.save" ||
-        id === "editor.aiComplete" ||
         id === "editor.codeComplete"
       ) {
         return activeTab?.kind !== "editor";
-      }
-      if (id === "ai.askSelection") {
-        const target =
-          (e.target as HTMLElement | null) ?? document.activeElement;
-        return shouldDisableAskSelection(
-          e,
-          () => isTerminalSurfaceTarget(target),
-          () => !!captureActiveSelection()?.trim(),
-        );
       }
       if (id === "terminal.clear") {
         // Only intercept ⌘K while a terminal is focused; elsewhere let the key
@@ -1034,11 +907,7 @@ export default function App() {
           (e.target as HTMLElement | null) ?? document.activeElement;
         return !isTerminalSurfaceTarget(target);
       }
-      if (
-        id === "terminal.toggleInput" ||
-        id === "blocks.prev" ||
-        id === "blocks.next"
-      ) {
+      if (id === "blocks.prev" || id === "blocks.next") {
         return !(activeTab?.kind === "terminal" && activeTab.blocks === true);
       }
       if (id === "sidebar.toggle") {
@@ -1054,7 +923,7 @@ export default function App() {
       }
       return false;
     },
-    [activeTab, captureActiveSelection],
+    [activeTab],
   );
 
   useGlobalShortcuts(shortcutHandlers, { isDisabled: shortcutsDisabled });
@@ -1118,11 +987,6 @@ export default function App() {
   );
 
   const onActivateAgent = activateAgentTarget;
-
-  const onActivateLocalAgent = useCallback(() => {
-    openPanel();
-    focusInput(null);
-  }, [openPanel, focusInput]);
 
   const handleLeafExit = useCallback(
     (leafId: number, _code: number) => {
@@ -1275,7 +1139,6 @@ export default function App() {
             home,
             openNewTab,
             openNewBlock: openNewBlockTab,
-            openNewPrivate: openNewPrivateTab,
             openNewEditor: () => setNewEditorOpen(true),
             openNewPreview: () => openPreviewTab(""),
             openGitGraph: openGitGraphFromContext,
@@ -1287,8 +1150,6 @@ export default function App() {
             focusExplorerSearch: () => explorerRef.current?.focusSearch(),
             toggleSidebar,
             toggleHiddenFiles,
-            toggleAi: togglePanelAndFocus,
-            askAiSelection: askFromSelection,
             openSettings: () => void openSettingsWindow(),
             openKeyboardShortcuts: () => void openSettingsWindow("shortcuts"),
             spaces: useSpaces.getState().spaces,
@@ -1307,7 +1168,6 @@ export default function App() {
       home,
       openNewTab,
       openNewBlockTab,
-      openNewPrivateTab,
       openPreviewTab,
       openGitGraphFromContext,
       toggleSourceControl,
@@ -1315,8 +1175,6 @@ export default function App() {
       splitActivePaneInActiveTab,
       toggleSidebar,
       toggleHiddenFiles,
-      togglePanelAndFocus,
-      askFromSelection,
       activeSpaceId,
       handleNewSpace,
     ],
@@ -1377,6 +1235,11 @@ export default function App() {
     [openFileTab],
   );
 
+  useEffect(() => {
+    setFileNavigator({ openFile: openContentHit });
+    return () => setFileNavigator(null);
+  }, [openContentHit]);
+
   useControlBridge({
     ready: spacesHydrated && launchCwdResolved,
     tabsRef,
@@ -1384,11 +1247,6 @@ export default function App() {
     activeSpaceIdRef,
     onOpen: openControlFile,
   });
-
-  useEffect(() => {
-    setLspNavigator({ openFile: openContentHit });
-    return () => setLspNavigator(null);
-  }, [openContentHit]);
 
   const insertHistoryCommand = useMemo(
     () =>
@@ -1410,18 +1268,6 @@ export default function App() {
     return () => setCodeBlockRunner(null);
   }, [insertHistoryCommand]);
 
-  useAiLiveBridge({
-    setLive,
-    activeId,
-    tabs,
-    explorerRoot,
-    launchCwd,
-    home,
-    openPreviewTab,
-    newAgentTab,
-    terminalRefs,
-  });
-
   const shell = (
     <ThemeProvider>
       <TooltipProvider>
@@ -1437,13 +1283,23 @@ export default function App() {
               newAgentGroupTab={newAgentGroupTab}
               splitActivePane={splitActivePane}
               closeTab={closeTab}
-              openFileTab={(path, pin = true) => openFileTab(path, pin)}
+              openFileTab={(path, pin = true, spaceId) =>
+                openFileTab(path, pin, spaceId ? { spaceId } : undefined)
+              }
               openPreviewTab={openPreviewTab}
               newSpace={handleNewSpace}
               setActiveSpace={(id) => useSpaces.getState().setActive(id)}
               readBuffer={(leafId, maxLines) =>
                 terminalRefs.current.get(leafId)?.getBuffer(maxLines) ?? null
               }
+              spaces={useSpaces.getState().spaces.map(({ id, name }) => ({ id, name }))}
+              activeSpaceId={activeSpaceId}
+              createSpace={(name, root) =>
+                useSpaces.getState().create({ name, root }).id
+              }
+              setActiveSpace={(id) => useSpaces.getState().setActive(id)}
+              newTabInSpace={(spaceId, cwd) => newTabInSpace(spaceId, cwd)}
+              openPreview={(url) => openPreviewTab(url)}
             />
           </Suspense>
         )}
@@ -1455,7 +1311,6 @@ export default function App() {
               onSelect={setActiveId}
               onNew={openNewTab}
               onNewBlock={openNewBlockTab}
-              onNewPrivate={openNewPrivateTab}
               onNewPreview={() => openPreviewTab("")}
               onNewEditor={() => setNewEditorOpen(true)}
               onNewGitGraph={openGitGraphFromContext}
@@ -1469,7 +1324,6 @@ export default function App() {
               onToggleSidebar={toggleSidebar}
               onOpenCommandPalette={() => openCommandPalette("commands")}
               onActivateAgent={onActivateAgent}
-              onActivateLocalAgent={onActivateLocalAgent}
               onOpenSettings={() => void openSettingsWindow()}
               spaceSwitcher={spaceSwitcher}
               searchTarget={searchTarget}
@@ -1526,7 +1380,6 @@ export default function App() {
                             handleOpenRepositoryInSourceControl
                           }
                           onOpenGitHistory={handleOpenGitHistoryForPath}
-                          onAttachToAgent={handleAttachFileToAgent}
                           pathDropTarget={terminalPathDropTarget}
                           visible={!sidebarCollapsed}
                         />
@@ -1576,8 +1429,6 @@ export default function App() {
                         onEditorCloseTab={disposeTab}
                         registerPreviewHandle={registerPreviewHandle}
                         onPreviewUrlChange={handlePreviewUrl}
-                        onAiDiffAccept={(id) => respondToApproval(id, true)}
-                        onAiDiffReject={(id) => respondToApproval(id, false)}
                         onOpenCommitFile={openCommitFileDiffTab}
                         onGitHistorySearchHandle={setGitHistoryHandle}
                         onSetMarkdownView={setMarkdownView}
@@ -1586,14 +1437,7 @@ export default function App() {
 
                     <WorkspaceInputBar
                       isBlockTab={isBlockTab}
-                      isTerminalTab={isTerminalTab}
                       activeLeafId={activeLeafId}
-                      cwd={activeCwd}
-                      home={home}
-                      hasComposer={hasComposer}
-                      panelOpen={panelOpen}
-                      keysLoaded={keysLoaded}
-                      onConnect={() => void openSettingsWindow("models")}
                     />
                   </div>
                 </div>
@@ -1608,12 +1452,6 @@ export default function App() {
               home={home}
               onCd={sendCd}
               onWorkspaceChange={handleWorkspaceChange}
-              onOpenMini={openMini}
-              onOpenAi={togglePanelAndFocus}
-              hasComposer={hasComposer}
-              privateActive={
-                activeTab?.kind === "terminal" && activeTab.private === true
-              }
             />
           )}
 
@@ -1628,31 +1466,9 @@ export default function App() {
             tabs={tabs}
             activeId={activeId}
             onActivate={onActivateAgent}
+            spaceNames={spaceNames}
           />
           <Toaster position="bottom-right" />
-
-          {hasComposer ? (
-            <>
-              <AgentRunBridge
-                openAiDiffTab={openAiDiffTab}
-                closeAiDiffTab={closeAiDiffTab}
-              />
-              <LocalAgentNotificationsBridge />
-            </>
-          ) : null}
-
-          {hasComposer && miniPresence.mounted ? (
-            <AiMiniWindow state={miniPresence.state} />
-          ) : null}
-          {askPresence.mounted ? (
-            <SelectionAskAi
-              state={askPresence.state}
-              x={askPopup?.x ?? 0}
-              y={askPopup?.y ?? 0}
-              onAsk={onAskFromSelection}
-              onDismiss={() => setAskPopup(null)}
-            />
-          ) : null}
 
           {switcherState && (
             <TabSwitcherHud tabs={spaceTabs} state={switcherState} />
@@ -1702,5 +1518,5 @@ export default function App() {
     </ThemeProvider>
   );
 
-  return <AiComposerProvider>{shell}</AiComposerProvider>;
+  return shell;
 }

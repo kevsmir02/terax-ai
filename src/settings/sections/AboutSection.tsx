@@ -25,30 +25,23 @@ export function AboutSection() {
   const [name, setName] = useState("Terax");
   const [identifier, setIdentifier] = useState("");
   const [build, setBuild] = useState("");
-  const { status, check, install } = useUpdater({ autoCheck: false });
-  const checking = status.kind === "checking";
-  const downloading = status.kind === "downloading";
-  const available = status.kind === "available";
-  const manualAvailable = status.kind === "manual-available";
-  const ready = status.kind === "ready";
-  const checkLabel =
-    status.kind === "uptodate"
-      ? "You're up to date"
-      : status.kind === "error"
-        ? "Check failed — retry"
-        : checking
-          ? "Checking…"
-          : downloading
-            ? "Downloading…"
-            : ready
-              ? "Restart to install"
-              : available
-                ? `Install v${status.update.version}`
-                : manualAvailable
-                  ? `Update to v${status.info.version}`
-                  : "Check for updates";
+  const { state, check, requestUpdate } = useUpdater({ autoCheck: false });
+  const checking = state.kind === "checking";
+  const available = state.kind === "update-available";
+  const handedOff = state.kind === "handoff-unavailable";
+  const checkLabel = checking
+    ? "Checking…"
+    : available
+      ? `Update to v${state.release.version}`
+      : handedOff
+        ? "Update with your package tool"
+        : state.kind === "up-to-date"
+          ? "You're up to date"
+          : state.kind === "check-failed"
+            ? "Check failed — retry"
+            : "Check for updates";
   const onUpdateClick = () => {
-    if (available) void install();
+    if (available) void requestUpdate();
     else void check({ manual: true });
   };
 
@@ -79,7 +72,7 @@ export function AboutSection() {
             {name}
           </span>
           <span className="text-[11px] text-muted-foreground">
-            Open-source AI-native terminal emulator
+            Open-source terminal workspace for coding agents
           </span>
           <span className="mt-1 font-mono text-[11px] text-muted-foreground">
             v{version || "—"}
@@ -128,7 +121,7 @@ export function AboutSection() {
           <Button
             size="sm"
             onClick={onUpdateClick}
-            disabled={checking || downloading || ready}
+            disabled={checking || handedOff}
           >
             {checkLabel}
           </Button>
@@ -149,20 +142,20 @@ export function AboutSection() {
             Report an issue
           </Button>
         </div>
-        {status.kind === "error" && (
-          <p className="font-mono text-[10.5px] break-all text-destructive/80">
-            {status.message}
+        {state.kind === "update-available" && (
+          <p className="text-[11px] text-muted-foreground">
+            A newer stable release was found. Terax does not download or install
+            it; update with your package tool after closing the app.
           </p>
         )}
-        {downloading && status.contentLength ? (
-          <p className="text-[11px] text-muted-foreground">
-            {Math.min(
-              100,
-              Math.round((status.downloaded / status.contentLength) * 100),
-            )}
-            %
+        {state.kind === "check-failed" && (
+          <p className="font-mono text-[10.5px] break-all text-destructive/80">
+            {state.failure.reason}: {state.failure.detail}
           </p>
-        ) : null}
+        )}
+        {handedOff && (
+          <p className="text-[11px] text-muted-foreground">{state.detail}</p>
+        )}
       </div>
     </div>
   );

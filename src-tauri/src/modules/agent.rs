@@ -76,6 +76,120 @@ struct AgentSpec {
     events: &'static [EventSpec],
 }
 
+/// What writing a configuration does *not* prove: the agent still has to
+/// restart, and some versions ask the user to review/trust the hooks before
+/// they run. Reported so a written file is never described as an active
+/// integration.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Activation {
+    pub restart_required: bool,
+    pub trust_required: bool,
+    pub summary: String,
+    pub steps: Vec<String>,
+    /// False until a real installed CLI version was exercised. Every adapter
+    /// here is planned implementation, not validated vendor support.
+    pub verified: bool,
+}
+
+/// An agent this fork deliberately has no structured hook adapter for.
+struct UnsupportedAgent {
+    agent: &'static str,
+    summary: &'static str,
+    steps: &'static [&'static str],
+}
+
+const UNSUPPORTED_AGENTS: &[UnsupportedAgent] = &[
+    UnsupportedAgent {
+        agent: "opencode",
+        summary: "OpenCode has no structured hook adapter in version one: this fork does not write or remove its configuration. Attention comes from terminal and process signals only.",
+        steps: &[
+            "Keep using OpenCode's own permission prompts and approvals.",
+            "Expect process/terminal attention, not session, prompt or permission events.",
+        ],
+    },
+    UnsupportedAgent {
+        agent: "antigravity",
+        summary: "The Antigravity CLI has no structured hook adapter in version one: only launching and basic process status are supported. This fork does not write or remove its configuration.",
+        steps: &[
+            "Keep using Antigravity's own permission prompts and approvals.",
+            "Expect launch/process status only, with no hook-based events.",
+        ],
+    },
+];
+
+/// The activation/trust instructions for one supported agent, in that agent's
+/// own terms. `verified` stays false until the release-validation ticket runs
+/// the real installed CLI.
+fn activation(agent: &str) -> Activation {
+    let cli = identity::env("CLI");
+    if let Some(spec) = UNSUPPORTED_AGENTS.iter().find(|spec| spec.agent == agent) {
+        return Activation {
+            restart_required: false,
+            trust_required: false,
+            summary: spec.summary.to_string(),
+            steps: spec.steps.iter().map(|step| (*step).to_string()).collect(),
+            verified: false,
+        };
+    }
+    match agent {
+        "claude" => Activation {
+            restart_required: true,
+            trust_required: true,
+            summary: "Writing ~/.claude/settings.json configures Claude Code; it does not activate the hooks. A running session keeps the hooks it started with, and a version that reviews changed settings will not run this group until you approve it.".to_string(),
+            steps: vec![
+                "Restart the Claude Code session (or open a new one) so it reads ~/.claude/settings.json.".to_string(),
+                format!("If it asks you to review hooks or changed settings, approve the group whose command calls {cli}."),
+                "Run one prompt and check that the notification arrives; this fork cannot observe that approval.".to_string(),
+            ],
+            verified: false,
+        },
+        "codex" => Activation {
+            restart_required: true,
+            trust_required: true,
+            summary: "Writing hooks.json configures Codex; it does not activate the hooks. Codex reads the file when a session starts and may ask you to review hooks before running them.".to_string(),
+            steps: vec![
+                "Restart the Codex session so it reads ~/.codex/hooks.json.".to_string(),
+                format!("If Codex shows a hook review or trust prompt, approve the entry that calls {cli}."),
+                "Run one prompt and check the notification; approval is not observable from this fork.".to_string(),
+            ],
+            verified: false,
+        },
+        "gemini" => Activation {
+            restart_required: true,
+            trust_required: true,
+            summary: "Writing settings.json configures Gemini CLI; it does not activate the hooks. Gemini reads hooks at session start, and a version with hook review will not run this group until you enable it.".to_string(),
+            steps: vec![
+                "Restart the Gemini CLI session so it reads ~/.gemini/settings.json.".to_string(),
+                format!("If the installed version asks you to trust or review hooks, approve the Terax group (name {}).", identity::namespace()),
+                "Run one prompt and check the notification; approval is not observable from this fork.".to_string(),
+            ],
+            verified: false,
+        },
+        "pi" => Activation {
+            restart_required: true,
+            trust_required: true,
+            summary: format!(
+                "Writing {} configures Pi; it does not activate the extension. Pi loads extensions when a session starts and may ask you to allow or trust one before it runs.",
+                pi_extension_file()
+            ),
+            steps: vec![
+                format!("Restart the Pi session so it loads ~/.pi/agent/extensions/{}.", pi_extension_file()),
+                "If Pi asks to allow or trust the extension, approve it; it only spawns this fork's CLI when that shell carries the fork's variables.".to_string(),
+                "Run one prompt and check the notification; approval is not observable from this fork.".to_string(),
+            ],
+            verified: false,
+        },
+        other => Activation {
+            restart_required: false,
+            trust_required: false,
+            summary: format!("{other} has no structured hook adapter in version one; nothing is written or removed."),
+            steps: vec!["Use the agent's own permission prompts and approvals.".to_string()],
+            verified: false,
+        },
+    }
+}
+
 /// Longer than the longest decision wait the CLI accepts plus its socket
 /// slack, so Terax always answers before the agent gives up on the hook.
 const DECISION_HOOK_TIMEOUT: u32 = terax_control_protocol::hook::MAX_DECISION_SECS + 60;
@@ -345,12 +459,22 @@ fn hook_group(spec: &AgentSpec, event: &EventSpec, windows: bool) -> Value {
     group
 }
 
-/// True only for commands this fork wrote. Upstream's hooks (`$TERAX_CLI`,
-/// `notify;Terax;`, `terax;notify`, `__terax_notify`) are deliberately *not* ours:
-/// they are another application's configuration, so this fork never rewrites or
-/// removes them, even when they share the same file.
+/// True only for commands this fork wrote. An entry belongs to this fork when
+/// its command *invokes* this fork's own CLI (`TERAX_WORKSPACE_FORK_CLI`, from
+/// the identity table) in one of the three shell dialects the adapters emit.
+/// Upstream's hooks (`$TERAX_CLI`, `notify;Terax;`, `terax;notify`,
+/// `__terax_notify`) and any user hook are deliberately not ours: they are
+/// another application's or the user's configuration, so this fork never
+/// rewrites or removes them, even when they share the same file.
 fn command_is_ours(command: &str) -> bool {
-    command.contains(&identity::env("CLI")) && command.contains(" hook ")
+    let cli = identity::env("CLI");
+    [
+        format!("\"${cli}\" hook "),
+        format!("%{cli}%\" hook "),
+        format!("$env:{cli} hook "),
+    ]
+    .iter()
+    .any(|invocation| command.contains(invocation.as_str()))
 }
 
 /// A matcher group is ours when it exists only to run this fork's commands, so a
@@ -467,7 +591,71 @@ pub struct HooksPlan {
     pub before: Option<String>,
     /// File contents after applying; `None` when the file would be removed.
     pub after: Option<String>,
+    /// Fingerprint of the observed `before` contents. Apply echoes it back and
+    /// refuses when the file no longer matches, so a preview is never applied
+    /// to contents the user did not review.
+    pub revision: String,
     pub changed: bool,
+    /// Hook groups owned by another tool or by upstream, which stay untouched.
+    pub foreign_groups: usize,
+    pub activation: Activation,
+}
+
+/// A content fingerprint: `absent`, or the byte length plus an FNV-1a hash of
+/// the bytes. It changes with content even when the length and mtime do not,
+/// which is what a stale-preview check needs.
+fn revision_of(existing: Option<&str>) -> String {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    match existing {
+        None => "absent".to_string(),
+        Some(text) => {
+            let mut hash = OFFSET;
+            for byte in text.as_bytes() {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(PRIME);
+            }
+            format!("{}:{hash:016x}", text.len())
+        }
+    }
+}
+
+/// Matcher groups under the events this fork manages that it does not own.
+fn foreign_groups(agent: &str, existing: Option<&str>) -> usize {
+    let Some(text) = existing.filter(|text| !text.trim().is_empty()) else {
+        return 0;
+    };
+    if agent == "pi" {
+        return usize::from(!text.contains(&pi_extension_family()));
+    }
+    let Ok(spec) = find(agent) else {
+        return 0;
+    };
+    spec.events
+        .iter()
+        .map(|event| {
+            agent_json::array_at(text, &["hooks", event.event]).map_or(0, |groups| {
+                groups.iter().filter(|group| !group_is_ours(group)).count()
+            })
+        })
+        .sum()
+}
+
+/// True when at least one entry in the file is this fork's.
+fn has_fork_entry(agent: &str, existing: Option<&str>) -> bool {
+    let Some(text) = existing.filter(|text| !text.trim().is_empty()) else {
+        return false;
+    };
+    if agent == "pi" {
+        return text.contains(&pi_extension_family());
+    }
+    let Ok(spec) = find(agent) else {
+        return false;
+    };
+    spec.events.iter().any(|event| {
+        agent_json::array_at(text, &["hooks", event.event])
+            .is_some_and(|groups| groups.iter().any(group_is_ours))
+    })
 }
 
 fn home_path(dir: &str, file: &str) -> Result<PathBuf, String> {
@@ -506,13 +694,17 @@ fn plan_at(
         json_after(find(agent)?, existing.as_deref(), action, windows, path)?
     };
     let changed = after != existing;
+    let foreign = foreign_groups(agent, existing.as_deref());
     Ok(HooksPlan {
         agent: agent.to_string(),
         action: action.as_str().to_string(),
         path: path.display().to_string(),
+        revision: revision_of(existing.as_deref()),
         before: existing,
         after,
         changed,
+        foreign_groups: foreign,
+        activation: activation(agent),
     })
 }
 
@@ -603,18 +795,139 @@ fn apply_plan(plan: &HooksPlan) -> Result<(), String> {
     }
 }
 
-fn run_action(agent: &str, action: Action) -> Result<(), String> {
-    apply_plan(&plan(agent, action)?)
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HooksStatus {
+    pub agent: String,
+    /// Empty for an agent this fork has no supported adapter for.
+    pub path: String,
+    pub support: Support,
+    /// `installed` | `partial` | `not-installed` | `invalid` | `conflict` | `unsupported`
+    pub config_state: &'static str,
+    /// The fork's entries are present and current. This is *not* "active":
+    /// see `activation`.
+    pub installed: bool,
+    pub revision: Option<String>,
+    pub foreign_groups: usize,
+    pub activation: Activation,
+    pub note: Option<String>,
 }
 
-#[tauri::command]
-pub async fn agent_enable_hooks(agent: String) -> Result<(), String> {
-    super::fs::blocking(move || run_action(&agent, Action::Install)).await
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Support {
+    Supported,
+    Unsupported,
 }
 
-#[tauri::command]
-pub async fn agent_disable_hooks(agent: String) -> Result<(), String> {
-    super::fs::blocking(move || run_action(&agent, Action::Uninstall)).await
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HooksApply {
+    /// `applied` | `unchanged` | `stale`. A stale apply wrote nothing.
+    pub outcome: &'static str,
+    pub revision: String,
+    pub status: HooksStatus,
+}
+
+fn unsupported(agent: &str) -> bool {
+    UNSUPPORTED_AGENTS.iter().any(|spec| spec.agent == agent)
+}
+
+fn unsupported_status(agent: &str, note: Option<String>) -> HooksStatus {
+    HooksStatus {
+        agent: agent.to_string(),
+        path: String::new(),
+        support: Support::Unsupported,
+        config_state: "unsupported",
+        installed: false,
+        revision: None,
+        foreign_groups: 0,
+        activation: activation(agent),
+        note,
+    }
+}
+
+fn status_for(
+    agent: &str,
+    path: &Path,
+    existing: Option<&str>,
+    config_state: &'static str,
+    installed: bool,
+    note: Option<String>,
+) -> HooksStatus {
+    HooksStatus {
+        agent: agent.to_string(),
+        path: path.display().to_string(),
+        support: Support::Supported,
+        config_state,
+        installed,
+        revision: Some(revision_of(existing)),
+        foreign_groups: foreign_groups(agent, existing),
+        activation: activation(agent),
+        note,
+    }
+}
+
+/// The honest state of one agent's configuration file: what is on disk, what
+/// this fork owns, and what the agent still needs before the hooks run.
+fn status_at(agent: &str, path: &Path) -> HooksStatus {
+    if unsupported(agent) {
+        return unsupported_status(agent, None);
+    }
+    if agent != "pi" && find(agent).is_err() {
+        return unsupported_status(agent, Some(format!("unknown agent {agent}")));
+    }
+    let existing = match read_existing(path) {
+        Ok(existing) => existing,
+        Err(error) => {
+            return status_for(agent, path, None, "invalid", false, Some(error));
+        }
+    };
+    match plan_at(
+        agent,
+        Action::Install,
+        path,
+        existing.clone(),
+        cfg!(windows),
+    ) {
+        Ok(plan) if !plan.changed => {
+            status_for(agent, path, existing.as_deref(), "installed", true, None)
+        }
+        Ok(_) if has_fork_entry(agent, existing.as_deref()) => {
+            status_for(agent, path, existing.as_deref(), "partial", false, None)
+        }
+        Ok(_) => status_for(
+            agent,
+            path,
+            existing.as_deref(),
+            "not-installed",
+            false,
+            None,
+        ),
+        Err(error) => {
+            let state = if agent == "pi"
+                && existing
+                    .as_deref()
+                    .is_some_and(|text| !text.trim().is_empty())
+            {
+                "conflict"
+            } else {
+                "invalid"
+            };
+            status_for(agent, path, existing.as_deref(), state, false, Some(error))
+        }
+    }
+}
+
+/// The honest state of one agent's configuration, at its real home path.
+fn status(agent: &str) -> HooksStatus {
+    if unsupported(agent) {
+        return unsupported_status(agent, None);
+    }
+    match config_path(agent) {
+        Ok(path) => status_at(agent, &path),
+        Err(error) => unsupported_status(agent, Some(error)),
+    }
 }
 
 /// What installing or removing would change, for a diff preview.
@@ -624,37 +937,60 @@ pub async fn agent_hooks_plan(agent: String, action: String) -> Result<HooksPlan
     super::fs::blocking(move || plan(&agent, action)).await
 }
 
-/// Applies a previewed plan; refused when the file changed after the preview.
+/// Validates a preview against the observed revision, then writes it. The
+/// caller (the Tauri command) refuses a stale plan instead of writing it.
+fn apply_at(
+    agent: &str,
+    action: Action,
+    path: &Path,
+    revision: &str,
+) -> Result<HooksApply, String> {
+    let current = plan_at(agent, action, path, read_existing(path)?, cfg!(windows))?;
+    if current.revision != revision {
+        return Ok(HooksApply {
+            outcome: "stale",
+            revision: current.revision,
+            status: status_at(agent, path),
+        });
+    }
+    if !current.changed {
+        return Ok(HooksApply {
+            outcome: "unchanged",
+            revision: current.revision,
+            status: status_at(agent, path),
+        });
+    }
+    apply_plan(&current)?;
+    let after = read_existing(path)?;
+    Ok(HooksApply {
+        outcome: "applied",
+        revision: revision_of(after.as_deref()),
+        status: status_at(agent, path),
+    })
+}
+
+fn apply(agent: &str, action: Action, revision: &str) -> Result<HooksApply, String> {
+    let path = config_path(agent)?;
+    apply_at(agent, action, &path, revision)
+}
+
+/// Applies a previewed plan against the revision it was computed from. A file
+/// that changed after the preview returns `stale` and is not written.
 #[tauri::command]
 pub async fn agent_hooks_apply(
     agent: String,
     action: String,
-    before: Option<String>,
-) -> Result<(), String> {
+    revision: String,
+) -> Result<HooksApply, String> {
     let action = Action::parse(&action)?;
-    super::fs::blocking(move || {
-        let current = plan(&agent, action)?;
-        if current.before != before {
-            return Err(format!(
-                "{} changed since the preview; review the new diff first",
-                current.path
-            ));
-        }
-        apply_plan(&current)
-    })
-    .await
+    super::fs::blocking(move || apply(&agent, action, &revision)).await
 }
 
 #[tauri::command]
-pub async fn agent_hooks_status(agent: String) -> bool {
-    tauri::async_runtime::spawn_blocking(move || hooks_status(&agent))
+pub async fn agent_hooks_status(agent: String) -> HooksStatus {
+    tauri::async_runtime::spawn_blocking(move || status(&agent))
         .await
-        .unwrap_or(false)
-}
-
-/// True when every hook Terax installs is present and current.
-fn hooks_status(agent: &str) -> bool {
-    plan(agent, Action::Install).is_ok_and(|plan| !plan.changed)
+        .unwrap_or_else(|_| unsupported_status("unknown", Some("status task failed".to_string())))
 }
 
 // The raw OSC 777 bytes older hooks emitted. Kept so an old Windows hook
@@ -1296,6 +1632,7 @@ mod tests {
         let fresh = plan_at("claude", Action::Install, &path, None, false).unwrap();
         assert!(fresh.changed);
         assert_eq!(fresh.before, None);
+        assert_eq!(fresh.revision, "absent");
         assert!(fresh
             .after
             .as_deref()
@@ -1319,6 +1656,306 @@ mod tests {
         let value = serde_json::to_value(&fresh).unwrap();
         assert_eq!(value["action"], "install");
         assert!(value["changed"].as_bool().unwrap());
+        assert_eq!(value["revision"], "absent");
+        assert_eq!(value["activation"]["trustRequired"], true);
+        assert_eq!(value["activation"]["restartRequired"], true);
+        assert_eq!(value["activation"]["verified"], false);
+        assert!(value["activation"]["steps"].as_array().unwrap().len() >= 2);
+    }
+
+    #[test]
+    fn a_revision_changes_with_content_even_when_length_and_mtime_do_not() {
+        let absent = revision_of(None);
+        assert_eq!(absent, "absent");
+        let before = revision_of(Some("{\"model\":\"opus\"}\n"));
+        let same_length = revision_of(Some("{\"model\":\"sonn\"}\n"));
+        assert_eq!(before.len(), same_length.len());
+        assert_ne!(before, same_length, "same-length content must differ");
+        assert_eq!(before, revision_of(Some("{\"model\":\"opus\"}\n")));
+        assert_ne!(before, revision_of(Some("{}\n")));
+    }
+
+    /// The stale-preview refusal: an external edit between preview and apply is
+    /// refused, the file keeps the external change, and only a fresh preview
+    /// can be applied.
+    #[test]
+    fn a_preview_whose_file_changed_is_refused_without_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".claude").join("settings.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = "{\n  \"model\": \"opus\"\n}\n";
+        std::fs::write(&path, original).unwrap();
+
+        let preview = plan_at(
+            "claude",
+            Action::Install,
+            &path,
+            read_existing(&path).unwrap(),
+            false,
+        )
+        .unwrap();
+        assert!(preview.changed);
+
+        // Same length, so only the content fingerprint can notice the change.
+        let external = "{\n  \"model\": \"sonn\"\n}\n";
+        assert_eq!(external.len(), original.len());
+        std::fs::write(&path, external).unwrap();
+
+        let stale = apply_at("claude", Action::Install, &path, &preview.revision).unwrap();
+        assert_eq!(stale.outcome, "stale");
+        assert_eq!(stale.revision, revision_of(Some(external)));
+        assert!(!stale.status.installed);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), external);
+
+        // A fresh preview, confirmed, applies against the reviewed revision.
+        let fresh = plan_at(
+            "claude",
+            Action::Install,
+            &path,
+            read_existing(&path).unwrap(),
+            false,
+        )
+        .unwrap();
+        let applied = apply_at("claude", Action::Install, &path, &fresh.revision).unwrap();
+        assert_eq!(applied.outcome, "applied");
+        assert!(applied.status.installed);
+        assert_eq!(applied.status.config_state, "installed");
+        let installed = std::fs::read_to_string(&path).unwrap();
+        assert!(installed.contains("sonn"), "the external edit is preserved");
+        assert!(installed.contains("TERAX_WORKSPACE_FORK_CLI"));
+
+        // Repeating a preview that still matches reports no write needed, so a
+        // retry after a stale refusal is explicit and idempotent.
+        let again = plan_at(
+            "claude",
+            Action::Install,
+            &path,
+            read_existing(&path).unwrap(),
+            false,
+        )
+        .unwrap();
+        assert!(!again.changed);
+        assert_eq!(
+            apply_at("claude", Action::Install, &path, &again.revision)
+                .unwrap()
+                .outcome,
+            "unchanged"
+        );
+    }
+
+    #[test]
+    fn install_and_remove_retry_cleanly_on_the_same_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let base = "{\n  \"model\": \"opus\"\n}\n";
+        std::fs::write(&path, base).unwrap();
+
+        let install = plan_at(
+            "codex",
+            Action::Install,
+            &path,
+            read_existing(&path).unwrap(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            apply_at("codex", Action::Install, &path, &install.revision)
+                .unwrap()
+                .outcome,
+            "applied"
+        );
+        let installed = std::fs::read_to_string(&path).unwrap();
+        let retry = plan_at(
+            "codex",
+            Action::Install,
+            &path,
+            read_existing(&path).unwrap(),
+            false,
+        )
+        .unwrap();
+        assert!(!retry.changed);
+        assert_eq!(
+            apply_at("codex", Action::Install, &path, &retry.revision)
+                .unwrap()
+                .outcome,
+            "unchanged"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), installed);
+
+        let remove = plan_at(
+            "codex",
+            Action::Uninstall,
+            &path,
+            read_existing(&path).unwrap(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            apply_at("codex", Action::Uninstall, &path, &remove.revision)
+                .unwrap()
+                .outcome,
+            "applied"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), base);
+    }
+
+    /// Removal never needs a write when the file holds nothing of this fork's:
+    /// an upstream-only (or user-only) file stays byte-identical, comments and
+    /// odd formatting included.
+    #[test]
+    fn removing_from_a_foreign_only_file_writes_nothing_and_preserves_it() {
+        let upstream = "{\n    // upstream Terax wrote these\n    \"hooks\": {\n        \"Stop\": [\n            { \"hooks\": [ { \"type\": \"command\", \"command\": \"[ -n \\\"$TERAX_CLI\\\" ] && \\\"$TERAX_CLI\\\" hook claude Stop || printf '{}'\" } ] }\n        ],\n        \"Notification\": [\n            { \"hooks\": [ { \"type\": \"command\", \"command\": \"notify-send done\" } ] }\n        ]\n    },\n    \"model\": \"opus\"\n}\n";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, upstream).unwrap();
+
+        let plan = plan_at(
+            "claude",
+            Action::Uninstall,
+            &path,
+            read_existing(&path).unwrap(),
+            false,
+        )
+        .unwrap();
+        assert!(!plan.changed);
+        assert_eq!(plan.after.as_deref(), Some(upstream));
+        assert_eq!(plan.after, plan.before);
+        assert!(
+            plan.foreign_groups >= 2,
+            "upstream + user groups are foreign"
+        );
+        let outcome = apply_at("claude", Action::Uninstall, &path, &plan.revision).unwrap();
+        assert_eq!(outcome.outcome, "unchanged");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), upstream);
+    }
+
+    #[test]
+    fn ownership_is_this_forks_own_cli_invocation_not_a_lookalike() {
+        let ours = [
+            hook_command(Dialect::Posix, "claude", "Stop"),
+            hook_command(Dialect::Cmd, "gemini", "AfterAgent"),
+            hook_command(Dialect::PowerShell, "codex", "Stop"),
+        ];
+        for command in ours {
+            assert!(command_is_ours(&command), "{command}");
+        }
+        let foreign = [
+            r#"[ -n "$TERAX_CLI" ] && "$TERAX_CLI" hook claude Stop || printf '{}'"#,
+            r#"if defined TERAX_CLI ("%TERAX_CLI%" hook claude Stop) else (echo {})"#,
+            r#"if ($env:TERAX_CLI) { & $env:TERAX_CLI hook claude Stop } else { '{}' }"#,
+            r#"printf '\033]777;notify;Terax;claude;Stop\007'"#,
+            r#"terax.exe __terax_notify claude finished"#,
+            // The fork's variable without this fork's invocation.
+            r#"[ -n "$TERAX_WORKSPACE_FORK_CLI" ] && notify-send ready"#,
+            r#""$TERAX_WORKSPACE_FORK_CLI_EXTRA" hook claude Stop"#,
+            r#""$TERAX_WORKSPACE_FORK_CLI" report claude Stop"#,
+            "claude hook claude Stop",
+        ];
+        for command in foreign {
+            assert!(!command_is_ours(command), "{command}");
+        }
+    }
+
+    #[test]
+    fn status_reports_configured_state_not_active_support() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{\n  \"model\": \"opus\"\n}\n").unwrap();
+
+        let plan = plan_at(
+            "claude",
+            Action::Install,
+            &path,
+            read_existing(&path).unwrap(),
+            false,
+        )
+        .unwrap();
+        apply_plan(&plan).unwrap();
+        let status = status_at("claude", &path);
+        assert_eq!(status.config_state, "installed");
+        assert!(status.installed);
+        assert_eq!(status.support, Support::Supported);
+        assert!(status.activation.trust_required);
+        assert!(status.activation.restart_required);
+        assert!(
+            !status.activation.verified,
+            "writing a file is not verified vendor support"
+        );
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["configState"], "installed");
+        assert_eq!(json["activation"]["verified"], false);
+        assert!(
+            !json.to_string().to_lowercase().contains("\"active\""),
+            "status must not claim activation"
+        );
+
+        // An older fork version's entry is partial, never installed.
+        std::fs::write(&path, "{\n  \"hooks\": {\n    \"Stop\": [\n      { \"hooks\": [ { \"type\": \"command\", \"command\": \"[ -n \\\"$TERAX_WORKSPACE_FORK_CLI\\\" ] && \\\"$TERAX_WORKSPACE_FORK_CLI\\\" hook claude OldEvent || printf '{}'\" } ] }\n    ]\n  }\n}\n").unwrap();
+        let partial = status_at("claude", &path);
+        assert_eq!(partial.config_state, "partial");
+        assert!(!partial.installed);
+
+        std::fs::write(&path, "{ not json,").unwrap();
+        assert_eq!(status_at("claude", &path).config_state, "invalid");
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(status_at("claude", &path).config_state, "not-installed");
+    }
+
+    #[test]
+    fn unsupported_agents_are_documented_and_never_written() {
+        for agent in ["opencode", "antigravity"] {
+            let status = status_at(agent, Path::new(""));
+            assert_eq!(status.support, Support::Unsupported, "{agent}");
+            assert_eq!(status.config_state, "unsupported", "{agent}");
+            assert!(!status.installed);
+            assert_eq!(status.path, "");
+            assert!(
+                status
+                    .activation
+                    .summary
+                    .contains("no structured hook adapter"),
+                "{agent}"
+            );
+            assert!(plan(agent, Action::Install).is_err(), "{agent}");
+            let json = serde_json::to_value(&status).unwrap();
+            assert_eq!(json["support"], "unsupported");
+        }
+        let unknown = status_at("nobody", Path::new(""));
+        assert_eq!(unknown.support, Support::Unsupported);
+        assert!(unknown.note.is_some());
+    }
+
+    #[test]
+    fn a_foreign_file_at_the_pi_extension_path_is_a_conflict_not_a_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(pi_extension_file());
+        let foreign = "export const mine = true;\n";
+        std::fs::write(&path, foreign).unwrap();
+        let status = status_at("pi", &path);
+        assert_eq!(status.config_state, "conflict");
+        assert!(!status.installed);
+        assert_eq!(status.foreign_groups, 1);
+        assert!(status.note.is_some());
+        assert!(plan_at(
+            "pi",
+            Action::Install,
+            &path,
+            read_existing(&path).unwrap(),
+            false
+        )
+        .is_err());
+        // Removal leaves the foreign file alone as well.
+        let remove = plan_at(
+            "pi",
+            Action::Uninstall,
+            &path,
+            read_existing(&path).unwrap(),
+            false,
+        )
+        .unwrap();
+        assert!(!remove.changed);
+        assert_eq!(remove.after.as_deref(), Some(foreign));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), foreign);
     }
 
     #[test]
@@ -1507,7 +2144,9 @@ mod tests {
     fn unknown_agents_and_actions_are_rejected() {
         assert!(find("nobody").is_err());
         assert!(Action::parse("explode").is_err());
-        assert!(!hooks_status("nobody"));
+        let unknown = status("nobody");
+        assert_eq!(unknown.support, Support::Unsupported);
+        assert!(!unknown.installed);
     }
 
     #[test]

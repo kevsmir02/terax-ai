@@ -25,6 +25,23 @@ pub struct Upstream {
     pub app_identifier: String,
     pub namespace: String,
     pub env_prefix: String,
+    pub product_name: String,
+    pub publisher: String,
+}
+
+/// The package/install identity of the fork's Linux candidate builds. Final branding is
+/// ticket #39/#40; these names are deliberately private working values, and the packaging
+/// script (`scripts/package-candidate/run.py`) generates the bundle configuration from them
+/// instead of repeating literals.
+#[derive(Deserialize, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Packaging {
+    pub product_name: String,
+    pub vendor: String,
+    pub package_name: String,
+    pub cli_binary_name: String,
+    pub short_description: String,
+    pub long_description: String,
 }
 
 #[derive(Deserialize, Debug, PartialEq, Eq)]
@@ -36,6 +53,7 @@ pub struct Table {
     pub app_identifier: String,
     pub namespace: String,
     pub env_prefix: String,
+    pub packaging: Packaging,
     /// Child-process variables this fork keeps at their upstream name on purpose: they
     /// are the contract of `~/.terax/project.toml` scripts shared with upstream projects
     /// (`TERAX_PORT` and friends), not fork-owned state.
@@ -71,6 +89,18 @@ pub fn env(suffix: &str) -> String {
 /// The upstream identity this fork must never silently read, overwrite or delete.
 pub fn upstream() -> &'static Upstream {
     &table().upstream
+}
+
+/// The package/install identity of the Linux candidate builds (private working values).
+pub fn packaging() -> &'static Packaging {
+    &table().packaging
+}
+
+/// The installed name of the bundled CLI sidecar. Upstream ships `terax-cli`; a candidate
+/// package must not install over that path, so the sidecar is renamed with the fork's
+/// package identity while the *launcher* command keeps its documented name (ticket #39).
+pub fn cli_binary_name() -> &'static str {
+    &table().packaging.cli_binary_name
 }
 
 /// An environment variable of the upstream application, e.g. `upstream_env("CLI")` ->
@@ -125,6 +155,28 @@ mod tests {
             .starts_with(&table.upstream.app_identifier));
         assert_ne!(table.namespace, table.upstream.namespace);
         assert_ne!(table.env_prefix, "TERAX");
+    }
+
+    #[test]
+    fn the_candidate_packaging_identity_is_private_and_not_upstream() {
+        let packaging = packaging();
+        let upstream = upstream();
+        for name in [
+            packaging.product_name.as_str(),
+            packaging.vendor.as_str(),
+            packaging.package_name.as_str(),
+        ] {
+            assert!(!name.eq_ignore_ascii_case("terax"), "{name} reuses upstream branding");
+            assert!(!name.contains("Crynta"), "{name} reuses upstream branding");
+            assert!(!name.contains("crynta"), "{name} reuses upstream branding");
+        }
+        // A candidate package installs into its own paths: no `/usr/bin/terax`, no
+        // `/usr/bin/terax-cli`, so it cannot overwrite an installed upstream build.
+        assert_eq!(packaging.package_name, packaging.package_name.to_lowercase());
+        assert!(packaging.package_name.contains(&namespace()));
+        assert_ne!(packaging.package_name, upstream.namespace);
+        assert_ne!(cli_binary_name(), format!("{}-cli", upstream.namespace));
+        assert!(cli_binary_name().contains(&namespace()));
     }
 
     #[test]
@@ -193,6 +245,73 @@ mod tests {
             config["identifier"].as_str(),
             Some(app_identifier()),
             "src-tauri/tauri.conf.json must carry the identifier from the identity table"
+        );
+    }
+
+    #[test]
+    fn the_update_endpoint_is_fork_owned_and_not_upstreams_release_feed() {
+        // Release identity is part of the fork identity: a build tool forces the updater
+        // endpoint into tauri.conf.json, so it is compared against the contract table in
+        // src/modules/updater/releaseContract.json instead of being trusted as a literal.
+        let contract = parse(include_str!("../../../src/modules/updater/releaseContract.json"));
+        let config = parse(include_str!("../../tauri.conf.json"));
+
+        assert_eq!(contract["provisional"], serde_json::json!(true));
+        assert_eq!(contract["channel"], serde_json::json!("stable"));
+
+        let endpoints = contract["endpoints"]
+            .as_array()
+            .expect("endpoints array")
+            .iter()
+            .map(|value| value.as_str().expect("endpoint string").to_string())
+            .collect::<Vec<_>>();
+        assert!(!endpoints.is_empty(), "a release endpoint is configured");
+
+        let upstream = contract["upstream"]["endpoints"]
+            .as_array()
+            .expect("upstream endpoints array")
+            .iter()
+            .map(|value| value.as_str().expect("endpoint string").to_string())
+            .collect::<Vec<_>>();
+        assert!(
+            !upstream.is_empty(),
+            "the contract records upstream's feed so it can be refused"
+        );
+        for endpoint in &endpoints {
+            assert!(
+                !upstream.contains(endpoint),
+                "{endpoint} is upstream's release feed"
+            );
+            assert!(
+                !endpoint.contains("crynta"),
+                "{endpoint} names the upstream release owner"
+            );
+            let host = endpoint
+                .split("://")
+                .nth(1)
+                .and_then(|rest| rest.split('/').next())
+                .unwrap_or_default();
+            assert!(
+                host.ends_with(".invalid"),
+                "the default endpoint must not be live until #39/#40 provision one: {endpoint}"
+            );
+        }
+
+        let configured = config["plugins"]["updater"]["endpoints"]
+            .as_array()
+            .expect("tauri updater endpoints array")
+            .iter()
+            .map(|value| value.as_str().expect("endpoint string").to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            configured, endpoints,
+            "tauri.conf.json must mirror the fork release contract"
+        );
+        // No fork trust root exists yet; upstream's embedded key must not be reused.
+        assert_eq!(config["plugins"]["updater"]["pubkey"], serde_json::json!(""));
+        assert!(
+            !include_str!("../../tauri.conf.json").contains("3BABFD8AB60E3469"),
+            "the upstream signing key must not remain in the fork config"
         );
     }
 

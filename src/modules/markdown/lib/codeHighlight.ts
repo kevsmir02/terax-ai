@@ -1,5 +1,5 @@
-// Fenced-code highlighting for rendered Markdown, independent of the built-in
-// AI feature. `classHighlighter` emits `tok-*` classes painted by
+// Fenced-code highlighting for rendered Markdown. `classHighlighter` emits
+// `tok-*` classes painted by
 // `src/styles/code-highlight.css`, from the same `@lezer/highlight` instance
 // the editor themes use (locked by `src/app/dist-budget.test.ts`).
 
@@ -17,7 +17,7 @@ type StreamLoader = () => Promise<StreamParser<unknown>>;
 // Only langs that ship a real Lezer parser. Legacy stream-modes (bash,
 // yaml, toml, c/cpp, java, csharp) fall back to plain <pre> — they don't
 // produce a Tree, and dragging in a token-stream driver isn't worth the
-// bytes for chat-side highlight.
+// bytes for Markdown-side highlight.
 const loaders: Record<string, ParserLoader> = {
   js: () => import("@codemirror/lang-javascript").then((m) => m.javascriptLanguage),
   jsx: () => import("@codemirror/lang-javascript").then((m) => m.jsxLanguage),

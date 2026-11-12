@@ -26,7 +26,6 @@ commandPalette.content: Shift+Cmd+h
 settings.open: Cmd+,
 tab.new: Cmd+t
 tab.newBlock: Shift+Cmd+t
-tab.newPrivate: Cmd+r
 tab.newPreview: Shift+Cmd+o
 tab.newEditor: Cmd+e
 tab.close: Cmd+w
@@ -39,7 +38,6 @@ pane.swapRight: Alt+Cmd+ArrowRight
 pane.swapUp: Alt+Cmd+ArrowUp
 pane.swapDown: Alt+Cmd+ArrowDown
 pane.source: Cmd+g
-terminal.toggleInput: Cmd+u
 blocks.prev: Cmd+ArrowUp
 blocks.next: Cmd+ArrowDown
 tab.next: Ctrl+Tab
@@ -50,9 +48,6 @@ space.prev: Shift+Cmd+[
 space.overview: Shift+Cmd+s
 explorer.search: Shift+Cmd+f
 search.focus: Cmd+f
-ai.toggle: Cmd+i
-ai.toggleMini: Shift+Cmd+i
-ai.askSelection: Cmd+j
 agent.focusAttention: Shift+Cmd+a
 sidebar.toggle: Cmd+b, Shift+Cmd+b
 explorer.focus: Shift+Cmd+e
@@ -64,7 +59,6 @@ view.zenMode: Shift+Cmd+'
 editor.undo: Cmd+z
 editor.redo: Cmd+y, Shift+Cmd+z
 editor.save: Cmd+s
-editor.aiComplete: Alt+\\
 editor.codeComplete: Ctrl+ `;
 
 const describeBinding = (b: KeyBinding): string =>
@@ -334,9 +328,6 @@ describe("Windows and Linux defaults", () => {
     expect(hit({ ...ctrl, key: "?", code: "Slash" }, "explorer.search")).toBe(
       true,
     );
-    expect(hit({ ...ctrl, key: "<", code: "Comma" }, "ai.toggleMini")).toBe(
-      true,
-    );
     expect(hit({ ...ctrl, key: "_", code: "Minus" }, "view.zoomOut")).toBe(
       true,
     );
@@ -379,7 +370,6 @@ describe.each([
 
 describe("Windows and Linux shifted punctuation layout audit", () => {
   it.each([
-    ["Dvorak comma", "<", "KeyW", "ai.toggleMini"],
     ["AZERTY period", "/", "Period", "explorer.toggleHidden"],
     ["AZERTY minus", "°", "Minus", "view.zoomOut"],
     ["US minus", "_", "Minus", "view.zoomOut"],

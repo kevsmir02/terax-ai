@@ -1,0 +1,13 @@
+{
+  "version": "0.9.0",
+  "channel": "stable",
+  "notes": "Fork stable fixture pinned at the application version: a check must report no update.",
+  "pub_date": "2026-09-01T12:00:00Z",
+  "platforms": {
+    "linux-x86_64": {
+      "url": "http://127.0.0.1:8787/Terax_0.9.0_amd64.deb",
+      "signature": "untrusted comment: signature from terax-workspace fixture key\nRWTWFeG1WNQlrxsLjC8eL6/b9pKfdsFNUpTB0MLrik9yb/dbNKJdEkxHZcVh3aMh2saTHwpYpGqwQhEurAMosP7rhsKv5tOk6FY=\ntrusted comment: timestamp:1759233600\tfile:Terax_0.9.0_amd64.deb\tversion:0.9.0\n/QY6RbINVXpJdxcdSTiMhO9olHhhuSB8Z4e2LOLxA/Mqt+jOueqdnQuEE11RQm40SMZ67EHKZRXj3LWwLCpaHQ==",
+      "size": 1200
+    }
+  }
+}

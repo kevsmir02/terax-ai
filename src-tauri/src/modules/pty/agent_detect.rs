@@ -25,10 +25,30 @@ const NOTIFY_DUPLICATE: Duration = Duration::from_secs(1);
 const MAX_NOTIFY_TITLE: usize = 256;
 const MAX_NOTIFY_BODY: usize = 1024;
 
-const DEFAULT_AGENTS: &[&str] = &["claude", "codex", "gemini", "pi", "opencode", "grok"];
+const DEFAULT_AGENTS: &[&str] = &[
+    "claude",
+    "codex",
+    "gemini",
+    "pi",
+    "opencode",
+    "grok",
+    "antigravity",
+];
 
 /// Extensions a launcher shim or native binary carries on Windows.
 const LAUNCHER_EXTENSIONS: &[&str] = &[".exe", ".cmd", ".bat", ".ps1", ".com"];
+
+/// Desktop-app program names. Antigravity ships a GUI separately from its
+/// terminal CLI, and only the CLI may be tracked as a pane's agent.
+const DESKTOP_BASENAMES: &[&str] = &[
+    "antigravity-desktop",
+    "antigravity-desktop.exe",
+    "antigravity-gui",
+    "antigravity-gui.exe",
+];
+
+/// Commands that hand a path or bundle to a desktop application.
+const DESKTOP_LAUNCHERS: &[&str] = &["xdg-open", "gio", "gtk-launch", "flatpak", "snap"];
 
 // OSC 777 marker older agent hooks emit. Legacy 3-field `notify;Terax;<event>`
 // (Claude) or 4-field `notify;Terax;<agent>;<event>` (Codex/Gemini/Pi).
@@ -596,6 +616,10 @@ impl AgentDetector {
 
     fn match_agent(&self, cmd: &[u8]) -> Option<String> {
         let cmd = std::str::from_utf8(cmd).ok()?;
+        // Antigravity's desktop app is a different product from its terminal
+        // CLI. A GUI launch must never be tracked as the CLI (its name also
+        // matches as a dash-suffixed alias).
+        let desktop_app = is_desktop_app_launch(cmd);
         for token in cmd.split_whitespace() {
             let token = token.trim_matches(['"', '\'']);
             if token.is_empty() || token.starts_with('-') {
@@ -607,11 +631,36 @@ impl AgentDetector {
                 base.strip_prefix(a.as_str())
                     .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
             }) {
+                if desktop_app && agent == "antigravity" {
+                    continue;
+                }
                 return Some(agent.clone());
             }
         }
         None
     }
+}
+
+/// True for command shapes that start Antigravity's desktop application: its
+/// GUI executables, an `.app` bundle, a `.desktop` file, or a launcher that
+/// hands the app a path.
+fn is_desktop_app_launch(cmd: &str) -> bool {
+    let lower = cmd.to_ascii_lowercase();
+    let first = lower.split_whitespace().next().unwrap_or("");
+    if first == "open" && lower.split_whitespace().any(|part| part == "-a") {
+        return true;
+    }
+    if DESKTOP_LAUNCHERS.contains(&first) {
+        return true;
+    }
+    lower.split_whitespace().any(|raw| {
+        let token = raw.trim_matches(['"', '\'']);
+        if token.ends_with(".app") || token.contains(".app/") || token.ends_with(".desktop") {
+            return true;
+        }
+        let base = token.rsplit(['/', '\\']).next().unwrap_or(token);
+        DESKTOP_BASENAMES.contains(&base)
+    })
 }
 
 fn strip_launcher_extension(name: &str) -> &str {
@@ -743,6 +792,48 @@ mod tests {
                 vec![started(agent)]
             );
         }
+    }
+
+    #[test]
+    fn arms_on_the_antigravity_cli() {
+        for command in [
+            "antigravity",
+            "antigravity --model fast",
+            "/usr/local/bin/antigravity",
+            "~/.local/bin/antigravity chat",
+        ] {
+            let mut d = AgentDetector::new();
+            assert_eq!(
+                run(&mut d, &osc(&format!("133;C;{command}"))),
+                vec![started("antigravity")],
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn does_not_arm_on_the_antigravity_desktop_app() {
+        for command in [
+            "antigravity-desktop",
+            "antigravity-desktop --new-window",
+            "antigravity-gui",
+            "/opt/antigravity/antigravity-desktop.exe",
+            "open -a Antigravity",
+            "open -n -a Antigravity /workspace",
+            "xdg-open /usr/share/applications/antigravity.desktop",
+            "gio open antigravity.desktop",
+            "gtk-launch antigravity",
+            "/Applications/Antigravity.app/Contents/MacOS/Antigravity",
+        ] {
+            let mut d = AgentDetector::new();
+            assert!(
+                run(&mut d, &osc(&format!("133;C;{command}"))).is_empty(),
+                "{command}"
+            );
+        }
+        // The GUI form must not arm the CLI of a neighbouring token either.
+        let mut d = AgentDetector::new();
+        assert!(run(&mut d, &osc("133;C;open -a Antigravity")).is_empty());
     }
 
     #[test]

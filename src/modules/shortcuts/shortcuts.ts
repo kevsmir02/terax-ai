@@ -11,7 +11,6 @@ export type ShortcutId =
   | "commandPalette.content"
   | "tab.new"
   | "tab.newBlock"
-  | "tab.newPrivate"
   | "tab.newPreview"
   | "tab.newEditor"
   | "tab.close"
@@ -31,7 +30,6 @@ export type ShortcutId =
   | "pane.swapDown"
   | "pane.source"
   | "terminal.clear"
-  | "terminal.toggleInput"
   | "blocks.prev"
   | "blocks.next"
   | "search.focus"
@@ -42,16 +40,12 @@ export type ShortcutId =
   | "view.zoomOut"
   | "view.zoomReset"
   | "view.zenMode"
-  | "ai.toggle"
-  | "ai.toggleMini"
-  | "ai.askSelection"
   | "agent.focusAttention"
   | "settings.open"
   | "sidebar.toggle"
   | "editor.undo"
   | "editor.redo"
   | "editor.save"
-  | "editor.aiComplete"
   | "editor.codeComplete";
 
 export type ShortcutGroup =
@@ -61,7 +55,7 @@ export type ShortcutGroup =
   | "Panes"
   | "Terminal"
   | "Search"
-  | "AI"
+  | "Agents"
   | "View"
   | "Editor";
 
@@ -118,11 +112,6 @@ const SHORTCUT_META: Omit<Shortcut, "defaultBindings">[] = [
   {
     id: "tab.newBlock",
     label: "New Blocks terminal",
-    group: "Tabs",
-  },
-  {
-    id: "tab.newPrivate",
-    label: "New private terminal",
     group: "Tabs",
   },
   {
@@ -186,11 +175,6 @@ const SHORTCUT_META: Omit<Shortcut, "defaultBindings">[] = [
     group: "Panes",
   },
   {
-    id: "terminal.toggleInput",
-    label: "Toggle Shell / AI input",
-    group: "Terminal",
-  },
-  {
     id: "blocks.prev",
     label: "Previous command block",
     group: "Terminal",
@@ -245,24 +229,9 @@ const SHORTCUT_META: Omit<Shortcut, "defaultBindings">[] = [
     group: "Search",
   },
   {
-    id: "ai.toggle",
-    label: "Toggle AI agent",
-    group: "AI",
-  },
-  {
-    id: "ai.toggleMini",
-    label: "Toggle AI chat window",
-    group: "AI",
-  },
-  {
-    id: "ai.askSelection",
-    label: "Ask AI about selection",
-    group: "AI",
-  },
-  {
     id: "agent.focusAttention",
     label: "Jump to agent needing attention",
-    group: "AI",
+    group: "Agents",
   },
   {
     id: "sidebar.toggle",
@@ -317,11 +286,6 @@ const SHORTCUT_META: Omit<Shortcut, "defaultBindings">[] = [
     group: "Editor",
   },
   {
-    id: "editor.aiComplete",
-    label: "Trigger AI completion",
-    group: "Editor",
-  },
-  {
     id: "editor.codeComplete",
     label: "Trigger code completion",
     group: "Editor",
@@ -345,7 +309,7 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
   "Terminal",
   "View",
   "Search",
-  "AI",
+  "Agents",
   "Editor",
 ];
 

@@ -1,9 +1,4 @@
 import { toast } from "sonner";
-import { flushPersist } from "@/modules/ai/store/chatStore";
-import {
-  type FlushResult,
-  flushSessionWrites,
-} from "@/modules/ai/lib/sessions";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   type RefObject,
@@ -25,21 +20,6 @@ async function anyTerminalBusy(tabs: Tab[]): Promise<boolean> {
   return checks.some(Boolean);
 }
 
-/** How long closing waits for chat history to reach the disk. */
-export const CLOSE_FLUSH_TIMEOUT_MS = 4_000;
-
-/**
- * Failing to save chat history must never make the window impossible to close.
- * The first failed flush keeps the window open once, with a visible error and a
- * "Close anyway" action; any further close request closes immediately.
- */
-export function closeAfterFlush(
-  flush: Pick<FlushResult, "ok">,
-  alreadyWarned: boolean,
-): "close" | "warn" {
-  return flush.ok || alreadyWarned ? "close" : "warn";
-}
-
 export type AppCloseBlocker = {
   dirtyEditors: number;
   busyTerminal: boolean;
@@ -58,7 +38,6 @@ export function useAppCloseGuard(tabsRef: RefObject<Tab[]>) {
     useState<AppCloseBlocker | null>(null);
   const forceClose = useRef(false);
   const closing = useRef(false);
-  const warned = useRef(false);
   const closeWindow = useCallback(async () => {
     forceClose.current = true;
     try {
@@ -74,25 +53,6 @@ export function useAppCloseGuard(tabsRef: RefObject<Tab[]>) {
     if (closing.current) return;
     closing.current = true;
     try {
-      flushPersist();
-      const flush = await flushSessionWrites({
-        timeoutMs: CLOSE_FLUSH_TIMEOUT_MS,
-      });
-      if (closeAfterFlush(flush, warned.current) === "warn") {
-        warned.current = true;
-        toast.error("Could not save chat history", {
-          id: "close-save-failed",
-          duration: Number.POSITIVE_INFINITY,
-          description: flush.timedOut
-            ? "Saving is taking too long. The latest messages may be lost."
-            : "The latest messages may be lost.",
-          action: {
-            label: "Close anyway",
-            onClick: () => void closeWindow(),
-          },
-        });
-        return;
-      }
       await closeWindow();
     } finally {
       closing.current = false;

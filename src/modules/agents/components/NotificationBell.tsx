@@ -9,21 +9,25 @@ import {
   ArrowDown01Icon,
   ArrowUp01Icon,
   CheckmarkCircle02Icon,
-  Loading03Icon,
   Notification01Icon,
   Notification03Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { invoke } from "@tauri-apps/api/core";
+import {
+  agentHooksStatus,
+  HOOK_AGENTS,
+  type HookAgent,
+  type HooksStatus,
+} from "@/modules/control/lib/hooksConfig";
 import { useMemo, useState } from "react";
 import { AgentIcon } from "../lib/agentIcon";
 import { displayAgent } from "../lib/format";
+import { sessionStatusLabel } from "../lib/status";
 import type { AgentNotification, AgentStatus } from "../lib/types";
 import { useAgentStore } from "../store/agentStore";
 
 type Props = {
   onActivate: (tabId: number, leafId: number) => void;
-  onActivateLocal: () => void;
 };
 
 function relativeTime(ts: number): string {
@@ -45,7 +49,7 @@ function StatusRow({
   status: AgentStatus;
   onClick: () => void;
 }) {
-  const waiting = status === "waiting";
+  const attention = status === "attention";
   return (
     <button
       type="button"
@@ -63,69 +67,59 @@ function StatusRow({
       <span
         className={cn(
           "flex items-center gap-1.5 text-xs",
-          waiting ? "font-medium text-primary" : "text-muted-foreground",
+          attention ? "font-medium text-primary" : "text-muted-foreground",
         )}
       >
-        {waiting ? <span className="size-1.5 rounded-full bg-primary" /> : null}
-        {waiting ? "waiting" : "working"}
+        {attention ? (
+          <span className="size-1.5 rounded-full bg-primary" />
+        ) : null}
+        {sessionStatusLabel(status)}
       </span>
     </button>
   );
 }
 
 const NOTIF_LABEL: Record<AgentNotification["kind"], string> = {
-  attention: "needs input",
-  finished: "finished",
+  attention: "needs attention",
+  // A finished turn, reported by the agent, not a process that exited.
+  "turn-finished": "turn finished",
   error: "failed",
 };
-
-const HOOK_AGENTS = ["claude", "codex", "gemini", "pi"] as const;
 
 function HookAgentRow({
   id,
   label,
-  ready,
-  installing,
-  onEnable,
+  status,
 }: {
-  id: string;
+  id: HookAgent;
   label: string;
-  ready: boolean;
-  installing: boolean;
-  onEnable: () => void;
+  status: HooksStatus | null;
 }) {
+  const configured = status?.configState === "installed";
+  const partial = status?.configState === "partial";
   return (
     <div className="flex items-center gap-2 px-2 py-1">
-      <AgentIcon agent={id} size={14} className="shrink-0 text-muted-foreground" />
+      <AgentIcon
+        agent={id}
+        size={14}
+        className="shrink-0 text-muted-foreground"
+      />
       <span className="flex-1 truncate text-[12px] text-muted-foreground">
         {label}
       </span>
-      {ready ? (
+      {configured ? (
         <span className="flex items-center gap-1 text-[11px] font-medium text-primary">
           <HugeiconsIcon
             icon={CheckmarkCircle02Icon}
             size={13}
             strokeWidth={1.75}
           />
-          enabled
+          configured
         </span>
       ) : (
-        <button
-          type="button"
-          onClick={onEnable}
-          disabled={installing}
-          className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60"
-        >
-          {installing ? (
-            <HugeiconsIcon
-              icon={Loading03Icon}
-              size={12}
-              strokeWidth={1.75}
-              className="animate-spin"
-            />
-          ) : null}
-          {installing ? "Enabling" : "Enable"}
-        </button>
+        <span className="text-[11px] text-muted-foreground/70">
+          {partial ? "partly configured" : "not configured"}
+        </span>
       )}
     </div>
   );
@@ -145,7 +139,7 @@ function NotificationRow({
       className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors hover:bg-accent"
     >
       <span className="flex w-4 shrink-0 items-center justify-center">
-        {n.kind === "finished" ? (
+        {n.kind === "turn-finished" ? (
           <HugeiconsIcon
             icon={CheckmarkCircle02Icon}
             size={15}
@@ -172,35 +166,33 @@ function NotificationRow({
   );
 }
 
-export function NotificationBell({ onActivate, onActivateLocal }: Props) {
+export function NotificationBell({ onActivate }: Props) {
   const [open, setOpen] = useState(false);
-  const [hooks, setHooks] = useState<Record<string, boolean>>({});
-  const [installing, setInstalling] = useState<string | null>(null);
+  const [hooks, setHooks] = useState<Record<string, HooksStatus | null>>({});
   const [alertsOpen, setAlertsOpen] = useState(false);
   const sessions = useAgentStore((s) => s.sessions);
-  const localAgent = useAgentStore((s) => s.localAgent);
   const notifications = useAgentStore((s) => s.notifications);
   const markAllRead = useAgentStore((s) => s.markAllRead);
   const clearNotifications = useAgentStore((s) => s.clearNotifications);
 
   const active = useMemo(() => Object.values(sessions), [sessions]);
-  const activeCount = active.length + (localAgent ? 1 : 0);
-  const waitingCount =
-    active.filter((s) => s.status === "waiting").length +
-    (localAgent?.status === "waiting" ? 1 : 0);
-  // attention maps to an active waiting session, so only completed events add
+  const activeCount = active.length;
+  const waitingCount = active.filter((s) => s.status === "attention").length;
+  // attention maps to an active attention session, so only completed events add
   // to the badge to avoid double-counting.
   const unreadDone = notifications.filter(
     (n) => !n.read && n.kind !== "attention",
   ).length;
   const badge = waitingCount + unreadDone;
-  const enabledCount = HOOK_AGENTS.filter((id) => hooks[id] === true).length;
+  const enabledCount = HOOK_AGENTS.filter(
+    (id) => hooks[id]?.configState === "installed",
+  ).length;
 
   const refreshHooks = () => {
     for (const id of HOOK_AGENTS) {
-      invoke<boolean>("agent_hooks_status", { agent: id })
-        .then((ok) => setHooks((h) => ({ ...h, [id]: ok })))
-        .catch(() => setHooks((h) => ({ ...h, [id]: false })));
+      agentHooksStatus(id)
+        .then((status) => setHooks((h) => ({ ...h, [id]: status })))
+        .catch(() => setHooks((h) => ({ ...h, [id]: null })));
     }
   };
 
@@ -212,31 +204,13 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
     }
   };
 
-  const enableHooks = async (id: string) => {
-    setInstalling(id);
-    try {
-      await invoke("agent_enable_hooks", { agent: id });
-      setHooks((h) => ({ ...h, [id]: true }));
-    } catch {
-      setHooks((h) => ({ ...h, [id]: false }));
-    } finally {
-      setInstalling(null);
-    }
-  };
-
   const activate = (tabId: number, leafId: number) => {
     onActivate(tabId, leafId);
     setOpen(false);
   };
 
-  const activateLocal = () => {
-    onActivateLocal();
-    setOpen(false);
-  };
-
   const activateNotification = (n: AgentNotification) => {
-    if (n.source === "local") activateLocal();
-    else activate(n.tabId, n.leafId);
+    activate(n.tabId, n.leafId);
   };
 
   const empty = activeCount === 0 && notifications.length === 0;
@@ -293,17 +267,10 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
           <div className="border-t border-border/60 px-3 py-5 text-center text-xs leading-relaxed text-muted-foreground">
             No agent activity yet.
             <br />
-            Run the Terax agent or a coding agent to track it here.
+            Run a coding agent to track it here.
           </div>
         ) : (
           <div className="max-h-80 overflow-y-auto border-t border-border/60 p-1">
-            {localAgent ? (
-              <StatusRow
-                agent={localAgent.agent}
-                status={localAgent.status}
-                onClick={activateLocal}
-              />
-            ) : null}
             {active.map((s) => (
               <StatusRow
                 key={s.leafId}
@@ -332,7 +299,11 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
             aria-expanded={alertsOpen}
             className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70 transition-colors hover:text-foreground"
           >
-            <HugeiconsIcon icon={Notification03Icon} size={11} strokeWidth={2} />
+            <HugeiconsIcon
+              icon={Notification03Icon}
+              size={11}
+              strokeWidth={2}
+            />
             Agent alerts
             <span className="ml-auto flex items-center gap-1.5 normal-case tracking-normal">
               {enabledCount > 0 ? (
@@ -347,18 +318,22 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
               />
             </span>
           </button>
-          {alertsOpen
-            ? HOOK_AGENTS.map((id) => (
+          {alertsOpen ? (
+            <>
+              {HOOK_AGENTS.map((id) => (
                 <HookAgentRow
                   key={id}
                   id={id}
                   label={displayAgent(id)}
-                  ready={hooks[id] === true}
-                  installing={installing === id}
-                  onEnable={() => enableHooks(id)}
+                  status={hooks[id] ?? null}
                 />
-              ))
-            : null}
+              ))}
+              <p className="px-2 pt-1 pb-0.5 text-[10px] leading-relaxed text-muted-foreground/70">
+                Hooks are opt-in: review, install or remove them in Settings →
+                Agents.
+              </p>
+            </>
+          ) : null}
         </div>
       </PopoverContent>
     </Popover>

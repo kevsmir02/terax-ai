@@ -15,6 +15,7 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { AgentIcon } from "@/modules/agents/lib/agentIcon";
+import { processStatusLabel } from "@/modules/agents/lib/status";
 import type { AgentLaunchRequest } from "@/modules/agents/lib/launcher";
 import {
   ALL_LANGUAGES,
@@ -36,7 +37,6 @@ import {
   ComputerTerminal02Icon,
   GitCompareIcon,
   Globe02Icon,
-  IncognitoIcon,
   Message02Icon,
   PencilEdit02Icon,
   Tick02Icon,
@@ -62,7 +62,6 @@ type Props = {
   onSelect: (id: number) => void;
   onNew: () => void;
   onNewBlock: () => void;
-  onNewPrivate: () => void;
   onNewPreview: () => void;
   onNewEditor: () => void;
   onNewGitGraph: () => void;
@@ -88,7 +87,6 @@ export function TabBar({
   onSelect,
   onNew,
   onNewBlock,
-  onNewPrivate,
   onNewPreview,
   onNewEditor,
   onNewGitGraph,
@@ -588,7 +586,6 @@ export function TabBar({
         <NewTabMenu
           onNew={onNew}
           onNewBlock={onNewBlock}
-          onNewPrivate={onNewPrivate}
           onNewPreview={onNewPreview}
           onNewEditor={onNewEditor}
           onNewGitGraph={onNewGitGraph}
@@ -630,22 +627,28 @@ function TerminalTabIcon({ tab }: { tab: TerminalTab }) {
   );
   if (agentStatus.state === "attention") {
     return (
-      <HugeiconsIcon
-        icon={Message02Icon}
-        size={14}
-        strokeWidth={2}
-        className="shrink-0"
-      />
+      <span
+        role="img"
+        aria-label={`Agent ${processStatusLabel("attention", "event")}`}
+        title={`Agent ${processStatusLabel("attention", "event")}`}
+        className="flex shrink-0 items-center"
+      >
+        <HugeiconsIcon icon={Message02Icon} size={14} strokeWidth={2} />
+      </span>
     );
   }
   if (agentStatus.state === "finished") {
+    // A turn-finished event, not a completed agent: the process can still be
+    // running in this pane and may start another turn.
     return (
-      <HugeiconsIcon
-        icon={CheckmarkCircle01Icon}
-        size={14}
-        strokeWidth={2}
-        className="shrink-0"
-      />
+      <span
+        role="img"
+        aria-label={`Agent ${processStatusLabel("turn-finished", "event")}`}
+        title={`Agent ${processStatusLabel("turn-finished", "event")}`}
+        className="flex shrink-0 items-center"
+      >
+        <HugeiconsIcon icon={CheckmarkCircle01Icon} size={14} strokeWidth={2} />
+      </span>
     );
   }
   if (
@@ -683,26 +686,6 @@ export function TabIcon({ tab }: { tab: Tab }) {
     return (
       <HugeiconsIcon
         icon={Globe02Icon}
-        size={14}
-        strokeWidth={2}
-        className="shrink-0"
-      />
-    );
-  }
-  if (tab.kind === "ai-diff") {
-    return (
-      <HugeiconsIcon
-        icon={GitCompareIcon}
-        size={14}
-        strokeWidth={2}
-        className="shrink-0"
-      />
-    );
-  }
-  if (tab.kind === "terminal" && tab.private) {
-    return (
-      <HugeiconsIcon
-        icon={IncognitoIcon}
         size={14}
         strokeWidth={2}
         className="shrink-0"

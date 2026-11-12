@@ -44,8 +44,6 @@ export type TerminalTab = TabBase & {
   paneTree: PaneNode;
   activeLeafId: number;
   blocks?: boolean;
-  /** AI agent cannot read buffer / context of this terminal. */
-  private?: boolean;
   /** User-set label that overrides the cwd-derived name. Survives cd. */
   customTitle?: string;
 };
@@ -77,22 +75,6 @@ export type MarkdownTab = TabBase & {
   kind: "markdown";
   title: string;
   path: string;
-};
-
-export type AiDiffStatus = "pending" | "approved" | "rejected";
-
-export type AiDiffTab = TabBase & {
-  id: number;
-  kind: "ai-diff";
-  title: string;
-  path: string;
-  /** "" for newly created files. */
-  originalContent: string;
-  proposedContent: string;
-  /** Tool-call approval id used to resolve the AI SDK approval. */
-  approvalId: string;
-  status: AiDiffStatus;
-  isNewFile: boolean;
 };
 
 export type GitDiffTab = TabBase & {
@@ -130,7 +112,6 @@ export type Tab =
   | EditorTab
   | PreviewTab
   | MarkdownTab
-  | AiDiffTab
   | GitDiffTab
   | GitHistoryTab
   | GitCommitFileDiffTab;
@@ -832,37 +813,6 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     [setActiveId, setTabs],
   );
 
-  const newAgentTab = useCallback(
-    (cwd: string | undefined, title: string) => {
-      const { tabId, leafIds: agentLeafIds } = newAgentGroupTab(cwd, title, 1);
-      return { tabId, leafId: agentLeafIds[0] };
-    },
-    [newAgentGroupTab],
-  );
-
-  const newPrivateTab = useCallback(
-    (cwd?: string) => {
-      const tabId = nextIdRef.current++;
-      const leafId = nextIdRef.current++;
-      setTabs((t) => [
-        ...t,
-        {
-          id: tabId,
-          kind: "terminal",
-          spaceId: activeSpaceIdRef.current,
-          title: "private",
-          cwd,
-          paneTree: { kind: "leaf", id: leafId, cwd },
-          activeLeafId: leafId,
-          private: true,
-        },
-      ]);
-      setActiveId(tabId);
-      return tabId;
-    },
-    [setTabs, setActiveId],
-  );
-
   /**
    * Opens a file in an editor tab.
    *
@@ -909,84 +859,6 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       );
     },
     [setTabs],
-  );
-
-  const openAiDiffTab = useCallback(
-    (input: {
-      path: string;
-      originalContent: string;
-      proposedContent: string;
-      approvalId: string;
-      isNewFile: boolean;
-    }) => {
-      let targetId: number | null = null;
-      setTabs((curr) => {
-        const existing = curr.find(
-          (t) => t.kind === "ai-diff" && t.approvalId === input.approvalId,
-        );
-        if (existing) {
-          targetId = existing.id;
-          return curr;
-        }
-        const id = nextIdRef.current++;
-        targetId = id;
-        const title = `${basename(input.path)} (AI diff)`;
-        return [
-          ...curr,
-          {
-            id,
-            kind: "ai-diff",
-            spaceId: activeSpaceIdRef.current,
-            title,
-            path: input.path,
-            originalContent: input.originalContent,
-            proposedContent: input.proposedContent,
-            approvalId: input.approvalId,
-            status: "pending",
-            isNewFile: input.isNewFile,
-          },
-        ];
-      });
-      if (targetId !== null) setActiveId(targetId);
-      return targetId as number | null;
-    },
-    [setTabs, setActiveId],
-  );
-
-  const setAiDiffStatus = useCallback(
-    (approvalId: string, status: AiDiffStatus) => {
-      setTabs((curr) =>
-        curr.map((t) =>
-          t.kind === "ai-diff" && t.approvalId === approvalId
-            ? { ...t, status }
-            : t,
-        ),
-      );
-    },
-    [setTabs],
-  );
-
-  const closeAiDiffTab = useCallback(
-    (approvalId: string) => {
-      setTabs((curr) => {
-        const target = curr.find(
-          (t) => t.kind === "ai-diff" && t.approvalId === approvalId,
-        );
-        if (!target) return curr;
-        const fallback = nextActiveInSpace(curr, target.id);
-        if (fallback === null) {
-          return curr.map((t) =>
-            t.kind === "ai-diff" && t.approvalId === approvalId
-              ? { ...t, status: "approved" as AiDiffStatus }
-              : t,
-          );
-        }
-        const next = curr.filter((t) => t.id !== target.id);
-        setActiveId((active) => (target.id === active ? fallback : active));
-        return next;
-      });
-    },
-    [setTabs, setActiveId],
   );
 
   const newPreviewTab = useCallback(
@@ -1502,20 +1374,15 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     setOverrideLanguage,
     newTab,
     newBlockTab,
-    newAgentTab,
     newAgentGroupTab,
-    newPrivateTab,
     openFileTab,
     pinTab,
     newPreviewTab,
     newMarkdownTab,
     setMarkdownView,
-    openAiDiffTab,
     openGitDiffTab,
     openCommitHistoryTab,
     openCommitFileDiffTab,
-    setAiDiffStatus,
-    closeAiDiffTab,
     closeTab,
     closeTabs,
     updateTab,
