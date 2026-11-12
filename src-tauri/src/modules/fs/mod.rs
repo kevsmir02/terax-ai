@@ -1,6 +1,8 @@
 mod access;
 mod access_policy;
 pub mod assets;
+#[cfg(feature = "bench")]
+pub mod bench_probe;
 pub mod clipboard;
 pub mod copy;
 pub mod file;

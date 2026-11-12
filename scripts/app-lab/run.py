@@ -21,13 +21,16 @@ Scenarios (`--scenario`):
   input          native key events / input-method calls into a PTY reader (pass/fail in page.log)
   workflow       Linux acceptance workflow: shell spawn, exact echo, new tab, split, switch back,
                  open a temp file and assert the editor's text (pass/fail in page.log)
-  preview        Linux web-preview seam: frame teardown on tab/Space/window changes, sandbox and
-                 redirect boundaries, independent dev server
+  preview        Linux preview acceptance: a served dev-server page in the real iframe (redirect,
+                 sandbox, no native access, hidden-tab/Space/window teardown and reload) and PDF
+                 documents (served content type and byte ranges, the frame as a separate document,
+                 open/close stability, memory) — pass/fail in page.log
   images         Linux image seam: representative formats decode in the real WebKitGTK, oversized
                  and corrupt inputs are refused honestly, hidden tabs release, close cycles do not
                  retain decoded viewers or grants
 
-Linux currently implements `workflow` only (WebKitGTK); the measured scenarios above stay
+Linux currently implements `workflow`, `preview`, `resource`, `stress` and `startup`
+(WebKitGTK); the measured scenarios above stay
 macOS-only until ticket 02 (sampling) and ticket 32 (input/resize/layers). On Linux the app is
 built with `--no-bundle` into `<target>/<profile>/terax`.
 
@@ -74,6 +77,7 @@ import linux_proc  # noqa: E402
 import isolation_report  # noqa: E402
 import linux_report  # noqa: E402
 import namespace_sentinels  # noqa: E402
+import pdf_fixtures  # noqa: E402
 import procstats  # noqa: E402
 
 SYSTEM = platform.system()
@@ -120,6 +124,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--toggle", action="append", default=[], metavar="NAME=VALUE", help="experiment toggle: localStorage terax:bench:NAME (repeatable)")
     p.add_argument("--local-storage", action="append", default=[], metavar="KEY=VALUE", help="raw localStorage entry (VALUE 'null' removes), e.g. terax:terminal-canvas-park-ms=off")
     p.add_argument("--window", default="1280x820", help="window size in points, WxH")
+    p.add_argument("--pdf-hold-ms", type=int, default=0, help="preview: keep the representative PDF open this long after its sample, so the named reader checks (docs/architecture/pdf-reader.md) can be run against the real window")
     p.add_argument("--instrument", action="store_true", help="patch WebGPU/DOM prototypes with lifecycle counters (calls, wrappers created/finalized, canvas re-parenting); compare with an uninstrumented run")
     p.add_argument("--gc", nargs="?", const="private", choices=["private", "alloc"], help="after the idle tail, request a full garbage collection and sample +2 s/+10 s: 'private' (default) is WebKit's testing SPI, 'alloc' is allocation pressure from the page (what an in-app valve could do)")
     p.add_argument("--tick", type=float, help="idle, fs-churn: take a full sample (with the layer tree and the page event log) every this many seconds (fs-churn default 30)")
@@ -602,6 +607,10 @@ def host_timeout(args, scenario: dict) -> float:
     name = args.scenario
     if name == "workflow":
         return 600
+    if name == "preview":
+        # The web-preview teardown/reload cycle plus the PDF document checks (open, sample,
+        # close, memory) each take a rendered sample.
+        return 720
     if name == "images":
         return 600
     if name == "startup":
@@ -923,6 +932,7 @@ def scenario_json_linux(
     first_line: str | None,
     workspace: Path,
     fixtures: dict | None,
+    pdf: dict | None = None,
     images: dict | None = None,
 ) -> dict:
     """The scenario as the driver receives it (Linux; no synthetic agent)."""
@@ -949,6 +959,25 @@ def scenario_json_linux(
         scenario.update({"file": str(file), "fileText": first_line})
     if args.scenario == "spaces":
         scenario.update({"workspace": str(workspace)})
+    if args.scenario == "preview" and pdf:
+        files = pdf["manifest"]["files"]
+        scenario["pdf"] = {
+            "files": pdf["paths"],
+            "sizes": {key: files[key]["bytes"] for key in pdf["paths"]},
+            "textPages": files["text"]["pages"],
+            "searchPrefix": "SEARCH-NEEDLE-",
+            "searchTemplate": files["text"]["tokens"]["searchTemplate"],
+            "uniqueNeedle": files["text"]["tokens"]["unique"],
+            "uniquePage": files["text"]["tokens"]["uniquePage"],
+            "ceilingBytes": pdf["manifest"]["ceiling"]["pageBytes"],
+            "renders": {
+                key: files[key].get("renders", [])
+                for key in ("text", "zoomed-a4", "large-page")
+            },
+            "pagePt": {key: files[key].get("page") for key in ("text", "zoomed-a4", "large-page")},
+        }
+        if args.pdf_hold_ms > 0:
+            scenario["pdf"]["holdMs"] = args.pdf_hold_ms
     if args.scenario == "images" and images:
         scenario.update({"images": images})
     if args.scenario in ("resource", "stress") and fixtures:
@@ -1024,12 +1053,18 @@ def build_startup_entry(kind: str, launch: int, event: dict, spawned_wall_s: flo
 # ---------------------------------------------------------------------------------------------
 
 LIMITATIONS_LINUX = [
+    "PDF: the fixtures are generated and verified by scripts/app-lab/pdf_fixtures.py, and the "
+    "phase exercises the app's own delivery gate, the bytes the asset server served (recorded "
+    "natively), the document boundary and the tab lifecycle. The reader functions (navigation, "
+    "zoom, search, text selection inside the page) cannot be driven from this harness: WebKitGTK "
+    "hands the PDF to its own separate document (the built-in PDF.js viewer at "
+    "webkit-pdfjs-viewer://), which the app page cannot script or even read, and WebKitGTK "
+    "exposes no screenshot/input seam. Those checks are named manual checks in "
+    "docs/architecture/pdf-reader.md, not automated passes.",
     "Image format support is measured only on this host's WebKitGTK build and only for the "
     "committed fixtures; a different distro/WebKit version needs its own run.",
     "The images scenario observes the rendered element and the decoded-viewer table; it does not "
     "measure the webview's private decoded-bitmap memory.",
-    "PDF rendering is not exercised: fixture.pdf exists as a document fixture but the run never "
-    "opens it, and no PDF capability is claimed for the preview pane.",
     "Audio and video codecs are not exercised: the only media fixture is a 64x64 PNG decoded by "
     "the HTML preview.",
     "GPU/VRAM use is not per-process attributable on Linux: /proc exposes no per-process GPU "
@@ -1142,6 +1177,31 @@ def prepare_fixtures(workspace: Path, stress: bool) -> dict:
         "imageFile": str(image),
         "documentFile": str(document),
         "workloadFiles": [str(path.relative_to(workspace)) for path in (notes, todos, data, medium, large, preview, image, document)],
+    }
+
+
+def prepare_pdf_fixtures(workspace: Path) -> dict:
+    """Generate the PDF documents the preview scenario opens, and verify them independently.
+
+    The files are written by `scripts/app-lab/pdf_fixtures.py` (deterministic; a rebuild is
+    byte-identical) into the run's own workspace, never the repository. Verification is real: a
+    PDF tool reads each document, counts its pages, finds its searchable tokens and rasterises a
+    page, so a fixture that does not have the property the scenario relies on stops the run here
+    instead of producing a passing scenario about the wrong file.
+    """
+    directory = workspace / "pdf"
+    manifest = pdf_fixtures.build(directory)
+    verification = pdf_fixtures.verify(directory, manifest)
+    files = manifest["files"]
+    print(
+        f"pdf fixtures: {len(files)} documents in {directory} "
+        f"({files['text']['pages']} pages, ceiling {manifest['ceiling']['pageBytes'] // (1024 * 1024)} MiB/page)"
+    )
+    return {
+        "directory": str(directory),
+        "manifest": manifest,
+        "verification": verification,
+        "paths": {key: str(directory / entry["name"]) for key, entry in files.items()},
     }
 
 
@@ -1296,6 +1356,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     workspace.mkdir(parents=True, exist_ok=True)
     fixture_server = None
     fixtures = None
+    pdf = None
     image_fixtures = None
     file = None
     first_line = ""
@@ -1304,6 +1365,8 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         fixture_server = FixtureServer(workspace)
         fixtures["previewUrl"] = fixture_server.url("preview.html")
         fixtures["workload"] = describe_workload(args, fixtures)
+    elif args.scenario == "preview":
+        pdf = prepare_pdf_fixtures(workspace)
     elif args.scenario == "images":
         image_fixtures = prepare_image_fixtures(workspace, source)
     else:
@@ -1317,7 +1380,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             )
     report_path = (args.report or output / "report.json").resolve()
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    scenario = scenario_json_linux(args, file, first_line, workspace, fixtures, image_fixtures)
+    scenario = scenario_json_linux(args, file, first_line, workspace, fixtures, pdf, image_fixtures)
     timeout = host_timeout(args, scenario)
     load_average = [round(value, 2) for value in os.getloadavg()]
 
@@ -1368,17 +1431,24 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         "samples": [],
         "series": [],
         "startup": [],
-        "workload": (
-            fixtures["workload"]
-            if fixtures
-            else (
-                "Linux image acceptance scenario (representative formats, oversized/corrupt refusal, hidden-tab release, open/close cycles)"
-                if args.scenario == "images"
-                else "Linux acceptance workflow only (no resource workload)"
-            )
+        "workload": fixtures["workload"] if fixtures else (
+            "Linux image acceptance scenario (representative formats, oversized/corrupt refusal, "
+            "hidden-tab release, open/close cycles)"
+            if args.scenario == "images"
+            else "Linux preview acceptance (web-frame teardown/reload plus PDF fixtures)"
+            if pdf
+            else "Linux acceptance workflow only (no resource workload)"
         ),
         "limitations": list(LIMITATIONS_LINUX),
     }
+    if pdf:
+        # The generated fixtures and their independent (poppler) verification travel with the
+        # report, so the evidence names the exact documents the app opened.
+        manifest["pdf"] = {
+            "directory": pdf["directory"],
+            "documents": pdf["manifest"],
+            "verification": pdf["verification"],
+        }
     manifest["environment"]["loadAverageStart"] = load_average
     log = (output / "app.log").open("w")
     spawned_wall = time.time()
@@ -1588,10 +1658,13 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         linux_profile.cleanup(home, output)
     if failed is not None:
         raise failed
-    if args.scenario in ("workflow", "spaces"):
+    if args.scenario in ("workflow", "spaces", "preview"):
         steps = workflow.get("steps") or []
         passed = sum(1 for step in steps if step.get("ok"))
         print(f"{args.scenario} {'PASS' if workflow.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
+        for step in steps:
+            if not step.get("ok"):
+                print(f"  FAIL {step.get('name')}: {step.get('detail')}")
     if args.scenario == "images":
         steps = images.get("steps") or []
         passed = sum(1 for step in steps if step.get("ok"))
@@ -1614,7 +1687,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             [app_report.load(path) for path in args.compare], [manifest], args.compare_format
         ))
     print(f"\nSaved {report_path}")
-    if args.scenario in ("workflow", "spaces") and not workflow.get("pass"):
+    if args.scenario in ("workflow", "spaces", "preview") and not workflow.get("pass"):
         print(
             f"Run failed: the {args.scenario} scenario reported a failing step (see page.log).",
             file=sys.stderr,

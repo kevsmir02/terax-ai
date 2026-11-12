@@ -123,11 +123,13 @@ Images and decoded viewers are enforced by the preview surfaces:
 ceiling, releasing hidden viewers least-recently-used first and never evicting a
 visible one. Hidden image tabs drop the rendered element and release their
 decoded slot; closing or replacing the tab releases the raster, the slot and the
-tab-owned asset grant. PDF opens in the bounded frame, so the file read is
-bounded, but the 32 MiB per-page render ceiling is still contract only until
-issue #31, and a hidden media element still only pauses its own pane until issue
-#29. Markdown inline images go through the same asset delivery bounds but are
-not separate decoded viewers until issue #27.
+tab-owned asset grant. A PDF goes through the same whole-file delivery gate (the
+explicit choice above 10 MiB, refusal above 50 MiB), which the real application was
+observed applying in issue #30; the 32 MiB per-page render ceiling is still contract
+only until issue #31, because WebKit's own PDF document never asks this module — see
+`docs/architecture/pdf-reader.md`. A hidden media element still only pauses its own
+pane until issue #29. Markdown inline images go through the same asset delivery
+bounds but are not separate decoded viewers until issue #27.
 
 This is **planned implementation, not validated support** for anything that
 needs a real WebKitGTK session: no measurement claims these ceilings are
@@ -186,9 +188,10 @@ Do not add one to the other, and do not derive one from the other.
   numbers. Issue #28 measured PNG, JPEG, GIF, WebP, BMP, ICO, AVIF and SVG in the
   Fedora WebKitGTK build recorded above; a different engine build needs its own
   run.
-- **The PDF reader path.** Issue #30 decides whether the current iframe can
-  meet the PDF contract and issue #31 implements the reader; these limits apply
-  either way.
+- **The PDF reader path.** Issue #30 recorded the evidence and decided that the
+  current iframe cannot meet the PDF contract, so issue #31 implements a dedicated
+  on-demand reader (`docs/architecture/pdf-reader.md`); these limits apply either
+  way.
 
 ## Using the contract
 

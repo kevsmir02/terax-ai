@@ -150,6 +150,42 @@ export type BenchScenario = {
   closeCycles?: number;
   /** resource/stress: seconds the app is left idle (one shell, no agents) before the workload. */
   idleSeconds?: number;
+  /** preview: the PDF fixtures the scenario opens (see scripts/app-lab/pdf_fixtures.py). */
+  pdf?: PdfFixtures;
+  /**
+   * preview: keep the representative PDF on screen this long after its sample, so the named
+   * reader checks (`docs/architecture/pdf-reader.md`) can be run against the real window.
+   */
+  pdfHoldMs?: number;
+};
+
+/**
+ * PDF documents for the preview scenario, generated and independently verified by
+ * `scripts/app-lab/pdf_fixtures.py`. `ceilingBytes` is parsed there from the TypeScript that owns
+ * the approved limit, and the driver compares it with `PDF_PAGE_LIMIT_BYTES` so the two cannot
+ * drift apart silently.
+ */
+export type PdfFixtures = {
+  files: {
+    text: string;
+    "zoomed-a4": string;
+    "large-page": string;
+    oversized: string;
+    corrupt: string;
+    "not-a-pdf": string;
+  };
+  sizes: Record<string, number>;
+  textPages: number;
+  searchPrefix: string;
+  searchTemplate: string;
+  uniqueNeedle: string;
+  uniquePage: number;
+  ceilingBytes: number;
+  /** Render bytes per zoom factor for the fixtures where the ceiling decision matters. */
+  renders: Record<string, { zoom: number; bytes: number }[]>;
+  pagePt: Record<string, { widthPt: number; heightPt: number }>;
+  /** Milliseconds the representative PDF is held on screen (see `pdfHoldMs`). */
+  holdMs?: number;
 };
 
 export type BenchConfig = {
