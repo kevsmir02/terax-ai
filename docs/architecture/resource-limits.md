@@ -53,7 +53,21 @@ test fails when the copies diverge.
 | --- | --- | --- |
 | 10 MiB read, 50 MiB override | `src-tauri/src/modules/fs/file.rs` (`MAX_READ_BYTES`, `FORCE_MAX_READ_BYTES`) | the native reader refuses and returns the limit it applied; the UI never re-reads a file to re-decide |
 | 4 MiB syntax ceiling | `src/modules/preview/lib/limits.ts`, consumed by `src/modules/editor/EditorPane.tsx` | a renderer behaviour, not a read limit |
-| Image, PDF, viewer and media ceilings | `src/modules/preview/lib/limits.ts` | enforced by the viewers that tickets 27, 28, 30 and 31 build |
+| Image, PDF, viewer and media ceilings | `src/modules/preview/lib/limits.ts` | enforced by the viewers built in issues #25, #28, #29 and #30/#31 (see "Enforcement today") |
+
+### Enforcement today
+
+Only the text ceilings are enforced today: `modules::fs` refuses a read above
+10 MiB and reports the limit it applied, the explicit override reaches 50 MiB,
+and the editor disables syntax features above 4 MiB.
+
+The image, PDF, viewer and media ceilings are an approved contract without an
+enforcement path yet. The current image pane decodes at intrinsic size, PDF
+opens in an iframe with no per-page budget, a media element only pauses its own
+hidden pane, and no admission layer counts viewers. Issues #25, #28, #29 and
+#30/#31 implement and verify those paths. Until they do, this record is
+**planned implementation, not validated support**: no measurement claims those
+ceilings are observed at runtime.
 
 `limits.test.ts` parses the Rust constants and rejects an editor-side copy of
 the override or syntax literal, so "single source" is a checked property.
@@ -102,10 +116,11 @@ Do not add one to the other, and do not derive one from the other.
 - **Package size.** Unrelated to runtime ceilings; issue #42 and the release
   tickets own it.
 - **Codec and format support.** Which image/media formats actually decode is
-  measured in tickets 27, 28 and 30, not implied by an extension list or by
-  these numbers.
-- **The PDF reader path.** Ticket 29 decides whether the current iframe can
-  meet the PDF contract; these limits apply either way.
+  measured in issues #28 and #29, not implied by an extension list or by these
+  numbers.
+- **The PDF reader path.** Issue #30 decides whether the current iframe can
+  meet the PDF contract and issue #31 implements the reader; these limits apply
+  either way.
 
 ## Using the contract
 

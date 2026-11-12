@@ -24,6 +24,10 @@
  * The TypeScript mirror of the Rust ceilings exists because the UI has to know
  * when to offer the override; `limits.test.ts` reads the Rust source and fails
  * if the two drift apart.
+ *
+ * Only the text ceilings are enforced today. The image, PDF, viewer and media
+ * values are the approved contract that issues #25, #28, #29 and #30/#31 turn
+ * into enforced viewer behaviour; do not treat them as measured support.
  */
 
 export const MIB = 1024 * 1024;
