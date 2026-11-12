@@ -62,8 +62,8 @@ The copy is the retained `worktree::copy_included` path, unchanged:
 - every skipped path and reason is shown, and the limit notice says some ignored files were not
   copied rather than claiming success.
 
-Storage is not reclaimed automatically; deleting the worktree remains a separate, guarded action
-(ticket #19's `worktreeRemove` guard).
+Storage is not reclaimed automatically; deleting the worktree is the separate, guarded action in
+[Remove](#remove).
 
 ## Open as a Space
 
@@ -74,6 +74,61 @@ same action is available later from each worktree's submenu in the repository me
 
 Space deletion continues to leave project and worktree directories on disk (ticket #17).
 
+## Remove
+
+Each worktree's submenu in the repository menu offers **Remove worktree…**. The dialog runs
+`git_worktree_remove_preflight`, which performs every check and mutates nothing, then the same
+`git_worktree_remove` command performs the removal. The preflight report is the authority on the
+blockers:
+
+| Blocker | Meaning |
+| --- | --- |
+| `dirty` | changed tracked files, and the count of untracked ones |
+| `unmerged` | commits reachable only from this worktree's HEAD |
+| `ignored` | ignored files that are not dependency/cache directories and differ from the main checkout |
+| `locked` | the worktree is locked (`git worktree lock`) |
+| `inconclusive` | a probe (`ignored-files`, `unmerged-commits`) timed out or was cut short |
+| `recoveryRefs` | checkpoints or pre-restore safety refs this worktree still owns |
+
+`force` is offered only for the on-disk Git blockers (`dirty`, `unmerged`, `ignored`,
+`inconclusive`) and never for `locked` or `recoveryRefs`. Dirty editor buffers and live terminals
+in **any** Space are separate acknowledgements, built by the destructive-action plan in
+[`destructive-git.md`](destructive-git.md): a terminal whose cwd is inside the worktree, and an
+editor view whose canonical path is, must be acknowledged before the button enables. The plan is
+rebuilt immediately before removal and a changed fingerprint is refused as stale; the native
+command rechecks the on-disk blockers itself and refuses with a fresh report.
+
+### Recovery points are not stranded
+
+A checkpoint commit subject ends with ` wt:<worktree id>`; the id lives in the worktree's private
+Git directory. Removing the worktree deletes that marker, so a ref left behind would have no owner
+to list, restore or clean it. Removal therefore refuses while `recoveryRefs` is non-empty, and
+`force` does not decide that. The dialog shows the counts and ref names and offers **Delete N
+recovery points**, which calls `git_checkpoint_cleanup_at` for exactly the refs the preflight
+attributed to this worktree (`manual`, `turns`, `safety`) and nothing else. The cleanup keeps its
+per-ref "expected old value" refusal, deletes no object, and runs no garbage collection; the
+remaining groups come back in the same report. Another worktree's refs are never counted, listed
+or deleted, even when the two share a task id or a checkpoint name.
+
+The refs are resolved from the repository's administrative directory
+(`.git/worktrees/<name>/gitdir` and the ownership marker inside it), so a worktree whose working
+directory was already deleted still reports and cleans up its recovery points. Removing that
+registration goes through `git worktree remove --force <path>` for that one entry; the app never
+runs `git worktree prune`, so other stale registrations (a volume that is merely offline) are
+left alone.
+
+### What removal does and does not touch
+
+- It revokes only the removed worktree's **derived** access grant. A path covered by a stronger
+  existing grant (the launch directory, the home directory, or a root grant the terminal flow
+  made when a terminal reported that cwd) keeps that grant; removal does not take another
+  feature's grant away.
+- It never deletes the branch or its commits. The result says so.
+- It never closes or deletes a Space. Deleting a Space is organization only and never calls
+  worktree removal; a Space rooted in a removed worktree keeps its tabs, and the dialog names the
+  Spaces whose terminals have a working directory there before the confirmation.
+- It does not run `git gc`, `git worktree prune`, or an automatic branch deletion.
+
 ## Limits, stated rather than implied
 
 - The preflight is advisory and the add is the authority. An external writer creating the branch
@@ -82,10 +137,12 @@ Space deletion continues to leave project and worktree directories on disk (tick
   process; see `docs/security-model.md`.
 - Path/rev syntax checked in the form is a fast pre-check. `git check-ref-format`, `rev-parse`
   and the native path checks decide the final answer.
-- This ticket only creates. Removal controls and the refusal of removal while checkpoints or
-  restore-safety refs remain are a separate concern; #19's destructive-action guard already
-  models `worktreeRemove` and the native removal report already lists dirty, unmerged, ignored
-  and locked blockers. No removal button was added here.
+- Removal is not archival: there is no operation that restores a deleted worktree from a retained
+  checkpoint afterwards (deferred). Cleanup is the accepted loss.
+- The preflight is advisory between its answer and the removal; the native command is the
+  authority and refuses a blocker that appeared in between.
+- An independent program writing inside the worktree is outside the application's control, as
+  everywhere else.
 
 ## Test seams
 
@@ -101,6 +158,21 @@ Space deletion continues to leave project and worktree directories on disk (tick
   rename cannot silently produce an empty form.
 - `src/modules/worktrees/WorktreeCreateDialog.test.tsx` — refusal, copied/skipped report, access
   refusal and error states.
+- `src-tauri/src/modules/git/worktree_removal_tests.rs` — real scratch repositories: a manual
+  checkpoint and a restore safety ref each refuse removal even with `force`, explicit cleanup
+  unblocks it, another worktree's refs are never counted or deleted, a missing directory is still
+  refused while refs remain and its single registration is removed without a repository-wide
+  prune, and the retained archive path keeps its own policy.
+- `src/modules/worktrees/lib/removeWorktree.test.ts` — blocker wording, force availability
+  (never for a lock or a retained ref), the exact refs an explicit cleanup may name, refusal and
+  result copy.
+- `src/modules/git/worktreeRemove.test.ts` — command argument shapes, the `RemoveBlocker` enum and
+  `WorktreeRemoveReport`/`OwnedRecoveryRefs` fields parsed from the Rust source, and the absence of
+  a removal path from Space deletion.
+- `src/modules/worktrees/WorktreeRemoveDialog.test.tsx` — blocker rendering, recovery cleanup,
+  cross-Space acknowledgements, refusal and the completed result.
 - `python3 scripts/app-lab/run.py --scenario worktree` — the real Linux app: creation with a new
   branch and a copied `.env`, derived access, a new Space with a terminal in the worktree, the
-  original terminals unchanged, and four refusals through the same dialog.
+  original terminals unchanged, four creation refusals, deleting the Space leaving the worktree
+  alone, removal refused while a checkpoint is retained, explicit cleanup, and a removal that
+  deletes the folder, keeps the branch and revokes only the derived access.

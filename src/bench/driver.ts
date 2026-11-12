@@ -4899,6 +4899,218 @@ async function worktreeScenario(run: ScenarioRun): Promise<unknown> {
         .join("; ")}`,
     );
     bridge()?.close();
+
+    // The removal plan looks at every Space, not at the panel's repository: the
+    // worktree Space's terminal has a working directory inside the folder.
+    app().openWorktreeRemove(fixture.repo, created.path);
+    const firstRemoval = () => app().worktreeRemove();
+    await run.waitFor(
+      () => firstRemoval() !== null,
+      "the removal dialog",
+      20_000,
+    );
+    await run.waitFor(
+      () => firstRemoval()?.state().plan !== null,
+      "the cross-Space removal plan",
+      20_000,
+    );
+    const planState = firstRemoval()?.state();
+    const terminalSeen =
+      planState?.plan?.activeWork.some((work) => work.spaceId === spaceId) ===
+      true;
+    await check(
+      "the removal plan sees the terminal in the worktree Space",
+      terminalSeen,
+      `active work ${planState?.plan?.activeWork
+        .map((work) => `${work.spaceName}:${work.busy}`)
+        .join(",")}`,
+    );
+    await run.sync("worktree-remove-affected", {
+      activeWork:
+        planState?.plan?.activeWork.map((work) => ({
+          spaceId: work.spaceId,
+          busy: work.busy,
+        })) ?? [],
+    });
+    firstRemoval()?.close();
+
+    // Deleting a Space is organization only: the folder and its worktree
+    // registration stay. This runs before removal so no tab outlives its root.
+    app().requestDeleteSpace(spaceId ?? "");
+    await run.waitFor(
+      () => app().pendingGuards().spaceDeleteId === spaceId,
+      "the Space deletion guard",
+      10_000,
+    );
+    app().confirmDeleteSpace();
+    await run.waitFor(
+      () => !app().spaces.some((space) => space.id === spaceId),
+      "the Space to be deleted",
+      10_000,
+    );
+    const listedAfterSpaceDelete = (await worktrees()).some(
+      (entry) => entry.path === created.path,
+    );
+    await check(
+      "deleting the Space leaves the worktree directory and registration alone",
+      (await statOk(created.path)) && listedAfterSpaceDelete,
+      `directory ${await statOk(created.path)}; listed ${listedAfterSpaceDelete}`,
+    );
+    await run.sync("worktree-space-deleted", {
+      spaceId,
+      stillListed: listedAfterSpaceDelete,
+    });
+
+    // A retained checkpoint refuses removal through the dialog.
+    await invoke("git_checkpoint_manual_create", {
+      worktree: created.path,
+      name: "lab removal",
+      workspace: { kind: "local" },
+    });
+    app().openWorktreeRemove(fixture.repo, created.path);
+    const removal = () => app().worktreeRemove();
+    await run.waitFor(() => removal() !== null, "the removal dialog", 20_000);
+    await run.log(
+      `[worktree] removal bridge: ${JSON.stringify({
+        repoRoot: removal()?.state().repoRoot,
+        path: removal()?.state().path,
+      })}`,
+    );
+    await run.waitFor(
+      () => {
+        const state = removal()?.state();
+        return state?.report != null || state?.error != null;
+      },
+      "the removal preflight",
+      20_000,
+    );
+    const preflightState = removal()?.state();
+    await run.log(
+      `[worktree] removal preflight: ${JSON.stringify({
+        repoRoot: preflightState?.repoRoot,
+        path: preflightState?.path,
+        error: preflightState?.error,
+        report: preflightState?.report ? "present" : "missing",
+      })}`,
+    );
+    await run.waitFor(
+      () => removal()?.state().plan !== null,
+      "the cross-Space removal plan",
+      20_000,
+    );
+    const blocked = removal()?.state();
+    await check(
+      "removal is refused while the worktree owns a checkpoint",
+      blocked?.canConfirm === false &&
+        blocked.report?.blockers.includes("recoveryRefs") === true &&
+        blocked.report.recovery.total === 1,
+      `blockers ${blocked?.report?.blockers.join(",")}; recovery ${blocked?.report?.recovery.total}`,
+    );
+    await run.sync("worktree-remove-blocked", {
+      blockers: blocked?.report?.blockers ?? [],
+      recovery: blocked?.report?.recovery ?? null,
+    });
+
+    // Confirming anyway reaches the native refusal, which changes nothing.
+    await removal()?.confirm();
+    await run.waitFor(
+      () => {
+        const state = removal()?.state();
+        return state?.error != null && state.busy === false;
+      },
+      "the native removal refusal",
+      20_000,
+    );
+    const refused = removal()?.state();
+    const ownedAfterRefusal = await invoke<{ manual: unknown[] }>(
+      "git_checkpoint_groups_at",
+      {
+        repoRoot: fixture.repo,
+        worktree: created.path,
+        workspace: { kind: "local" },
+      },
+    );
+    await check(
+      "a confirmed removal is refused and loses neither the directory nor the ref",
+      refused?.removed === null &&
+        (await statOk(created.path)) &&
+        ownedAfterRefusal.manual.length === 1,
+      `removed ${refused?.removed ? "yes" : "no"}; refs ${ownedAfterRefusal.manual.length}`,
+    );
+    await run.sync("worktree-remove-refused", {
+      error: refused?.error ?? null,
+    });
+
+    // Explicit scoped cleanup, then the same dialog removes the worktree.
+    await removal()?.cleanup();
+    await run.waitFor(
+      () => {
+        const state = removal()?.state();
+        return (
+          state?.cleanupBusy === false &&
+          state.report?.recovery.total === 0 &&
+          state.groups?.storage.ownedRefs === 0
+        );
+      },
+      "the explicit recovery cleanup",
+      20_000,
+    );
+    const cleaned = removal()?.state();
+    await check(
+      "explicit cleanup deletes exactly this worktree's refs and unblocks removal",
+      cleaned?.report?.blockers.includes("recoveryRefs") === false &&
+        cleaned?.canConfirm === true,
+      `blockers ${cleaned?.report?.blockers.join(",")}; ready ${cleaned?.canConfirm}`,
+    );
+    await run.sync("worktree-remove-cleaned", {
+      ownedRefs: cleaned?.groups?.storage.ownedRefs ?? null,
+    });
+
+    await removal()?.confirm();
+    await run.waitFor(
+      () => {
+        const state = removal()?.state();
+        return state?.removed != null || (state?.error != null && !state.busy);
+      },
+      "the worktree removal",
+      30_000,
+    );
+    if (!removal()?.state().removed) {
+      throw new Error(
+        `the removal failed: ${removal()?.state().error ?? "unknown error"}`,
+      );
+    }
+    const accessAfter = await accessKind(created.path).catch(() => "none");
+    const branchList = await invoke<{
+      branches: { name: string; kind: string }[];
+    }>("git_list_branches", {
+      repoRoot: fixture.repo,
+      workspace: { kind: "local" },
+    });
+    const branchKept = branchList.branches.some(
+      (entry) => entry.name === "feature/lab" && entry.kind === "local",
+    );
+    const stillRegistered = (await worktrees()).some(
+      (entry) => entry.path === created.path,
+    );
+    await check(
+      "removal deletes the folder, keeps the branch and revokes only derived access",
+      !(await statOk(created.path)) &&
+        !stillRegistered &&
+        branchKept &&
+        // Only the grant this worktree derived is revoked. A stronger grant
+        // (the app authorizes a terminal's reported cwd) is not the app's to
+        // take away here, and the path no longer has a derived one.
+        accessAfter !== "derived",
+      `registered ${stillRegistered}; branch ${branchKept}; access ${access}->${accessAfter}`,
+    );
+    await run.sync("worktree-removed", {
+      path: created.path,
+      branchKept,
+      accessBefore: access,
+      accessAfter,
+    });
+    removal()?.close();
   } catch (error) {
     throw new Error(await failed("scenario completed", String(error)));
   }

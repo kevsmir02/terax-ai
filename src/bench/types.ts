@@ -2,6 +2,7 @@ import type { QuitPhase } from "@/modules/shutdown";
 import type { DestructiveGitBridgePending } from "@/modules/source-control/destructiveGitBridge";
 import type { Tab } from "@/modules/tabs";
 import type { WorktreeBridge } from "@/modules/worktrees/worktreeBridge";
+import type { WorktreeRemovalBridge } from "@/modules/worktrees/worktreeRemovalBridge";
 
 /** What the scenario driver may do to the running application: the app's own tab actions. */
 export type BenchAppApi = {
@@ -59,6 +60,10 @@ export type BenchAppApi = {
   openWorktreeDialog: () => void;
   /** Drives the dialog's own form, preflight and submit path. */
   worktree: () => WorktreeBridge | null;
+  /** Opens the removal dialog for one worktree path in its repository. */
+  openWorktreeRemove: (repoRoot: string, path: string) => void;
+  /** Drives the removal dialog's own preflight, cleanup and confirm path. */
+  worktreeRemove: () => WorktreeRemovalBridge | null;
   /** Drives the panel's own destructive-action guard (never a second implementation). */
   destructiveGit: () => {
     mounted: boolean;

@@ -291,6 +291,13 @@ export const git = {
       force,
       workspace: currentWorkspaceEnv(),
     }),
+  /** What `worktreeRemove` would refuse or lose; never mutates. */
+  worktreeRemovePreflight: (repoRoot: string, path: string) =>
+    invoke<WorktreeRemoveReport>("git_worktree_remove_preflight", {
+      repoRoot,
+      path,
+      workspace: currentWorkspaceEnv(),
+    }),
   worktreePrune: (repoRoot: string) =>
     invoke<WorktreePruneReport>("git_worktree_prune", {
       repoRoot,
@@ -353,6 +360,22 @@ export const git = {
    */
   checkpointCleanup: (worktree: string, refs: string[]) =>
     invoke<CheckpointCleanupReport>("git_checkpoint_cleanup", {
+      worktree,
+      refs,
+      workspace: currentWorkspaceEnv(),
+    }),
+
+  // ---- recovery refs of a worktree registration, by path (removal)
+  /** Works when the worktree directory is already gone. */
+  checkpointGroupsAt: (repoRoot: string, worktree: string) =>
+    invoke<CheckpointGroups>("git_checkpoint_groups_at", {
+      repoRoot,
+      worktree,
+      workspace: currentWorkspaceEnv(),
+    }),
+  checkpointCleanupAt: (repoRoot: string, worktree: string, refs: string[]) =>
+    invoke<CheckpointCleanupReport>("git_checkpoint_cleanup_at", {
+      repoRoot,
       worktree,
       refs,
       workspace: currentWorkspaceEnv(),

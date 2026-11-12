@@ -75,6 +75,8 @@ import {
 import { normalizeSpaceRoot } from "@/modules/spaces/lib/sharedRoots";
 import { worktreeSpaceName } from "@/modules/worktrees/lib/createWorktree";
 import { worktreeBridge } from "@/modules/worktrees/worktreeBridge";
+import { type WorktreeRemovalTarget } from "@/modules/worktrees/WorktreeRemoveDialog";
+import { worktreeRemovalBridge } from "@/modules/worktrees/worktreeRemovalBridge";
 import { StatusBar } from "@/modules/statusbar";
 import {
   TabSwitcherHud,
@@ -350,6 +352,10 @@ export default function App() {
   const [newEditorOpen, setNewEditorOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [worktreeDialogOpen, setWorktreeDialogOpen] = useState(false);
+  /** The worktree whose removal dialog is open, if any. Removal is a deliberate
+   * menu action: deleting a Space never sets this. */
+  const [worktreeRemoveTarget, setWorktreeRemoveTarget] =
+    useState<WorktreeRemovalTarget | null>(null);
   const [paletteInitialMode, setPaletteInitialMode] =
     useState<PaletteInitialMode>("commands");
   const openCommandPalette = useCallback(
@@ -1533,6 +1539,11 @@ export default function App() {
                 setWorktreeDialogOpen(true);
               }}
               worktree={() => worktreeBridge()}
+              openWorktreeRemove={(repoRoot, path) => {
+                openSourceControl();
+                setWorktreeRemoveTarget({ repoRoot, path });
+              }}
+              worktreeRemove={() => worktreeRemovalBridge()}
               destructiveGit={() => {
                 const bridge = destructiveGitBridge();
                 return {
@@ -1646,6 +1657,8 @@ export default function App() {
                           worktreeDialogOpen={worktreeDialogOpen}
                           onWorktreeDialogOpenChange={setWorktreeDialogOpen}
                           onOpenWorktreeAsSpace={openWorktreeAsSpace}
+                          worktreeRemoveTarget={worktreeRemoveTarget}
+                          onWorktreeRemoveOpenChange={setWorktreeRemoveTarget}
                         />
                       )}
                     </div>

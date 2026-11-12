@@ -316,12 +316,23 @@ type ChangedPath = { path: string; status: GitFileStatus };
  * `ignored`: files git ignores but that are not regenerable (`.env`, local
  * databases), which removal would delete without a word.
  */
-type WorktreeRemoveBlocker =
+export type WorktreeRemoveBlocker =
   | "locked"
   | "dirty"
   | "unmerged"
   | "ignored"
+  | "recoveryRefs"
   | "inconclusive";
+
+/** Recovery points a worktree registration still owns (native `OwnedRecoveryRefs`). */
+export type OwnedRecoveryRefs = {
+  total: number;
+  manual: number;
+  turns: number;
+  safety: number;
+  /** Ref names, capped; the refusal names what has to be cleaned up. */
+  sample: string[];
+};
 
 export type WorktreeRemoveReport = {
   removed: boolean;
@@ -341,6 +352,8 @@ export type WorktreeRemoveReport = {
   ignoredIdentical: number;
   /** Safety probes that could not finish (`ignored-files`, `unmerged-commits`); removal is refused until they can, unless forced. */
   inconclusive: string[];
+  /** Checkpoints and restore-safety refs this worktree owns: removal is refused until they are deleted explicitly. */
+  recovery: OwnedRecoveryRefs;
   lockReason: string | null;
 };
 

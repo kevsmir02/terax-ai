@@ -43,7 +43,9 @@ Scenarios (`--scenario`):
   worktree       Linux worktree seam: the Source Control dialog creates a worktree with a new
                  branch and an ignored file, checks derived access, opens it as its own Space, and
                  refuses an unknown start point, a file target, a non-empty target and a branch
-                 checked out elsewhere
+                 checked out elsewhere. Deleting that Space leaves the worktree alone; its removal
+                 is refused while it owns a checkpoint, an explicit cleanup unblocks it, and the
+                 removal keeps the branch while revoking only the derived access
 
 Linux currently implements `workflow`, `spaces`, `quit`, `markdown`, `git`, `checkpoints`,
 `worktree`, `preview`, `images`, `resource`, `stress` and `startup` (WebKitGTK); the measured
@@ -1916,7 +1918,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                 manifest["qualification"]["qualified"] = False
                 manifest["qualification"]["failures"].append({
                     "phase": "worktree-space",
-                    "reasons": ["worktree creation/Space scenario failed"],
+                    "reasons": ["worktree creation/Space/removal scenario failed"],
                 })
         manifest["images"] = images
         # The fixture server is the independent process previews are served by; these counters

@@ -13,10 +13,11 @@ The Source Control panel performs two destructive actions today:
 - switching branches (`git_checkout_branch` via the branch dropdown).
 
 The same plan/guard types cover `restore` (checkpoint restore), `worktreeRemove` and `revert`
-(hunk revert). Those commands are retained, but their UI arrives with the worktree/checkpoint
-controls ticket; wiring them to `createDestructiveGitGuard` is the intended path rather than a
-second implementation. Nothing here adds automatic commits or pushes, and the diff/history/hunk
-review surface is unchanged.
+(hunk revert). `worktreeRemove` is wired to `createDestructiveGitGuard` by the worktree removal
+dialog (see [`worktrees.md`](worktrees.md)): the dialog supplies the plan (dirty buffers and
+terminals in every Space), the guard rechecks the fingerprint and holds the mutation scope, and
+the native removal decides the on-disk blockers. Nothing here adds automatic commits or pushes,
+and the diff/history/hunk review surface is unchanged.
 
 ## Before mutation
 
@@ -81,6 +82,8 @@ The scope ends in `finally`, so a failed native command does not leave the app f
 - `src-tauri/src/modules/git/destructive_guard_tests.rs` — real scratch repositories: a dirty
   worktree-removal refusal and a stale checkpoint-restore refusal leave files, the index and refs
   unchanged; force does not remove a locked worktree.
+- `src/modules/worktrees/WorktreeRemoveDialog.test.tsx` — the removal dialog's cross-Space
+  acknowledgements and stale/refusal states, sharing the same plan and guard.
 - `python3 scripts/app-lab/run.py --scenario git` — the real Linux app: a dirty buffer blocks a
   panel discard, an unacknowledged confirmation and a plan that went stale are refused with the
   file/index unchanged, and a deliberately confirmed discard still restores its file.

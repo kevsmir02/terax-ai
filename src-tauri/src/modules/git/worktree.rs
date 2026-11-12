@@ -11,7 +11,7 @@ use std::path::{Component, Path, PathBuf};
 use globset::{GlobBuilder, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 
-use crate::modules::git::checkpoint::{ChangedPath, Skipped};
+use crate::modules::git::checkpoint::{self, ChangedPath, OwnedRecoveryRefs, Skipped};
 use crate::modules::git::diff::FileStatus;
 use crate::modules::git::errors::{GitError, Result};
 use crate::modules::git::plumbing::{
@@ -1048,6 +1048,9 @@ pub enum RemoveBlocker {
     /// Ignored files that are not regenerable (`.env`, local databases...):
     /// git itself would delete them without a word.
     Ignored,
+    /// Checkpoints or pre-restore safety refs this worktree still owns.
+    /// `force` never overrides this: only explicit cleanup of those refs does.
+    RecoveryRefs,
     /// A safety check could not finish (failed, timed out or was cut short), so
     /// nothing is known about what removal would lose. `inconclusive` names
     /// the checks.
@@ -1246,6 +1249,9 @@ pub struct WorktreeRemoveReport {
     /// Checks that could not finish (`ignored-files`, `unmerged-commits`);
     /// each also raises the `inconclusive` blocker.
     pub inconclusive: Vec<String>,
+    /// Recovery points this worktree still owns. Non-empty means removal is
+    /// refused until the caller cleans them up explicitly.
+    pub recovery: OwnedRecoveryRefs,
     pub lock_reason: Option<String>,
 }
 
@@ -1321,7 +1327,41 @@ pub fn remove_with_limits(
     workspace: &WorkspaceEnv,
     limits: RemoveLimits,
 ) -> Result<WorktreeRemoveReport> {
-    remove_inner(registry, repo_root, path, force, workspace, limits, None)
+    remove_inner(
+        registry,
+        repo_root,
+        path,
+        workspace,
+        limits,
+        RemovalPolicy {
+            force,
+            enforce_recovery_refs: true,
+            inspect: false,
+        },
+        None,
+    )
+}
+
+/// What removal would refuse or lose, without mutating anything.
+pub fn preflight_removal(
+    registry: &WorkspaceRegistry,
+    repo_root: &str,
+    path: &str,
+    workspace: &WorkspaceEnv,
+) -> Result<WorktreeRemoveReport> {
+    remove_inner(
+        registry,
+        repo_root,
+        path,
+        workspace,
+        RemoveLimits::default(),
+        RemovalPolicy {
+            force: false,
+            enforce_recovery_refs: true,
+            inspect: true,
+        },
+        None,
+    )
 }
 
 pub(crate) fn inspect_removal(
@@ -1335,11 +1375,52 @@ pub(crate) fn inspect_removal(
         registry,
         repo_root,
         path,
-        false,
         workspace,
         RemoveLimits::default(),
+        RemovalPolicy {
+            force: false,
+            enforce_recovery_refs: false,
+            inspect: true,
+        },
         Some(excluded),
     )
+}
+
+/// Removal on behalf of the retained task archive, which captures a snapshot
+/// and then removes the worktree it came from. Its retention contract is the
+/// archive ref, not the worktree's own recovery points, so it keeps the
+/// pre-recovery-ref policy.
+pub(crate) fn remove_for_archive(
+    registry: &WorkspaceRegistry,
+    repo_root: &str,
+    path: &str,
+    force: bool,
+    workspace: &WorkspaceEnv,
+) -> Result<WorktreeRemoveReport> {
+    remove_inner(
+        registry,
+        repo_root,
+        path,
+        workspace,
+        RemoveLimits::default(),
+        RemovalPolicy {
+            force,
+            enforce_recovery_refs: false,
+            inspect: false,
+        },
+        None,
+    )
+}
+
+/// How one removal call is allowed to behave.
+#[derive(Debug, Clone, Copy)]
+struct RemovalPolicy {
+    force: bool,
+    /// Refuse while this worktree owns a checkpoint or pre-restore safety ref.
+    /// `force` is deliberately not part of this decision.
+    enforce_recovery_refs: bool,
+    /// Report only; never mutate.
+    inspect: bool,
 }
 
 fn exclude_pathspecs(
@@ -1361,9 +1442,9 @@ fn remove_inner(
     registry: &WorkspaceRegistry,
     repo_root: &str,
     path: &str,
-    force: bool,
     workspace: &WorkspaceEnv,
     limits: RemoveLimits,
+    policy: RemovalPolicy,
     inspect: Option<&[String]>,
 ) -> Result<WorktreeRemoveReport> {
     if workspace.is_wsl() {
@@ -1408,8 +1489,12 @@ fn remove_inner(
         ignored_regenerable: 0,
         ignored_identical: 0,
         inconclusive: Vec::new(),
+        recovery: OwnedRecoveryRefs::default(),
         lock_reason: entry.lock_reason.clone(),
     };
+    // Ownership lives in the repository's administrative directory, so this is
+    // answered the same way for a worktree whose working directory is gone.
+    report.recovery = checkpoint::owned_recovery_refs(&repo, &entry.path)?;
     if entry.locked {
         report.blockers.push(RemoveBlocker::Locked);
         return Ok(report);
@@ -1496,14 +1581,21 @@ fn remove_inner(
     if !report.inconclusive.is_empty() {
         report.blockers.push(RemoveBlocker::Inconclusive);
     }
+    // A retained recovery point is refused for every caller of the product
+    // removal, whatever `force` says: deleting the registration would leave a
+    // ref with no owner to list, restore or clean it.
+    if report.recovery.total > 0 {
+        report.blockers.push(RemoveBlocker::RecoveryRefs);
+    }
 
-    if inspect.is_some() || (!force && !report.blockers.is_empty()) {
+    let recovery_refused = policy.enforce_recovery_refs && report.recovery.total > 0;
+    if policy.inspect || recovery_refused || (!policy.force && !report.blockers.is_empty()) {
         return Ok(report);
     }
 
     if entry.exists {
         let mut args = os_args(["worktree", "remove"]);
-        if force {
+        if policy.force {
             args.push("--force".into());
         }
         args.push(entry.path.clone().into());

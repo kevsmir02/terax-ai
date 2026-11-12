@@ -109,8 +109,13 @@ Cleanup never runs `git gc`, `git prune` or any other object deletion: the conte
 readable until Git itself prunes unreachable objects. The report returns the remaining groups after
 the deletion, so the caller does not have to guess or re-list.
 
-Worktree removal is blocked while its checkpoints or safety refs remain (issue #25); this command
-is the explicit cleanup that unblocks it, and it affects only the selected worktree.
+Worktree removal is blocked while its checkpoints or safety refs remain; the explicit cleanup is
+what unblocks it, and it affects only the selected worktree. `git_checkpoint_groups_at` and
+`git_checkpoint_cleanup_at` answer the same groups and delete the same way, resolved from the
+repository and the administrative directory instead of the working directory, so the removal
+dialog can still list and delete this worktree's refs after the directory itself is gone. Removal
+never infers "clean everything": the caller passes the exact refs the preflight attributed to the
+worktree it is removing, and another worktree's refs stay refused (`another-worktree`).
 
 ## Seams and tests
 
@@ -130,6 +135,6 @@ is the explicit cleanup that unblocks it, and it affects only the selected workt
 - No UI panel is added here; the commands and types are the seam the checkpoint controls use. The
   restore preflight and its safety refs are issue #24.
 - No automatic per-turn checkpoints, no automatic retention deletion, no archival restoration after
-  a worktree is deleted (deferred).
+  a worktree is deleted (deferred). Deleting the refs is the only way past the removal refusal.
 - No full-backup or atomic-snapshot claim: ignored files, submodule contents and staging state are
   not captured, and an independent writer can change files during the capture.
