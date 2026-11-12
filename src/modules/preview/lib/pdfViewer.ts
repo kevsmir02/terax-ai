@@ -4,11 +4,7 @@ import {
   PDF_PAGE_LIMIT_BYTES,
   type ViewerAdmission,
 } from "./limits";
-import {
-  pdfScaleLabel,
-  pdfZoomDecision,
-  type PdfPageGeometry,
-} from "./pdfPage";
+import { pdfZoomDecision, type PdfPageGeometry } from "./pdfPage";
 
 /**
  * The PDF reader's state machine, as a pure function.
@@ -286,13 +282,4 @@ export function viewerBlockerLabel(id: string): string {
   const path = id.replace(/^[^:]+:[^:]*:/, "");
   const name = path.replace(/\\/g, "/").split("/").pop() ?? "";
   return name || id;
-}
-
-/** Toolbar page-count label, e.g. `Page 1 of 6 at 100%`. */
-export function pdfPositionLabel(state: PdfViewerState): string | null {
-  if (state.kind !== "ready" && state.kind !== "page-too-large") return null;
-  if (state.kind === "page-too-large") {
-    return `Page ${state.pageNumber} of ${state.pageCount} at ${pdfScaleLabel(state.scale)}`;
-  }
-  return `Page ${state.pageNumber} of ${state.pageCount} at ${pdfScaleLabel(state.scale)}`;
 }

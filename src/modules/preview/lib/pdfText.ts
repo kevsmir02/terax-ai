@@ -1,5 +1,3 @@
-import type { PdfTextSpan } from "./pdfSearch";
-
 /**
  * Selectable text layer geometry.
  *
@@ -69,9 +67,3 @@ export function pdfTextIsRotated(transform: readonly number[]): boolean {
   const angle = Math.atan2(transform[1], transform[0]);
   return Math.abs(angle) > 0.001;
 }
-
-export type PdfTextSpanHighlight = {
-  readonly span: PdfTextSpan;
-  readonly matched: boolean;
-  readonly current: boolean;
-};
