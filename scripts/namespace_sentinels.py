@@ -173,7 +173,7 @@ def verify(home: Path, manifest: dict) -> list[str]:
         for name in changed:
             if name not in tree:
                 problems.append(f"{relative}/{name} was created inside an upstream directory")
-    return problems
+    return list(dict.fromkeys(problems))
 
 
 def _entries(directory: Path) -> list[str]:
