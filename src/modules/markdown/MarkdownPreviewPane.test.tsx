@@ -24,6 +24,7 @@ function renderPane() {
   return renderToStaticMarkup(
     createElement(MarkdownPreviewPane, {
       path: "/proj/docs/readme.md",
+      tabId: 3,
       workspaceRoot: "/proj",
       visible: true,
       onSetView: () => {},

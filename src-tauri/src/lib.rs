@@ -291,6 +291,7 @@ pub fn run() {
             fs::file::fs_read_file,
             fs::assets::asset_grant,
             fs::assets::asset_revoke,
+            fs::assets::asset_revoke_scope,
             fs::file::fs_write_file,
             fs::file::fs_stat,
             fs::file::fs_file_revision,

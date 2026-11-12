@@ -20,14 +20,19 @@
  * | 10 MiB normal read | `src-tauri/src/modules/fs/file.rs` (`MAX_READ_BYTES`) | the native reader refuses and reports `limit` |
  * | 50 MiB explicit override | `src-tauri/src/modules/fs/file.rs` (`FORCE_MAX_READ_BYTES`) | reached only through the explicit "open anyway" action |
  * | 4 MiB syntax ceiling | this module, consumed by `src/modules/editor/EditorPane.tsx` | a TypeScript-only editing behaviour |
+ * | 64 MiB image decode | `src/modules/preview/ImagePreview.tsx` via `imageBudgetDecision` | the raster is measured on load and refused above the ceiling; #28 adds a reduced-size decode |
+ * | 4 viewers / 192 MiB decoded | `src/modules/preview/lib/viewerAdmission.ts` via `decideViewerAdmission` | hidden viewers may be released, a visible one is never evicted |
+ * | 10/50 MiB asset delivery, chunking, outstanding reads | `src-tauri/src/modules/fs/assets.rs` (`DeliveryLimits`), mirrored by `src/modules/preview/lib/assetDelivery.ts` | derived from the read and override ceilings; a range response is one chunk |
  *
  * The TypeScript mirror of the Rust ceilings exists because the UI has to know
- * when to offer the override; `limits.test.ts` reads the Rust source and fails
- * if the two drift apart.
+ * when to offer the override; `limits.test.ts` and `assetDelivery.test.ts` read
+ * the Rust source and fail if the two drift apart.
  *
- * Only the text ceilings are enforced today. The image, PDF, viewer and media
- * values are the approved contract that issues #25, #28, #29 and #30/#31 turn
- * into enforced viewer behaviour; do not treat them as measured support.
+ * Text ceilings, asset delivery bounds, the single-image decode ceiling and
+ * decoded-viewer admission are enforced today. The PDF per-page ceiling and the
+ * media playback ceiling remain the approved contract that issues #29 and
+ * #30/#31 turn into enforced viewer behaviour; do not treat them as measured
+ * support.
  */
 
 export const MIB = 1024 * 1024;

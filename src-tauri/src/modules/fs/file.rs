@@ -14,10 +14,10 @@ use super::mutate::note_changed;
 use super::save::{self, current_revision, CurrentState, DiskRevision, SaveError, SaveOutcome};
 use crate::modules::workspace::{resolve_path, WorkspaceEnv};
 
-const MAX_READ_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
+pub(crate) const MAX_READ_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
 /// Ceiling for explicit "open anyway"; mirrored as TEXT_OVERRIDE_LIMIT_BYTES in
 /// src/modules/preview/lib/limits.ts.
-const FORCE_MAX_READ_BYTES: u64 = 50 * 1024 * 1024;
+pub(crate) const FORCE_MAX_READ_BYTES: u64 = 50 * 1024 * 1024;
 const BINARY_SNIFF_BYTES: usize = 8 * 1024;
 
 #[derive(Serialize)]
