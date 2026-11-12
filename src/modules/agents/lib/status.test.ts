@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   processStatusLabel,
   signalStatus,
-  signalStatusLabel,
+  sessionStatusLabel,
   type StatusSignalKind,
 } from "./status";
 
@@ -61,8 +61,8 @@ describe("signalStatus", () => {
 
 describe("labels", () => {
   it("describes the two session statuses by their evidence", () => {
-    expect(signalStatusLabel("running")).toBe("running");
-    expect(signalStatusLabel("attention")).toBe("needs attention");
+    expect(sessionStatusLabel("running")).toBe("running");
+    expect(sessionStatusLabel("attention")).toBe("needs attention");
   });
 
   it("describes a process status without claiming a turn result", () => {

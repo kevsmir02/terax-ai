@@ -22,7 +22,7 @@ import {
 import { useMemo, useState } from "react";
 import { AgentIcon } from "../lib/agentIcon";
 import { displayAgent } from "../lib/format";
-import { signalStatusLabel } from "../lib/status";
+import { sessionStatusLabel } from "../lib/status";
 import type { AgentNotification, AgentStatus } from "../lib/types";
 import { useAgentStore } from "../store/agentStore";
 
@@ -73,7 +73,7 @@ function StatusRow({
         {attention ? (
           <span className="size-1.5 rounded-full bg-primary" />
         ) : null}
-        {signalStatusLabel(status)}
+        {sessionStatusLabel(status)}
       </span>
     </button>
   );

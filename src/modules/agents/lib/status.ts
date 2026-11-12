@@ -77,7 +77,7 @@ export function signalStatus(kind: StatusSignalKind): SignalStatus {
 }
 
 /** Label for a live session row, phrased by what is actually known. */
-export function signalStatusLabel(status: AgentStatus): string {
+export function sessionStatusLabel(status: AgentStatus): string {
   return status === "attention" ? "needs attention" : "running";
 }
 
