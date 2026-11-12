@@ -23,6 +23,15 @@ const macrotask = () =>
   });
 
 /**
+ * Phases that deliberately leave the window hidden, minimized or behind another window.
+ * Bringing it back first would erase the very state the phase exists to record (and on Linux
+ * `activate` shows the window again).
+ */
+function keepsWindowState(phase: string): boolean {
+  return phase.endsWith("-hidden") || phase === "preview-minimized";
+}
+
+/**
  * A garbage collection requested from the page itself, with no testing SPI: external-memory
  * pressure (large ArrayBuffers) and object churn reach JavaScriptCore's collection heuristics
  * (the same probe as scripts/renderer-profile `--force-gc alloc`). Shows whether a pressure valve
@@ -76,7 +85,7 @@ class ScenarioRun {
     extra: Record<string, unknown> = {},
   ): Promise<void> {
     for (let attempt = 1; ; attempt++) {
-      if (!this.scenario.unfocused && !phase.endsWith("-hidden"))
+      if (!this.scenario.unfocused && !keepsWindowState(phase))
         await this.ensureFront();
       const app = this.app();
       const layers = await this.layerTree(phase);
@@ -1205,6 +1214,7 @@ type PreviewFixtureMessage = {
   visibility: string;
   native: { tauri: boolean; internals: boolean; invoke: string };
   topNav: { attempted: boolean; error: string | null };
+  popup: { requested: boolean; opened: boolean; error: string | null };
 };
 
 /**
@@ -1306,6 +1316,14 @@ async function previewScenario(
         location.href === appHref &&
         !location.href.includes("preview-escape"),
       `attempted=${redirected?.topNav.attempted} error=${redirected?.topNav.error ?? "-"} app=${location.href}`,
+    );
+    // The frame may ask for a popup (the sandbox grants popups on purpose), but the app installs
+    // no new-window handler: no popup window must be handed to untrusted content.
+    await check(
+      "popup refused",
+      redirected?.popup.requested === true &&
+        redirected?.popup.opened === false,
+      JSON.stringify(redirected?.popup ?? null),
     );
 
     const instance = redirected?.instance ?? "";
@@ -1516,11 +1534,24 @@ async function previewScenario(
       `[preview] SIGNAL minimize reported=${signalReported} (Wayland compositors do not report iconification; occlusion is not available on Linux either)`,
     );
     const restored = await run.native({ cmd: "show", mode: "miniaturize" });
-    await pause(1500);
+    try {
+      await run.waitFor(
+        () => Boolean(frame()),
+        "the preview frame after restore",
+        10_000,
+      );
+    } catch (error) {
+      throw new Error(await failed("minimize restore reloads", String(error)));
+    }
+    await check(
+      "minimize restore reloads",
+      Boolean(frame()),
+      `instances ${instances().join(",")}`,
+    );
     await run.sync("preview-minimize-restored", { restored });
 
     // Closing the tab also releases the frame, and the dev server outlives it again.
-    const framesBeforeClose = instances().length;
+    const instancesBeforeClose = instances().length;
     run.app().closeTab(previewId);
     try {
       await run.waitFor(
@@ -1537,7 +1568,7 @@ async function previewScenario(
     await check(
       "close releases the frame and keeps the server",
       !frame() && pingAfterClose?.pong === true,
-      `instances before close ${framesBeforeClose}, ping ${JSON.stringify(pingAfterClose)}`,
+      `instances before close ${instancesBeforeClose}, ping ${JSON.stringify(pingAfterClose)}`,
     );
     await run.sync("preview-closed", { instances: instances().length });
 

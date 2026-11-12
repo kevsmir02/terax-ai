@@ -73,11 +73,3 @@ export function createWindowVisibleTracker(
     },
   };
 }
-
-export function documentVisibility(
-  doc: VisibilityDocument | undefined = typeof document === "undefined"
-    ? undefined
-    : document,
-): boolean {
-  return doc ? doc.visibilityState === "visible" : true;
-}

@@ -316,12 +316,23 @@ const native = {
 const topNav = { attempted: false, error: null };
 try { topNav.attempted = true; window.top.location.href = "http://127.0.0.1:1/preview-escape"; }
 catch (error) { topNav.error = String(error); }
+// A popup must not become a window outside the application's control: the app installs no
+// new-window handler, so WebKit has to refuse the request rather than hand the page one.
+const popup = (() => {
+  try {
+    const opened = window.open("about:blank", "terax-preview-popup", "width=200,height=120");
+    if (opened) { try { opened.close(); } catch (error) {} }
+    return { requested: true, opened: Boolean(opened), error: null };
+  } catch (error) {
+    return { requested: true, opened: false, error: String(error) };
+  }
+})();
 let seq = 0;
 function payload(kind) {
   return {
     source: "terax-preview-fixture", kind, instance, href: location.href, seq: seq++,
     redirected: location.pathname === "/preview-redirected", visibility: document.visibilityState,
-    native, topNav,
+    native, topNav, popup,
   };
 }
 function post(kind) { try { window.parent.postMessage(payload(kind), "*"); } catch (error) {} }

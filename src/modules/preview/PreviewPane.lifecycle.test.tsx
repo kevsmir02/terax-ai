@@ -5,20 +5,15 @@ import { PreviewPane, PreviewReloadNotice } from "./PreviewPane";
 
 const url = "http://127.0.0.1:5173/";
 
-function render(
-  props: Partial<Parameters<typeof PreviewPane>[0]> & {
-    visible?: boolean;
-  } = {},
-) {
-  const { visible = true, ...rest } = props;
+function render(props: Partial<Parameters<typeof PreviewPane>[0]> = {}) {
   return renderToString(
     createElement(PreviewPane, {
       url,
-      visible,
+      tabActive: true,
       spaceActive: true,
       windowVisible: true,
       onUrlChange: () => {},
-      ...rest,
+      ...props,
     }),
   );
 }
@@ -31,7 +26,7 @@ describe("PreviewPane frame lifecycle", () => {
   });
 
   it("unloads the frame in the same render when its tab is no longer active", () => {
-    expect(frame(render({ visible: false }))).toBe(false);
+    expect(frame(render({ tabActive: false }))).toBe(false);
   });
 
   it("unloads the frame in the same render when its Space is no longer active", () => {
@@ -43,15 +38,16 @@ describe("PreviewPane frame lifecycle", () => {
   });
 
   it("keeps a still-visible window's frame loaded through focus loss", () => {
-    // No focus input exists here on purpose: a visible window showing the preview must not
-    // reload just because another window has the keyboard.
+    // The pane has no focus input at all: a visible window showing the preview must not
+    // reload just because another window has the keyboard (the async assertion for a real
+    // blur lives in the app-lab preview scenario).
     expect(frame(render({ windowVisible: true }))).toBe(true);
   });
 
   it("keeps the URL restrictions before and after unload", () => {
     const html = render({
       url: "tauri://localhost/index.html",
-      visible: false,
+      tabActive: false,
     });
     expect(frame(html)).toBe(false);
     expect(html).toContain("This URL cannot be loaded in preview.");

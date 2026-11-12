@@ -77,21 +77,25 @@ export function PreviewStack({
   return (
     <div className="relative h-full w-full">
       {previews.map((t) => {
-        const visible = t.id === activeId && t.spaceId === activeSpaceId;
+        // Two independent reasons a frame is not on screen; the pane decides what to do with
+        // each, and the stack only hides the layer.
+        const tabActive = t.id === activeId;
+        const spaceActive = t.spaceId === activeSpaceId;
+        const onScreen = tabActive && spaceActive;
         return (
           <div
             key={t.id}
             className={cn(
               "absolute inset-0",
-              !visible && "invisible pointer-events-none",
+              !onScreen && "invisible pointer-events-none",
             )}
-            aria-hidden={!visible}
+            aria-hidden={!onScreen}
           >
             <PreviewPane
               ref={getRefCallback(t.id)}
               url={t.url}
-              visible={visible}
-              spaceActive={t.spaceId === activeSpaceId}
+              tabActive={tabActive}
+              spaceActive={spaceActive}
               windowVisible={windowVisible}
               onUrlChange={getUrlCallback(t.id)}
             />

@@ -4,6 +4,7 @@ import {
   previewReloadNotice,
   reloadNoticeAfter,
   type PreviewFrameInputs,
+  type PreviewFrameUnloadReason,
 } from "./frameLifecycle";
 
 const active: PreviewFrameInputs = {
@@ -72,6 +73,80 @@ describe("preview frame lifecycle", () => {
         windowVisible: false,
       }),
     ).toEqual({ mounted: false, reason: "tab-inactive" });
+  });
+});
+
+/**
+ * The ticket's decision table, written out signal by signal instead of derived from the
+ * implementation: which reported state unloads a frame and which does not.
+ */
+describe("the unload decision table", () => {
+  const table: Array<
+    [
+      label: string,
+      inputs: PreviewFrameInputs,
+      expected: "mounted" | PreviewFrameUnloadReason,
+    ]
+  > = [
+    ["active tab, active Space, window visible", active, "mounted"],
+    ["active tab, active Space, window focused", active, "mounted"],
+    [
+      "active tab, active Space, window visible but unfocused (blur)",
+      { ...active, windowFocused: false },
+      "mounted",
+    ],
+    [
+      "active tab, active Space, window reported hidden",
+      { ...active, windowVisible: false },
+      "window-hidden",
+    ],
+    [
+      "active tab, active Space, window hidden and unfocused",
+      { ...active, windowVisible: false, windowFocused: false },
+      "window-hidden",
+    ],
+    [
+      "inactive tab, active Space",
+      { ...active, tabActive: false },
+      "tab-inactive",
+    ],
+    [
+      "inactive tab of an inactive Space",
+      { ...active, tabActive: false, spaceActive: false },
+      "space-inactive",
+    ],
+    [
+      "active tab of an inactive Space",
+      { ...active, spaceActive: false },
+      "space-inactive",
+    ],
+    [
+      "inactive tab, window reported hidden",
+      { ...active, tabActive: false, windowVisible: false },
+      "tab-inactive",
+    ],
+  ];
+
+  it.each(table)("%s → %s", (_label, inputs, expected) => {
+    const lifecycle = previewFrameLifecycle(inputs);
+    if (expected === "mounted") {
+      expect(lifecycle).toEqual({ mounted: true, reason: null });
+    } else {
+      expect(lifecycle).toEqual({ mounted: false, reason: expected });
+    }
+  });
+
+  it("never changes its answer because of focus alone", () => {
+    // Focus is recorded for callers but never an input to the decision: for every tab/Space/
+    // window-visibility combination, a visible window with and without focus behaves the same.
+    for (const tabActive of [true, false])
+      for (const spaceActive of [true, false])
+        for (const windowVisible of [true, false]) {
+          const base = { tabActive, spaceActive, windowVisible };
+          expect(
+            previewFrameLifecycle({ ...base, windowFocused: false }),
+          ).toEqual(previewFrameLifecycle({ ...base, windowFocused: true }));
+        }
   });
 });
 

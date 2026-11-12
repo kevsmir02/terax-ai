@@ -35,7 +35,7 @@ export type PreviewPaneHandle = {
 type Props = {
   url: string;
   /** The tab that owns this frame is the active tab of its Space. */
-  visible: boolean;
+  tabActive: boolean;
   /** The tab's Space is the active Space. */
   spaceActive: boolean;
   /** A supported window-visibility signal says the window is visible (focus is not one). */
@@ -45,7 +45,7 @@ type Props = {
 
 export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
   function PreviewPane(
-    { url, visible, spaceActive, windowVisible, onUrlChange },
+    { url, tabActive, spaceActive, windowVisible, onUrlChange },
     ref,
   ) {
     // `nonce` is part of the iframe `key`. Bumping it remounts the iframe,
@@ -60,7 +60,7 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
     // The frame exists only while it is on screen: inactive tab/Space or a
     // hidden window tears it down in this render, not after a grace period.
     const lifecycle = previewFrameLifecycle({
-      tabActive: visible,
+      tabActive,
       spaceActive,
       windowVisible,
     });
@@ -98,6 +98,7 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
     );
 
     const allowed = isAllowedPreviewUrl(url);
+    const onScreen = tabActive && spaceActive;
     const cookieOrigin = loopbackPreviewOrigin(url);
     const showXfoHint = url ? cookieOrigin === null : false;
     const showCookieHint =
@@ -107,8 +108,8 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
       <div
         className="flex h-full w-full flex-col overflow-hidden bg-background"
         style={{
-          visibility: visible ? "visible" : "hidden",
-          pointerEvents: visible ? "auto" : "none",
+          visibility: onScreen ? "visible" : "hidden",
+          pointerEvents: onScreen ? "auto" : "none",
         }}
       >
         <PreviewAddressBar
