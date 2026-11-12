@@ -2,6 +2,7 @@ import type { QuitPhase } from "@/modules/shutdown";
 import type { CheckpointBridgePending } from "@/modules/source-control/checkpointBridge";
 import type { DestructiveGitBridgePending } from "@/modules/source-control/destructiveGitBridge";
 import type { Tab } from "@/modules/tabs";
+import type { WorktreeBridge } from "@/modules/worktrees/worktreeBridge";
 
 /** What the scenario driver may do to the running application: the app's own tab actions. */
 export type BenchAppApi = {
@@ -27,7 +28,7 @@ export type BenchAppApi = {
   setLeafCwd: (leafId: number, cwd: string) => void;
   readBuffer: (leafId: number, maxLines?: number) => string | null;
   /** Spaces (workspaces) the application knows about. */
-  spaces: { id: string; name: string }[];
+  spaces: { id: string; name: string; root: string | null }[];
   activeSpaceId: string | null;
   createSpace: (name: string, root: string | null) => string;
   setActiveSpace: (id: string) => void;
@@ -55,6 +56,10 @@ export type BenchAppApi = {
   editEditor: (tabId: number, text: string) => void;
   /** Shows the Source Control panel so its real destructive-action guard mounts. */
   openSourceControl: () => void;
+  /** Opens the Source Control panel's worktree dialog (the app's own state). */
+  openWorktreeDialog: () => void;
+  /** Drives the dialog's own form, preflight and submit path. */
+  worktree: () => WorktreeBridge | null;
   /** Drives the panel's own destructive-action guard (never a second implementation). */
   destructiveGit: () => {
     mounted: boolean;
@@ -142,9 +147,11 @@ export type BenchScenario = {
     | "markdown"
     | "spaces"
     | "git"
+    | "worktree"
     | "checkpoints"
     | "preview"
     | "images"
+    | "media"
     | "resource"
     | "stress"
     | "quit"
@@ -175,6 +182,19 @@ export type BenchScenario = {
     ignoredCount?: number;
     stagedFile?: string;
     stagedCount?: number;
+  };
+  /** worktree: an isolated scratch repository and the paths refusals use. */
+  worktree?: {
+    repo: string;
+    /** A location that does not exist yet: the successful creation. */
+    createPath: string;
+    /** An ignored file the success must copy. */
+    ignoredFile: string;
+    /** A location that exists as a file: refusal. */
+    filePath: string;
+    /** A non-empty directory: refusal, and its file must survive. */
+    dirtyPath: string;
+    dirtyFile: string;
   };
   /** split-drag: seconds of divider motion per drag, and its amplitude as a share of the pane area. */
   dragS?: number;
@@ -246,6 +266,29 @@ export type BenchScenario = {
     svg: string;
     corrupt: string;
     oversized: string;
+  };
+  /** media: fixture paths the scenario opens and asserts through the media surface. */
+  media?: {
+    mp4: string;
+    m4a: string;
+    mov: string;
+    webm: string;
+    mkv: string;
+    ogg: string;
+    wav: string;
+    mp3: string;
+    flac: string;
+    aac: string;
+    corrupt: string;
+    unsupportedCodec: string;
+    /** WebM bytes with a `.mp4` name: the probe must report the mismatch. */
+    mismatch: string;
+    /** >1 MiB PCM WAV so playback has to ask for more than one delivery chunk. */
+    large: string;
+    /** Containers whose real playback outcome the scenario measures. */
+    measured: string[];
+    /** Containers this host's build was measured to play (run.py records them). */
+    expectedSupported: string[];
   };
   /** resource/stress: directory used as the second Space's root and the preview fixture root. */
   workspace?: string;

@@ -294,10 +294,12 @@ pub fn run() {
             fs::assets::asset_read_bytes,
             fs::assets::asset_revoke,
             fs::assets::asset_revoke_scope,
+            fs::assets::asset_media_url,
             fs::file::fs_write_file,
             fs::file::fs_stat,
             fs::file::fs_file_revision,
             fs::image_probe::fs_image_probe,
+            fs::media_probe::fs_media_probe,
             fs::file::fs_canonicalize,
             fs::mutate::fs_create_file,
             fs::mutate::fs_create_dir,
@@ -339,6 +341,7 @@ pub fn run() {
             git::commands_review::git_diff_file,
             git::commands_review::git_apply_hunks,
             git::commands_review::git_worktree_list,
+            git::commands_review::git_worktree_preflight,
             git::commands_review::git_worktree_add,
             git::commands_tasks::task_project_config,
             git::commands_tasks::task_worktree_list,
@@ -369,6 +372,7 @@ pub fn run() {
             workspace::wsl_default_distro,
             workspace::ipc::wsl_home,
             workspace::workspace_authorize,
+            workspace::workspace_access,
             workspace::workspace_current_dir,
             control::control_frontend_ready,
             control::control_respond,
@@ -400,6 +404,8 @@ pub fn run() {
             modules::bench::bench_asset_log,
             #[cfg(feature = "bench")]
             modules::bench::bench_exit,
+            #[cfg(feature = "bench")]
+            fs::assets::asset_delivery_log,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

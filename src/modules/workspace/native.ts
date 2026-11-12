@@ -35,6 +35,14 @@ export type ReadResult =
 /** What a write left on disk. */
 export type WriteResult = { mtime: number; revision: string };
 
+/** Why a folder can be opened; mirrors the native `Access` enum. */
+export type WorkspaceAccessKind = "root" | "derived" | "covered" | "none";
+
+export type WorkspaceAccess = {
+  path: string;
+  access: WorkspaceAccessKind;
+};
+
 export type CommandOutput = {
   stdout: string;
   stderr: string;
@@ -47,6 +55,12 @@ export const native = {
   workspaceCurrentDir: () => invoke<string>("workspace_current_dir"),
   workspaceAuthorize: (path: string) =>
     invoke<string>("workspace_authorize", {
+      path,
+      workspace: currentWorkspaceEnv(),
+    }),
+  /** Why a folder can be opened. Grants nothing; creation flows grant access. */
+  workspaceAccess: (path: string) =>
+    invoke<WorkspaceAccess>("workspace_access", {
       path,
       workspace: currentWorkspaceEnv(),
     }),

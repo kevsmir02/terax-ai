@@ -12,6 +12,7 @@ function render(overrides: Partial<Parameters<typeof AssetPreview>[0]> = {}) {
       kind: "image",
       bytes: 1024,
       url: "asset://localhost/repo/photo.png?token=t",
+      token: "t",
       grantError: undefined,
       onRetryGrant: () => {},
       visible: true,
@@ -50,16 +51,21 @@ describe("AssetPreview delivery gate", () => {
     expect(html).not.toContain("<img");
   });
 
-  it("streams media of any size instead of refusing it", () => {
+  it("streams media of any size without the whole-file delivery gate", () => {
     const html = render({
       path: "/repo/film.mp4",
       kind: "video",
       bytes: 8 * 1024 * TEXT_OVERRIDE_LIMIT_BYTES,
       url: "asset://localhost/repo/film.mp4?token=t",
     });
-    expect(html).toContain("<video");
-    expect(html).toContain("controls");
+    // Audio/video are delivered through bounded ranges, so the whole-file
+    // ceiling never refuses them; the media surface still probes the real
+    // container before it mounts an element (see MediaPreviewView.test).
+    expect(html).toContain("data-media-viewer");
+    expect(html).toContain('data-media-state="probing"');
     expect(html).not.toContain("too large");
+    expect(html).not.toContain("Load anyway");
+    expect(html).not.toContain("<video");
   });
 
   it("hands a small PDF to the app-owned reader instead of a frame", () => {

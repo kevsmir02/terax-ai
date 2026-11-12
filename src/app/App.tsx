@@ -73,6 +73,9 @@ import {
   useSpaces,
   useSpacesBoot,
 } from "@/modules/spaces";
+import { normalizeSpaceRoot } from "@/modules/spaces/lib/sharedRoots";
+import { worktreeSpaceName } from "@/modules/worktrees/lib/createWorktree";
+import { worktreeBridge } from "@/modules/worktrees/worktreeBridge";
 import { StatusBar } from "@/modules/statusbar";
 import {
   TabSwitcherHud,
@@ -347,6 +350,7 @@ export default function App() {
 
   const [newEditorOpen, setNewEditorOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [worktreeDialogOpen, setWorktreeDialogOpen] = useState(false);
   const [paletteInitialMode, setPaletteInitialMode] =
     useState<PaletteInitialMode>("commands");
   const openCommandPalette = useCallback(
@@ -1163,6 +1167,35 @@ export default function App() {
     return meta.id;
   }, [activeCwd, home, workspaceEnv, newTab, setActiveSpaceForNewTabs]);
 
+  /**
+   * A worktree gets a Space of its own. Existing Spaces keep their tabs and
+   * every terminal keeps its working directory: only a new Space and (when it
+   * has none yet) a new terminal are added.
+   */
+  const openWorktreeAsSpace = useCallback(
+    (path: string, branch: string | null) => {
+      const { spaces, create, setActive } = useSpaces.getState();
+      const normalized = normalizeSpaceRoot(path);
+      const existing = spaces.find(
+        (space) =>
+          space.root !== null && normalizeSpaceRoot(space.root) === normalized,
+      );
+      const meta =
+        existing ??
+        create({
+          name: worktreeSpaceName({ path, branch }),
+          root: path,
+          env: workspaceEnv,
+        });
+      setActive(meta.id);
+      const hasTerminal = tabsRef.current.some(
+        (tab) => tab.spaceId === meta.id && tab.kind === "terminal",
+      );
+      if (!hasTerminal) newTabInSpace(meta.id, path);
+    },
+    [newTabInSpace, workspaceEnv],
+  );
+
   const commitDeleteSpace = useCallback(
     (id: string) => {
       const nextSpaceId = useSpaces.getState().remove(id);
@@ -1417,7 +1450,7 @@ export default function App() {
               }
               spaces={useSpaces
                 .getState()
-                .spaces.map(({ id, name }) => ({ id, name }))}
+                .spaces.map(({ id, name, root }) => ({ id, name, root }))}
               activeSpaceId={activeSpaceId}
               createSpace={(name, root) =>
                 useSpaces.getState().create({ name, root }).id
@@ -1496,6 +1529,11 @@ export default function App() {
                   : null,
               })}
               openSourceControl={openSourceControl}
+              openWorktreeDialog={() => {
+                openSourceControl();
+                setWorktreeDialogOpen(true);
+              }}
+              worktree={() => worktreeBridge()}
               destructiveGit={() => {
                 const bridge = destructiveGitBridge();
                 return {
@@ -1627,6 +1665,9 @@ export default function App() {
                             handleFollowRepositoryContext
                           }
                           destructive={destructiveSupport}
+                          worktreeDialogOpen={worktreeDialogOpen}
+                          onWorktreeDialogOpenChange={setWorktreeDialogOpen}
+                          onOpenWorktreeAsSpace={openWorktreeAsSpace}
                         />
                       )}
                     </div>

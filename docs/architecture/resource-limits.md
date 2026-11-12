@@ -58,7 +58,7 @@ test fails when the copies diverge.
 | 4 viewers / 192 MiB decoded | `src/modules/preview/lib/viewerAdmission.ts` via `decideViewerAdmission` | hidden viewers are evictable, a visible viewer never is |
 | 32 MiB PDF page render | `src/modules/preview/lib/pdfPage.ts` (arithmetic) + `pdfPageDecision` in `limits.ts` (threshold), applied by the reader before a canvas exists | refusal names the ceiling and the largest zoom that fits; issue #31 |
 | PDF page rasters vs. the decoded budget | `src/modules/preview/lib/pdfCache.ts` (cache capacity = the page ceiling) registered through `viewerAdmission.ts` | at most 4 × 32 MiB = 128 MiB across four PDF viewers, inside the 192 MiB budget |
-| Media playback | `src/modules/preview/lib/limits.ts` | still contract only; issue #29 implements the media surface |
+| Media playback (1 per tab, 3 application-wide) | `src/modules/preview/lib/mediaPlayback.ts` via `decideMediaPlayback` | the live table pauses a same-tab sibling and refuses beyond the app-wide count; hiding or closing a tab releases its slot |
 
 ### Enforcement today
 
@@ -129,8 +129,7 @@ tab-owned asset grant. A PDF goes through the same whole-file delivery gate (the
 explicit choice above 10 MiB, refusal above 50 MiB), which the real application was
 observed applying in issue #30; the 32 MiB per-page render ceiling is still contract
 only until issue #31, because WebKit's own PDF document never asks this module — see
-`docs/architecture/pdf-reader.md`. A hidden media element still only pauses its own
-pane until issue #29.
+`docs/architecture/pdf-reader.md`.
 
 Markdown previews (issue #27) inline images go through the same asset delivery bounds
 but are not counted as separate decoded viewers, because each image is bounded by its
@@ -140,9 +139,71 @@ document outside the Space root is anchored to its own directory; assets beyond 
 boundary or on the network need the explicit choice described in
 `markdown-rendering.md`, so browsing cannot pull an unbounded remote set on its own.
 
-This is **planned implementation, not validated support** for anything that
-needs a real WebKitGTK session: no measurement claims these ceilings are
-observed at runtime on the packaged application yet.
+### Audio and video
+
+Media is routed by extension, then the native `fs_media_probe` reads at most
+64 KiB of the container header and reports the real container and any codec ids
+the header carries. The container id, not the name, decides: WebM bytes named
+`.mp4` are reported as a mismatch, and a corrupt header is refused before an
+element mounts. A container this build never opened is refused with an
+explanation. A container that *was* measured is mounted even when its
+representative codec failed, so the element's own `MEDIA_ERR_SRC_NOT_SUPPORTED`
+or `MEDIA_ERR_DECODE` names what is missing. `canPlayType` is recorded beside
+each real outcome as the hint it is, never as proof.
+
+The element is served through the same bounded delivery policy as other
+assets, but over loopback HTTP: WebKitGTK's GStreamer media backend rejects
+custom URI schemes (WebKit bug 146351; every container failed with
+`MEDIA_ERR_SRC_NOT_SUPPORTED` in the first measured run, while the same bytes
+played from a blob URL). `assets.rs` therefore serves the same tab-owned token
+at `http://127.0.0.1:<ephemeral-port>/media?token=…`, with one chunk (a tenth of
+the read ceiling) per range response, a whole response bounded by the approved
+read ceiling (never an unbounded file), the same revocation and a bounded
+connection count. The endpoint is loopback-only and grants no file the token did
+not already cover. Closing or replacing the tab unmounts the element and revokes
+the tab-owned grant.
+
+Playback is bounded by **1 element per tab and 3 application-wide**
+(`mediaPlayback.ts`): starting a sibling pauses the other element in the tab,
+and a request beyond the application-wide count is refused with the blockers
+named and `stop-other-playback` offered. Hiding a tab pauses playback, releases
+its slot and keeps the element (and position) mounted; returning never calls
+`play()`.
+
+Measured in the `--scenario media` run on the primary host:
+
+| Container | Routing | Measured playback (2026-11-12) |
+| --- | --- | --- |
+| WebM | `.webm` | Fedora 44, WebKitGTK 2.54.2: VP9 + Opus loads and plays |
+| Ogg | `.ogg` | same run: Ogg Vorbis loads and plays (audio-only in a video element) |
+| WAV | `.wav` | same run: 16-bit PCM loads, plays and seeks past the first chunk |
+| MP3 | `.mp3` | same run: MPEG audio layer 3 loads and plays |
+| FLAC | `.flac` | same run: FLAC loads and plays |
+| M4A | `.m4a` | same run: AAC audio loads and plays |
+| AAC (ADTS) | `.aac` | same run: ADTS AAC loads and plays; the element reports no duration (0) because ADTS carries none |
+| MP4 | `.mp4` | same run: H.264 + AAC loads and plays through the loopback delivery (the custom asset scheme, not the codec, was the earlier failure) |
+| QuickTime | `.mov` | same run: H.264 + AAC loads and plays |
+| Matroska | `.mkv` | not measured: routed only to explain the refusal |
+
+The evidence is the app-lab `media` scenario against the real application: the
+driver asserts the element's own `loadedmetadata`/`error` outcome per fixture,
+fetches a real `206` range through the bounded endpoint, checks that each
+delivery stays inside the approved bounds, seeks to 16 s of a 20 s WAV and
+observes a mid-file range request, then verifies hidden pause, no auto-resume,
+close cleanup and recovery after an interrupted load. A codec pack
+(`gstreamer1-plugin-libav` or equivalent) could change the MP4/QuickTime rows;
+that is a measured, host-specific result, not a universal support claim.
+
+The earlier attempt through the custom `asset:` scheme failed for **every**
+container with `MEDIA_ERR_SRC_NOT_SUPPORTED` while the same bytes played from a
+blob URL: that is the WebKitGTK transport limitation, not a codec result. The
+table records what actually plays through the bounded loopback delivery on this
+host.
+
+These limits and the media rows above are validated by the real-app runs cited
+here on Fedora 44 WebKitGTK 2.54.2. Packaged builds, other distributions,
+codec packs and whole-application budgets remain release work: no measurement
+here claims the packaged application.
 
 `limits.test.ts` parses the Rust constants and rejects an editor-side copy of
 the override or syntax literal; `assetDelivery.test.ts` parses
@@ -195,8 +256,9 @@ Do not add one to the other, and do not derive one from the other.
 - **Codec and format support.** Which image/media formats actually decode is
   measured in issues #28 and #29, not implied by an extension list or by these
   numbers. Issue #28 measured PNG, JPEG, GIF, WebP, BMP, ICO, AVIF and SVG in the
-  Fedora WebKitGTK build recorded above; a different engine build needs its own
-  run.
+  Fedora WebKitGTK build recorded above; issue #29 measured the media containers
+  in the table in "Audio and video". A different engine or GStreamer codec pack
+  needs its own run, and no codec is installed automatically.
 - **The PDF reader path.** Issue #30 recorded the evidence and decided that the
   current iframe cannot meet the PDF contract, so issue #31 implements a dedicated
   on-demand reader (`docs/architecture/pdf-reader.md`); these limits apply either
@@ -214,6 +276,9 @@ Later preview tickets import from `@/modules/preview/lib/limits`:
 | `decodedImageBytes(width, height)`, `imageBudgetDecision(width, height, { reducedDecode })` | allow / downscale / refuse |
 | `fs_image_probe` (native), `imageFormatForPath`, `imageDecodeSupport` | header dimensions before decode, and routing kept separate from measured format support |
 | `imageViewerState`, `imageViewerRequest`, `imageViewerRegistration` | the image surface's order: probe → budget → admission → mount, with honest refusal states |
+| `fs_media_probe` (native), `mediaFormatForPath`, `mediaMeasured`, `mediaDecodeSupport` | real container/codec ids from the header, and routing/measurement kept separate |
+| `mediaViewerState`, `mediaErrorMessage` | the media surface's order: route → probe → mismatch/measurement → mount → element events |
+| `useMediaPlaybackStore` | the applied 1-per-tab / 3-app-wide table; never calls `play()` |
 | `pdfPageDecision(renderBytes)` | allow / refuse with a suggested zoom |
 | `decideViewerAdmission(viewers, request)` | admit (with explicit evictions) / refuse with blockers |
 | `decideMediaPlayback(sessions, request)` | play (with sibling pauses) / refuse with blockers |

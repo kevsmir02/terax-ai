@@ -55,6 +55,11 @@ python3 scripts/app-lab/run.py --scenario markdown --profile debug \
 python3 scripts/app-lab/run.py --scenario spaces --profile debug \
     --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-spaces
 
+# the worktree seam (creation through the panel dialog, derived access, opening the
+# result as a Space, and four refusals that leave their targets untouched)
+python3 scripts/app-lab/run.py --scenario worktree --profile debug \
+    --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-worktree
+
 # the quit seam (survey across Spaces, repeated close, save-then-quit, graceful
 # termination, survivor prompt, forced exit, reload without command replay)
 python3 scripts/app-lab/run.py --scenario quit --profile debug \
@@ -64,6 +69,11 @@ python3 scripts/app-lab/run.py --scenario quit --profile debug \
 # close-cycle release of decoded viewers and grants)
 python3 scripts/app-lab/run.py --scenario images --profile debug \
     --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-images
+
+# the media seam (real container/codec outcomes, ranged delivery and seeking, hidden
+# pause without auto-resume, unsupported/corrupt/interrupted inputs, close cleanup)
+python3 scripts/app-lab/run.py --scenario media --profile debug \
+    --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-media
 
 # prove both refusals without running a scenario (preflight + the binary's isolation guard)
 python3 scripts/app-lab/run.py --scenario workflow --self-test
@@ -263,6 +273,32 @@ grant scopes. An explicitly opened SVG is asserted to stay an editable text tab.
 (`images.pass`, `steps`, `formats`) rides the same final `done` sync; the runner exits 2 when a
 step fails.
 
+**The media** (`mediaScenario`): committed containers from
+`src-tauri/tests/fixtures/media/` (plus a generated ~3.5 MiB WAV) are copied into the run's
+workspace and opened through the app's own file-tab planner. Support is recorded from the
+element's own `loadedmetadata`/`error` events — the extension only routes the file, and the native
+`fs_media_probe` reports the real container first. `canPlayType` is recorded beside each outcome as
+the hint it is. Because WebKitGTK cannot load media from the custom `asset:` scheme
+(`MEDIA_ERR_SRC_NOT_SUPPORTED`; WebKit bug 146351), the element is served from the same tab-owned
+grant over the bounded loopback endpoint, and the driver fetches a byte range through that endpoint
+to prove the range path. The driver asserts:
+
+- every measured container loads and reports its real container (`mp4`, `m4a`, `mov`, `webm`,
+  `ogg`, `wav`, `mp3`, `flac`, `aac` on this host);
+- a valid MP4 whose sample entry names `zzzz` reaches an honest codec error (not a blank player),
+  and Matroska is refused as unmeasured; a corrupt EBML header and WebM bytes named `.mp4` are
+  refused before an element mounts;
+- the native delivery log shows the element asking for ranged responses only, each inside one
+  1 MiB chunk, and seeking past the first chunk issues a new mid-file range;
+- playback (muted; WebKitGTK has no input injection) pauses when the tab is hidden, releases the
+  playback slot, and does not resume when the tab returns;
+- closing while playing, and closing during an interrupted load, leave no element, playback
+  session or tab-owned grant scope; reopening after the interrupt works.
+
+The result (`media.pass`, `steps`, `formats`, `manual`) rides the same final `done` sync; the
+runner exits 2 when a step fails. If this build requires a trusted gesture for playback, that
+step is reported under `media.manual` as a named manual check instead of a pass.
+
 **Focus is advisory on Linux.** Wayland lets the compositor decide focus (`set_focus` is a hint)
 and WebKitGTK exposes no occlusion state, so `qualify()` does not fail the workflow or preview
 scenario on focus: `native.appActive`/`key` are recorded per phase and summarised as a
@@ -334,6 +370,8 @@ not.
 | `idle` | one idle shell for 30 s |
 | `input` | real key events and input-method calls into a raw-mode PTY reader; pass/fail lines in `page.log` (no measurements) |
 | `workflow` (Linux) | acceptance workflow: shell spawn, exact echo, new tab, split, switch back, open a file and assert its rendered text; now sampled like the measured scenarios |
+| `images` (Linux) | image seam: representative committed containers decode in the real WebKitGTK, oversized/corrupt are refused, hidden tabs release, close cycles leave no decoded viewers or grants |
+| `media` (Linux) | media seam: real container/codec outcomes from the element, ranged delivery and seeking, hidden pause without auto-resume, unsupported/corrupt/mismatch/interrupted inputs, close releases elements, playback slots and grants |
 | `spaces` (Linux) | Space lifecycle: one checkout shared by two Spaces and its rendered indication, a switch that keeps hidden terminal output flowing while presentation stops, the running-process and unsaved-buffer close guards, and Space deletion that resolves dirty buffers/processes, leaves the project directory intact, and cancel leaving everything as it was |
 | `resource` (Linux) | idle terminal for `--idle-seconds` (5), then 2 Spaces, 4 terminal panes, `--agents` (2) busy synthetic agents, several text files, one active local preview; `--streams` (2) streaming panes for `--stream-seconds`, `--close-cycles` editor open/close cycles, `--cycles` hide/show cycles, then +10/+30 s settle |
 | `stress` (Linux) | the same shape with 4 agents, 4 streaming panes and the 4 MiB close-cycle file; a separate, clearly described workload |
@@ -430,4 +468,4 @@ macOS for the measured scenarios: one display (2048x1152 points at 100 Hz here),
 with default preferences (vibrancy off), no AI panel traffic, a synthetic agent instead of Codex.
 Footprint figures vary between runs because garbage collection timing decides when dead native
 objects are released; compare medians of repeats and prefer the timeline floor and the after-GC
-value. Linux has the `workflow` and `preview` acceptance scenarios plus the measured `resource`, `stress` and `startup` scenarios (WebKitGTK, Wayland): memory is Pss from `/proc`, workload processes are separate, and every report states its own `limitations` rather than claiming what was not sampled. The preview scenario also records what the platform cannot report: WebKitGTK has no occlusion state, so a preview covered by another window keeps running, and minimize follows the compositor.
+value. Linux has the `workflow`, `preview`, `images` and `media` acceptance scenarios plus the measured `resource`, `stress` and `startup` scenarios (WebKitGTK, Wayland): memory is Pss from `/proc`, workload processes are separate, and every report states its own `limitations` rather than claiming what was not sampled. The preview scenario also records what the platform cannot report: WebKitGTK has no occlusion state, so a preview covered by another window keeps running, and minimize follows the compositor. The media scenario records the decoder outcomes the webview reports; playback can only be started programmatically (muted) because WebKitGTK has no trusted input injection, and that limitation is named when it applies.

@@ -158,5 +158,10 @@ export function useAssetGrant(
   path: string | null,
   tabId: number | null = null,
 ) {
-  return useAssetGrants([path], tabId);
+  const grants = useAssetGrants([path], tabId);
+  return {
+    ...grants,
+    /** The bearer token that also authorizes the loopback media delivery. */
+    token: path ? grants.tokenFor(path) : undefined,
+  };
 }

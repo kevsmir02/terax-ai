@@ -1,14 +1,14 @@
 import { openPath } from "@tauri-apps/plugin-opener";
 import { type ComponentType, useCallback, useEffect, useState } from "react";
-import { MediaPreview } from "@/modules/editor/MediaPreview";
 import { AssetDeliveryNotice } from "./AssetDeliveryNotice";
+import { ImagePreview } from "./ImagePreview";
+import { MediaPreview } from "./MediaPreview";
 import {
   type AssetKind,
   assetDeliveryDecision,
   assetFailureNotice,
   assetUrlWithOverride,
 } from "./lib/assetDelivery";
-import { ImagePreview } from "./ImagePreview";
 
 type Props = {
   path: string;
@@ -18,7 +18,7 @@ type Props = {
   bytes: number;
   /** Grant URL, or undefined while the grant is pending. */
   url: string | undefined;
-  /** The grant token, for a surface that reads bytes through IPC (the PDF reader). */
+  /** The grant token, for a surface that reads bytes through IPC or loopback. */
   token?: string | undefined;
   grantError: string | undefined;
   onRetryGrant: () => void;
@@ -136,7 +136,13 @@ export function AssetPreview({
         />
       )}
       {(kind === "video" || kind === "audio") && (
-        <MediaPreview kind={kind} src={source} active={mediaActive} />
+        <MediaPreview
+          path={path}
+          tabId={tabId}
+          token={token}
+          visible={visible && mediaActive}
+          onOpenExternally={openExternally}
+        />
       )}
     </div>
   );
