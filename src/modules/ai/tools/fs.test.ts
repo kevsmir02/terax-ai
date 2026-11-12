@@ -42,7 +42,7 @@ beforeEach(() => {
 });
 
 it.each([
-  "AI path is outside the authorized workspace",
+  "path is outside the authorized workspace",
   "Permission denied (os error 13)",
   new Error("snapshot failed"),
 ])("does not queue an overwrite when the snapshot fails: %s", async (error) => {
@@ -63,7 +63,7 @@ it.each([
 });
 
 it("keeps a known missing file creatable in plan mode", async () => {
-  nativeMock.readFile.mockRejectedValue("AI file not found");
+  nativeMock.readFile.mockRejectedValue("file not found");
   expect(await queueWrite()).toMatchObject({ queued_for_plan_review: true });
   expect(usePlanStore.getState().queue[0]).toMatchObject({
     originalContent: "",

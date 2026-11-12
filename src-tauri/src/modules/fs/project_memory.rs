@@ -43,7 +43,7 @@ fn read_memory(root: &Path, checked_path: &Path) -> Result<Option<String>, Strin
     // Validate the opened object before reading, so a link swapped after the
     // frontend secret-policy check cannot substitute a different target.
     let opened = opened_path(&file)?;
-    super::read_policy::readable(&opened)?;
+    super::access_policy::readable(&opened)?;
     if !lossless_paths(&[opened.as_path(), root, checked_path]) {
         return Err("project memory path cannot be represented losslessly".into());
     }

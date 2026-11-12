@@ -1,10 +1,31 @@
+/**
+ * Legacy AI-owned native barrel.
+ *
+ * The generic half now lives in the neutral owner, `src/modules/workspace/
+ * native`, and is re-exported here so the remaining agent code keeps
+ * compiling. `readFile` is deliberately **overridden** below: the agent reader
+ * must stay on the policy-guarded `ai_read_file`, while the neutral
+ * `native.readFile` maps to the explicit-user `fs_read_file`.
+ *
+ * Remaining importers of this module (all AI-owned; none retained by the
+ * workspace program):
+ *  - `ai/lib/transport.ts`
+ *  - `ai/store/planStore.ts`
+ *  - `ai/tools/edit.ts`
+ *  - `ai/tools/fs.ts`
+ *  - `ai/tools/search.ts`
+ *  - `ai/tools/shell.ts`
+ *  - `ai/components/AgentRunBridge.tsx`
+ * Deleting this file (with the agent) must not remove
+ * `modules/workspace/native`, which retained Spaces/explorer callers import.
+ */
+
 import { invoke } from "@tauri-apps/api/core";
 import { currentWorkspaceEnv, type WorkspaceEnv } from "@/modules/workspace";
-
-export type ReadResult =
-  | { kind: "text"; content: string; size: number }
-  | { kind: "binary"; size: number }
-  | { kind: "toolarge"; size: number; limit: number };
+import {
+  native as sharedNative,
+  type ReadResult,
+} from "@/modules/workspace/native";
 
 export type DirEntry = {
   name: string;
@@ -12,14 +33,6 @@ export type DirEntry = {
   size: number;
   mtime: number;
   gitignored: boolean;
-};
-
-export type CommandOutput = {
-  stdout: string;
-  stderr: string;
-  exit_code: number | null;
-  timed_out: boolean;
-  truncated: boolean;
 };
 
 type GrepHit = {
@@ -39,38 +52,24 @@ type GlobHit = { path: string; rel: string };
 export type GlobResponse = { hits: GlobHit[]; truncated: boolean };
 
 export const native = {
-  workspaceCurrentDir: () => invoke<string>("workspace_current_dir"),
-  workspaceAuthorize: (path: string) =>
-    invoke<string>("workspace_authorize", {
-      path,
-      workspace: currentWorkspaceEnv(),
-    }),
-  readProjectMemory: (root: string, checkedPath: string, workspace: WorkspaceEnv) =>
+  ...sharedNative,
+  readProjectMemory: (
+    root: string,
+    checkedPath: string,
+    workspace: WorkspaceEnv,
+  ) =>
     invoke<string | null>("fs_read_project_memory", {
       root,
       checkedPath,
       workspace,
     }),
+  // AI reads stay behind the shared policy + registry composition
+  // (`fs::ai::read_file`); do not point this at the neutral `readFile`.
   readFile: (path: string) =>
     invoke<ReadResult>("ai_read_file", {
       path,
       workspace: currentWorkspaceEnv(),
     }),
-  writeFile: (path: string, content: string) =>
-    invoke<void>("fs_write_file", {
-      path,
-      content,
-      workspace: currentWorkspaceEnv(),
-    }),
-  canonicalize: (path: string, workspace = currentWorkspaceEnv()) =>
-    invoke<string>("fs_canonicalize", {
-      path,
-      workspace,
-    }),
-  createFile: (path: string) =>
-    invoke<void>("fs_create_file", { path, workspace: currentWorkspaceEnv() }),
-  createDir: (path: string) =>
-    invoke<void>("fs_create_dir", { path, workspace: currentWorkspaceEnv() }),
   // AI tooling never sees dot-prefixed entries regardless of the user's
   // explorer preference — keeps .git / .env / .ssh out of agent context.
   readDir: (path: string) =>
@@ -101,18 +100,6 @@ export const native = {
       maxResults: params.maxResults ?? null,
       workspace: currentWorkspaceEnv(),
     }),
-  runCommand: (
-    command: string,
-    cwd?: string | null,
-    timeoutSecs?: number,
-  ) =>
-    invoke<CommandOutput>("shell_run_command", {
-      command,
-      cwd: cwd ?? null,
-      timeoutSecs: timeoutSecs ?? null,
-      workspace: currentWorkspaceEnv(),
-    }),
-
   shellSessionOpen: (cwd?: string | null) =>
     invoke<number>("shell_session_open", {
       cwd: cwd ?? null,

@@ -1,17 +1,7 @@
 import { quoteShellArg } from "@/lib/shellQuote";
+import { native } from "@/modules/workspace/native";
 import type { EditorFormatter } from "@/modules/settings/store";
-import { currentWorkspaceEnv } from "@/modules/workspace";
 import type { EditorView } from "@codemirror/view";
-import { invoke } from "@tauri-apps/api/core";
-
-type ReadResult = { kind: string; content?: string; mtime?: number };
-
-type CommandOutput = {
-  stdout: string;
-  stderr: string;
-  exit_code: number | null;
-  timed_out: boolean;
-};
 
 export type ExternalFormatter = Exclude<EditorFormatter, "lsp">;
 
@@ -126,12 +116,12 @@ export async function runExternalFormatter(
     return "No custom format command configured in Settings.";
   }
   try {
-    const out = await invoke<CommandOutput>("shell_run_command", {
-      command,
-      cwd: dirname(path),
-      timeoutSecs: 20,
-      workspace: currentWorkspaceEnv(),
-    });
+    // `cwd` is registry-confined on the native side
+    // (`workspace::authorize_spawn_cwd`): formatting a file that lives outside
+    // every authorized root is refused today, even though the file itself can
+    // be opened and saved. Known limitation — see
+    // `docs/architecture/security-model.md`.
+    const out = await native.shellRunCommand(command, dirname(path), 20);
     if (out.timed_out) return `${formatter} timed out`;
     if (out.exit_code !== 0) {
       return out.stderr.trim().slice(-300) || `${formatter} failed`;
@@ -145,10 +135,8 @@ export async function runExternalFormatter(
 export async function readFileText(
   path: string,
 ): Promise<{ text: string; mtime: number } | null> {
-  const res = await invoke<ReadResult>("fs_read_file", {
-    path,
-    workspace: currentWorkspaceEnv(),
-  }).catch(() => null);
+  // Explicit-user read (tier A): no secret policy, no registry.
+  const res = await native.readFile(path).catch(() => null);
   if (res?.kind !== "text" || res.content == null) return null;
   return { text: res.content, mtime: res.mtime ?? 0 };
 }

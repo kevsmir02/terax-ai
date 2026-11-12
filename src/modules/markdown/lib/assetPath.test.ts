@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkReadable } from "@/modules/ai/lib/security";
+import { checkReadable } from "@/modules/workspace/policy";
 import {
   isAllowedLocalImage,
   isInsideRoot,

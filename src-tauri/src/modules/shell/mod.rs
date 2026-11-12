@@ -37,6 +37,17 @@ pub struct CommandOutput {
 /// the process is force-killed on timeout. We deliberately do NOT pipe into
 /// the user's interactive PTY — that would fight their input. AI tool calls
 /// are presented in chat as their own structured result.
+///
+/// `cwd` is authorized through `workspace::authorize_spawn_cwd`, which is
+/// strict: only the launch dir, the user's home and directories the user
+/// authorized (spaces, terminal cwds) are accepted, and symlinks are resolved
+/// before the check. Known limitation for retained consumers: the external
+/// formatter (`src/modules/editor/lib/externalFormat.ts`) passes
+/// `cwd = dirname(edited file)`, so formatting a file that lives outside every
+/// authorized root is refused even though that file can be edited. That is
+/// deliberate for now — do not widen this to a path-only check without an
+/// explicit user grant (tracked by a later ticket, see
+/// `docs/architecture/security-model.md`).
 #[tauri::command]
 pub async fn shell_run_command(
     app: tauri::AppHandle,

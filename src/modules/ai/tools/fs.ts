@@ -160,7 +160,7 @@ export function buildFsTools(ctx: ToolContext) {
               };
             original = r.content;
           } catch (error) {
-            if (error !== "AI file not found")
+            if (error !== "file not found")
               return { error: String(error), path: abs };
             isNewFile = true;
           }

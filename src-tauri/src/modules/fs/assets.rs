@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -7,6 +6,7 @@ use std::sync::Mutex;
 use tauri::http::{Request, Response};
 use tauri::{Manager, Runtime, UriSchemeContext, UriSchemeResponder};
 
+use super::access::opened_path;
 use crate::modules::workspace::{resolve_path, WorkspaceEnv};
 
 #[derive(Clone)]
@@ -48,7 +48,7 @@ impl AssetGrants {
             std::fs::canonicalize(resolve_path(path, &workspace)).map_err(|e| e.to_string())?;
         let directory = root.is_dir();
         if directory {
-            super::read_policy::readable(&root)?;
+            super::access_policy::readable(&root)?;
         }
         if !directory && media_type(&root).is_none() {
             return Err("only media files can be granted".into());
@@ -175,7 +175,7 @@ fn respond(
     let path =
         std::fs::canonicalize(resolve_path(&path, &grant.workspace)).map_err(|e| e.to_string())?;
     if grant.directory {
-        super::read_policy::readable(&path)?;
+        super::access_policy::readable(&path)?;
     }
     if !within(&path, &grant) {
         return Err("outside media grant".into());
@@ -190,7 +190,7 @@ fn respond(
     let mut file = options.open(&path).map_err(|e| e.to_string())?;
     let actual = opened_path(&file)?;
     if grant.directory {
-        super::read_policy::readable(&actual)?;
+        super::access_policy::readable(&actual)?;
     }
     if !within(&actual, &grant) {
         return Err("opened asset escaped its grant".into());
@@ -281,32 +281,6 @@ fn media_type(path: &Path) -> Option<&'static str> {
             _ => return None,
         },
     )
-}
-
-fn opened_path(file: &File) -> Result<PathBuf, String> {
-    #[cfg(target_os = "macos")]
-    {
-        use std::os::fd::AsRawFd;
-        use std::os::unix::ffi::OsStrExt;
-        let mut buffer = [0u8; libc::PATH_MAX as usize];
-        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETPATH, buffer.as_mut_ptr()) } == -1 {
-            return Err(std::io::Error::last_os_error().to_string());
-        }
-        let end = buffer
-            .iter()
-            .position(|&byte| byte == 0)
-            .ok_or("invalid path")?;
-        Ok(PathBuf::from(std::ffi::OsStr::from_bytes(&buffer[..end])))
-    }
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::fd::AsRawFd;
-        std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).map_err(|e| e.to_string())
-    }
-    #[cfg(windows)]
-    {
-        super::local_file::canonicalize(file).map(PathBuf::from)
-    }
 }
 
 #[cfg(test)]

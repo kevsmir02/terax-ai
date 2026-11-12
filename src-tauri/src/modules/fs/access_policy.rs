@@ -1,3 +1,15 @@
+//! Secret-path policy shared by automatic preview assets and the agent reader.
+//!
+//! The data lives in the frontend tree because the TS guard and this native
+//! guard must agree on the exact same list:
+//! `src/modules/workspace/pathPolicy.json` (owner: `src/modules/workspace`).
+//! Retained consumer: `fs::assets` (Markdown/media preview). The AI-only
+//! consumers are `fs::ai` and `fs::project_memory`.
+//!
+//! This module is deliberately *not* enough on its own: callers must also check
+//! the canonical (post-symlink) path, which `fs::access::authorize_read` and
+//! `fs::assets::respond` do.
+
 use regex::RegexSetBuilder;
 use serde::Deserialize;
 use std::path::Path;
@@ -17,7 +29,7 @@ pub(super) fn readable(path: &Path) -> Result<(), String> {
     static POLICY: OnceLock<(regex::RegexSet, Vec<String>)> = OnceLock::new();
     let (patterns, directories) = POLICY.get_or_init(|| {
         let policy: PathPolicy = serde_json::from_str(include_str!(
-            "../../../../src/modules/ai/lib/pathPolicy.json"
+            "../../../../src/modules/workspace/pathPolicy.json"
         ))
         .expect("valid path policy");
         (
@@ -28,14 +40,14 @@ pub(super) fn readable(path: &Path) -> Result<(), String> {
             policy.protected_dirs,
         )
     });
-    let path = path.to_str().ok_or("refused non-UTF-8 AI path")?;
+    let path = path.to_str().ok_or("refused non-UTF-8 path")?;
     if path.is_empty() || path.chars().any(|c| c < ' ') {
-        return Err("refused invalid AI path".into());
+        return Err("refused invalid path".into());
     }
     let normalized = path.replace('\\', "/");
     let basename = normalized.rsplit('/').next().unwrap_or("");
     if patterns.is_match(&basename.replace('\u{feff}', " ")) {
-        return Err("refused sensitive AI file".into());
+        return Err("refused sensitive file".into());
     }
     let comparison = normalized
         .split('/')
@@ -53,7 +65,7 @@ pub(super) fn readable(path: &Path) -> Result<(), String> {
         .iter()
         .any(|dir| comparison.contains(&format!("{dir}/")))
     {
-        return Err("refused protected AI directory".into());
+        return Err("refused protected directory".into());
     }
     Ok(())
 }
@@ -168,6 +180,24 @@ mod tests {
         let opened = std::path::PathBuf::from(super::super::to_canon(actual));
         assert!(deny_runtime_directory(&opened, &alias).is_err());
         std::fs::remove_dir(alias).unwrap();
+    }
+
+    #[test]
+    fn shared_policy_protects_secrets_and_control_descriptors() {
+        for path in [
+            "/repo/.env",
+            "/repo/file.pem",
+            "/repo/.git/config",
+            "/Users/me/Library/Caches/terax/control.json",
+            "/home/me/.cache/terax/control.json",
+            "C:/Users/me/AppData/Local/terax/control.json",
+            "//wsl.localhost/Ubuntu/home/me/.ssh/id_rsa",
+        ] {
+            assert!(readable(Path::new(path)).is_err(), "{path}");
+        }
+        for path in ["/repo/src/main.ts", "/repo/environment.ts", "/repo/.envoy"] {
+            assert!(readable(Path::new(path)).is_ok(), "{path}");
+        }
     }
 
     #[test]

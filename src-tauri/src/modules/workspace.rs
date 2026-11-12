@@ -1149,6 +1149,26 @@ mod auth_tests {
         assert!(err.contains("outside"), "got: {err}");
     }
 
+    /// Known limitation (ticket #5, RS-3): the external formatter in
+    /// `src/modules/editor/lib/externalFormat.ts` runs through
+    /// `shell_run_command` with `cwd = dirname(edited file)`, and this seam is
+    /// strict. A file legitimately opened outside every authorized root can
+    /// still be edited, but formatting it is refused until a later ticket adds
+    /// an explicit user grant for the formatter cwd.
+    #[test]
+    fn external_formatter_cwd_outside_every_root_is_refused() {
+        let project = tempdir("formatter-project");
+        let outside = tempdir("formatter-outside");
+        let edited = outside.join("notes.ts");
+        fs::write(&edited, "let x = 1;\n").expect("fixture file");
+        let reg = WorkspaceRegistry::default();
+        reg.authorize(&project).expect("authorize project root");
+        let cwd = edited.parent().expect("parent").to_string_lossy().into_owned();
+        let err = authorize_spawn_cwd(&reg, Some(&cwd), &WorkspaceEnv::Local)
+            .expect_err("formatter cwd outside the roots must be refused");
+        assert!(err.contains("outside"), "got: {err}");
+    }
+
     #[test]
     fn authorize_spawn_cwd_rejects_missing_path() {
         let mut missing = env::temp_dir();

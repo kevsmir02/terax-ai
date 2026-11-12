@@ -30,7 +30,7 @@ import {
   useSelectionAskAi,
 } from "@/modules/ai";
 import { AiComposerProvider } from "@/modules/ai/lib/composer";
-import { native } from "@/modules/ai/lib/native";
+import { native } from "@/modules/workspace/native";
 import {
   CommandPalette,
   createCommandItems,
