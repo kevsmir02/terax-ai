@@ -285,14 +285,16 @@ def _startup_table(report: dict) -> str:
     entries = report.get("startup") or []
     if not entries:
         return "  (no startup measurement in this report)"
-    headers = ["launch", "profile", "exec->nav ms", "nav->boot ms", "exec->boot ms", "first paint ms", "DOMContentLoaded ms", "load ms"]
+    headers = ["launch", "profile", "exec->nav ms", "nav->boot ms", "exec->boot ms", "first paint ms", "FCP ms", "DOMContentLoaded ms", "load ms", "boot PSS MiB"]
     rows = []
     for entry in entries:
         rows.append([
             str(entry.get("launch", "-")), entry.get("kind", "-"),
             _m(entry.get("exec_to_nav_ms"), 0), _m(entry.get("nav_to_boot_ms"), 0),
             _m(entry.get("exec_to_boot_ms"), 0), _m(entry.get("first_paint_ms"), 0),
+            _m(entry.get("first_contentful_paint_ms"), 0),
             _m(entry.get("dom_content_loaded_ms"), 0), _m(entry.get("load_ms"), 0),
+            _m(entry.get("pssMiB"), 1),
         ])
     return lab_report.table(headers, rows)
 

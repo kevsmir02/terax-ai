@@ -1480,8 +1480,11 @@ def run_linux_startup(args, binary: Path, source: Path, output: Path) -> int:
                     try:
                         if phase == "booted":
                             booted = build_startup_entry(kind, launch, event, spawned_wall)
-                            manifest["startup"].append(booted)
                             found = linux_proc.sample(process.pid)
+                            booted["pssMiB"] = round(found["total"]["pss"] / linux_proc.MIB, 2)
+                            booted["appPssMiB"] = round(found["app"]["pss"] / linux_proc.MIB, 2)
+                            booted["workloadPssMiB"] = round(found["workload"]["pss"] / linux_proc.MIB, 2)
+                            manifest["startup"].append(booted)
                             manifest["samples"].append({
                                 "phase": "booted",
                                 "launch": launch,
@@ -1519,6 +1522,14 @@ def run_linux_startup(args, binary: Path, source: Path, output: Path) -> int:
                 raise RuntimeError(f"launch {launch} reported no boot milestone")
             print(json.dumps({key: booted.get(key) for key in ("launch", "kind", "exec_to_boot_ms", "nav_to_boot_ms", "first_paint_ms")}), flush=True)
         manifest["environment"]["loadAverageEnd"] = [round(value, 2) for value in os.getloadavg()]
+        manifest["linux"] = {
+            "sampler": "procfs",
+            "pollIntervalS": args.poll_interval,
+            "pssIsUniqueMemory": True,
+            "roles": list(linux_proc.ROLE_ORDER),
+            "seriesLaunch": repeats,
+            "seriesNote": "the timeline covers the last (warm) launch; startup entries cover every launch",
+        }
         manifest["metrics"] = linux_report.round_metrics(linux_report.compute_metrics(manifest))
         manifest["humanSummary"] = linux_report.summarize(manifest)
     except BaseException as error:
