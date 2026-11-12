@@ -14,7 +14,7 @@ pkgname=terax-workspace
 pkgver=0.9.0
 pkgrel=1
 # The source revision this recipe is aligned with; refreshed by the packaging runner.
-_commit=d716382f44399771c83af070eaee6c36da1f38f4
+_commit=1742389cbf5ae4026b9a99ae9e5278ec7b33f721
 pkgdesc="Personal Linux terminal workspace (unofficial fork candidate)"
 arch=('x86_64')
 license=('Apache-2.0')
