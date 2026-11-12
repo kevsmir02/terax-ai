@@ -1,14 +1,12 @@
-//! Secret-path policy shared by automatic preview assets and the agent reader.
+//! Secret-path policy shared by automatic preview assets.
 //!
 //! The data lives in the frontend tree because the TS guard and this native
 //! guard must agree on the exact same list:
 //! `src/modules/workspace/pathPolicy.json` (owner: `src/modules/workspace`).
-//! Retained consumer: `fs::assets` (Markdown/media preview). The AI-only
-//! consumers are `fs::ai` and `fs::project_memory`.
+//! Retained consumer: `fs::assets` (Markdown/media preview).
 //!
 //! This module is deliberately *not* enough on its own: callers must also check
-//! the canonical (post-symlink) path, which `fs::access::authorize_read` and
-//! `fs::assets::respond` do.
+//! the canonical (post-symlink) path, which `fs::assets::respond` does.
 
 use regex::RegexSetBuilder;
 use serde::Deserialize;
