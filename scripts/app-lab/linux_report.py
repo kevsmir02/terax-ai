@@ -373,6 +373,15 @@ def summarize(report: dict) -> str:
     roles = report.get("linux", {}).get("roles") or []
     if roles:
         out.append(f"  process roles the sampler knows: {', '.join(roles)}")
+    isolation = report.get("isolation") or {}
+    if isolation:
+        out.append(
+            f"  isolation: identifier {isolation.get('identifier')}, benchIsolated "
+            f"{isolation.get('benchIsolated')}, profile verified {isolation.get('profileVerified')}, "
+            f"namespace {isolation.get('namespaceIsolation')}, upstream unchanged "
+            f"{isolation.get('upstreamStateUnchanged')}, binary identifier "
+            f"{report.get('appIdentifier')}"
+        )
     if internals(report).get("workloadFiles"):
         out.append(f"  fixtures: {', '.join(internals(report)['workloadFiles'])}")
     out.append("")

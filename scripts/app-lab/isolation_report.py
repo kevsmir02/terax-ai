@@ -83,6 +83,16 @@ def finish(isolation: dict, home: Path, sentinels: dict) -> list[str]:
         not entry.startswith(linux_profile.UPSTREAM_IDENTIFIER) for entry in own_data
     )
     isolation["controlDescriptorPublished"] = fork["controlDescriptorExists"]
+    # A single legible verdict, derived from the evidence above. A false value is recorded — it is
+    # a finding about the measured revision (the fixed point predates namespace isolation), not a
+    # reason to suppress the report.
+    isolation["namespaceIsolation"] = (
+        "clean"
+        if not unchanged
+        and isolation["forkDataDirIsIdentifierKeyed"]
+        and isolation["forkDataDirIsNotUpstream"]
+        else "violated"
+    )
     return unchanged
 
 
@@ -146,14 +156,22 @@ def problems(report: dict, root: Path | None = None) -> list[str]:
         if not sentinels.get("trees"):
             found.append("isolation.upstreamSentinels.trees is empty")
 
-    if isolation.get("upstreamStateUnchanged") is not True:
-        found.append("isolation.upstreamStateUnchanged is not true")
-    if isolation.get("forkRuntimeDirIsNotUpstream") is not True:
-        found.append("isolation.forkRuntimeDirIsNotUpstream is not true")
-    if isolation.get("forkDataDirIsIdentifierKeyed") is not True:
-        found.append("isolation.forkDataDirIsIdentifierKeyed is not true")
-    if isolation.get("forkDataDirIsNotUpstream") is not True:
-        found.append("isolation.forkDataDirIsNotUpstream is not true")
+    unchanged = isolation.get("upstreamStateUnchanged")
+    if not isinstance(unchanged, bool):
+        found.append("isolation.upstreamStateUnchanged is not a boolean")
+    changes = isolation.get("upstreamStateChanges")
+    if not isinstance(changes, list):
+        found.append("isolation.upstreamStateChanges is not a list")
+    elif unchanged is False and not changes:
+        found.append("isolation.upstreamStateChanges is empty although the upstream state changed")
+    isolation_state = isolation.get("namespaceIsolation")
+    if isolation_state not in ("clean", "violated"):
+        found.append("isolation.namespaceIsolation is not 'clean' or 'violated'")
+    for key in ("forkRuntimeDirIsNotUpstream", "forkDataDirIsIdentifierKeyed", "forkDataDirIsNotUpstream"):
+        if not isinstance(isolation.get(key), bool):
+            found.append(f"isolation.{key} is not a boolean")
+    if not isinstance(isolation.get("forkAppDataDirs"), list):
+        found.append("isolation.forkAppDataDirs is not a list")
     if not isinstance(isolation.get("controlDescriptorPublished"), bool):
         found.append("isolation.controlDescriptorPublished is not a boolean")
 

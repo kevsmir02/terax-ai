@@ -97,12 +97,24 @@ class IsolationBlockTest(unittest.TestCase):
         self.assertTrue(block["forkDataDirIsNotUpstream"])
         self.assertEqual(block["fork"]["descriptorPid"], 4242)
 
-    def test_a_changed_upstream_sentinel_invalidates_the_report(self) -> None:
+    def test_a_changed_upstream_sentinel_is_recorded_not_suppressed(self) -> None:
+        # A violation is a finding about the measured revision: it must stay in the report with
+        # reasons, and the run fails on it (run.py returns 3), but the evidence is not deleted.
         block = self.finished_block()
         (self.home / ".cache" / linux_profile.UPSTREAM_NAMESPACE / "control.json").write_text("{}\n")
-        isolation_report.finish(block, self.home, self.sentinels)
+        changes = isolation_report.finish(block, self.home, self.sentinels)
+        self.assertTrue(changes)
+        self.assertFalse(block["upstreamStateUnchanged"])
+        self.assertEqual(block["namespaceIsolation"], "violated")
+        self.assertTrue(block["upstreamStateChanges"])
+        self.assertEqual(isolation_report.problems({"isolation": block}, self.root), [])
+
+    def test_a_recorded_change_without_reasons_is_rejected(self) -> None:
+        block = self.finished_block()
+        block["upstreamStateUnchanged"] = False
+        block["upstreamStateChanges"] = []
         found = isolation_report.problems({"isolation": block}, self.root)
-        self.assertIn("isolation.upstreamStateUnchanged is not true", found)
+        self.assertTrue(any("upstreamStateChanges is empty" in reason for reason in found), found)
 
     def test_a_profile_outside_the_run_output_is_rejected(self) -> None:
         block = self.finished_block()
