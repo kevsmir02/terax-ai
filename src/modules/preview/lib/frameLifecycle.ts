@@ -73,16 +73,17 @@ export function previewReloadNotice(
     title: "Preview reloaded",
     detail: `${CAUSE[reason]} The frame was unloaded to stop hidden page work, so the page reloaded from its server: scroll position, form input and any other page state are lost. The dev server keeps running.`,
     limitation:
-      "Unloading follows the window-visibility signals Linux actually reports: a window covered by another window, and minimize under Wayland, may keep running.",
+      "Unloading follows only the visibility signals the platform reports: on Linux, a window covered by another window, and minimize under Wayland, may keep running.",
   };
 }
 
 /**
  * The disclosure that belongs on screen after a frame was unloaded.
  *
- * The cause is recorded while the frame is gone, survives the re-mount so the notice can explain
- * the reload where it happens, and stays until the user dismisses it or another unload replaces
- * it.
+ * The cause is recorded when the frame goes away and survives the re-mount so the notice can
+ * explain the reload where it happens. It is deliberately not rewritten while the frame stays
+ * gone: returning to a Space re-renders before the app has restored that Space's active tab, and
+ * those intermediate renders report a tab switch that never happened.
  */
 export function reloadNoticeAfter(
   previous: PreviewFrameLifecycle,
@@ -90,7 +91,7 @@ export function reloadNoticeAfter(
   notice: PreviewFrameUnloadReason | null,
 ): PreviewFrameUnloadReason | null {
   if (next.mounted) return notice;
-  // Already hidden with nothing to say (dismissed, or recorded before this render): stay quiet.
-  if (!previous.mounted && notice === null) return null;
+  // Already gone: keep (or keep quiet about) the cause recorded on the way out.
+  if (!previous.mounted) return notice;
   return next.reason;
 }

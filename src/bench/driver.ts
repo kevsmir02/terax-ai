@@ -1259,8 +1259,28 @@ async function previewScenario(
     await pause(ms);
     return beats().length - before;
   };
-  const notice = (reason: string) =>
-    document.querySelector(`[data-preview-reloaded="${reason}"]`);
+  /** Beat-count watermark: only beats received after an action count as evidence of it. */
+  const mark = () => beats().length;
+  const since = (index: number) => beats().slice(index);
+  const waitForNewBeat = (
+    index: number,
+    predicate: (message: PreviewFixtureMessage) => boolean,
+    what: string,
+    timeoutMs = 30_000,
+  ) => run.waitFor(() => since(index).some(predicate), what, timeoutMs);
+  const reloadNotice = (reason?: string) =>
+    document.querySelector(
+      reason
+        ? `[data-preview-reloaded="${reason}"]`
+        : "[data-preview-reloaded]",
+    );
+  /** The instances that already reported; a re-mounted frame must be one that is not here. */
+  const seen = () => new Set(instances());
+  const waitForFreshPage = (before: Set<string>, what: string) =>
+    waitForBeat(
+      (message) => message.redirected && !before.has(message.instance),
+      what,
+    );
 
   try {
     const first = await run.booted();
@@ -1360,16 +1380,19 @@ async function previewScenario(
     );
 
     // Returning re-mounts a fresh document and explains the reload where it happens.
+    const beforeTabReturn = seen();
     run.select(previewId);
     try {
-      await waitForBeat(
-        (message) => message.instance !== instance && message.redirected,
-        "the reloaded preview page",
+      await waitForFreshPage(beforeTabReturn, "the reloaded preview page");
+      await run.waitFor(
+        () => Boolean(reloadNotice("tab-inactive")),
+        "the tab reload notice",
+        5000,
       );
     } catch (error) {
       throw new Error(await failed("tab return reloads", String(error)));
     }
-    const tabNotice = notice("tab-inactive");
+    const tabNotice = reloadNotice("tab-inactive");
     await check(
       "tab return reloads",
       Boolean(frame()) && instances().length >= 2,
@@ -1389,7 +1412,6 @@ async function previewScenario(
     // Inactive Space: every frame of the Space that left the screen unloads.
     const spaceA =
       run.app().tabs.find((tab) => tab.id === previewId)?.spaceId ?? "";
-    const beforeSpace = lastBeat()?.instance ?? "";
     run.app().newSpace();
     try {
       await run.waitFor(
@@ -1409,26 +1431,43 @@ async function previewScenario(
       `${afterSpace} beats after teardown, ${beatsAfterSpace} before`,
     );
 
+    const beforeSpaceReturn = instances();
+    const spaceReturnMark = mark();
     run.app().setActiveSpace(spaceA);
     try {
-      await waitForBeat(
-        (message) => message.instance !== beforeSpace && message.redirected,
-        "the reloaded preview page after returning to the Space",
+      await waitForNewBeat(
+        spaceReturnMark,
+        (message) =>
+          !beforeSpaceReturn.includes(message.instance) && message.redirected,
+        "a fresh preview page after returning to the Space",
+      );
+      await run.waitFor(
+        () => Boolean(reloadNotice()),
+        "the reload notice on the returned Space",
+        10_000,
       );
     } catch (error) {
       throw new Error(await failed("space return reloads", String(error)));
     }
-    const spaceNotice = notice("space-inactive");
+    const spaceNotice = reloadNotice();
+    const spaceReason =
+      spaceNotice?.getAttribute("data-preview-reloaded") ?? null;
     await check(
       "space return reloads",
-      Boolean(frame()) && instances().length >= 3,
-      `instances ${instances().join(",")}`,
+      Boolean(frame()) &&
+        !beforeSpaceReturn.includes(lastBeat()?.instance ?? ""),
+      `before=${beforeSpaceReturn.join(",")} after=${instances().join(",")}`,
     );
     await check(
       "space reload disclosed",
       Boolean(spaceNotice) &&
-        (spaceNotice?.textContent ?? "").includes("another Space"),
-      JSON.stringify(spaceNotice?.textContent?.slice(0, 120) ?? null),
+        spaceReason === "space-inactive" &&
+        (spaceNotice?.textContent ?? "").includes("another Space") &&
+        (spaceNotice?.textContent ?? "").toLowerCase().includes("lost"),
+      `reason=${spaceReason} text=${JSON.stringify(spaceNotice?.textContent?.slice(0, 140) ?? null)}`,
+    );
+    await run.log(
+      `[preview] NOTE Space-return notice reason=${spaceReason} (returning to a Space re-renders before the app restores its active tab; the recorded cause must stay the Space)`,
     );
     await run.sync("preview-space-returned", {
       instances: instances().length,
@@ -1438,6 +1477,7 @@ async function previewScenario(
     // opens another application for this phase.
     let blurExercised = false;
     const beforeBlur = lastBeat()?.instance ?? "";
+    const blurMark = mark();
     await run.sync("preview-blur");
     try {
       await run.waitFor(
@@ -1450,13 +1490,15 @@ async function previewScenario(
       blurExercised = false;
     }
     if (blurExercised) {
-      const blurBeats = await pauseBeats(1500);
+      const beatsAtBlur = since(blurMark).length;
+      await pause(1500);
       await check(
         "visible blur keeps the frame",
         Boolean(frame()) &&
           (lastBeat()?.instance ?? "") === beforeBlur &&
-          document.visibilityState === "visible",
-        `hasFocus=${document.hasFocus()} visibility=${document.visibilityState} beats=${blurBeats} instance=${beforeBlur}`,
+          document.visibilityState === "visible" &&
+          since(blurMark).length > beatsAtBlur,
+        `frame=${Boolean(frame())} hasFocus=${document.hasFocus()} visibility=${document.visibilityState} before=${beforeBlur} last=${lastBeat()?.instance ?? "-"} newBeats=${since(blurMark).length - beatsAtBlur}`,
       );
     } else {
       await run.log(
@@ -1496,9 +1538,11 @@ async function previewScenario(
     );
 
     const beforeRestore = lastBeat()?.instance ?? "";
+    const restoreMark = mark();
     const show = await run.native({ cmd: "show", mode: "orderout" });
     try {
-      await waitForBeat(
+      await waitForNewBeat(
+        restoreMark,
         (message) => message.instance !== beforeRestore && message.redirected,
         "the preview page after the window is shown",
       );

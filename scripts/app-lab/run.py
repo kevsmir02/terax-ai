@@ -968,6 +968,11 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                 if phase == "done":
                     manifest["samples"].append({"phase": "done", "tMonoNs": time.monotonic_ns(), "event": app_report.slim_event(event)})
                     workflow = event.get("workflow") or {}
+                    if event.get("preview") is not None:
+                        # Scenario-specific evidence that is not a pass/fail step: how many
+                        # frame instances were loaded, whether the blur was exercised, and what
+                        # the desktop reported for minimize.
+                        manifest["preview"] = event["preview"]
                     break
                 if phase == "preview-blur":
                     # The window must lose OS focus while staying visible, so a separate

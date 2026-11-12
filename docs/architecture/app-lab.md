@@ -102,8 +102,8 @@ frame's document really stopping rather than as an attribute change:
 - switching to another tab, and switching to another Space, unloads the frame in the same turn (no
   further beats) and returning re-mounts a fresh document that says why it reloaded and that
   transient page state was lost (`[data-preview-reloaded]`);
-- the fixture server answers a ping across every teardown, so frame teardown never owns the dev
-  server process;
+- the fixture server answers a ping after the tab teardown and after the tab closes, so frame
+  teardown never owns the dev server process;
 - `preview-blur` opens a separate application window (zenity/yad) so the app loses focus while its
   window stays visible: the frame and its instance must survive, or the step is recorded as
   skipped when no window could take focus;
@@ -118,9 +118,9 @@ ride the final `done` sync as `preview` next to `workflow`; the fixture server's
 (`fixtureLoads`, `redirectHits`, `pings`) are recorded as `previewServer`.
 
 **Focus is advisory on Linux.** Wayland lets the compositor decide focus (`set_focus` is a hint)
-and WebKitGTK exposes no occlusion state, so `qualify()` does not fail the workflow on focus:
-`native.appActive`/`key` are recorded per phase and summarised as a `qualification.advisories`
-entry. The snapshot's process ids come from a `/proc` scan of the app's descendants
+and WebKitGTK exposes no occlusion state, so `qualify()` does not fail the workflow or preview
+scenario on focus: `native.appActive`/`key` are recorded per phase and summarised as a
+`qualification.advisories` entry. The snapshot's process ids come from a `/proc` scan of the app's descendants
 (`bench.rs`, Linux `platform` module), not from WebKit private API.
 
 **Not sampled yet (ticket 02 owns it):** per-category memory (`footprint`/`vmmap` equivalents:

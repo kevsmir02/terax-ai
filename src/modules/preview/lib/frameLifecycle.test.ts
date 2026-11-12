@@ -203,8 +203,25 @@ describe("preview reload notice lifecycle", () => {
     expect(reloadNoticeAfter(hiddenByTab, loaded, null)).toBe(null);
   });
 
-  it("a newer unload replaces the recorded cause", () => {
+  it("keeps the cause that took the frame off screen, not a later intermediate state", () => {
+    // Returning to a Space re-renders before the app has restored the Space's active tab: the
+    // frame reports "tab-inactive" for that render even though the tab never changed. The
+    // recorded cause must stay the one that took the frame away, or the notice would blame a
+    // tab switch the user never made.
     expect(reloadNoticeAfter(hiddenByTab, hiddenBySpace, "tab-inactive")).toBe(
+      "tab-inactive",
+    );
+    expect(
+      reloadNoticeAfter(hiddenBySpace, hiddenByTab, "space-inactive"),
+    ).toBe("space-inactive");
+    expect(reloadNoticeAfter(hiddenBySpace, loaded, "space-inactive")).toBe(
+      "space-inactive",
+    );
+  });
+
+  it("a visible blur never changes the recorded cause", () => {
+    // A blur is not an unload state at all; it cannot reach this function with a new reason.
+    expect(reloadNoticeAfter(loaded, loaded, "space-inactive")).toBe(
       "space-inactive",
     );
   });
