@@ -1,5 +1,6 @@
-import { isExternalUrl, openExternalUrl } from "@/lib/external-link";
+import { openExternalUrl } from "@/lib/external-link";
 import type { ComponentProps, MouseEventHandler } from "react";
+import { markdownLinkAction } from "./lib/linkAction";
 
 export type MarkdownLinkProps = ComponentProps<"a"> & {
   node?: unknown;
@@ -16,10 +17,16 @@ export function MarkdownLink({
 }: MarkdownLinkProps) {
   const handleClick: MouseEventHandler<HTMLAnchorElement> = (event) => {
     onClick?.(event);
-    if (event.defaultPrevented || !href || !isExternalUrl(href)) return;
-
+    if (event.defaultPrevented) return;
+    // Document content never navigates this webview and never runs an
+    // application command. The only outcome a link can produce is the
+    // deliberate native opener for an http(s)/mailto/tel target; a relative,
+    // file: or any other link is inert.
     event.preventDefault();
-    void openExternalUrl(href, onSettled);
+    const action = markdownLinkAction(href);
+    if (action.kind === "external") {
+      void openExternalUrl(action.href, onSettled);
+    }
   };
 
   return (
@@ -27,8 +34,8 @@ export function MarkdownLink({
       {...props}
       href={href}
       onClick={handleClick}
+      onAuxClick={(event) => event.preventDefault()}
       rel="noreferrer"
-      target="_blank"
     >
       {children}
     </a>

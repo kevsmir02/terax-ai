@@ -1,3 +1,4 @@
+import type { DestructiveGitBridgePending } from "@/modules/source-control/destructiveGitBridge";
 import type { Tab } from "@/modules/tabs";
 
 /** What the scenario driver may do to the running application: the app's own tab actions. */
@@ -18,6 +19,10 @@ export type BenchAppApi = {
   closeTab: (id: number) => void;
   /** Opens a file in an editor tab (the app's own planner); returns the tab id. */
   openFileTab: (path: string, pin?: boolean, spaceId?: string) => number;
+  /** Opens a rendered Markdown tab (the app's own planner); returns the tab id. */
+  openMarkdownTab: (path: string) => number;
+  /** Applies the terminal's own cwd update, as an OSC 7 report would. */
+  setLeafCwd: (leafId: number, cwd: string) => void;
   readBuffer: (leafId: number, maxLines?: number) => string | null;
   /** Spaces (workspaces) the application knows about. */
   spaces: { id: string; name: string }[];
@@ -46,6 +51,22 @@ export type BenchAppApi = {
   };
   /** Inserts text through the editor's real editing path (dirty buffer, drafts, saves). */
   editEditor: (tabId: number, text: string) => void;
+  /** Shows the Source Control panel so its real destructive-action guard mounts. */
+  openSourceControl: () => void;
+  /** Drives the panel's own destructive-action guard (never a second implementation). */
+  destructiveGit: () => {
+    mounted: boolean;
+    ready: boolean;
+    busy: boolean;
+    pending: DestructiveGitBridgePending | null;
+    requestDiscard: (paths: string[]) => Promise<void>;
+    confirm: (confirmation: {
+      unsavedBuffers: number[];
+      activeWork: number[];
+      force: boolean;
+    }) => Promise<void>;
+    cancel: () => void;
+  };
 };
 
 /** One scenario, as written by scripts/app-lab/run.py into TERAX_BENCH_SCENARIO. */
@@ -60,7 +81,9 @@ export type BenchScenario = {
     | "fs-churn"
     | "input"
     | "workflow"
+    | "markdown"
     | "spaces"
+    | "git"
     | "preview"
     | "images"
     | "resource"
@@ -78,6 +101,16 @@ export type BenchScenario = {
   durationS?: number;
   warmupS?: number;
   hiddenAgents?: number;
+  /** git: an isolated scratch repository the scenario mutates and inspects. */
+  git?: {
+    repo: string;
+    fileA: string;
+    fileB: string;
+    baseA: string;
+    baseB: string;
+    editedA: string;
+    editedB: string;
+  };
   /** split-drag: seconds of divider motion per drag, and its amplitude as a share of the pane area. */
   dragS?: number;
   dragAmplitude?: number;
@@ -115,6 +148,27 @@ export type BenchScenario = {
   file?: string;
   /** workflow: the file's distinctive first line, asserted in the rendered editor. */
   fileText?: string;
+  /** markdown: documents and assets the scenario drives through the real preview. */
+  markdown?: {
+    /** The configured Space project root (the app's launch directory). */
+    workspace: string;
+    /** A document inside the root with an allowed image and a symlink escape. */
+    insideDoc: string;
+    /** A document outside the root with a sibling image and an outside image. */
+    outsideDoc: string;
+    /** A document whose only image is remote. */
+    remoteDoc: string;
+    /** A document with relative and external links. */
+    linkDoc: string;
+    /** A document whose references are hostile: asset://, javascript:, file:, script, onerror. */
+    maliciousDoc: string;
+    /** A large document above the approved 4 MiB syntax ceiling. */
+    largeDoc: string;
+    /** Orchestrator URL that counts remote image fetches. */
+    remoteImage: string;
+    /** Marker text inside the large document. */
+    largeMarker: string;
+  };
   /** images: fixture paths the scenario opens and asserts through the image surface. */
   images?: {
     png: string;

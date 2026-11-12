@@ -1957,6 +1957,418 @@ async function previewScenario(
   }
 }
 
+/** A rendered Markdown image, identified by the alt text the fixture wrote. */
+function markdownImage(alt: string): HTMLImageElement | null {
+  return document.querySelector<HTMLImageElement>(
+    `[data-streamdown="image"][alt="${alt}"]`,
+  );
+}
+
+/** A document-rendered link; the hardened href may be normalized to `/path`. */
+function markdownLink(fragment: string): HTMLAnchorElement | null {
+  return (
+    [...document.querySelectorAll<HTMLAnchorElement>("a")].find((anchor) =>
+      (anchor.getAttribute("href") ?? "").includes(fragment),
+    ) ?? null
+  );
+}
+
+function buttonWithText(text: string): HTMLButtonElement | null {
+  return (
+    [...document.querySelectorAll("button")].find((button) =>
+      (button.textContent ?? "").includes(text),
+    ) ?? null
+  );
+}
+
+/**
+ * The Markdown panes actually on screen. Every preview tab stays mounted (so scroll state
+ * survives a switch), so a selector for the rendered text must skip the `aria-hidden`
+ * wrappers of the inactive ones.
+ */
+function visibleMarkdownPanes(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>(".select-text")].filter(
+    (element) => !element.closest('[aria-hidden="true"]'),
+  );
+}
+
+function visibleMarkdownText(): string {
+  return visibleMarkdownPanes()
+    .map((element) => element.textContent ?? "")
+    .join("\n");
+}
+
+/**
+ * The Markdown acceptance scenario through the real WebKitGTK webview.
+ *
+ * It drives the app's own Markdown tab planner and observes what the page really rendered and
+ * fetched: an in-Space image, a symlink escape refused by the native grant, an outside
+ * document confined to its own folder, an explicit grant, a counted remote image that is only
+ * fetched after the person chooses, inert links, the syntax ceiling, and grant revocation on
+ * close. The terminal cwd changes through the same `setLeafCwd` update an OSC 7 report drives.
+ */
+async function markdownScenario(
+  run: ScenarioRun,
+): Promise<Record<string, unknown>> {
+  const config = run.scenario.markdown;
+  if (!config)
+    throw new Error(
+      "the markdown scenario needs its fixture paths (scripts/app-lab/run.py creates them)",
+    );
+  const steps: WorkflowStep[] = [];
+  const check = async (name: string, ok: boolean, detail: string) => {
+    steps.push({ name, ok, detail });
+    await run.log(`[markdown] ${ok ? "PASS" : "FAIL"} ${name}: ${detail}`);
+  };
+  const failed = async (name: string, detail: string) => {
+    await check(name, false, detail);
+    return `markdown step failed: ${name}: ${detail}`;
+  };
+  const remoteHits = async (): Promise<number> => {
+    try {
+      const response = await fetch(run.url("/preview-ping"));
+      const body = (await response.json()) as { markdownRemoteHits?: number };
+      return body.markdownRemoteHits ?? 0;
+    } catch {
+      return -1;
+    }
+  };
+
+  const domState = () => {
+    const tabs = run
+      .app()
+      .tabs.map((tab) =>
+        tab.kind === "terminal" ||
+        tab.kind === "editor" ||
+        tab.kind === "preview" ||
+        tab.kind === "markdown"
+          ? `${tab.kind}:${"path" in tab ? tab.path : "cwd" in tab ? tab.cwd : "url" in tab ? tab.url : ""}`
+          : tab.kind,
+      )
+      .join(",");
+    const body = document.querySelector(".select-text")?.textContent ?? "";
+    return `tabs [${tabs}], active ${run.app().activeId}, page ${JSON.stringify(body.slice(0, 120))}, imgs ${document.querySelectorAll("img").length}, notice ${JSON.stringify((document.querySelector("[data-markdown-asset-notice]")?.textContent ?? "").slice(0, 160))}, alert ${JSON.stringify((document.querySelector('[role="alert"]')?.textContent ?? "").slice(0, 160))}`;
+  };
+
+  const first = await run.booted();
+
+  // 1. A document inside the Space: its image loads from the configured root, and a symlink
+  //    inside that root which points outside is refused by the native canonical check.
+  const insideTab = run.app().openMarkdownTab(config.insideDoc);
+  try {
+    await run.waitFor(
+      () =>
+        run.app().activeId === insideTab &&
+        markdownImage("inside")?.naturalWidth === 16,
+      "the in-Space Markdown image",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(
+      await failed("inside document image", `${String(error)}; ${domState()}`),
+    );
+  }
+  const insideSrc = markdownImage("inside")?.src ?? "";
+  await check(
+    "inside document image",
+    insideSrc.includes("token="),
+    insideSrc || "no src",
+  );
+  try {
+    await run.waitFor(
+      () => markdownImage("escape")?.complete === true,
+      "the symlink escape attempt",
+      15_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("symlink escape refused", String(error)));
+  }
+  const escaped = markdownImage("escape");
+  await check(
+    "symlink escape refused",
+    escaped !== null && escaped.naturalWidth === 0,
+    `naturalWidth ${escaped?.naturalWidth ?? "missing"}`,
+  );
+
+  // 2. The mutable terminal cwd changes; the document's access must not follow it.
+  run.app().setLeafCwd(first.leafId, "/tmp");
+  run.select(first.tabId);
+  try {
+    await run.waitFor(
+      () => {
+        const tab = run
+          .app()
+          .tabs.find((candidate) => candidate.id === first.tabId);
+        return tab?.kind === "terminal" && tab.cwd === "/tmp";
+      },
+      "the terminal cwd update",
+      10_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("terminal cwd changes", String(error)));
+  }
+  run.select(insideTab);
+  await pause(400);
+  const afterCwd = markdownImage("inside");
+  await check(
+    "cwd change does not change document access",
+    afterCwd?.src === insideSrc && afterCwd.naturalWidth === 16,
+    `src ${afterCwd?.src === insideSrc ? "unchanged" : "changed"}, naturalWidth ${afterCwd?.naturalWidth ?? 0}`,
+  );
+
+  // 3. A document outside the Space root anchors on its own folder; a sibling image beyond it
+  //    needs the explicit grant the notice offers.
+  const outsideTab = run.app().openMarkdownTab(config.outsideDoc);
+  try {
+    await run.waitFor(
+      () =>
+        run.app().activeId === outsideTab &&
+        markdownImage("own")?.naturalWidth === 16,
+      "the outside document's own image",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(
+      await failed("outside document own-folder image", String(error)),
+    );
+  }
+  await check(
+    "outside document own-folder image",
+    markdownImage("parent") === null,
+    "the outside image waits for consent",
+  );
+  const allow = buttonWithText("Allow");
+  if (!allow)
+    throw new Error(await failed("explicit grant offered", "no Allow button"));
+  allow.click();
+  try {
+    await run.waitFor(
+      () => markdownImage("parent")?.naturalWidth === 16,
+      "the explicitly granted outside image",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("explicit outside grant", String(error)));
+  }
+  await check(
+    "explicit outside grant",
+    (markdownImage("parent")?.src ?? "").includes("token="),
+    "loaded after the person chose",
+  );
+
+  // 4. Remote content: rendering the document fetches nothing; the counted pixel is requested
+  //    only after the deliberate choice.
+  const hitsBefore = await remoteHits();
+  const remoteTab = run.app().openMarkdownTab(config.remoteDoc);
+  try {
+    await run.waitFor(
+      () => run.app().activeId === remoteTab && buttonWithText("Load") !== null,
+      "the remote-consent notice",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("remote consent notice", String(error)));
+  }
+  await pause(600);
+  const beforeConsent = await remoteHits();
+  await check(
+    "remote image is not fetched automatically",
+    markdownImage("remote") === null && hitsBefore === 0 && beforeConsent === 0,
+    `image ${markdownImage("remote") ? "present" : "absent"}, hits ${hitsBefore}->${beforeConsent}`,
+  );
+  const loadRemote = buttonWithText("Load 1 remote image");
+  if (!loadRemote)
+    throw new Error(await failed("remote consent button", "no Load button"));
+  loadRemote.click();
+  try {
+    await run.waitFor(
+      () => (markdownImage("remote")?.naturalWidth ?? 0) > 0,
+      "the consented remote image",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("consented remote load", String(error)));
+  }
+  const afterConsent = await remoteHits();
+  await check(
+    "consented remote load",
+    afterConsent > beforeConsent,
+    `hits ${beforeConsent}->${afterConsent}`,
+  );
+
+  // 5. A relative link is inert: it never navigates the application webview or opens a tab.
+  const linkTab = run.app().openMarkdownTab(config.linkDoc);
+  try {
+    await run.waitFor(
+      () =>
+        run.app().activeId === linkTab && markdownLink("elsewhere.md") !== null,
+      "the link document",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(await failed("link document", String(error)));
+  }
+  const hrefBefore = window.location.href;
+  const tabsBefore = run.app().tabs.length;
+  document
+    .querySelector<HTMLAnchorElement>('a[href="./elsewhere.md"]')
+    ?.click();
+  await pause(500);
+  await check(
+    "relative link cannot navigate the app",
+    window.location.href === hrefBefore && run.app().tabs.length === tabsBefore,
+    `url ${window.location.href === hrefBefore ? "unchanged" : "changed"}, tabs ${tabsBefore}->${run.app().tabs.length}`,
+  );
+
+  // 5b. A document of hostile references: nothing in it runs, no handler survives into the
+  //     DOM, a javascript: link keeps no script href, and the only asset URLs are the ones the
+  //     app minted with a grant token.
+  const maliciousTab = run.app().openMarkdownTab(config.maliciousDoc);
+  try {
+    await run.waitFor(
+      () =>
+        run.app().activeId === maliciousTab &&
+        visibleMarkdownText().includes("malicious-marker"),
+      "the hostile document",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(
+      await failed(
+        "hostile document renders",
+        `${String(error)}; ${domState()}`,
+      ),
+    );
+  }
+  await pause(600);
+  const scope = visibleMarkdownPanes()[0] ?? null;
+  const executed = (window as unknown as Record<string, unknown>)
+    .__teraxMarkdownPwned;
+  const scripts = scope?.querySelectorAll("script").length ?? 0;
+  const handlers =
+    scope?.querySelectorAll("[onerror],[onclick],[onload],[onmouseover]")
+      .length ?? 0;
+  const injected =
+    scope === null || scope === undefined
+      ? 0
+      : [...scope.querySelectorAll("img")].filter((img) =>
+          (img.getAttribute("src") ?? "").includes("/etc/passwd"),
+        ).length;
+  const untokened =
+    scope === null || scope === undefined
+      ? 0
+      : [...scope.querySelectorAll<HTMLImageElement>("img")].filter(
+          (img) =>
+            /^asset:/i.test(img.getAttribute("src") ?? "") &&
+            !(img.getAttribute("src") ?? "").includes("token="),
+        ).length;
+  const scriptHrefs =
+    scope === null || scope === undefined
+      ? 0
+      : [...scope.querySelectorAll<HTMLAnchorElement>("a")].filter((anchor) =>
+          /^\s*javascript:/i.test(anchor.getAttribute("href") ?? ""),
+        ).length;
+  await check(
+    "hostile document executes nothing",
+    executed === undefined &&
+      scripts === 0 &&
+      handlers === 0 &&
+      scriptHrefs === 0,
+    `effect ${JSON.stringify(executed)}, ${scripts} scripts, ${handlers} handlers, ${scriptHrefs} javascript: hrefs`,
+  );
+  await check(
+    "hostile references never become app or file URLs",
+    injected === 0 && untokened === 0,
+    `${injected} references to /etc/passwd, ${untokened} untokened asset URLs`,
+  );
+  run.app().closeTab(maliciousTab);
+  await pause(300);
+
+  // 6. Above the 4 MiB syntax ceiling the document still opens, without highlighting. Closing
+  //    its tab revokes the asset grant it held, and a late completion does not resurrect it.
+  const largeTab = run.app().openMarkdownTab(config.largeDoc);
+  try {
+    await run.waitFor(
+      () =>
+        run.app().activeId === largeTab &&
+        document.querySelector('[data-syntax="off"]') !== null &&
+        markdownImage("large")?.naturalWidth === 16,
+      "the large document",
+      40_000,
+    );
+  } catch (error) {
+    throw new Error(
+      await failed("large document without syntax", String(error)),
+    );
+  }
+  const largeSrc = markdownImage("large")?.src ?? "";
+  await check(
+    "large document opens without syntax",
+    largeSrc.includes("token="),
+    largeSrc || "no asset src",
+  );
+  run.app().closeTab(largeTab);
+  await pause(1000);
+  const servedAfterClose = await new Promise<boolean>((resolve) => {
+    if (!largeSrc) {
+      resolve(false);
+      return;
+    }
+    // A distinct query makes this a fresh request: the browser's memory image
+    // cache must not answer for a grant that was just revoked.
+    const probeUrl = `${largeSrc}${largeSrc.includes("?") ? "&" : "?"}probe=${Date.now()}`;
+    const probe = new Image();
+    probe.onload = () => resolve(true);
+    probe.onerror = () => resolve(false);
+    probe.src = probeUrl;
+  });
+  await check(
+    "close revokes the document's asset grant",
+    largeSrc !== "" && !servedAfterClose,
+    `asset ${servedAfterClose ? "still served" : "refused"}`,
+  );
+  await check(
+    "closed document does not resurrect",
+    run.app().tabs.every((tab) => tab.id !== largeTab) &&
+      document.querySelector('[data-syntax="off"]') === null,
+    `tab ${run.app().tabs.some((tab) => tab.id === largeTab) ? "present" : "gone"}`,
+  );
+
+  // 7. A read landing after its document closed must not resurrect it: the 4 MiB document is
+  //    closed while its read is still in flight, and nothing it owned may appear afterwards.
+  const tabsBeforeLate = run.app().tabs.length;
+  const lateTab = run.app().openMarkdownTab(config.largeDoc);
+  run.app().closeTab(lateTab);
+  await pause(1500);
+  const afterLate = visibleMarkdownText();
+  await check(
+    "a read landing after close does not resurrect the document",
+    run.app().tabs.every((tab) => tab.id !== lateTab) &&
+      run.app().tabs.length === tabsBeforeLate &&
+      !afterLate.includes(config.largeMarker) &&
+      document.querySelector('[data-syntax="off"]') === null,
+    `tabs ${tabsBeforeLate}->${run.app().tabs.length}, marker ${afterLate.includes(config.largeMarker) ? "present" : "absent"}`,
+  );
+
+  const pass = steps.every((step) => step.ok);
+  await run.log(
+    `[markdown] ${pass ? "PASS" : "FAIL"} summary: ${steps.filter((step) => !step.ok).length} failures of ${steps.length}`,
+  );
+  return {
+    markdown: {
+      pass,
+      steps,
+      insideTab,
+      outsideTab,
+      remoteTab,
+      linkTab,
+      maliciousTab,
+      cwdAfter: "/tmp",
+      remoteHits: { before: hitsBefore, after: afterConsent },
+    },
+  };
+}
+
 /** One asset request/response pair the app's own server answered (see fs::bench_probe). */
 type AssetEntry = {
   seq: number;
@@ -3556,6 +3968,260 @@ async function imagesScenario(
   }
 }
 
+/**
+ * Destructive Git across Spaces, through the panel's own guard.
+ *
+ * A dirty buffer in one Space must block a discard requested from the panel;
+ * an unacknowledged confirmation and a plan whose Git state changed after the
+ * dialog opened are both refused, and every refusal is observed to leave the
+ * file and the index unchanged. The successful discard at the end is the
+ * control: the same path still mutates when it is deliberately confirmed.
+ */
+async function gitScenario(run: ScenarioRun): Promise<unknown> {
+  const fixture = run.scenario.git;
+  if (!fixture)
+    throw new Error(
+      "the git scenario needs a scratch repository (scripts/app-lab/run.py creates it)",
+    );
+  const steps: WorkflowStep[] = [];
+  const check = async (name: string, ok: boolean, detail: string) => {
+    steps.push({ name, ok, detail });
+    await run.log(`[git] ${ok ? "PASS" : "FAIL"} ${name}: ${detail}`);
+  };
+  const failed = async (name: string, detail: string) => {
+    await check(name, false, detail);
+    return `git step failed: ${name}: ${detail}`;
+  };
+  const app = () => run.app();
+  const pending = () => app().destructiveGit().pending;
+  const gitStatus = () =>
+    invoke<{
+      changedFiles: {
+        path: string;
+        staged: boolean;
+        unstaged: boolean;
+        untracked: boolean;
+      }[];
+    }>("git_status", {
+      repoRoot: fixture.repo,
+      workspace: { kind: "local" },
+    });
+  const fileStatus = async (path: string) =>
+    (await gitStatus()).changedFiles.find((file) => file.path === path) ?? null;
+  const readFile = (path: string) =>
+    invoke<{ kind: string; content?: string }>("fs_read_file", {
+      path,
+      workspace: { kind: "local" },
+      force: false,
+    }).then((result) => (result.kind === "text" ? (result.content ?? "") : ""));
+  const editorText = () =>
+    document.querySelector(".cm-content")?.textContent ?? "";
+  const dirty = (tabId: number) => {
+    const tab = app().tabs.find((candidate) => candidate.id === tabId);
+    return tab?.kind === "editor" && tab.dirty;
+  };
+  const requestDiscard = async (path: string) => {
+    for (let attempt = 0; attempt < 60; attempt++) {
+      if (pending()) app().destructiveGit().cancel();
+      await app().destructiveGit().requestDiscard([path]);
+      // The bridge reads React state: wait for the pending plan to render
+      // instead of cancelling it on the next microtask.
+      for (let wait = 0; wait < 20 && pending() === null; wait++) {
+        await pause(50);
+      }
+      const plan = pending();
+      if (plan?.affected.includes(path)) return plan;
+      app().destructiveGit().cancel();
+      await pause(200);
+    }
+    throw new Error(`no destructive plan was built for ${path}`);
+  };
+
+  try {
+    await run.booted();
+
+    const space = app().createSpace("Git guard", fixture.repo);
+    app().newTabInSpace(space, fixture.repo);
+    await run.switchSpace(space);
+    // The scratch repository is a fresh root: open its terminal so the shell
+    // authorizes the directory before the editor asks for the file.
+    const gitTerminal = app().tabs.find(
+      (tab) => tab.spaceId === space && tab.kind === "terminal",
+    );
+    if (gitTerminal?.kind !== "terminal")
+      throw new Error("the Git-lab Space did not get a terminal tab");
+    await run.sessionReady(gitTerminal.activeLeafId);
+    await invoke("workspace_authorize", {
+      path: fixture.repo,
+      workspace: { kind: "local" },
+    });
+    const fileATab = app().openFileTab(fixture.fileA, true, space);
+    await run.waitFor(
+      () => app().tabs.some((tab) => tab.id === fileATab),
+      "the file tab",
+      20_000,
+    );
+    run.select(fileATab);
+    await pause(1500);
+    // The fixture is committed without the disk edits, so the editor opens the
+    // edited wording a discard would throw away.
+    await run.waitFor(
+      () => editorText().includes(fixture.editedA),
+      "the tracked file in the editor",
+      20_000,
+    );
+
+    // The panel follows the active file's repository, so mount it only once
+    // the Git-lab Space is the context.
+    app().openSourceControl();
+    await run.waitFor(
+      () => app().destructiveGit().mounted && app().destructiveGit().ready,
+      "the Source Control destructive guard",
+      30_000,
+    );
+    await check(
+      "the Source Control guard mounts",
+      app().destructiveGit().mounted,
+      "bridge mounted and repository status ready",
+    );
+    app().editEditor(fileATab, "unsaved in the buffer\n");
+    await run.waitFor(() => dirty(fileATab), "the dirty buffer");
+
+    // 1. A dirty buffer in another pane of the same checkout blocks the discard.
+    const firstPlan = await requestDiscard("src/a.ts");
+    await run.waitFor(() => pending() !== null, "the discard dialog");
+    const dialogText = document.body.textContent ?? "";
+    await check(
+      "the discard dialog names the unsaved buffer and its Space",
+      firstPlan.blockers.some(
+        (blocker) =>
+          blocker.kind === "unsavedBuffer" &&
+          blocker.tabId === fileATab &&
+          blocker.spaceName === "Git guard",
+      ) &&
+        dialogText.includes("Discard changes?") &&
+        dialogText.includes("unsaved changes") &&
+        dialogText.includes("src/a.ts"),
+      `blockers ${firstPlan.blockers.length}; dialog ${dialogText.includes("Discard changes?")}`,
+    );
+
+    // 2. Confirming without the acknowledgement is refused, and nothing moves.
+    await app().destructiveGit().confirm({
+      unsavedBuffers: [],
+      activeWork: [],
+      force: false,
+    });
+    await run.waitFor(
+      () => typeof pending()?.stale === "string",
+      "the unacknowledged refusal",
+      10_000,
+    );
+    const afterRefusalStatus = await fileStatus("src/a.ts");
+    const afterRefusalDisk = await readFile(fixture.fileA);
+    await check(
+      "an unacknowledged confirmation leaves the file and index unchanged",
+      pending()?.stale?.includes("Acknowledge") === true &&
+        afterRefusalDisk.includes(fixture.editedA) &&
+        afterRefusalStatus?.staged === false &&
+        afterRefusalStatus?.unstaged === true &&
+        dirty(fileATab) &&
+        editorText().includes("unsaved in the buffer"),
+      `stale ${pending()?.stale ?? "none"}; disk edited ${afterRefusalDisk.includes(fixture.editedA)}; staged ${afterRefusalStatus?.staged}`,
+    );
+    await run.sync("git-refused-unacknowledged", {
+      stale: pending()?.stale ?? null,
+      disk: afterRefusalDisk.length,
+    });
+
+    // 3. Work started after the dialog opened makes the confirmation stale.
+    const secondPlan = await requestDiscard("src/a.ts");
+    await invoke("git_stage", {
+      repoRoot: fixture.repo,
+      paths: ["src/a.ts"],
+      workspace: { kind: "local" },
+    });
+    await app()
+      .destructiveGit()
+      .confirm({
+        unsavedBuffers: [fileATab],
+        activeWork: [],
+        force: false,
+      });
+    await run.waitFor(
+      () => pending()?.stale?.includes("changed since") === true,
+      "the stale-plan refusal",
+      10_000,
+    );
+    const staleStatus = await fileStatus("src/a.ts");
+    const staleDisk = await readFile(fixture.fileA);
+    await check(
+      "a plan that went stale is refused and performs no discard",
+      secondPlan.fingerprint !== pending()?.fingerprint &&
+        staleDisk.includes(fixture.editedA) &&
+        staleStatus?.staged === true &&
+        dirty(fileATab),
+      `new fingerprint ${pending()?.fingerprint !== secondPlan.fingerprint}; disk edited ${staleDisk.includes(fixture.editedA)}; staged ${staleStatus?.staged}`,
+    );
+    await run.sync("git-refused-stale", {
+      stale: pending()?.stale ?? null,
+      staged: staleStatus?.staged ?? null,
+    });
+
+    app().destructiveGit().cancel();
+    await run.waitFor(() => pending() === null, "the canceled dialog");
+    await check(
+      "cancel leaves the dialog closed and the buffer intact",
+      pending() === null &&
+        dirty(fileATab) &&
+        (await readFile(fixture.fileA)).includes(fixture.editedA),
+      "no pending plan, buffer still dirty",
+    );
+
+    // 4. The same action still works when it is deliberately confirmed.
+    const bPlan = await requestDiscard("src/b.ts");
+    await check(
+      "a clean-buffer discard has no blockers",
+      bPlan.blockers.length === 0,
+      `blockers ${bPlan.blockers.length}`,
+    );
+    await app().destructiveGit().confirm({
+      unsavedBuffers: [],
+      activeWork: [],
+      force: false,
+    });
+    await run.waitFor(
+      () =>
+        pending() === null &&
+        (document.body.textContent ?? "").includes("Discarded"),
+      "the confirmed discard",
+      15_000,
+    );
+    const deadline = performance.now() + 10_000;
+    let bDisk = await readFile(fixture.fileB);
+    while (!bDisk.startsWith(fixture.baseB) && performance.now() < deadline) {
+      await pause(150);
+      bDisk = await readFile(fixture.fileB);
+    }
+    const bStatus = await fileStatus("src/b.ts");
+    await check(
+      "a confirmed discard restores the working file and keeps the index",
+      bDisk.startsWith(fixture.baseB) && bStatus === null,
+      `disk restored ${bDisk.startsWith(fixture.baseB)}; status ${JSON.stringify(bStatus)}`,
+    );
+    await run.sync("git-confirmed", {
+      restored: bDisk.startsWith(fixture.baseB),
+    });
+  } catch (error) {
+    throw new Error(await failed("scenario completed", String(error)));
+  }
+
+  const pass = steps.every((step) => step.ok);
+  await run.log(
+    `[git] ${pass ? "PASS" : "FAIL"} summary: ${steps.filter((step) => !step.ok).length} failures of ${steps.length}`,
+  );
+  return { git: { pass, steps } };
+}
+
 const SCENARIOS: Record<
   BenchScenario["name"],
   (run: ScenarioRun) => Promise<unknown>
@@ -3569,7 +4235,9 @@ const SCENARIOS: Record<
   "fs-churn": fsChurnScenario,
   input: inputScenario,
   workflow: workflowScenario,
+  markdown: markdownScenario,
   spaces: spacesScenario,
+  git: gitScenario,
   preview: previewScenario,
   images: imagesScenario,
   resource: resourceScenario,
@@ -3586,6 +4254,17 @@ export async function startBenchDriver(app: () => BenchAppApi): Promise<void> {
     .__teraxBenchConfig;
   if (!config?.scenario || !config.reportUrl) return;
   started = true;
+  // Forward console warnings/errors to the run log so a failing step leaves its cause behind.
+  for (const level of ["error", "warn"] as const) {
+    const original = console[level].bind(console);
+    console[level] = (...args: unknown[]) => {
+      original(...args);
+      void fetch(`${config.reportUrl}/log`, {
+        method: "POST",
+        body: `console.${level}: ${args.map((value) => String(value)).join(" ")}`,
+      }).catch(() => undefined);
+    };
+  }
   const run = new ScenarioRun(config.reportUrl, config.scenario, app);
   try {
     await pause(1500);

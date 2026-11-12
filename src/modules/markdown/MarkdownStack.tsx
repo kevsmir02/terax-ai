@@ -5,23 +5,26 @@ import { MarkdownPreviewPane } from "./MarkdownPreviewPane";
 type Props = {
   tabs: Tab[];
   activeId: number;
+  /**
+   * Configured Space project roots, by Space id. A Markdown document resolves
+   * its automatic local assets against this root (or, when the document lives
+   * outside it, against the document's own directory). The mutable terminal cwd
+   * is deliberately not an input.
+   */
+  spaceRoots?: Readonly<Record<string, string | null>>;
   onSetMarkdownView: (id: number, mode: "rendered" | "raw") => void;
 };
 
-/** The folder the explorer shows: the active terminal's cwd, else any terminal's. */
-function workspaceRootOf(tabs: Tab[], activeId: number): string | null {
-  const active = tabs.find((t) => t.id === activeId);
-  if (active?.kind === "terminal" && active.cwd) return active.cwd;
-  for (const t of tabs) if (t.kind === "terminal" && t.cwd) return t.cwd;
-  return null;
-}
-
-export function MarkdownStack({ tabs, activeId, onSetMarkdownView }: Props) {
+export function MarkdownStack({
+  tabs,
+  activeId,
+  spaceRoots = {},
+  onSetMarkdownView,
+}: Props) {
   const markdowns = tabs.filter(
     (t): t is MarkdownTab => t.kind === "markdown" && !t.cold,
   );
   if (markdowns.length === 0) return null;
-  const workspaceRoot = workspaceRootOf(tabs, activeId);
   return (
     <div className="relative h-full w-full">
       {markdowns.map((t) => {
@@ -38,7 +41,7 @@ export function MarkdownStack({ tabs, activeId, onSetMarkdownView }: Props) {
             <MarkdownPreviewPane
               path={t.path}
               tabId={t.id}
-              workspaceRoot={workspaceRoot}
+              projectRoot={spaceRoots[t.spaceId] ?? null}
               visible={visible}
               onSetView={(mode) => onSetMarkdownView(t.id, mode)}
             />

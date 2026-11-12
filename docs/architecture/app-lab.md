@@ -47,6 +47,10 @@ python3 scripts/app-lab/run.py --scenario workflow --profile debug \
 python3 scripts/app-lab/run.py --scenario preview --profile debug \
     --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-preview
 
+# the Markdown seam (Space-root assets, consent, symlink escape, grant revocation)
+python3 scripts/app-lab/run.py --scenario markdown --profile debug \
+    --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-markdown
+
 # the Spaces lifecycle seam (shared checkout, switch, close guards, Space deletion)
 python3 scripts/app-lab/run.py --scenario spaces --profile debug \
     --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-spaces
@@ -126,6 +130,22 @@ and the editor's rendered text is asserted. Each step emits `[workflow] PASS|FAI
 `page.log`; the structured summary (`token`, `pass`, `steps`) rides the final `done` sync, the
 report stores it under `workflow`, and the runner exits 2 when any step failed.
 
+**The Markdown preview** (`--scenario markdown`) drives the real preview against fixtures the runner
+writes: a document inside the Space root, an outside document, a symlink escape, a remote pixel the
+runner counts, a link document, a document of hostile references and a document above the 4 MiB
+syntax ceiling. It asserts the image
+loads from the configured Space root, that changing the terminal cwd through `setLeafCwd` leaves the
+same `asset://` token and pixels in place, that the symlink escape is refused (`naturalWidth 0`), that
+an outside document loads from its own folder and only loads a sibling image after the "Allow"
+button, that the remote image is absent and the fixture server recorded zero hits until "Load remote
+images" is chosen (then one), that a relative link neither navigates the app nor opens a tab, that a
+hostile document leaves no executed effect, no `<script>`, no event-handler attribute, no
+`javascript:` href and no asset URL the app did not mint with a token, that
+the large document renders with `data-syntax="off"`, that closing the tab makes its old asset URL
+fail while no content resurfaces, and that closing it while its 4 MiB read is still in flight
+leaves no tab, no marker text and no syntax block behind. Pass/fail steps and the remote hit
+counters are in the report's `markdown` and `markdownServer` blocks.
+
 **The Spaces lifecycle** (`--scenario spaces`): two Spaces are created on one real checkout and the
 rendered `[data-shared-root]` badge is asserted; a shell in the first Space streams five lines
 while the app switches to the second Space, and after switching back the scrollback holds all five
@@ -139,7 +159,6 @@ deleted; the report records that the project directory and its `spaces-keep.txt`
 `spaceDeletion`. The runner exits 2 when any step failed. The scenario does not relaunch the app:
 restart restoration (layout, cwd and file locations cold, no command replay) is verified at the
 planning seam in `src/modules/spaces/lib/restore.test.ts`.
-
 
 **The preview** (`previewScenario`): a preview tab opens through the app's own planner
 (`openPreviewTab`) at `/preview-fixture?redirect=1`, which the orchestrator serves. The fixture page

@@ -21,6 +21,8 @@ Scenarios (`--scenario`):
   input          native key events / input-method calls into a PTY reader (pass/fail in page.log)
   workflow       Linux acceptance workflow: shell spawn, exact echo, new tab, split, switch back,
                  open a temp file and assert the editor's text (pass/fail in page.log)
+  markdown       Linux Markdown preview: Space-root assets, an outside document, a symlink escape,
+                 remote consent, inert links, cwd independence and grant revocation on close
   preview        Linux preview acceptance: a served dev-server page in the real iframe (redirect,
                  sandbox, no native access, hidden-tab/Space/window teardown and reload) and PDF
                  documents (served content type and byte ranges, the frame as a separate document,
@@ -29,8 +31,8 @@ Scenarios (`--scenario`):
                  and corrupt inputs are refused honestly, hidden tabs release, close cycles do not
                  retain decoded viewers or grants
 
-Linux currently implements `workflow`, `preview`, `resource`, `stress` and `startup`
-(WebKitGTK); the measured scenarios above stay
+Linux currently implements `workflow`, `spaces`, `markdown`, `preview`, `images`, `resource`,
+`stress` and `startup` (WebKitGTK); the measured scenarios above stay
 macOS-only until ticket 02 (sampling) and ticket 32 (input/resize/layers). On Linux the app is
 built with `--no-bundle` into `<target>/<profile>/terax`.
 
@@ -85,7 +87,7 @@ SYSTEM = platform.system()
 # measured scenarios (tabs, resize, split-drag, occlusion, agents-steady, idle, fs-churn, input)
 # stay unavailable here: WebKitGTK has no occlusion signal, no layer-tree mirror and no native
 # input hook (ticket 32).
-LINUX_SCENARIOS = ("workflow", "spaces", "preview", "images", "resource", "stress", "startup")
+LINUX_SCENARIOS = ("workflow", "spaces", "markdown", "git", "preview", "images", "resource", "stress", "startup")
 SCENARIOS = list(dict.fromkeys([*app_report.SCENARIOS, *LINUX_SCENARIOS]))
 IDENTIFIER = linux_profile.disposable_identifier("app-lab", "stable")
 PRODUCT_NAME = "Terax App Lab"
@@ -392,6 +394,7 @@ class ReportServer:
         self.fixture_loads = 0
         self.redirect_hits = 0
         self.pings = 0
+        self.markdown_remote_hits = 0
         outer = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -424,8 +427,15 @@ class ReportServer:
                         "hits": outer.pings,
                         "fixtureLoads": outer.fixture_loads,
                         "redirectHits": outer.redirect_hits,
+                        "markdownRemoteHits": outer.markdown_remote_hits,
                     }).encode()
                     self._send(200, body, "application/json")
+                elif path == "/markdown-pixel.png":
+                    # A remote image the Markdown scenario must not fetch until the person
+                    # chooses to load it. Every request is counted so "no automatic fetch"
+                    # is observed, not inferred from a missing element.
+                    outer.markdown_remote_hits += 1
+                    self._send(200, PNG_1X1, "image/png")
                 elif path in ("/preview-fixture", "/preview-redirected"):
                     # Fixture loads are served for as long as this server lives: frame teardown
                     # must never stop it.
@@ -607,6 +617,8 @@ def host_timeout(args, scenario: dict) -> float:
     name = args.scenario
     if name == "workflow":
         return 600
+    if name == "markdown":
+        return 420
     if name == "preview":
         # The web-preview teardown/reload cycle plus the PDF document checks (open, sample,
         # close, memory) each take a rendered sample.
@@ -888,6 +900,48 @@ def run(args, app: Path, source: Path, output: Path) -> int:
     return 0
 
 
+def prepare_git_fixture(workspace: Path) -> dict:
+    """A scratch repository with one clean base commit and two unstaged edits.
+
+    The scenario discards `src/a.ts` while a dirty buffer protects it and
+    `src/b.ts` without one. Nothing here touches a real project: the directory
+    lives under the run's disposable output.
+    """
+    repo = workspace / "repo"
+    # The output directory can be reused across runs; start from a clean fixture.
+    shutil.rmtree(repo, ignore_errors=True)
+    (repo / "src").mkdir(parents=True, exist_ok=True)
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Terax App Lab",
+        "GIT_AUTHOR_EMAIL": "app-lab@example.invalid",
+        "GIT_COMMITTER_NAME": "Terax App Lab",
+        "GIT_COMMITTER_EMAIL": "app-lab@example.invalid",
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
+    base_a = "export const a = 'base';"
+    base_b = "export const b = 'base';"
+    edited_a = "export const a = 'edited on disk';"
+    edited_b = "export const b = 'edited on disk';"
+    (repo / "src/a.ts").write_text(f"{base_a}\n")
+    (repo / "src/b.ts").write_text(f"{base_b}\n")
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, env=env, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=repo, env=env, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "fixture base"], cwd=repo, env=env, check=True)
+    # Working-tree edits after the commit: what a discard has to restore.
+    (repo / "src/a.ts").write_text(f"{edited_a}\n")
+    (repo / "src/b.ts").write_text(f"{edited_b}\n")
+    return {
+        "repo": str(repo),
+        "fileA": str(repo / "src/a.ts"),
+        "fileB": str(repo / "src/b.ts"),
+        "baseA": base_a,
+        "baseB": base_b,
+        "editedA": edited_a,
+        "editedB": edited_b,
+    }
+
+
 def prepare_image_fixtures(workspace: Path, source: Path) -> dict:
     """Copy the committed image fixtures the `images` scenario opens.
 
@@ -934,6 +988,7 @@ def scenario_json_linux(
     fixtures: dict | None,
     pdf: dict | None = None,
     images: dict | None = None,
+    git_fixture: dict | None = None,
 ) -> dict:
     """The scenario as the driver receives it (Linux; no synthetic agent)."""
     local: dict[str, str | None] = {}
@@ -980,6 +1035,8 @@ def scenario_json_linux(
             scenario["pdf"]["holdMs"] = args.pdf_hold_ms
     if args.scenario == "images" and images:
         scenario.update({"images": images})
+    if args.scenario == "git" and git_fixture:
+        scenario.update({"git": git_fixture})
     if args.scenario in ("resource", "stress") and fixtures:
         node = shutil.which("node")
         if not node:
@@ -1180,6 +1237,96 @@ def prepare_fixtures(workspace: Path, stress: bool) -> dict:
     }
 
 
+# A remote image the Markdown scenario must not fetch until the person chooses it.
+PNG_1X1 = _png_bytes(1, 1)
+
+
+def prepare_markdown_fixtures(workspace: Path, output: Path) -> dict:
+    """Documents and assets for the Markdown acceptance scenario.
+
+    The Space root is `workspace` (the app's launch directory). A document outside it gets its
+    own directory as its boundary; `escape.png` is a symlink out of the root; `remoteDoc`
+    names the orchestrator's counted pixel, which only a deliberate choice may fetch.
+    """
+    docs = workspace / "docs"
+    docs.mkdir(parents=True, exist_ok=True)
+    outside = output / "markdown-outside"
+    shared = output / "markdown-shared"
+    outside.mkdir(parents=True, exist_ok=True)
+    shared.mkdir(parents=True, exist_ok=True)
+    pixel = _png_bytes(16, 16)
+    for path in (docs / "pixel.png", outside / "pixel.png", shared / "outside.png"):
+        path.write_bytes(pixel)
+    secret = output / "markdown-secret.png"
+    secret.write_bytes(pixel)
+    escape = docs / "escape.png"
+    if escape.exists() or escape.is_symlink():
+        escape.unlink()
+    escape.symlink_to(secret)
+
+    inside = docs / "readme.md"
+    inside.write_text(
+        "# Inside the Space\n\n"
+        "The image below is anchored to the configured Space root.\n\n"
+        "![inside](./pixel.png)\n\n"
+        "![escape](./escape.png)\n"
+    )
+    outside_doc = outside / "readme.md"
+    outside_doc.write_text(
+        "# Outside the Space\n\n"
+        "This document is not under the Space root, so its own folder is the boundary.\n\n"
+        "![own](./pixel.png)\n\n"
+        "![parent](../markdown-shared/outside.png)\n"
+    )
+    remote_doc = docs / "remote.md"
+    remote_doc.write_text(
+        "# Remote reference\n\n"
+        "![remote](MARKDOWN_REMOTE_URL)\n"
+    )
+    link_doc = docs / "links.md"
+    link_doc.write_text(
+        "# Links\n\n"
+        "[relative](./elsewhere.md)\n\n"
+        "[external](https://example.com/)\n"
+    )
+    # Hostile references: an asset-protocol URL the document writes itself, a javascript:
+    # link, a file: link, an inline <script> and an <img onerror>. None of them may execute,
+    # navigate, or become an app URL; the page records any effect in `markdownPwned`.
+    malicious_doc = docs / "malicious.md"
+    malicious_doc.write_text(
+        "# Hostile references\n\n"
+        "malicious-marker\n\n"
+        "![injected](asset://localhost/etc/passwd)\n\n"
+        "[js](javascript:window.__teraxMarkdownPwned='link')\n\n"
+        "[file](file:///etc/passwd)\n\n"
+        '<img src="missing.png" onerror="window.__teraxMarkdownPwned=\'onerror\'">\n\n'
+        "<script>window.__teraxMarkdownPwned = 'script'</script>\n\n"
+        "[ok](https://example.com/)\n"
+    )
+    marker = "markdown-large-marker"
+    large = docs / "large.md"
+    with large.open("w") as handle:
+        handle.write(f"# Large document\n\n{marker}\n\n![large](./pixel.png)\n\n```ts\n")
+        line = "const value = 1; // the syntax ceiling keeps this plain\n"
+        written = 0
+        target = 4 * 1024 * 1024 + 65536
+        while written < target:
+            handle.write(line)
+            written += len(line)
+        handle.write("```\n")
+    return {
+        "workspace": str(workspace),
+        "insideDoc": str(inside),
+        "outsideDoc": str(outside_doc),
+        "remoteDoc": str(remote_doc),
+        "linkDoc": str(link_doc),
+        "maliciousDoc": str(malicious_doc),
+        "largeDoc": str(large),
+        "largeMarker": marker,
+        "escapeImage": str(escape),
+    }
+
+
 def prepare_pdf_fixtures(workspace: Path) -> dict:
     """Generate the PDF documents the preview scenario opens, and verify them independently.
 
@@ -1356,11 +1503,15 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     workspace.mkdir(parents=True, exist_ok=True)
     fixture_server = None
     fixtures = None
+    markdown_fixture = None
     pdf = None
     image_fixtures = None
+    git_fixture = None
     file = None
     first_line = ""
-    if args.scenario in ("resource", "stress"):
+    if args.scenario == "markdown":
+        markdown_fixture = prepare_markdown_fixtures(workspace, output)
+    elif args.scenario in ("resource", "stress"):
         fixtures = prepare_fixtures(workspace, args.scenario == "stress")
         fixture_server = FixtureServer(workspace)
         fixtures["previewUrl"] = fixture_server.url("preview.html")
@@ -1369,6 +1520,8 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         pdf = prepare_pdf_fixtures(workspace)
     elif args.scenario == "images":
         image_fixtures = prepare_image_fixtures(workspace, source)
+    elif args.scenario == "git":
+        git_fixture = prepare_git_fixture(workspace)
     else:
         token = uuid.uuid4().hex[:10]
         first_line = f"workflow-file {token}"
@@ -1380,11 +1533,20 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             )
     report_path = (args.report or output / "report.json").resolve()
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    scenario = scenario_json_linux(args, file, first_line, workspace, fixtures, pdf, image_fixtures)
+    scenario = scenario_json_linux(
+        args, file, first_line, workspace, fixtures, pdf, image_fixtures, git_fixture
+    )
     timeout = host_timeout(args, scenario)
     load_average = [round(value, 2) for value in os.getloadavg()]
 
     server = ReportServer()
+    if args.scenario == "markdown" and markdown_fixture is not None:
+        remote_url = f"{server.url}/markdown-pixel.png"
+        remote_doc = Path(markdown_fixture["remoteDoc"])
+        remote_doc.write_text(
+            remote_doc.read_text().replace("MARKDOWN_REMOTE_URL", remote_url)
+        )
+        scenario["markdown"] = {**markdown_fixture, "remoteImage": remote_url}
     env = {**{key: value for key, value in os.environ.items() if not key.startswith(("TAURI_", "VITE_", "CARGO_"))}}
     env.update(linux_profile.profile_env(home))
     env.update(linux_profile.session_env())
@@ -1466,6 +1628,8 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     poller.start()
     failed: BaseException | None = None
     workflow: dict = {}
+    git_scenario: dict = {}
+    markdown: dict = {}
     images: dict = {}
     started = time.monotonic()
 
@@ -1506,6 +1670,8 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                 if phase == "done":
                     manifest["samples"].append({"phase": "done", "tMonoNs": time.monotonic_ns(), "event": app_report.slim_event(event)})
                     workflow = event.get("workflow") or {}
+                    git_scenario = event.get("git") or {}
+                    markdown = event.get("markdown") or {}
                     if event.get("images") is not None:
                         images = event["images"]
                     if event.get("preview") is not None:
@@ -1567,6 +1733,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         if server.log:
             (output / "page.log").write_text("\n".join(server.log))
         manifest["workflow"] = workflow
+        manifest["markdown"] = markdown
         if args.scenario == "spaces":
             keep = workspace / "spaces-keep.txt"
             manifest["spaceDeletion"] = {
@@ -1580,6 +1747,15 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                     "phase": "spaces-delete",
                     "reasons": ["Space deletion changed the project directory"],
                 })
+        if args.scenario == "git":
+            git_report = git_scenario
+            manifest["gitScenario"] = git_report
+            if not git_report or not git_report.get("pass"):
+                manifest["qualification"]["qualified"] = False
+                manifest["qualification"]["failures"].append({
+                    "phase": "git-guard",
+                    "reasons": ["destructive Git guard scenario failed"],
+                })
         manifest["images"] = images
         # The fixture server is the independent process previews are served by; these counters
         # show it kept answering across every frame teardown.
@@ -1587,6 +1763,11 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             "fixtureLoads": server.fixture_loads,
             "redirectHits": server.redirect_hits,
             "pings": server.pings,
+        }
+        # Remote Markdown images are counted here: zero before consent is the evidence that
+        # rendering the document fetched nothing.
+        manifest["markdownServer"] = {
+            "remoteImageHits": server.markdown_remote_hits,
         }
         # Coexistence evidence: the hashes of the upstream installation's files, taken before
         # the launch, must still match now that the application has run and exited.
@@ -1665,6 +1846,14 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         for step in steps:
             if not step.get("ok"):
                 print(f"  FAIL {step.get('name')}: {step.get('detail')}")
+    if args.scenario == "markdown":
+        steps = markdown.get("steps") or []
+        passed = sum(1 for step in steps if step.get("ok"))
+        print(f"markdown {'PASS' if markdown.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
+        if not markdown.get("pass"):
+            for step in steps:
+                if not step.get("ok"):
+                    print(f"  failed: {step.get('name')}: {step.get('detail')}")
     if args.scenario == "images":
         steps = images.get("steps") or []
         passed = sum(1 for step in steps if step.get("ok"))
@@ -1692,6 +1881,9 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             f"Run failed: the {args.scenario} scenario reported a failing step (see page.log).",
             file=sys.stderr,
         )
+        return 2
+    if args.scenario == "markdown" and not markdown.get("pass"):
+        print("Run failed: the Markdown scenario reported a failing step (see page.log).", file=sys.stderr)
         return 2
     if args.scenario == "images" and not images.get("pass"):
         print("Run failed: the images scenario reported a failing step (see page.log).", file=sys.stderr)
