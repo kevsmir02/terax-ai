@@ -1,48 +1,17 @@
-"use client";
-
-import { isValidElement, type ReactNode } from "react";
-
-import { ChatCodeBlock } from "./chat-code";
-
-export function markdownCodeText(children?: ReactNode): string {
-  if (children == null || typeof children === "boolean") return "";
-  if (typeof children === "string" || typeof children === "number") {
-    return String(children);
-  }
-  if (Array.isArray(children)) {
-    return children.map((child) => markdownCodeText(child)).join("");
-  }
-  if (isValidElement<{ children?: ReactNode }>(children)) {
-    return markdownCodeText(children.props.children);
-  }
-  return "";
-}
-
 /**
- * Streamdown `components.code` override. Handles both inline (`code`) and
- * fenced blocks (className "language-X"). Fenced blocks delegate to the
- * Lezer-based renderer; inline stays a plain pill.
+ * Legacy AI-owned entry point for the Markdown `code` component override.
+ *
+ * The renderer now lives in the retained Markdown module
+ * (`@/modules/markdown/components/MarkdownCode`). This re-export keeps
+ * unmigrated AI components compiling.
+ *
+ * Remaining importers:
+ *  - `modules/ai/components/AiChat.tsx` (`MarkdownCode`)
+ *  - `components/ai-elements/message.tsx` (`MarkdownCode`, assistant text)
+ * `modules/markdown/MarkdownContent.tsx` imports the neutral module directly.
  */
-export function MarkdownCode({
-  className,
-  children,
-  ...rest
-}: {
-  className?: string;
-  children?: ReactNode;
-}) {
-  const match = className?.match(/language-(\w+)/);
-  if (!match) {
-    return (
-      <code
-        className="rounded bg-muted/70 px-1.5 py-0.5 font-mono text-[0.875em] text-foreground"
-        {...rest}
-      >
-        {children}
-      </code>
-    );
-  }
 
-  const code = markdownCodeText(children).replace(/\n$/, "");
-  return <ChatCodeBlock code={code} lang={match[1] ?? null} />;
-}
+export {
+  MarkdownCode,
+  markdownCodeText,
+} from "@/modules/markdown/components/MarkdownCode";

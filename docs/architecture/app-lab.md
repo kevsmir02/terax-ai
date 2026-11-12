@@ -52,6 +52,12 @@ the app with `--no-bundle`; no RPM/DEB/AppImage and no `terax-cli` sidecar are i
 Xvfb a window manager is required for focus/visibility and transparency will not work; a real
 session is the supported target.
 
+**Automated run.** `.github/workflows/linux-app-smoke.yml` executes this scenario on Xvfb +
+openbox in a hosted runner, after `--self-test` proves the refusals, and uploads `report.json`,
+`page.log` and the app/build logs as the `linux-app-smoke` artifact. It runs nightly, on demand,
+and on pull requests labelled `linux-smoke`; it is evidence, not a required check
+(`docs/contributing/testing.md`, "CI").
+
 **Host stack** is recorded in the report's `environment` (never asserted): `/etc/os-release`,
 `uname -r`, architecture, `XDG_SESSION_TYPE`/`XDG_CURRENT_DESKTOP`, the live Wayland/X11 display
 names, GDK scale variables, the text-scaling factor, matched monospace/sans fonts, the
