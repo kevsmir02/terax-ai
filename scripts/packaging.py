@@ -53,9 +53,16 @@ BUNDLE_TARGETS = ("rpm", "deb")
 # disagree. `deb_depends()`/`rpm_depends()` read the effective config; only the Arch
 # ecosystem's names are separate.
 #
-# Fedora names: `webkit2gtk4.1`, `gtk3`. Debian names: `libwebkit2gtk-4.1-0`; Debian 13's
-# time_t transition renamed GTK to `libgtk-3-0t64` (which Provides `libgtk-3-0`), so the
-# alternative covers Debian 12/13 and Ubuntu without claiming either was tested.
+# Tauri CLI appends these runtime dependencies to every Linux deb and the matching sonames
+# to every Linux rpm (`crates/tauri-cli/src/interface/rust.rs`), so the bundle config must not
+# repeat them (a repeated entry appears twice in the control file). Debian 13 renamed the GTK
+# package in the time_t transition to `libgtk-3-0t64`, which Provides `libgtk-3-0`; the
+# appended name therefore resolves there too. This was not executed on Debian.
+TAURI_INJECTED_DEB_DEPENDS = ("libwebkit2gtk-4.1-0", "libgtk-3-0")
+TAURI_INJECTED_RPM_SONAMES = (
+    "libwebkit2gtk-4.1.so.0()(64bit)",
+    "libgtk-3.so.0()(64bit)",
+)
 ARCH_DEPENDS = ("webkit2gtk-4.1", "gtk3")
 # Matches the webkit and GTK runtime in either ecosystem's spelling.
 WEBKIT_GTK = re.compile(r"(webkit2gtk|libwebkit2gtk)", re.IGNORECASE)
@@ -306,17 +313,25 @@ def merged_bundle_config(base: dict | None = None, overlay: dict | None = None) 
 
 
 def deb_depends(base: dict | None = None, overlay: dict | None = None) -> list[str]:
-    """The effective deb runtime dependencies (from the bundle config, not a copy)."""
-    return list(
+    """The effective deb runtime dependencies: config entries plus Tauri's injected pair."""
+    configured = list(
         merged_bundle_config(base, overlay).get("linux", {}).get("deb", {}).get("depends") or []
     )
+    return configured + [
+        dependency
+        for dependency in TAURI_INJECTED_DEB_DEPENDS
+        if dependency not in configured
+    ]
 
 
 def rpm_depends(base: dict | None = None, overlay: dict | None = None) -> list[str]:
-    """The effective rpm runtime dependencies (from the bundle config, not a copy)."""
-    return list(
+    """The effective rpm runtime dependencies: configured names plus Tauri's sonames."""
+    configured = list(
         merged_bundle_config(base, overlay).get("linux", {}).get("rpm", {}).get("depends") or []
     )
+    return configured + [
+        soname for soname in TAURI_INJECTED_RPM_SONAMES if soname not in configured
+    ]
 
 
 def config_problems(base: dict | None = None, overlay: dict | None = None) -> list[str]:
@@ -370,9 +385,14 @@ def config_problems(base: dict | None = None, overlay: dict | None = None) -> li
             "(issue #37 owns fork-owned discovery)"
         )
 
-    deb_depends = list(bundle.get("linux", {}).get("deb", {}).get("depends") or [])
-    rpm_depends = list(bundle.get("linux", {}).get("rpm", {}).get("depends") or [])
-    for label, depends in (("deb", deb_depends), ("rpm", rpm_depends)):
+    configured_deb = list(bundle.get("linux", {}).get("deb", {}).get("depends") or [])
+    for dependency in configured_deb:
+        if dependency in TAURI_INJECTED_DEB_DEPENDS:
+            found.append(
+                f"deb depends {dependency!r} repeats a dependency Tauri CLI appends; "
+                "it would appear twice in the control file"
+            )
+    for label, depends in (("deb", deb_depends(base, overlay)), ("rpm", rpm_depends(base, overlay))):
         if not any(WEBKIT_GTK.search(dep) for dep in depends):
             found.append(f"{label} depends {depends!r} lacks the WebKitGTK runtime")
         if not any(GTK.search(dep) for dep in depends):

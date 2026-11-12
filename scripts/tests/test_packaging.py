@@ -198,20 +198,31 @@ class DependencyTest(unittest.TestCase):
         self.assertTrue(any("updater" in problem for problem in problems), problems)
 
     def test_deb_and_rpm_require_the_webkit_and_gtk_runtime(self) -> None:
-        for label, depends in (
-            ("deb", packaging.deb_depends()),
-            ("rpm", packaging.rpm_depends()),
-        ):
+        deb = packaging.deb_depends()
+        rpm = packaging.rpm_depends()
+        self.assertEqual(deb, ["libwebkit2gtk-4.1-0", "libgtk-3-0"])
+        for label, depends in (("deb", deb), ("rpm", rpm)):
             self.assertTrue(
                 any(packaging.WEBKIT_GTK.search(dep) for dep in depends), label
             )
             self.assertTrue(any(packaging.GTK.search(dep) for dep in depends), label)
+            self.assertEqual(len(depends), len(set(depends)), label)
 
-    def test_a_missing_gtk_dependency_is_refused(self) -> None:
+    def test_the_injected_runtime_is_required_even_without_config_names(self) -> None:
+        # Tauri CLI always appends the deb packages and rpm sonames, so an empty configured
+        # list still yields WebKitGTK/GTK requirements rather than a silently bare package.
         base = json.loads(packaging.TAURI_CONFIG.read_text())
-        base["bundle"]["linux"]["rpm"]["depends"] = ["webkit2gtk4.1"]
+        base["bundle"]["linux"]["deb"].pop("depends", None)
+        base["bundle"]["linux"]["rpm"].pop("depends", None)
+        self.assertEqual(packaging.config_problems(base=base), [])
+        self.assertTrue(any("webkit2gtk" in dep for dep in packaging.deb_depends(base)))
+        self.assertTrue(any("libgtk-3" in dep for dep in packaging.deb_depends(base)))
+
+    def test_repeating_a_tauri_injected_dependency_is_refused(self) -> None:
+        base = json.loads(packaging.TAURI_CONFIG.read_text())
+        base["bundle"]["linux"]["deb"]["depends"] = ["libwebkit2gtk-4.1-0"]
         problems = packaging.config_problems(base=base)
-        self.assertTrue(any("rpm depends" in problem for problem in problems), problems)
+        self.assertTrue(any("repeats a dependency" in problem for problem in problems), problems)
 
     def test_the_arch_recipe_requires_the_same_runtime(self) -> None:
         self.assertEqual(packaging.arch_problems(), [])
