@@ -407,6 +407,125 @@ export type RestoreReport = {
 
 type SafetySnapshot = { ref: string; commit: string; tree: string };
 
+// ------------------------------------------------- manual checkpoints
+//
+// A manual checkpoint is independent of agent tasks and turns: its identity is
+// its own random id, and `name` is an optional label that may repeat. Capture
+// limits and the stored capture record are part of every result; nothing here
+// is a claim of an atomic or complete backup.
+
+export type RecoveryKind = "manual" | "turn" | "safety";
+
+export type CheckpointCapture = {
+  /** Two consecutive snapshot passes produced the same tree. */
+  consistent: boolean;
+  passes: number;
+  /** Files that kept changing under the snapshot and were left out. */
+  unstableCount: number;
+  /** Files Git could not read, e.g. `unreadable-files`, `concurrent-writes`. */
+  warnings: string[];
+  /** Ignored files and directories; never captured. */
+  ignoredFiles: number;
+  /** The ignored listing hit its read cap: `ignoredFiles` is a lower bound. */
+  ignoredTruncated: boolean;
+  /** Paths staged in the real index at capture time; staging is not recorded. */
+  stagedFiles: number;
+  stagedTruncated: boolean;
+  /** Submodules recorded as pointers only. */
+  submodules: number;
+  submodulesTruncated: boolean;
+  /** The capture is not a complete, stable snapshot of the working tree. */
+  incomplete: boolean;
+};
+
+export type ManualCheckpoint = {
+  ref: string;
+  /** Opaque random identity, never a reused task/turn slot. */
+  id: string;
+  /** The user's optional label; not part of the identity. */
+  name: string | null;
+  commit: string;
+  tree: string;
+  parent: string | null;
+  createdAtSecs: number;
+  /** `null` only when the stored record is missing or unreadable. */
+  capture: CheckpointCapture | null;
+};
+
+export type ManualCheckpointCreated = ManualCheckpoint & {
+  limits: CheckpointLimits;
+  durationMs: number;
+};
+
+export type SafetyRef = {
+  ref: string;
+  /** The turn checkpoint whose restore saved this snapshot. */
+  taskId: string;
+  commit: string;
+  tree: string;
+  parent: string | null;
+  createdAtSecs: number;
+};
+
+/**
+ * Repository-wide object context. Not a reclaimable-byte estimate: objects are
+ * content-addressed and shared, and the app never runs Git garbage collection.
+ */
+export type CheckpointStorage = {
+  looseObjects: number;
+  looseKib: number;
+  packedObjects: number;
+  packedKib: number;
+  /** Recovery refs this worktree owns: manual + turn + safety. */
+  ownedRefs: number;
+  /** Always true; deleting a ref removes reachability, not bytes. */
+  sharedObjects: boolean;
+};
+
+export type CheckpointGroups = {
+  manual: ManualCheckpoint[];
+  turns: CheckpointInfo[];
+  safety: SafetyRef[];
+  storage: CheckpointStorage;
+};
+
+export type CheckpointInspection = {
+  ref: string;
+  kind: RecoveryKind;
+  name: string | null;
+  taskId: string | null;
+  turn: number | null;
+  commit: string;
+  tree: string;
+  parent: string | null;
+  createdAtSecs: number;
+  capture: CheckpointCapture | null;
+  limits: CheckpointLimits;
+  /** Paths that differ between the checkpoint and its recorded parent, capped. */
+  changedPaths: ChangedPath[];
+  changedTotal: number;
+  changedTruncated: boolean;
+  /** HEAD moved since capture; commits are left alone. */
+  headMoved: boolean;
+};
+
+export type CleanupRemovedRef = { ref: string; kind: RecoveryKind };
+
+export type CleanupRefusedRef = {
+  ref: string;
+  /** `not-a-recovery-ref`, `missing`, `unknown-owner`, `another-worktree`, `changed`. */
+  reason: string;
+};
+
+export type CheckpointCleanupReport = {
+  removed: CleanupRemovedRef[];
+  refused: CleanupRefusedRef[];
+  /** The groups after deletion, so the caller never has to guess. */
+  remaining: CheckpointGroups;
+  /** Each deletion is its own `update-ref`; a midway failure keeps earlier ones. */
+  atomic: boolean;
+};
+
 // ------------------------------------------------------------- branches
 
 export type BranchCreated = { name: string; commit: string };
