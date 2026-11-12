@@ -129,6 +129,7 @@ export type BenchScenario = {
     | "checkpoints"
     | "preview"
     | "images"
+    | "media"
     | "resource"
     | "stress"
     | "quit"
@@ -243,6 +244,29 @@ export type BenchScenario = {
     svg: string;
     corrupt: string;
     oversized: string;
+  };
+  /** media: fixture paths the scenario opens and asserts through the media surface. */
+  media?: {
+    mp4: string;
+    m4a: string;
+    mov: string;
+    webm: string;
+    mkv: string;
+    ogg: string;
+    wav: string;
+    mp3: string;
+    flac: string;
+    aac: string;
+    corrupt: string;
+    unsupportedCodec: string;
+    /** WebM bytes with a `.mp4` name: the probe must report the mismatch. */
+    mismatch: string;
+    /** >1 MiB PCM WAV so playback has to ask for more than one delivery chunk. */
+    large: string;
+    /** Containers whose real playback outcome the scenario measures. */
+    measured: string[];
+    /** Containers this host's build was measured to play (run.py records them). */
+    expectedSupported: string[];
   };
   /** resource/stress: directory used as the second Space's root and the preview fixture root. */
   workspace?: string;

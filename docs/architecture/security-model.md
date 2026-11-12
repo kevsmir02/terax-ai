@@ -32,9 +32,13 @@ The legacy AI-owned wrapper that re-exported these guards and owned `checkShellC
 
 Three tiers exist and must stay distinct:
 
-1. **Explicit user editing**: `fs_read_file`, `fs_write_file`, `fs_stat`, `fs_image_probe` (bounded header read for an image the user opened), `fs_canonicalize`, `fs_create_*`, `fs_rename`, `fs_delete`, explorer search/read. No registry, no secret policy. Editing `key.pem`, `.env`, `~/.ssh/config` or any file outside the project root works by design (the editor uses these commands, not an automatic reader). `fs_write_file` does take an *expected disk revision* when the caller read the file first; that is coordination, not authorization (see "Save coordination").
+1. **Explicit user editing**: `fs_read_file`, `fs_write_file`, `fs_stat`, `fs_image_probe` (bounded header read for an image the user opened), `fs_media_probe` (bounded header read for a media file the user opened), `fs_canonicalize`, `fs_create_*`, `fs_rename`, `fs_delete`, explorer search/read. No registry, no secret policy. Editing `key.pem`, `.env`, `~/.ssh/config` or any file outside the project root works by design (the editor uses these commands, not an automatic reader). `fs_write_file` does take an *expected disk revision* when the caller read the file first; that is coordination, not authorization (see "Save coordination").
 2. **Root-confined structural mutation**: `fs_move`, `fs_delete_batch`, `fs_copy`, control `open`, shell cwd. Canonicalize + `WorkspaceRegistry::is_authorized` only. Control `open` of a target outside every authorized root is still refused (retained-but-strict; a deliberate `terax open` outside the roots needs an explicit grant in a later change).
 3. **Automatic preview assets**: grant token + canonical containment + secret policy + media type + range + descriptor identity, in `src-tauri/src/modules/fs/assets.rs`.
+
+3. **Automatic preview assets**: grant token + canonical containment + secret policy + media type + range + descriptor identity, in `src-tauri/src/modules/fs/assets.rs`.
+
+Media elements cannot load a custom URI scheme in WebKitGTK (WebKit bug 146351; observed as `MEDIA_ERR_SRC_NOT_SUPPORTED` for every container), so the same tab-owned grant is also served at `http://127.0.0.1:<ephemeral-port>/media?token=…`. That endpoint is loopback-only, requires the same bearer token (it grants no new file access), serves only single-file media grants, re-checks revocation after reserving a delivery, applies the identical range chunking and delivery bounds, caps concurrent connections, and stops serving a token as soon as the tab scope revokes it. It is a transport for tier 3, not a fourth tier.
 
 An automatic consumer never widens its own boundary. A Markdown document loads
 local images only from its Space project root, or from its own directory when

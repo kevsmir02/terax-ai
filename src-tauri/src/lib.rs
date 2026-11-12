@@ -294,10 +294,12 @@ pub fn run() {
             fs::assets::asset_read_bytes,
             fs::assets::asset_revoke,
             fs::assets::asset_revoke_scope,
+            fs::assets::asset_media_url,
             fs::file::fs_write_file,
             fs::file::fs_stat,
             fs::file::fs_file_revision,
             fs::image_probe::fs_image_probe,
+            fs::media_probe::fs_media_probe,
             fs::file::fs_canonicalize,
             fs::mutate::fs_create_file,
             fs::mutate::fs_create_dir,
@@ -400,6 +402,8 @@ pub fn run() {
             modules::bench::bench_asset_log,
             #[cfg(feature = "bench")]
             modules::bench::bench_exit,
+            #[cfg(feature = "bench")]
+            fs::assets::asset_delivery_log,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -19,6 +19,8 @@ type Props = {
   onLoadAnyway?: () => void;
   onRetry?: () => void;
   onOpenExternally?: () => void;
+  /** Shows "Stop other playback" when the media policy named it. */
+  onStopOtherPlayback?: () => void;
 };
 
 /**
@@ -28,7 +30,7 @@ type Props = {
  * plus a safe alternative, never a blank pane or a silent retry loop. The
  * alternatives the surface cannot perform itself (closing another viewer,
  * stopping other playback) are still named, because the person has to do that
- * action.
+ * action; when a handler is supplied the same alternative also gets a button.
  */
 export function AssetDeliveryNotice({
   title,
@@ -37,12 +39,17 @@ export function AssetDeliveryNotice({
   onLoadAnyway,
   onRetry,
   onOpenExternally,
+  onStopOtherPlayback,
 }: Props) {
   const canOpenExternally =
     alternatives.includes("open-externally") && onOpenExternally;
-  const hints = alternatives.filter(
-    (alternative) => alternative !== "open-externally" || !onOpenExternally,
-  );
+  const canStopOtherPlayback =
+    alternatives.includes("stop-other-playback") && onStopOtherPlayback;
+  const hints = alternatives.filter((alternative) => {
+    if (alternative === "open-externally") return !onOpenExternally;
+    if (alternative === "stop-other-playback") return !onStopOtherPlayback;
+    return true;
+  });
   return (
     <div
       role="alert"
@@ -91,6 +98,15 @@ export function AssetDeliveryNotice({
             className="rounded-md border border-border px-3 py-1 text-xs text-foreground hover:bg-accent"
           >
             Open externally
+          </button>
+        )}
+        {canStopOtherPlayback && (
+          <button
+            type="button"
+            onClick={onStopOtherPlayback}
+            className="rounded-md border border-border px-3 py-1 text-xs text-foreground hover:bg-accent"
+          >
+            Stop other playback
           </button>
         )}
       </div>
