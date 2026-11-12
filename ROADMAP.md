@@ -21,7 +21,7 @@ The product is opinionated: terminal-first, AI as a primitive (not a sidebar), l
 
 The themes below frame every scope decision.
 
-1. **AI as a native primitive.** Agents, tools, autocomplete, voice - first-class, not a panel bolted onto a regular terminal.
+1. **AI as a native primitive.** Agents, tools, autocomplete - first-class, not a panel bolted onto a regular terminal.
 2. **Lightweight always.** 7-8 MB binary. Every dependency justified. Per-tab memory budget enforced.
 3. **Terminal-first.** xterm.js correctness, PTY fidelity, TUI app compatibility are non-negotiable.
 4. **Cross-platform parity.** macOS, Linux, Windows, WSL. No platform-specific exclusives.
@@ -72,7 +72,6 @@ The themes below frame every scope decision.
 - [x] Multiple cloud and local providers (BYOK)
 - [x] Multi-agent and sub-agents
 - [x] Approval-gated Claude Code orchestration with spawn, output inspection, and follow-up
-- [x] Voice input
 - [x] Reusable prompt snippets via `#handle`
 - [x] Project memory and per-project configuration
 - [x] Tools with per-action approval gating (file write / edit, bash, and filesystem mutations)
