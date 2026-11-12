@@ -3691,6 +3691,260 @@ async function imagesScenario(
   }
 }
 
+/**
+ * Destructive Git across Spaces, through the panel's own guard.
+ *
+ * A dirty buffer in one Space must block a discard requested from the panel;
+ * an unacknowledged confirmation and a plan whose Git state changed after the
+ * dialog opened are both refused, and every refusal is observed to leave the
+ * file and the index unchanged. The successful discard at the end is the
+ * control: the same path still mutates when it is deliberately confirmed.
+ */
+async function gitScenario(run: ScenarioRun): Promise<unknown> {
+  const fixture = run.scenario.git;
+  if (!fixture)
+    throw new Error(
+      "the git scenario needs a scratch repository (scripts/app-lab/run.py creates it)",
+    );
+  const steps: WorkflowStep[] = [];
+  const check = async (name: string, ok: boolean, detail: string) => {
+    steps.push({ name, ok, detail });
+    await run.log(`[git] ${ok ? "PASS" : "FAIL"} ${name}: ${detail}`);
+  };
+  const failed = async (name: string, detail: string) => {
+    await check(name, false, detail);
+    return `git step failed: ${name}: ${detail}`;
+  };
+  const app = () => run.app();
+  const pending = () => app().destructiveGit().pending;
+  const gitStatus = () =>
+    invoke<{
+      changedFiles: {
+        path: string;
+        staged: boolean;
+        unstaged: boolean;
+        untracked: boolean;
+      }[];
+    }>("git_status", {
+      repoRoot: fixture.repo,
+      workspace: { kind: "local" },
+    });
+  const fileStatus = async (path: string) =>
+    (await gitStatus()).changedFiles.find((file) => file.path === path) ?? null;
+  const readFile = (path: string) =>
+    invoke<{ kind: string; content?: string }>("fs_read_file", {
+      path,
+      workspace: { kind: "local" },
+      force: false,
+    }).then((result) => (result.kind === "text" ? (result.content ?? "") : ""));
+  const editorText = () =>
+    document.querySelector(".cm-content")?.textContent ?? "";
+  const dirty = (tabId: number) => {
+    const tab = app().tabs.find((candidate) => candidate.id === tabId);
+    return tab?.kind === "editor" && tab.dirty;
+  };
+  const requestDiscard = async (path: string) => {
+    for (let attempt = 0; attempt < 60; attempt++) {
+      if (pending()) app().destructiveGit().cancel();
+      await app().destructiveGit().requestDiscard([path]);
+      // The bridge reads React state: wait for the pending plan to render
+      // instead of cancelling it on the next microtask.
+      for (let wait = 0; wait < 20 && pending() === null; wait++) {
+        await pause(50);
+      }
+      const plan = pending();
+      if (plan?.affected.includes(path)) return plan;
+      app().destructiveGit().cancel();
+      await pause(200);
+    }
+    throw new Error(`no destructive plan was built for ${path}`);
+  };
+
+  try {
+    await run.booted();
+
+    const space = app().createSpace("Git guard", fixture.repo);
+    app().newTabInSpace(space, fixture.repo);
+    await run.switchSpace(space);
+    // The scratch repository is a fresh root: open its terminal so the shell
+    // authorizes the directory before the editor asks for the file.
+    const gitTerminal = app().tabs.find(
+      (tab) => tab.spaceId === space && tab.kind === "terminal",
+    );
+    if (gitTerminal?.kind !== "terminal")
+      throw new Error("the Git-lab Space did not get a terminal tab");
+    await run.sessionReady(gitTerminal.activeLeafId);
+    await invoke("workspace_authorize", {
+      path: fixture.repo,
+      workspace: { kind: "local" },
+    });
+    const fileATab = app().openFileTab(fixture.fileA, true, space);
+    await run.waitFor(
+      () => app().tabs.some((tab) => tab.id === fileATab),
+      "the file tab",
+      20_000,
+    );
+    run.select(fileATab);
+    await pause(1500);
+    // The fixture is committed without the disk edits, so the editor opens the
+    // edited wording a discard would throw away.
+    await run.waitFor(
+      () => editorText().includes(fixture.editedA),
+      "the tracked file in the editor",
+      20_000,
+    );
+
+    // The panel follows the active file's repository, so mount it only once
+    // the Git-lab Space is the context.
+    app().openSourceControl();
+    await run.waitFor(
+      () => app().destructiveGit().mounted && app().destructiveGit().ready,
+      "the Source Control destructive guard",
+      30_000,
+    );
+    await check(
+      "the Source Control guard mounts",
+      app().destructiveGit().mounted,
+      "bridge mounted and repository status ready",
+    );
+    app().editEditor(fileATab, "unsaved in the buffer\n");
+    await run.waitFor(() => dirty(fileATab), "the dirty buffer");
+
+    // 1. A dirty buffer in another pane of the same checkout blocks the discard.
+    const firstPlan = await requestDiscard("src/a.ts");
+    await run.waitFor(() => pending() !== null, "the discard dialog");
+    const dialogText = document.body.textContent ?? "";
+    await check(
+      "the discard dialog names the unsaved buffer and its Space",
+      firstPlan.blockers.some(
+        (blocker) =>
+          blocker.kind === "unsavedBuffer" &&
+          blocker.tabId === fileATab &&
+          blocker.spaceName === "Git guard",
+      ) &&
+        dialogText.includes("Discard changes?") &&
+        dialogText.includes("unsaved changes") &&
+        dialogText.includes("src/a.ts"),
+      `blockers ${firstPlan.blockers.length}; dialog ${dialogText.includes("Discard changes?")}`,
+    );
+
+    // 2. Confirming without the acknowledgement is refused, and nothing moves.
+    await app().destructiveGit().confirm({
+      unsavedBuffers: [],
+      activeWork: [],
+      force: false,
+    });
+    await run.waitFor(
+      () => typeof pending()?.stale === "string",
+      "the unacknowledged refusal",
+      10_000,
+    );
+    const afterRefusalStatus = await fileStatus("src/a.ts");
+    const afterRefusalDisk = await readFile(fixture.fileA);
+    await check(
+      "an unacknowledged confirmation leaves the file and index unchanged",
+      pending()?.stale?.includes("Acknowledge") === true &&
+        afterRefusalDisk.includes(fixture.editedA) &&
+        afterRefusalStatus?.staged === false &&
+        afterRefusalStatus?.unstaged === true &&
+        dirty(fileATab) &&
+        editorText().includes("unsaved in the buffer"),
+      `stale ${pending()?.stale ?? "none"}; disk edited ${afterRefusalDisk.includes(fixture.editedA)}; staged ${afterRefusalStatus?.staged}`,
+    );
+    await run.sync("git-refused-unacknowledged", {
+      stale: pending()?.stale ?? null,
+      disk: afterRefusalDisk.length,
+    });
+
+    // 3. Work started after the dialog opened makes the confirmation stale.
+    const secondPlan = await requestDiscard("src/a.ts");
+    await invoke("git_stage", {
+      repoRoot: fixture.repo,
+      paths: ["src/a.ts"],
+      workspace: { kind: "local" },
+    });
+    await app()
+      .destructiveGit()
+      .confirm({
+        unsavedBuffers: [fileATab],
+        activeWork: [],
+        force: false,
+      });
+    await run.waitFor(
+      () => pending()?.stale?.includes("changed since") === true,
+      "the stale-plan refusal",
+      10_000,
+    );
+    const staleStatus = await fileStatus("src/a.ts");
+    const staleDisk = await readFile(fixture.fileA);
+    await check(
+      "a plan that went stale is refused and performs no discard",
+      secondPlan.fingerprint !== pending()?.fingerprint &&
+        staleDisk.includes(fixture.editedA) &&
+        staleStatus?.staged === true &&
+        dirty(fileATab),
+      `new fingerprint ${pending()?.fingerprint !== secondPlan.fingerprint}; disk edited ${staleDisk.includes(fixture.editedA)}; staged ${staleStatus?.staged}`,
+    );
+    await run.sync("git-refused-stale", {
+      stale: pending()?.stale ?? null,
+      staged: staleStatus?.staged ?? null,
+    });
+
+    app().destructiveGit().cancel();
+    await run.waitFor(() => pending() === null, "the canceled dialog");
+    await check(
+      "cancel leaves the dialog closed and the buffer intact",
+      pending() === null &&
+        dirty(fileATab) &&
+        (await readFile(fixture.fileA)).includes(fixture.editedA),
+      "no pending plan, buffer still dirty",
+    );
+
+    // 4. The same action still works when it is deliberately confirmed.
+    const bPlan = await requestDiscard("src/b.ts");
+    await check(
+      "a clean-buffer discard has no blockers",
+      bPlan.blockers.length === 0,
+      `blockers ${bPlan.blockers.length}`,
+    );
+    await app().destructiveGit().confirm({
+      unsavedBuffers: [],
+      activeWork: [],
+      force: false,
+    });
+    await run.waitFor(
+      () =>
+        pending() === null &&
+        (document.body.textContent ?? "").includes("Discarded"),
+      "the confirmed discard",
+      15_000,
+    );
+    const deadline = performance.now() + 10_000;
+    let bDisk = await readFile(fixture.fileB);
+    while (!bDisk.startsWith(fixture.baseB) && performance.now() < deadline) {
+      await pause(150);
+      bDisk = await readFile(fixture.fileB);
+    }
+    const bStatus = await fileStatus("src/b.ts");
+    await check(
+      "a confirmed discard restores the working file and keeps the index",
+      bDisk.startsWith(fixture.baseB) && bStatus === null,
+      `disk restored ${bDisk.startsWith(fixture.baseB)}; status ${JSON.stringify(bStatus)}`,
+    );
+    await run.sync("git-confirmed", {
+      restored: bDisk.startsWith(fixture.baseB),
+    });
+  } catch (error) {
+    throw new Error(await failed("scenario completed", String(error)));
+  }
+
+  const pass = steps.every((step) => step.ok);
+  await run.log(
+    `[git] ${pass ? "PASS" : "FAIL"} summary: ${steps.filter((step) => !step.ok).length} failures of ${steps.length}`,
+  );
+  return { git: { pass, steps } };
+}
+
 const SCENARIOS: Record<
   BenchScenario["name"],
   (run: ScenarioRun) => Promise<unknown>
@@ -3706,6 +3960,7 @@ const SCENARIOS: Record<
   workflow: workflowScenario,
   markdown: markdownScenario,
   spaces: spacesScenario,
+  git: gitScenario,
   preview: previewScenario,
   images: imagesScenario,
   resource: resourceScenario,
