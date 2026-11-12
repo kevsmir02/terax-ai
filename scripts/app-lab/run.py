@@ -39,6 +39,7 @@ human summary); `--compare A.json [B.json ...]` prints deltas (medians when repe
 
 import argparse
 import fcntl
+import functools
 import hashlib
 import http.server
 import json
@@ -64,10 +65,18 @@ sys.path.insert(0, str(REPO / "scripts"))
 sys.path.insert(0, str(REPO / "scripts/renderer-profile"))
 import app_report  # noqa: E402
 import linux_profile  # noqa: E402
+import linux_proc  # noqa: E402
+import linux_report  # noqa: E402
 import namespace_sentinels  # noqa: E402
 import procstats  # noqa: E402
 
 SYSTEM = platform.system()
+# Scenarios the Linux/WebKitGTK runner implements with real /proc sampling. The macOS-only
+# measured scenarios (tabs, resize, split-drag, occlusion, agents-steady, idle, fs-churn, input)
+# stay unavailable here: WebKitGTK has no occlusion signal, no layer-tree mirror and no native
+# input hook (ticket 32).
+LINUX_SCENARIOS = ("workflow", "resource", "stress", "startup")
+SCENARIOS = list(dict.fromkeys([*app_report.SCENARIOS, *LINUX_SCENARIOS]))
 IDENTIFIER = linux_profile.disposable_identifier("app-lab", "stable")
 PRODUCT_NAME = "Terax App Lab"
 MAX_ATTEMPTS = 3
@@ -85,7 +94,7 @@ procstats.ROLE_LABEL["workload"] = "PTY-procs"
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter, allow_abbrev=False)
-    p.add_argument("--scenario", choices=list(app_report.SCENARIOS))
+    p.add_argument("--scenario", choices=SCENARIOS)
     p.add_argument("--self-test", action="store_true", help="prove the preflight refusal and the bench binary's isolation guard, then exit")
     p.add_argument(
         "--identifier",
@@ -138,6 +147,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--iosurfaces", action="store_true", help="list the IOSurface regions of WebContent and GPU (`vmmap -v`: count, sizes, volatile) in every full sample")
     p.add_argument("--categories", action=argparse.BooleanOptionalAction, default=True, help="keep footprint's per-category breakdown (default on)")
     p.add_argument("--poll-interval", type=float, default=1.0, help="seconds between timeline counter samples (phys_footprint, CPU, energy per process)")
+    p.add_argument("--agents", type=int, help="resource: busy synthetic agents (default 2; stress default 4)")
+    p.add_argument("--streams", type=int, help="resource: terminal panes receiving the streaming fixture (default 2; stress default 4)")
+    p.add_argument("--stream-rate", type=float, default=400, help="resource: streaming lines per second per pane (default 400)")
+    p.add_argument("--stream-seconds", type=float, help="resource: seconds of sustained terminal streaming (default: --duration or 30)")
+    p.add_argument("--close-cycles", type=int, default=3, help="resource: editor open/close cycles (default 3)")
+    p.add_argument("--idle-seconds", type=float, default=5, help="resource: idle-terminal hold before the workload (default 5)")
+    p.add_argument("--startup-repeats", type=int, default=3, help="startup: launches per run; the first is cold (fresh profile), the rest warm (default 3)")
+    p.add_argument("--compare-format", choices=["table", "tsv", "json"], default="table", help="with --compare/--candidate: one line per metric (tsv) or machine-readable json")
+    p.add_argument("--list-metrics", action="store_true", help="print every metric name a Linux report can produce and exit")
     p.add_argument("--sampling", choices=["full", "light"], default="full", help="full: footprint+vmmap after every event (they briefly suspend the target and perturb it); light: only every --full-every-th cycle and the non-cycle phases are sampled with them, the rest rely on the cheap timeline (use a small --poll-interval)")
     p.add_argument("--light-phases", default=r"^(switch-\d+|cycle-\d+-(hidden|visible)|shrink-\d+|grow-\d+|drag-\d+)$", help="light sampling: regular expression of the phases that get only the cheap counters (every other phase, setup, the tail and GC samples, is sampled in full)")
     p.add_argument("--full-every", type=int, default=10, help="light sampling: still take a full sample every N cycles")
@@ -370,25 +388,44 @@ def _terminate(signum, frame):  # run the cleanup in `run` (kill the app, remove
 def main() -> int:
     args = parse_args()
     signal.signal(signal.SIGTERM, _terminate)
+    if args.list_metrics:
+        print("\n".join(linux_report.METRIC_NAMES))
+        return 0
     if args.recompute:
         for path in args.recompute:
             stored = app_report.load(path)
-            stored["metrics"] = app_report.round_metrics(app_report.compute_metrics(stored))
-            stored["humanSummary"] = app_report.summarize(stored)
+            stored.pop("metricsError", None)
+            if linux_report.is_linux_report(stored):
+                stored["metrics"] = linux_report.round_metrics(linux_report.compute_metrics(stored))
+                stored["humanSummary"] = linux_report.summarize(stored)
+            else:
+                stored["metrics"] = app_report.round_metrics(app_report.compute_metrics(stored))
+                stored["humanSummary"] = app_report.summarize(stored)
             Path(path).write_text(app_report.dump(stored))
             print(f"Recomputed {path}")
         return 0
     if args.compare and args.candidate:
-        print(app_report.compare([app_report.load(p) for p in args.compare], [app_report.load(p) for p in args.candidate]))
+        reports = [app_report.load(p) for p in args.compare]
+        candidates = [app_report.load(p) for p in args.candidate]
+        if linux_report.is_linux_report(reports[0]):
+            print(linux_report.compare(reports, candidates, args.compare_format))
+        else:
+            print(app_report.compare(reports, candidates))
         return 0
     if SYSTEM not in ("Darwin", "Linux"):
         raise SystemExit(f"The app lab requires macOS or Linux, not {SYSTEM}.")
     if not args.scenario and not args.build_only:
         raise SystemExit("--scenario is required")
-    if SYSTEM == "Linux" and not args.build_only and args.scenario != "workflow":
+    if SYSTEM == "Linux" and not args.build_only and args.scenario not in LINUX_SCENARIOS:
         raise SystemExit(
-            "On Linux only the workflow scenario is implemented so far (ticket 02 owns the "
-            "measured scenarios, ticket 32 input/resize/layers)."
+            f"On Linux the implemented scenarios are {', '.join(LINUX_SCENARIOS)}; the macOS-only "
+            "measured scenarios wait for ticket 32 (WebKitGTK has no occlusion signal, layer tree "
+            "or native input hook)."
+        )
+    if SYSTEM == "Darwin" and args.scenario not in app_report.SCENARIOS:
+        raise SystemExit(
+            f"The Linux scenarios ({', '.join(LINUX_SCENARIOS)}) are measured with /proc sampling "
+            "and do not run on macOS; use the macOS measured scenarios."
         )
     source = (args.source or REPO).resolve()
     output = (args.output or Path(tempfile.mkdtemp(prefix="terax-app-lab-"))).resolve()
@@ -483,6 +520,16 @@ def host_timeout(args, scenario: dict) -> float:
     name = args.scenario
     if name == "workflow":
         return 600
+    if name == "startup":
+        return max(1, args.startup_repeats) * 150 + 120
+    if name in ("resource", "stress"):
+        cycles = scenario.get("cycles") or 3
+        return (
+            (cycles * (scenario.get("hiddenMs", 3000) + scenario.get("visibleMs", 2000)) / 1000)
+            + (scenario.get("closeCycles", 3) * 5)
+            + scenario.get("streamSeconds", 30)
+            + 300
+        )
     if name == "tabs":
         return scenario["cycles"] * (scenario["dwellMs"] / 1000 + 12) + 240
     if name == "occlusion":
@@ -748,8 +795,8 @@ def run(args, app: Path, source: Path, output: Path) -> int:
     return 0
 
 
-def scenario_json_linux(args, file: Path, first_line: str, workspace: Path) -> dict:
-    """The workflow scenario as the driver receives it (Linux; no synthetic agent)."""
+def scenario_json_linux(args, file: Path | None, first_line: str | None, workspace: Path, fixtures: dict | None) -> dict:
+    """The scenario as the driver receives it (Linux)."""
     local: dict[str, str | None] = {}
     for entry in args.local_storage:
         key, _, value = entry.partition("=")
@@ -761,18 +808,304 @@ def scenario_json_linux(args, file: Path, first_line: str, workspace: Path) -> d
     # fetches api.github.com and can raise a dialog over the window. Preseed the throttle.
     local.setdefault("terax:updater:last-check", str(int(time.time() * 1000)))
     width, height = (float(value) for value in args.window.lower().split("x"))
-    return {
-        "name": "workflow",
+    scenario = {
+        "name": args.scenario,
         "window": {"width": width, "height": height},
-        "file": str(file),
-        "fileText": first_line,
         "cwds": {"shell": str(workspace)},
         "localStorage": local,
     }
+    if args.scenario == "workflow":
+        scenario.update({"file": str(file), "fileText": first_line})
+    if args.scenario in ("resource", "stress") and fixtures:
+        node = shutil.which("node")
+        if not node:
+            raise SystemExit("node is required for the streaming terminal fixture")
+        stress = args.scenario == "stress"
+        scenario.update({
+            "agentCommand": f"exec {node} {HERE / 'agent-sim.mjs'}",
+            "workspace": str(workspace),
+            "files": fixtures["files"],
+            "closeFile": fixtures["closeFile"],
+            "previewUrl": fixtures["previewUrl"],
+            "workload": fixtures["workload"],
+            "agents": args.agents if args.agents is not None else (4 if stress else 2),
+            "streams": args.streams if args.streams is not None else (4 if stress else 2),
+            "streamSeconds": int(args.stream_seconds if args.stream_seconds is not None else (args.duration or 30)),
+            "closeCycles": args.close_cycles,
+            "cycles": args.cycles if args.cycles is not None else 3,
+            "idleSeconds": args.idle_seconds,
+            "hiddenMs": args.hidden_ms,
+            "visibleMs": args.visible_ms,
+            "streamCommand": f"exec {node} {HERE / 'stream-sim.mjs'} --rate {args.stream_rate:g}",
+        })
+    return scenario
+
+
+def build_startup_entry(kind: str, launch: int, event: dict, spawned_wall_s: float) -> dict:
+    """One startup measurement from the boot milestone event.
+
+    `native.startedUnixMs` is the host process's wall-clock start (btime + start ticks, read by
+    the app itself); `perf.timeOrigin` is the page's navigation start. The difference is the work
+    before the page exists (loader, GTK, WebKit); `perf.uptimeMs` is navigation -> boot. The
+    harness's own spawn timestamp is kept as a cross-check, never as the primary figure.
+    """
+    native = event.get("native") or {}
+    perf = event.get("perf") or {}
+
+    def number(value):
+        return round(value, 3) if isinstance(value, (int, float)) else None
+
+    started = native.get("startedUnixMs") or 0
+    origin = perf.get("timeOrigin")
+    uptime = perf.get("uptimeMs")
+    wall = event.get("tWall")
+    exec_to_nav = number(origin - started) if started and origin else None
+    nav_to_boot = number(uptime)
+    exec_to_boot = None
+    if exec_to_nav is not None and nav_to_boot is not None:
+        exec_to_boot = round(exec_to_nav + nav_to_boot, 3)
+    elif started and wall:
+        exec_to_boot = number(wall - started)
+    return {
+        "launch": launch,
+        "kind": kind,
+        "phase": event.get("phase"),
+        "exec_to_nav_ms": exec_to_nav,
+        "nav_to_boot_ms": nav_to_boot,
+        "exec_to_boot_ms": exec_to_boot,
+        "first_paint_ms": number(perf.get("firstPaintMs")),
+        "first_contentful_paint_ms": number(perf.get("firstContentfulPaintMs")),
+        "dom_content_loaded_ms": number(perf.get("domContentLoadedMs")),
+        "load_ms": number(perf.get("loadEventMs")),
+        "harness_spawn_to_boot_ms": round((time.time() - spawned_wall_s) * 1000, 3),
+        "native_started_unix_ms": int(started) if started else None,
+        "time_origin_unix_ms": number(origin),
+        "event_wall_ms": wall,
+    }
+
+
+# ---------------------------------------------------------------------------------------------
+# Fixtures (small, deterministic documents/media for the resource workload)
+# ---------------------------------------------------------------------------------------------
+
+LIMITATIONS_LINUX = [
+    "PDF rendering is not exercised: fixture.pdf exists as a document fixture but the run never "
+    "opens it, and no PDF capability is claimed for the preview pane.",
+    "Audio and video codecs are not exercised: the only media fixture is a 64x64 PNG decoded by "
+    "the HTML preview.",
+    "GPU/VRAM use is not per-process attributable on Linux: /proc exposes no per-process GPU "
+    "figure, so dmabuf/shared pages appear only inside Pss/Rss where they are mapped.",
+    "The app's own structures are not split by allocator: Linux has no footprint --categories "
+    "equivalent here, so only Pss/Rss/private/shared/swap per role are reported. WebKit's JS "
+    "heap and malloc zones cannot be separated from the rest of the web process.",
+    "The 1 Hz timeline can miss sub-second peaks; event samples are the more precise figures.",
+    "No layer tree, occlusion state or native input injection exists on WebKitGTK (ticket 32), "
+    "so hidden-window behaviour is measured from window visibility only and document "
+    "visibility is advisory.",
+    "Package size covers the bench binary and the frontend dist only; real deb/rpm/AppImage "
+    "packages are ticket #36 and are not produced by --no-bundle.",
+    "Single machine, single display, single session: not another user's fonts, shell config, "
+    "compositor or a packaged/signed install.",
+]
+
+
+def _png_bytes(width: int, height: int) -> bytes:
+    import struct
+    import zlib
+
+    rows = []
+    for y in range(height):
+        row = bytearray(b"\x00")  # filter: none
+        for x in range(width):
+            row += bytes(((x * 4) % 256, (y * 4) % 256, ((x + y) * 2) % 256))
+        rows.append(bytes(row))
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(b"".join(rows), 9)) + chunk(b"IEND", b"")
+
+
+def _text_file(path: Path, lines: int, width: int = 96, seed: int = 1) -> None:
+    words = (
+        "renderer terminal scrollback pane split space preview editor memory baseline streaming "
+        "window hidden process helper sampler counter fixture workload"
+    ).split()
+    with path.open("w") as handle:
+        for line in range(lines):
+            handle.write(f"{line:05d} " + " ".join(words[(line + offset + seed) % len(words)] for offset in range(width // 8))[:width] + "\n")
+
+
+def prepare_fixtures(workspace: Path, stress: bool) -> dict:
+    """Create the accepted workload's fixtures deterministically (no random content)."""
+    workspace.mkdir(parents=True, exist_ok=True)
+    notes = workspace / "notes.txt"
+    todos = workspace / "todos.md"
+    data = workspace / "data.csv"
+    medium = workspace / "medium.txt"
+    large = workspace / "large.txt"
+    preview = workspace / "preview.html"
+    image = workspace / "pixel.png"
+    document = workspace / "fixture.pdf"
+
+    _text_file(notes, 120, seed=1)
+    todos.write_text(
+        "# Baseline fixtures\n\n"
+        "- [x] note the toolchain and the host stack\n"
+        "- [x] record the cold and warm startup\n"
+        "- [ ] compare a candidate build with the baseline\n\n"
+        "| metric | unit |\n| --- | --- |\n| memory | MiB PSS |\n| startup | ms |\n"
+    )
+    with data.open("w") as handle:
+        handle.write("line,role,pss_kib,cpu_ticks\n")
+        for row in range(400):
+            handle.write(f"{row},host,{(row * 37) % 5000},{row % 200}\n")
+    _text_file(medium, 3000, seed=2)
+    _text_file(large, 40000, seed=3)
+    image.write_bytes(_png_bytes(64, 64))
+    preview.write_text(
+        "<!doctype html><html><head><meta charset='utf-8'><title>fixture preview</title>"
+        "<style>body{font-family:sans-serif;margin:24px}table{border-collapse:collapse}"
+        "td,th{border:1px solid #888;padding:4px 8px}</style></head><body>"
+        "<h1>Preview fixture</h1><p>Static, local, deterministic. The image is a real 64x64 PNG.</p>"
+        "<img src='pixel.png' width='128' height='128' alt='gradient fixture'>"
+        "<table><tr><th>metric</th><th>unit</th></tr><tr><td>memory</td><td>MiB PSS</td></tr>"
+        "<tr><td>startup</td><td>ms</td></tr></table>"
+        "<p id='dom'>dom ready</p><script>document.querySelector('#dom').textContent='dom script ran';</script>"
+        "</body></html>"
+    )
+    document.write_bytes(
+        b"%PDF-1.4\n"
+        b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+        b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+        b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]/Contents 4 0 R"
+        b"/Resources<</Font<</F1 5 0 R>>>>>>endobj\n"
+        b"4 0 obj<</Length 45>>stream\nBT /F1 12 Tf 20 100 Td (fixture) Tj ET\nendstream endobj\n"
+        b"5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n"
+        b"trailer<</Root 1 0 R>>\n%%EOF\n"
+    )
+    (workspace / "README-FIXTURES.md").write_text(
+        "# App-lab fixtures\n\n"
+        f"Generated deterministically by `scripts/app-lab/run.py` for the {'stress' if stress else 'representative'} workload.\n\n"
+        "- notes.txt (120 lines) and todos.md: opened as editor tabs\n"
+        "- data.csv (400 rows): opened as an editor tab\n"
+        "- medium.txt (3000 lines): opened and closed in every close cycle\n"
+        "- large.txt (40000 lines): the stress workload's close-cycle file\n"
+        "- preview.html + pixel.png: served over local HTTP and shown in the active preview pane\n"
+        "- fixture.pdf: exists only to document that PDF is not rendered\n"
+    )
+    files = [str(notes), str(todos), str(data), str(medium)]
+    return {
+        "files": files,
+        "closeFile": str(large if stress else medium),
+        "previewFile": str(preview),
+        "imageFile": str(image),
+        "documentFile": str(document),
+        "workloadFiles": [str(path.relative_to(workspace)) for path in (notes, todos, data, medium, large, preview, image, document)],
+    }
+
+
+class FixtureServer:
+    """Serves the fixture directory on 127.0.0.1 and records what was actually fetched.
+
+    The request log is evidence that the active preview loaded the local HTML and decoded the
+    PNG; the runner does not pretend to inspect the rendered pixels.
+    """
+
+    def __init__(self, directory: Path):
+        self.requests: list[str] = []
+        outer = self
+
+        class Handler(http.server.SimpleHTTPRequestHandler):
+            def log_message(self, *_args):  # keep the run log clean
+                pass
+
+            def do_GET(self):  # noqa: N802 - http.server's spelling
+                outer.requests.append(self.path)
+                super().do_GET()
+
+        handler = functools.partial(Handler, directory=str(directory))
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+
+    def url(self, name: str) -> str:
+        return f"http://127.0.0.1:{self.httpd.server_port}/{name}"
+
+    def close(self) -> None:
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+def toolchains() -> dict:
+    """The compilers/runtimes a report was built with (recorded, never asserted)."""
+    def version(*command: str) -> str:
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        return (result.stdout or result.stderr).strip().splitlines()[0] if result.returncode == 0 and (result.stdout or result.stderr) else ""
+
+    return {
+        "rustc": version("rustc", "-V"),
+        "cargo": version("cargo", "-V"),
+        "node": version("node", "--version"),
+        "pnpm": version("pnpm", "--version"),
+        "python": platform.python_version(),
+        "vite": version("node", "node_modules/vite/bin/vite.js", "--version"),
+        "cc": version("cc", "--version"),
+    }
+
+
+def package_sizes(binary: Path, output: Path) -> dict:
+    """Every size that is observable without packaging a release artifact."""
+    def tree_bytes(path: Path) -> int:
+        if not path.exists():
+            return 0
+        return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+
+    no_bundle = "not produced (--no-bundle): deb/rpm/AppImage belong to ticket #36"
+    sizes = {
+        "benchBinaryBytes": binary.stat().st_size if binary.exists() else 0,
+        "frontendDistBytes": tree_bytes(output / "dist"),
+        "bundle": no_bundle,
+        "note": (
+            "The bench binary is a release-mode binary with the `bench` feature and a "
+            "diagnostics-enabled frontend; it is an upper bound for the shipped Linux binary, "
+            "not a package. Installed footprint, .deb/.rpm/.AppImage compression and the CLI "
+            "sidecar are not observable from --no-bundle."
+        ),
+    }
+    build_seconds = output / "build-seconds.json"
+    if build_seconds.exists():
+        sizes["buildSeconds"] = json.loads(build_seconds.read_text())
+    return sizes
+
+
+def describe_workload(args, fixtures: dict) -> str:
+    stress = args.scenario == "stress"
+    agents = args.agents if args.agents is not None else (4 if stress else 2)
+    streams = args.streams if args.streams is not None else (4 if stress else 2)
+    files = len(fixtures["files"]) if fixtures else 0
+    kind = "stress" if stress else "representative"
+    return (
+        f"{kind} workload (provisional, accepted by the spec; not observed user usage): "
+        f"2 Spaces, 4 terminal panes, {agents} synthetic busy agents, {files} text files, "
+        f"1 active local preview, {streams} streaming panes"
+    )
 
 
 def run_linux(args, binary: Path, source: Path, output: Path) -> int:
-    """Launch the real WebKitGTK app in a disposable profile and collect the workflow evidence."""
+    """Launch the real WebKitGTK app in a disposable profile and measure it from /proc.
+
+    Everything the report calls a measurement is sampled here: per-event memory (Pss/Rss per
+    role), a 1 Hz counter timeline, startup from the app's own process start and page clock, and
+    the workload's files. The app never reports its own resource use; only pids and the page's
+    timing come from inside it.
+    """
+    if args.scenario == "startup":
+        return run_linux_startup(args, binary, source, output)
     home = output / "home"
     linux_profile.prepare(home, output)
     # Coexistence: a synthetic installed upstream Terax owns state in this same profile. The
@@ -780,13 +1113,23 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     sentinels = namespace_sentinels.seed(home)
     workspace = output / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
-    token = uuid.uuid4().hex[:10]
-    first_line = f"workflow-file {token}"
-    file = output / "workflow-file.txt"
-    file.write_text(f"{first_line}\nsecond line for the editor\n")
+    fixture_server = None
+    fixtures = None
+    file = None
+    first_line = ""
+    if args.scenario in ("resource", "stress"):
+        fixtures = prepare_fixtures(workspace, args.scenario == "stress")
+        fixture_server = FixtureServer(workspace)
+        fixtures["previewUrl"] = fixture_server.url("preview.html")
+        fixtures["workload"] = describe_workload(args, fixtures)
+    else:
+        token = uuid.uuid4().hex[:10]
+        first_line = f"workflow-file {token}"
+        file = output / "workflow-file.txt"
+        file.write_text(f"{first_line}\nsecond line for the editor\n")
     report_path = (args.report or output / "report.json").resolve()
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    scenario = scenario_json_linux(args, file, first_line, workspace)
+    scenario = scenario_json_linux(args, file, first_line, workspace, fixtures)
     timeout = host_timeout(args, scenario)
     load_average = [round(value, 2) for value in os.getloadavg()]
 
@@ -810,19 +1153,26 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         "schema": "terax-app-lab/1",
         "scope": (
             "The real Linux/WebKitGTK application (bench build: full React shell, real PTYs, tabs, "
-            "splits and editor) in a disposable profile, driven by the in-app workflow scenario over "
-            "the local report server. Process sampling, metrics and the whole-app baseline are "
-            "macOS-only until ticket 02; this run records the host stack and the workflow evidence."
+            "Spaces, splits, editor and preview) in a disposable profile, driven by the in-app "
+            "scenario driver over the local report server. Whole-application memory, CPU and "
+            "startup are sampled from /proc by this orchestrator, not reported by the app; "
+            "external PTY/agent processes are reported separately. Package sizes are the bench "
+            "binary and frontend dist only (no deb/rpm/AppImage)."
         ),
         "config": {
             "scenario": args.scenario, "label": args.label, "profile": args.profile,
-            "hostTimeoutS": timeout, "scenarioJson": scenario, "buildSeconds": build_seconds,
-            "window": args.window,
+            "hostTimeoutS": timeout, "scenarioJson": {k: v for k, v in scenario.items() if k != "localStorage"},
+            "scenarioVariant": {
+                key: scenario.get(key)
+                for key in ("agents", "streams", "streamSeconds", "cycles", "closeCycles", "hiddenMs", "visibleMs", "window", "files")
+            },
+            "buildSeconds": build_seconds, "window": args.window,
+            "pollIntervalS": args.poll_interval,
         },
         "sourceRevision": revision.stdout.strip() if has_git else args.revision,
         "sourceTree": str(source),
         "platform": platform.platform(),
-        "environment": linux_profile.host_stack(),
+        "environment": {**linux_profile.host_stack(), "toolchains": toolchains()},
         "isolation": {
             "identifier": args.identifier,
             "home": str(home),
@@ -840,9 +1190,13 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         "warnings": [],
         "samples": [],
         "series": [],
+        "startup": [],
+        "workload": fixtures["workload"] if fixtures else "Linux acceptance workflow only (no resource workload)",
+        "limitations": list(LIMITATIONS_LINUX),
     }
     manifest["environment"]["loadAverageStart"] = load_average
     log = (output / "app.log").open("w")
+    spawned_wall = time.time()
     process = subprocess.Popen(
         [str(binary), str(workspace)],
         cwd=home,
@@ -852,9 +1206,24 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         start_new_session=True,
     )
     manifest["hostPid"] = process.pid
+    poller = linux_proc.Poller(args.poll_interval)
+    poller.set_host(process.pid)
+    poller.start()
     failed: BaseException | None = None
     workflow: dict = {}
     started = time.monotonic()
+
+    def take_sample(phase: str, event: dict, elapsed: float) -> dict:
+        found = linux_proc.sample(process.pid)
+        return {
+            "phase": phase,
+            "tMonoNs": found["tMonoNs"],
+            "elapsedS": elapsed,
+            "event": app_report.slim_event(event),
+            "memory": found,
+            "loadAverage": [round(value, 2) for value in os.getloadavg()],
+        }
+
     try:
         deadline = started + timeout
         first_event_by = started + 180
@@ -878,15 +1247,21 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                     workflow = event.get("workflow") or {}
                     break
                 reasons = app_report.qualify(args.scenario, phase, event)
-                manifest["samples"].append({
-                    "phase": phase, "tMonoNs": time.monotonic_ns(),
-                    "elapsedS": time.monotonic() - started,
-                    "event": app_report.slim_event(event),
-                })
+                elapsed = time.monotonic() - started
+                sample = take_sample(phase, event, elapsed)
+                if not manifest["startup"] and phase in ("booted", "workflow-shell"):
+                    manifest["startup"].append(build_startup_entry("cold", 1, event, spawned_wall))
+                manifest["samples"].append(sample)
                 if reasons:
                     manifest["qualification"]["qualified"] = False
                     manifest["qualification"]["failures"].append({"phase": phase, "reasons": reasons})
-                print(json.dumps({"phase": phase}), flush=True)
+                print(json.dumps({
+                    "phase": phase,
+                    "pssMiB": round(sample["memory"]["total"]["pss"] / linux_proc.MIB, 1),
+                    "appMiB": round(sample["memory"]["app"]["pss"] / linux_proc.MIB, 1),
+                    "workloadMiB": round(sample["memory"]["workload"]["pss"] / linux_proc.MIB, 1),
+                    **({"unqualified": reasons} if reasons else {}),
+                }), flush=True)
             finally:
                 done.set()
     except BaseException as error:  # a partial report is still worth keeping
@@ -894,6 +1269,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         manifest["incomplete"] = True
         manifest["error"] = repr(error)
     finally:
+        poller.stop()
         for kill in (signal.SIGTERM, signal.SIGKILL):
             if process.poll() is not None:
                 break
@@ -905,6 +1281,9 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 pass
+        if fixture_server is not None:
+            manifest["environment"]["fixtureRequests"] = sorted(set(fixture_server.requests))
+            fixture_server.close()
         server.httpd.shutdown()
         log.close()
         if server.log:
@@ -926,10 +1305,6 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         isolation["upstreamCacheDirUntouched"] = (upstream_cache / "control.json").is_file()
         isolation["fork"] = fork_state
         isolation["forkRuntimeDirIsNotUpstream"] = descriptor.parent != upstream_cache
-        # WebKit storage (localStorage, CacheStorage, HSTS, logs) lives in the identifier-keyed
-        # app data dir. The built bench identifier is `<fork product identifier>.app-lab-<hex>`,
-        # so every directory this run created under XDG_DATA_HOME is inside the fork's product
-        # namespace; the upstream identifier is present only because the run seeded it.
         own_data = [
             entry
             for entry in fork_state["dataDirEntries"]
@@ -959,29 +1334,65 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                 f"focus is advisory on Wayland (the compositor decides): appActive=false in "
                 f"{len(unfocused)} of {len(manifest['samples'])} phases ({shown})"
             )
+        busy = max((entry.get("loadAverage", [0])[0] for entry in poller.series), default=0)
+        cpus = int(manifest["environment"].get("logicalCpus") or 0)
+        if cpus and busy > cpus / 2:
+            manifest["qualification"]["advisories"].append(
+                f"host load average reached {busy:.1f} on {cpus} logical CPUs during the run; "
+                f"startup and CPU figures may be inflated by other work"
+            )
+        manifest["series"] = poller.series
+        manifest["linux"] = {
+            "sampler": "procfs",
+            "pollIntervalS": args.poll_interval,
+            "pssIsUniqueMemory": True,
+            "roles": list(linux_proc.ROLE_ORDER),
+            "workloadFiles": fixtures["workloadFiles"] if fixtures else [],
+            "fixtures": {
+                key: value
+                for key, value in (fixtures or {}).items()
+                if key in ("previewFile", "imageFile", "documentFile", "closeFile")
+            },
+            "pollerErrors": poller.errors,
+        }
+        manifest["package"] = package_sizes(binary, output)
         for sample in reversed(manifest["samples"]):
-            diag = sample["event"].get("diag") or {}
+            diag = (sample.get("event") or {}).get("diag") or {}
             if "devicePixelRatio" in diag:
                 manifest["environment"]["observedDevicePixelRatio"] = diag["devicePixelRatio"]
                 break
         if workflow:
             manifest["qualification"]["workflowPass"] = bool(workflow.get("pass"))
+        completed = [sample for sample in manifest["samples"] if "memory" in sample]
+        if completed:
+            try:
+                manifest["metrics"] = linux_report.round_metrics(linux_report.compute_metrics(manifest))
+                manifest["humanSummary"] = linux_report.summarize(manifest)
+            except Exception as error:  # a report without metrics is still evidence
+                manifest["metricsError"] = repr(error)
         report_path.write_text(app_report.dump(manifest))
         linux_profile.cleanup(home, output)
     if failed is not None:
         raise failed
-    steps = workflow.get("steps") or []
-    passed = sum(1 for step in steps if step.get("ok"))
+    if args.scenario == "workflow":
+        steps = workflow.get("steps") or []
+        passed = sum(1 for step in steps if step.get("ok"))
+        print(f"workflow {'PASS' if workflow.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
     isolation = manifest["isolation"]
-    print(f"workflow {'PASS' if workflow.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
     print(
         f"coexistence {'PASS' if isolation['upstreamStateUnchanged'] else 'FAIL'}: "
         f"{isolation['upstreamSentinels']['files']} upstream files unchanged; "
         f"descriptor {'published' if isolation['controlDescriptorPublished'] else 'MISSING'} at "
         f"{isolation['fork']['controlDescriptor']}"
     )
+    if "humanSummary" in manifest:
+        print("\n" + manifest["humanSummary"])
+    if args.compare:
+        print("\n" + linux_report.compare(
+            [app_report.load(path) for path in args.compare], [manifest], args.compare_format
+        ))
     print(f"\nSaved {report_path}")
-    if not workflow.get("pass"):
+    if args.scenario == "workflow" and not workflow.get("pass"):
         print("Run failed: the workflow reported a failing step (see page.log).", file=sys.stderr)
         return 2
     if not isolation["upstreamStateUnchanged"]:
@@ -991,6 +1402,157 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             file=sys.stderr,
         )
         return 3
+    return 0
+
+
+def run_linux_startup(args, binary: Path, source: Path, output: Path) -> int:
+    """Cold and warm startup: one fresh profile, then relaunches against the same profile.
+
+    The first launch runs against an empty profile directory (cold: no WebKit caches, no
+    localStorage, no control descriptor); later launches reuse that profile (warm: the app's own
+    caches are populated). Every launch is the same boot-only scenario, so the difference is
+    caches, not workload.
+    """
+    home = output / "home"
+    linux_profile.prepare(home, output)
+    sentinels = namespace_sentinels.seed(home)
+    workspace = output / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    report_path = (args.report or output / "report.json").resolve()
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    repeats = max(1, args.startup_repeats)
+    revision = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"], text=True, capture_output=True)
+    has_git = revision.returncode == 0 and (source / ".git").exists()
+    manifest = {
+        "schema": "terax-app-lab/1",
+        "scope": (
+            "Cold and warm startup of the real Linux/WebKitGTK application in a disposable "
+            "profile. Startup is measured from the host process's /proc start time and the "
+            "page's navigation-start clock to the first live terminal tab; the harness's spawn "
+            "timestamp is recorded as a cross-check only."
+        ),
+        "config": {
+            "scenario": "startup", "label": args.label, "profile": args.profile, "window": args.window,
+            "scenarioVariant": {"repeats": repeats, "window": args.window},
+            "pollIntervalS": args.poll_interval,
+        },
+        "sourceRevision": revision.stdout.strip() if has_git else args.revision,
+        "sourceTree": str(source),
+        "platform": platform.platform(),
+        "environment": {**linux_profile.host_stack(), "toolchains": toolchains()},
+        "appBinarySha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+        "qualification": {"qualified": True, "failures": [], "advisories": []},
+        "warnings": [],
+        "samples": [],
+        "series": [],
+        "startup": [],
+        "workload": "boot-only startup scenario (no terminal workload besides the boot shell)",
+        "limitations": list(LIMITATIONS_LINUX),
+        "package": package_sizes(binary, output),
+    }
+    manifest["environment"]["loadAverageStart"] = [round(value, 2) for value in os.getloadavg()]
+    env = {**{key: value for key, value in os.environ.items() if not key.startswith(("TAURI_", "VITE_", "CARGO_"))}}
+    env.update(linux_profile.profile_env(home))
+    env.update(linux_profile.session_env())
+    scenario = scenario_json_linux(args, None, None, workspace, None)
+    try:
+        for launch in range(1, repeats + 1):
+            kind = "cold" if launch == 1 else "warm"
+            server = ReportServer()
+            launch_env = {**env, "TERAX_BENCH_ISOLATED": "1", "TERAX_BENCH_REPORT_URL": server.url,
+                          "TERAX_BENCH_SCENARIO": json.dumps(scenario)}
+            linux_profile.preflight(args.identifier, launch_env, output, require_isolated=True)
+            log = (output / f"app-{launch}.log").open("w")
+            spawned_wall = time.time()
+            process = subprocess.Popen(
+                [str(binary), str(workspace)], cwd=home, env=launch_env,
+                stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+            )
+            poller = linux_proc.Poller(args.poll_interval)
+            poller.set_host(process.pid)
+            poller.start()
+            started = time.monotonic()
+            booted = None
+            try:
+                while True:
+                    try:
+                        event, done, _reply = server.events.get(timeout=1)
+                    except queue.Empty:
+                        if process.poll() is not None:
+                            raise RuntimeError(f"launch {launch} exited ({process.returncode}) before booting; see {output / f'app-{launch}.log'}")
+                        if time.monotonic() - started > 180:
+                            raise RuntimeError(f"launch {launch} did not boot within 180 s")
+                        continue
+                    phase = event.get("phase")
+                    try:
+                        if phase == "booted":
+                            booted = build_startup_entry(kind, launch, event, spawned_wall)
+                            found = linux_proc.sample(process.pid)
+                            booted["pssMiB"] = round(found["total"]["pss"] / linux_proc.MIB, 2)
+                            booted["appPssMiB"] = round(found["app"]["pss"] / linux_proc.MIB, 2)
+                            booted["workloadPssMiB"] = round(found["workload"]["pss"] / linux_proc.MIB, 2)
+                            manifest["startup"].append(booted)
+                            manifest["samples"].append({
+                                "phase": "booted",
+                                "launch": launch,
+                                "kind": kind,
+                                "tMonoNs": found["tMonoNs"],
+                                "event": app_report.slim_event(event),
+                                "memory": found,
+                                "loadAverage": [round(value, 2) for value in os.getloadavg()],
+                            })
+                        if phase == "done":
+                            break
+                        if phase == "error":
+                            raise RuntimeError(event)
+                    finally:
+                        done.set()
+            finally:
+                poller.stop()
+                for kill in (signal.SIGTERM, signal.SIGKILL):
+                    if process.poll() is not None:
+                        break
+                    try:
+                        os.killpg(process.pid, kill)
+                    except ProcessLookupError:
+                        break
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        pass
+                server.httpd.shutdown()
+                log.close()
+                if server.log:
+                    (output / f"page-{launch}.log").write_text("\n".join(server.log))
+                manifest["series"] = poller.series
+            if booted is None:
+                raise RuntimeError(f"launch {launch} reported no boot milestone")
+            print(json.dumps({key: booted.get(key) for key in ("launch", "kind", "exec_to_boot_ms", "nav_to_boot_ms", "first_paint_ms")}), flush=True)
+        manifest["environment"]["loadAverageEnd"] = [round(value, 2) for value in os.getloadavg()]
+        manifest["linux"] = {
+            "sampler": "procfs",
+            "pollIntervalS": args.poll_interval,
+            "pssIsUniqueMemory": True,
+            "roles": list(linux_proc.ROLE_ORDER),
+            "seriesLaunch": repeats,
+            "seriesNote": "the timeline covers the last (warm) launch; startup entries cover every launch",
+        }
+        manifest["metrics"] = linux_report.round_metrics(linux_report.compute_metrics(manifest))
+        manifest["humanSummary"] = linux_report.summarize(manifest)
+    except BaseException as error:
+        manifest["incomplete"] = True
+        manifest["error"] = repr(error)
+        report_path.write_text(app_report.dump(manifest))
+        linux_profile.cleanup(home, output)
+        raise
+    report_path.write_text(app_report.dump(manifest))
+    linux_profile.cleanup(home, output)
+    print("\n" + manifest["humanSummary"])
+    if args.compare:
+        print("\n" + linux_report.compare(
+            [app_report.load(path) for path in args.compare], [manifest], args.compare_format
+        ))
+    print(f"\nSaved {report_path}")
     return 0
 
 

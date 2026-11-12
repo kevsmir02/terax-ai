@@ -1283,10 +1283,20 @@ export default function App() {
               newAgentGroupTab={newAgentGroupTab}
               splitActivePane={splitActivePane}
               closeTab={closeTab}
-              openFileTab={(path, pin = true) => openFileTab(path, pin)}
+              openFileTab={(path, pin = true, spaceId) =>
+                openFileTab(path, pin, spaceId ? { spaceId } : undefined)
+              }
               readBuffer={(leafId, maxLines) =>
                 terminalRefs.current.get(leafId)?.getBuffer(maxLines) ?? null
               }
+              spaces={useSpaces.getState().spaces.map(({ id, name }) => ({ id, name }))}
+              activeSpaceId={activeSpaceId}
+              createSpace={(name, root) =>
+                useSpaces.getState().create({ name, root }).id
+              }
+              setActiveSpace={(id) => useSpaces.getState().setActive(id)}
+              newTabInSpace={(spaceId, cwd) => newTabInSpace(spaceId, cwd)}
+              openPreview={(url) => openPreviewTab(url)}
             />
           </Suspense>
         )}
