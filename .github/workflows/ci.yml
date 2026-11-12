@@ -91,6 +91,74 @@ jobs:
           pnpm exec playwright install chromium --no-shell
           pnpm test:terminal-scaling
 
+  terminal-linux:
+    # The Linux half of the terminal strategy, in one job so the inventory has one command.
+    # `terminal-test` above keeps Windows and macOS: ticket #34 narrows platforms, and the
+    # repository guard forbids this job from replacing that matrix. What is only provable on
+    # Linux: the sustained-output soak (both artifacts, both render formats), the adapted-core
+    # benchmark the Ghostty update procedure compares against, and the compositor parity gate
+    # against the WebGL fallback the application uses on WebKitGTK.
+    name: terminal-linux
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Adapted core, input, search, selection and renderer fallback
+        run: pnpm exec vitest run src/modules/terminal
+
+      - name: Sustained-output soak (adversarial input, stack, plateau)
+        env:
+          TERAX_SOAK_REPORT: ${{ runner.temp }}/soak.json
+        run: pnpm soak:ghostty
+
+      - name: Adapted-core benchmark (the Ghostty update procedure's baseline source)
+        run: >-
+          pnpm exec vitest bench src/modules/terminal/ghostty/AdaptedGhostty.bench.ts --run
+          --outputJson "${{ runner.temp }}/bench.json"
+
+      - uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: chromium-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Terminal compositor pixel parity, WebGL fallback (DPR 1, 1.25, 1.5, 2)
+        env:
+          TERAX_VISUAL_SOFTWARE: '1'
+          TERAX_VISUAL_RENDERERS: webgl
+          # Software WebGPU on a display-less runner destroys its device before the harness can
+          # read the surface back, so only the fallback is compared here. The gate still requires
+          # both renderers by default and macOS runs it that way; this sentence is recorded in
+          # scaling.json so the gap is evidence, not a quiet omission.
+          TERAX_VISUAL_RENDERERS_GAP: >-
+            headless Chromium on a Linux runner has no GPU and its software WebGPU device is
+            destroyed before the harness can read the surface back
+        run: |
+          pnpm exec playwright install --with-deps chromium --no-shell
+          pnpm test:terminal-scaling
+
+      - name: Upload the soak and benchmark evidence
+        # The soak report and the benchmark output are what a later Ghostty revision is compared
+        # against, so a passing run still has to ship them.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: terminal-linux
+          path: |
+            ${{ runner.temp }}/soak.json
+            ${{ runner.temp }}/bench.json
+          if-no-files-found: warn
+
   rust:
     runs-on: ubuntu-22.04
     steps:
