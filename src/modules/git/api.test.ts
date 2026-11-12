@@ -87,6 +87,25 @@ describe("git api argument shapes", () => {
     });
   });
 
+  it("preflights with the same normalized shape as the add command", async () => {
+    await git.worktreePreflight("/r", {
+      branch: { mode: "newBranch", name: "task/x" },
+      taskSlug: "x",
+      include: [".env"],
+    });
+    expect(mocks.invoke).toHaveBeenLastCalledWith("git_worktree_preflight", {
+      repoRoot: "/r",
+      request: {
+        branch: { mode: "newBranch", name: "task/x" },
+        path: null,
+        taskSlug: "x",
+        base: null,
+        include: [".env"],
+      },
+      workspace,
+    });
+  });
+
   it("fills worktree defaults and keeps removal non-forced unless asked", async () => {
     await git.worktreeAdd("/r", {
       branch: { mode: "newBranch", name: "task/x" },

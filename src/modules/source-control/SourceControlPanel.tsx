@@ -21,6 +21,9 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
@@ -52,6 +55,7 @@ import {
   CheckmarkCircle01Icon,
   Download01Icon,
   Folder01Icon,
+  FolderAddIcon,
   FolderCloudIcon,
   FolderGitTwoIcon,
   GitBranchIcon,
@@ -80,6 +84,7 @@ import {
   type DestructivePromptState,
 } from "./DestructiveGitPrompt";
 import { registerDestructiveGitBridge } from "./destructiveGitBridge";
+import { WorktreeCreateDialog } from "@/modules/worktrees/WorktreeCreateDialog";
 import type { SourceControlSummary } from "./useSourceControl";
 import {
   useSourceControlPanel,
@@ -104,6 +109,9 @@ type Props = {
   repositoryTarget: SourceControlRepositoryTarget;
   onFollowRepositoryContext: () => void;
   destructive: DestructiveGitSupport;
+  worktreeDialogOpen: boolean;
+  onWorktreeDialogOpenChange: (open: boolean) => void;
+  onOpenWorktreeAsSpace: (path: string, branch: string | null) => void;
 };
 
 const SOURCE_CONTROL_TOOLTIP_CLASS =
@@ -174,6 +182,8 @@ function BranchDropdown({
   onNavigateToPath,
   onRefresh,
   onRequestCheckout,
+  onNewWorktree,
+  onOpenWorktreeAsSpace,
 }: {
   repoRoot: string | null;
   repoLabel: string;
@@ -183,6 +193,8 @@ function BranchDropdown({
   onNavigateToPath?: (path: string) => void;
   onRefresh: () => void;
   onRequestCheckout: (branch: string, onDone: () => void) => void;
+  onNewWorktree: () => void;
+  onOpenWorktreeAsSpace: (path: string, branch: string | null) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [branches, setBranches] = useState<GitBranchEntry[]>([]);
@@ -340,34 +352,67 @@ function BranchDropdown({
                 </DropdownMenuLabel>
                 <DropdownMenuGroup>
                   {worktrees.map((b) => (
-                    <DropdownMenuItem
-                      key={b.worktreePath ?? b.name}
-                      onSelect={() => {
-                        if (b.worktreePath && onNavigateToPath) {
-                          onNavigateToPath(b.worktreePath);
-                        }
-                      }}
-                      className="flex cursor-pointer items-center gap-2 text-[12px]"
-                    >
-                      <HugeiconsIcon
-                        icon={Folder01Icon}
-                        size={14}
-                        strokeWidth={1.5}
-                        className="shrink-0 text-muted-foreground"
-                      />
-                      <div className="flex min-w-0 flex-col">
-                        <span className="truncate">{b.name}</span>
-                        {b.worktreePath && (
-                          <span className="truncate text-[10px] text-muted-foreground">
-                            {b.worktreePath}
-                          </span>
-                        )}
-                      </div>
-                    </DropdownMenuItem>
+                    <DropdownMenuSub key={b.worktreePath ?? b.name}>
+                      <DropdownMenuSubTrigger className="flex cursor-pointer items-center gap-2 text-[12px]">
+                        <HugeiconsIcon
+                          icon={Folder01Icon}
+                          size={14}
+                          strokeWidth={1.5}
+                          className="shrink-0 text-muted-foreground"
+                        />
+                        <div className="flex min-w-0 flex-col">
+                          <span className="truncate">{b.name}</span>
+                          {b.worktreePath && (
+                            <span className="truncate text-[10px] text-muted-foreground">
+                              {b.worktreePath}
+                            </span>
+                          )}
+                        </div>
+                      </DropdownMenuSubTrigger>
+                      <DropdownMenuSubContent className="w-56">
+                        <DropdownMenuItem
+                          onSelect={() => {
+                            if (b.worktreePath && onNavigateToPath) {
+                              onNavigateToPath(b.worktreePath);
+                            }
+                          }}
+                          className="cursor-pointer text-[12px]"
+                        >
+                          Open terminal here
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onSelect={() => {
+                            if (b.worktreePath) {
+                              onOpenWorktreeAsSpace(b.worktreePath, b.name);
+                            }
+                          }}
+                          className="cursor-pointer text-[12px]"
+                        >
+                          Open as Space
+                        </DropdownMenuItem>
+                      </DropdownMenuSubContent>
+                    </DropdownMenuSub>
                   ))}
                 </DropdownMenuGroup>
               </>
             )}
+            {repoRoot ? (
+              <>
+                {branches.length > 0 && <DropdownMenuSeparator />}
+                <DropdownMenuItem
+                  onSelect={onNewWorktree}
+                  className="flex cursor-pointer items-center gap-2 text-[12px]"
+                >
+                  <HugeiconsIcon
+                    icon={FolderAddIcon}
+                    size={14}
+                    strokeWidth={1.5}
+                    className="shrink-0 text-muted-foreground"
+                  />
+                  New worktree…
+                </DropdownMenuItem>
+              </>
+            ) : null}
             {branches.length === 0 && (
               <div className="px-3 py-3 text-[11px] text-muted-foreground">
                 No branches found.
@@ -390,6 +435,9 @@ export const SourceControlPanel = memo(function SourceControlPanel({
   repositoryTarget,
   onFollowRepositoryContext,
   destructive,
+  worktreeDialogOpen,
+  onWorktreeDialogOpenChange,
+  onOpenWorktreeAsSpace,
 }: Props) {
   const scm = useSourceControlPanel(
     open,
@@ -737,6 +785,8 @@ export const SourceControlPanel = memo(function SourceControlPanel({
               onNavigateToPath={onNavigateToPath}
               onRefresh={handleRefresh}
               onRequestCheckout={scm.requestCheckout}
+              onNewWorktree={() => onWorktreeDialogOpenChange(true)}
+              onOpenWorktreeAsSpace={onOpenWorktreeAsSpace}
             />
             {scm.status && (scm.status.ahead > 0 || scm.status.behind > 0) ? (
               <div className="flex shrink-0 items-center gap-0.5 text-[10px] font-semibold tabular-nums leading-none text-muted-foreground">
@@ -1083,6 +1133,13 @@ export const SourceControlPanel = memo(function SourceControlPanel({
           ) : null}
         </AlertDialogContent>
       </AlertDialog>
+
+      <WorktreeCreateDialog
+        open={worktreeDialogOpen}
+        onOpenChange={onWorktreeDialogOpenChange}
+        repoRoot={scm.repo?.repoRoot ?? null}
+        onOpenAsSpace={onOpenWorktreeAsSpace}
+      />
     </TooltipProvider>
   );
 });

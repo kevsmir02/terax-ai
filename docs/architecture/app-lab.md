@@ -55,6 +55,11 @@ python3 scripts/app-lab/run.py --scenario markdown --profile debug \
 python3 scripts/app-lab/run.py --scenario spaces --profile debug \
     --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-spaces
 
+# the worktree seam (creation through the panel dialog, derived access, opening the
+# result as a Space, and four refusals that leave their targets untouched)
+python3 scripts/app-lab/run.py --scenario worktree --profile debug \
+    --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-worktree
+
 # the quit seam (survey across Spaces, repeated close, save-then-quit, graceful
 # termination, survivor prompt, forced exit, reload without command replay)
 python3 scripts/app-lab/run.py --scenario quit --profile debug \

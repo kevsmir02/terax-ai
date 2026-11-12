@@ -91,6 +91,19 @@ fn covered(
     })
 }
 
+/// What grants a path access. `Root` is an explicitly authorized folder,
+/// `Derived` is a linked-worktree root whose parent vouches for it, and
+/// `Covered` is any other path inside one of those grants. Distinguishing them
+/// is what lets the worktree UI say *why* a new path can be opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Access {
+    Root,
+    Derived,
+    Covered,
+    None,
+}
+
 impl WorkspaceRegistry {
     pub fn authorize<P: AsRef<Path>>(&self, path: P) -> std::io::Result<PathBuf> {
         let canonical = std::fs::canonicalize(path.as_ref())?;
@@ -144,6 +157,27 @@ impl WorkspaceRegistry {
             !wanted.contains(&normalize_location(&key.to_string_lossy(), windows))
         });
         derived.len() != before
+    }
+
+    /// How `path` is granted access right now. The path may not exist yet (the
+    /// deepest existing ancestor is canonicalized, as for a grant).
+    pub fn access(&self, path: &Path) -> Access {
+        let canonical = canonical_or_resolved(path);
+        let roots = self.roots.lock().expect("workspace registry poisoned");
+        let derived = self.derived.lock().expect("workspace registry poisoned");
+        if roots.contains(&canonical) {
+            return Access::Root;
+        }
+        if derived
+            .get(&canonical)
+            .is_some_and(|parent| covered(parent, &roots, &derived, 0))
+        {
+            return Access::Derived;
+        }
+        if covered(&canonical, &roots, &derived, 0) {
+            return Access::Covered;
+        }
+        Access::None
     }
 
     pub fn canonicalize_cached<P: AsRef<Path>>(&self, path: P) -> std::io::Result<PathBuf> {
@@ -264,6 +298,34 @@ pub async fn workspace_authorize(
             .authorize(&resolved)
             .map_err(|e| e.to_string())?;
         Ok(crate::modules::fs::to_canon(&canonical))
+    })
+    .await
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceAccess {
+    pub path: String,
+    pub access: Access,
+}
+
+/// Why a path can be opened, without granting anything. Callers use this to
+/// refuse to build a Space on a folder the app has no access to; only creation
+/// flows (an explicit folder choice, a worktree add) grant access.
+#[tauri::command]
+pub async fn workspace_access(
+    app: tauri::AppHandle,
+    path: String,
+    workspace: Option<WorkspaceEnv>,
+) -> Result<WorkspaceAccess, String> {
+    crate::modules::fs::blocking(move || {
+        let workspace = WorkspaceEnv::from_option(workspace);
+        let resolved = resolve_path(&path, &workspace);
+        let access = tauri::Manager::state::<WorkspaceRegistry>(&app).access(&resolved);
+        Ok(WorkspaceAccess {
+            path: crate::modules::fs::to_canon(canonical_or_resolved(&resolved)),
+            access,
+        })
     })
     .await
 }
@@ -909,6 +971,32 @@ mod auth_tests {
         assert!(reg.revoke_derived(&child));
         assert!(!reg.is_authorized(&child));
         assert!(!reg.revoke_derived(&child), "second revoke is a no-op");
+    }
+
+    #[test]
+    fn access_distinguishes_a_root_from_a_worktree_derived_from_it() {
+        let reg = WorkspaceRegistry::default();
+        let parent = tempdir("access-parent");
+        let child = tempdir("access-child");
+        let stranger = tempdir("access-stranger");
+        reg.authorize(&parent).unwrap();
+        reg.authorize_derived(&child, &parent).unwrap();
+
+        assert_eq!(reg.access(&parent), Access::Root);
+        assert_eq!(reg.access(&child), Access::Derived);
+        assert_eq!(
+            reg.access(&child.join("nested")),
+            Access::Covered,
+            "a path inside a linked worktree is covered by its grant"
+        );
+        assert_eq!(reg.access(&stranger), Access::None);
+
+        reg.revoke_derived(&child);
+        assert_eq!(
+            reg.access(&child),
+            Access::None,
+            "a revoked worktree grants nothing"
+        );
     }
 
     #[test]

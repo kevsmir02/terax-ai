@@ -1,6 +1,7 @@
 import type { QuitPhase } from "@/modules/shutdown";
 import type { DestructiveGitBridgePending } from "@/modules/source-control/destructiveGitBridge";
 import type { Tab } from "@/modules/tabs";
+import type { WorktreeBridge } from "@/modules/worktrees/worktreeBridge";
 
 /** What the scenario driver may do to the running application: the app's own tab actions. */
 export type BenchAppApi = {
@@ -26,7 +27,7 @@ export type BenchAppApi = {
   setLeafCwd: (leafId: number, cwd: string) => void;
   readBuffer: (leafId: number, maxLines?: number) => string | null;
   /** Spaces (workspaces) the application knows about. */
-  spaces: { id: string; name: string }[];
+  spaces: { id: string; name: string; root: string | null }[];
   activeSpaceId: string | null;
   createSpace: (name: string, root: string | null) => string;
   setActiveSpace: (id: string) => void;
@@ -54,6 +55,10 @@ export type BenchAppApi = {
   editEditor: (tabId: number, text: string) => void;
   /** Shows the Source Control panel so its real destructive-action guard mounts. */
   openSourceControl: () => void;
+  /** Opens the Source Control panel's worktree dialog (the app's own state). */
+  openWorktreeDialog: () => void;
+  /** Drives the dialog's own form, preflight and submit path. */
+  worktree: () => WorktreeBridge | null;
   /** Drives the panel's own destructive-action guard (never a second implementation). */
   destructiveGit: () => {
     mounted: boolean;
@@ -120,6 +125,7 @@ export type BenchScenario = {
     | "markdown"
     | "spaces"
     | "git"
+    | "worktree"
     | "checkpoints"
     | "preview"
     | "images"
@@ -153,6 +159,19 @@ export type BenchScenario = {
     ignoredCount?: number;
     stagedFile?: string;
     stagedCount?: number;
+  };
+  /** worktree: an isolated scratch repository and the paths refusals use. */
+  worktree?: {
+    repo: string;
+    /** A location that does not exist yet: the successful creation. */
+    createPath: string;
+    /** An ignored file the success must copy. */
+    ignoredFile: string;
+    /** A location that exists as a file: refusal. */
+    filePath: string;
+    /** A non-empty directory: refusal, and its file must survive. */
+    dirtyPath: string;
+    dirtyFile: string;
   };
   /** split-drag: seconds of divider motion per drag, and its amplitude as a share of the pane area. */
   dragS?: number;
