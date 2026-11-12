@@ -15,8 +15,8 @@ use serde::Serialize;
 use crate::modules::git::diff::{parse_raw_numstat_z, DiffFileSummary, FileStatus};
 use crate::modules::git::errors::{GitError, Result};
 use crate::modules::git::plumbing::{
-    git_dir, head_commit_opt, lock_for_repo, open_worktree, os_args, run, run_ok, stdout_text,
-    verify_tree,
+    empty_tree, git_dir, head_commit_opt, lock_for_repo, open_worktree, os_args, run, run_ok,
+    stdout_text, verify_tree,
 };
 use crate::modules::git::process::{ensure_success, run_git_with, RunOptions};
 use crate::modules::git::refs;
@@ -767,6 +767,7 @@ struct RefRecord {
     tree: String,
     parent: Option<String>,
     created_at_secs: i64,
+    subject: String,
     worktree_id: Option<String>,
 }
 
@@ -787,6 +788,7 @@ fn parse_ref_records(output: &[u8]) -> Vec<RefRecord> {
                 tree,
                 parent,
                 created_at_secs,
+                subject: subject.to_string(),
                 worktree_id: subject_worktree_id(subject).map(str::to_string),
             })
         })
@@ -1319,6 +1321,885 @@ pub fn restore(
     write_last_restore(&admin, task_id, reference, &target_tree);
     report.restored = true;
     Ok(report)
+}
+
+// ---------------------------------------------------------------------------
+// Manual checkpoints
+//
+// A manual checkpoint is not tied to an agent task or turn: it has its own
+// random id, its own ref root (`refs/<namespace>/manual-checkpoints/<id>`) and
+// an optional name that is a label, never part of the identity. Creation reuses
+// the bounded snapshot above (a private copy of the index, `git add -A`, up to
+// three verification passes) and records what it excluded or could not capture
+// in the commit subject, so a later listing and inspection disclose the same
+// limitations without trusting creation-time state.
+// ---------------------------------------------------------------------------
+
+/// Longest accepted manual checkpoint name, in characters.
+pub const MAX_MANUAL_NAME_CHARS: usize = 120;
+const MAX_INSPECTED_PATHS: usize = 200;
+/// Cap for the ignored/staged path probes: enough to count them, never a walk
+/// over an arbitrarily large ignored tree.
+const PROBE_STDOUT_CAP: usize = 256 * 1024;
+/// Cap for the submodule scan of the index.
+const INDEX_SCAN_CAP: usize = 4 * 1024 * 1024;
+const MANUAL_ID_ATTEMPTS: u32 = 8;
+
+const MANUAL_SUBJECT_PREFIX: &str = "terax manual ";
+const CAPTURE_MARK: &str = " [capture ";
+const CAPTURE_VERSION: &str = "v1";
+const UNNAMED: &str = "(unnamed)";
+
+/// What kind of recovery point a ref is.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RecoveryKind {
+    /// A manual, optionally named checkpoint.
+    Manual,
+    /// A retained per-task/per-turn checkpoint.
+    Turn,
+    /// A pre-restore snapshot kept so a restore can be undone.
+    Safety,
+}
+
+/// What a manual capture did and did not include. Persisted with the checkpoint
+/// (in its commit subject) so inspection reports the same facts later.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureReport {
+    /// Two consecutive snapshot passes produced the same tree.
+    pub consistent: bool,
+    pub passes: u32,
+    /// Files that kept changing under the snapshot and were left out.
+    pub unstable_count: u32,
+    /// Files Git could not read; the rest of the tree was still captured.
+    pub warnings: Vec<String>,
+    /// Ignored files and directories under the worktree. Never captured.
+    pub ignored_files: u32,
+    /// The ignored listing hit its read cap: the count is a lower bound.
+    pub ignored_truncated: bool,
+    /// Paths staged in the real index at capture time. Staging is not recorded.
+    pub staged_files: u32,
+    pub staged_truncated: bool,
+    /// Submodules recorded as their commit pointer only.
+    pub submodules: u32,
+    pub submodules_truncated: bool,
+    /// The capture is not a complete, stable snapshot of the working tree.
+    pub incomplete: bool,
+}
+
+impl CaptureReport {
+    fn of(
+        snapshot: &Snapshot,
+        ignored: &ProbeCount,
+        staged: &ProbeCount,
+        submodules: &ProbeCount,
+    ) -> Self {
+        let unstable_count = snapshot.unstable_paths.len() as u32;
+        Self {
+            consistent: snapshot.consistent,
+            passes: snapshot.passes,
+            unstable_count,
+            warnings: snapshot.warnings.clone(),
+            ignored_files: ignored.count,
+            ignored_truncated: ignored.truncated,
+            staged_files: staged.count,
+            staged_truncated: staged.truncated,
+            submodules: submodules.count,
+            submodules_truncated: submodules.truncated,
+            incomplete: !snapshot.consistent || unstable_count > 0 || !snapshot.warnings.is_empty(),
+        }
+    }
+}
+
+/// A manual checkpoint as the frontend sees it (creation result and listing).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualCheckpoint {
+    #[serde(rename = "ref")]
+    pub ref_name: String,
+    /// The opaque identity: 32 hex digits, never a fallback to task/turn slots.
+    pub id: String,
+    /// The user's optional name; a label, not an identity.
+    pub name: Option<String>,
+    pub commit: String,
+    pub tree: String,
+    /// HEAD at capture time; `None` for an unborn branch.
+    pub parent: Option<String>,
+    pub created_at_secs: i64,
+    /// `None` only when the stored record is missing or unreadable.
+    pub capture: Option<CaptureReport>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualCheckpointCreated {
+    #[serde(flatten)]
+    pub checkpoint: ManualCheckpoint,
+    pub limits: CheckpointLimits,
+    pub duration_ms: u64,
+}
+
+/// A pre-restore safety snapshot this worktree owns.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SafetyRef {
+    #[serde(rename = "ref")]
+    pub ref_name: String,
+    /// The turn checkpoint whose restore saved it.
+    pub task_id: String,
+    pub commit: String,
+    pub tree: String,
+    pub parent: Option<String>,
+    pub created_at_secs: i64,
+}
+
+/// Repository-wide object context for retained recovery points. Deliberately
+/// not a reclaimable-byte estimate: objects are content-addressed and shared
+/// between refs, and this application never runs Git garbage collection.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StoragePressure {
+    /// Loose objects in the repository, all refs included (`git count-objects -v`).
+    pub loose_objects: u32,
+    pub loose_kib: u64,
+    /// Objects already packed (`in-pack` / `size-pack`).
+    pub packed_objects: u32,
+    pub packed_kib: u64,
+    /// Recovery refs this worktree owns: manual + turn + safety.
+    pub owned_refs: u32,
+    /// Always true: deleting a ref removes reachability, not a measurable number
+    /// of bytes, until Git itself prunes unreachable objects.
+    pub shared_objects: bool,
+}
+
+/// Every recovery point this worktree owns, grouped by kind.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointList {
+    pub manual: Vec<ManualCheckpoint>,
+    pub turns: Vec<CheckpointInfo>,
+    pub safety: Vec<SafetyRef>,
+    pub storage: StoragePressure,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointInspection {
+    #[serde(rename = "ref")]
+    pub ref_name: String,
+    pub kind: RecoveryKind,
+    pub name: Option<String>,
+    pub task_id: Option<String>,
+    pub turn: Option<u32>,
+    pub commit: String,
+    pub tree: String,
+    pub parent: Option<String>,
+    pub created_at_secs: i64,
+    pub capture: Option<CaptureReport>,
+    pub limits: CheckpointLimits,
+    /// Paths that differ between the checkpoint and its recorded parent (HEAD at
+    /// capture time), capped at `MAX_INSPECTED_PATHS`.
+    pub changed_paths: Vec<ChangedPath>,
+    pub changed_total: u32,
+    pub changed_truncated: bool,
+    /// HEAD is not where it was when the checkpoint was taken. Commits are left
+    /// alone; inspection only reports it.
+    pub head_moved: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupRemoved {
+    #[serde(rename = "ref")]
+    pub ref_name: String,
+    pub kind: RecoveryKind,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupRefused {
+    #[serde(rename = "ref")]
+    pub ref_name: String,
+    /// `not-a-recovery-ref`, `missing`, `unknown-owner`, `another-worktree` or
+    /// `changed`, when the ref moved between the check and the deletion.
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupReport {
+    pub removed: Vec<CleanupRemoved>,
+    pub refused: Vec<CleanupRefused>,
+    /// The groups after the deletion, so the UI never has to guess.
+    pub remaining: CheckpointList,
+    /// Every deletion is its own `update-ref`; a failure midway leaves earlier
+    /// deletions in place and reports them.
+    pub atomic: bool,
+}
+
+fn recovery_kind(name: &str) -> Option<RecoveryKind> {
+    if refs::parse_manual_checkpoint_ref(name).is_some() {
+        Some(RecoveryKind::Manual)
+    } else if refs::parse_checkpoint_ref(name).is_some() {
+        Some(RecoveryKind::Turn)
+    } else if refs::parse_prerestore_ref(name).is_some() {
+        Some(RecoveryKind::Safety)
+    } else {
+        None
+    }
+}
+
+fn normalize_manual_name(name: Option<&str>) -> Result<Option<String>> {
+    let Some(name) = name else {
+        return Ok(None);
+    };
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.chars().count() > MAX_MANUAL_NAME_CHARS {
+        return Err(GitError::command(
+            "git checkpoint create",
+            format!("the checkpoint name is longer than {MAX_MANUAL_NAME_CHARS} characters"),
+        ));
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err(GitError::command(
+            "git checkpoint create",
+            "the checkpoint name cannot contain control characters or line breaks",
+        ));
+    }
+    if trimmed == UNNAMED {
+        return Err(GitError::command(
+            "git checkpoint create",
+            "that name is reserved for an unnamed checkpoint",
+        ));
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
+/// One line of the commit subject, so the existing single-line `for-each-ref`
+/// listing can carry it: id, optional name, the capture record and the owning
+/// worktree. The worktree marker stays last, as `subject_worktree_id` expects.
+fn manual_subject(
+    id: &str,
+    name: Option<&str>,
+    worktree_id: &str,
+    capture: &CaptureReport,
+) -> String {
+    let record = format!(
+        "{CAPTURE_VERSION} c={} p={} u={} i={} it={} s={} st={} m={} mt={} w={}",
+        u8::from(capture.consistent),
+        capture.passes,
+        capture.unstable_count,
+        capture.ignored_files,
+        u8::from(capture.ignored_truncated),
+        capture.staged_files,
+        u8::from(capture.staged_truncated),
+        capture.submodules,
+        u8::from(capture.submodules_truncated),
+        capture.warnings.join(",")
+    );
+    let label = name.unwrap_or(UNNAMED);
+    format!(
+        "{MANUAL_SUBJECT_PREFIX}{id} {label}{CAPTURE_MARK}{record}]{WORKTREE_MARK}{worktree_id}"
+    )
+}
+
+fn parse_manual_subject(subject: &str) -> Option<(String, Option<String>)> {
+    let rest = subject.strip_prefix(MANUAL_SUBJECT_PREFIX)?;
+    let (id, rest) = rest.split_once(' ')?;
+    if !refs::is_valid_manual_checkpoint_id(id) {
+        return None;
+    }
+    let rest = rest.rsplit_once(WORKTREE_MARK)?.0;
+    let label = match rest.rsplit_once(CAPTURE_MARK) {
+        Some((label, record)) => {
+            record.strip_suffix(']')?;
+            label
+        }
+        None => rest,
+    };
+    let label = label.trim();
+    let name = (!label.is_empty() && label != UNNAMED).then(|| label.to_string());
+    Some((id.to_string(), name))
+}
+
+fn parse_capture_record(record: &str) -> Option<CaptureReport> {
+    let mut fields = std::collections::HashMap::new();
+    let mut parts = record.split(' ');
+    if parts.next()? != CAPTURE_VERSION {
+        return None;
+    }
+    for part in parts {
+        let (key, value) = part.split_once('=')?;
+        fields.insert(key, value);
+    }
+    let number = |key: &str| fields.get(key)?.parse::<u32>().ok();
+    let flag = |key: &str| number(key).map(|value| value != 0);
+    let warnings: Vec<String> = fields
+        .get("w")?
+        .split(',')
+        .filter(|code| !code.is_empty())
+        .map(str::to_string)
+        .collect();
+    let consistent = flag("c")?;
+    let unstable_count = number("u")?;
+    Some(CaptureReport {
+        consistent,
+        passes: number("p")?,
+        unstable_count,
+        incomplete: !consistent || unstable_count > 0 || !warnings.is_empty(),
+        warnings,
+        ignored_files: number("i")?,
+        ignored_truncated: flag("it")?,
+        staged_files: number("s")?,
+        staged_truncated: flag("st")?,
+        submodules: number("m")?,
+        submodules_truncated: flag("mt")?,
+    })
+}
+
+fn capture_record_of(subject: &str) -> Option<CaptureReport> {
+    let (_, rest) = subject.rsplit_once(CAPTURE_MARK)?;
+    let (record, _) = rest.split_once(']')?;
+    parse_capture_record(record)
+}
+
+impl RefRecord {
+    fn manual(&self) -> Option<ManualCheckpoint> {
+        let (id, name) = parse_manual_subject(&self.subject)?;
+        Some(ManualCheckpoint {
+            ref_name: self.name.clone(),
+            id,
+            name,
+            commit: self.commit.clone(),
+            tree: self.tree.clone(),
+            parent: self.parent.clone(),
+            created_at_secs: self.created_at_secs,
+            capture: capture_record_of(&self.subject),
+        })
+    }
+}
+
+/// Count of NUL-separated records, with the read-cap state the output carried.
+struct ProbeCount {
+    count: u32,
+    truncated: bool,
+}
+
+impl ProbeCount {
+    fn of(output: &GitOutput) -> Self {
+        let count = output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|record| !record.is_empty())
+            .count();
+        Self {
+            count: count.min(u32::MAX as usize) as u32,
+            truncated: output.truncated,
+        }
+    }
+}
+
+fn probe(
+    repo: &ResolvedGitDirectory,
+    admin: &Admin,
+    args: Vec<OsString>,
+    cap: usize,
+) -> Result<ProbeCount> {
+    let output = run_git_with(
+        &repo.workspace,
+        Some(&repo.git_path),
+        admin.plumb(args)?,
+        SNAPSHOT_TIMEOUT_SECS,
+        RunOptions {
+            stdout_cap: cap,
+            ..Default::default()
+        },
+    )?;
+    if output.timed_out {
+        return Err(GitError::TimedOut("git ls-files"));
+    }
+    ensure_success(&output, "git ls-files failed")?;
+    Ok(ProbeCount::of(&output))
+}
+
+fn staged_paths(repo: &ResolvedGitDirectory, admin: &Admin) -> Result<ProbeCount> {
+    let output = run_git_with(
+        &repo.workspace,
+        Some(&repo.git_path),
+        admin.plumb(os_args(["diff", "--cached", "--name-only", "-z"]))?,
+        SNAPSHOT_TIMEOUT_SECS,
+        RunOptions {
+            stdout_cap: PROBE_STDOUT_CAP,
+            ..Default::default()
+        },
+    )?;
+    if output.timed_out {
+        return Err(GitError::TimedOut("git diff --cached"));
+    }
+    ensure_success(&output, "git diff --cached failed")?;
+    Ok(ProbeCount::of(&output))
+}
+
+fn submodule_entries(repo: &ResolvedGitDirectory, admin: &Admin) -> Result<ProbeCount> {
+    let output = run_git_with(
+        &repo.workspace,
+        Some(&repo.git_path),
+        admin.plumb(os_args(["ls-files", "--stage", "-z"]))?,
+        SNAPSHOT_TIMEOUT_SECS,
+        RunOptions {
+            stdout_cap: INDEX_SCAN_CAP,
+            ..Default::default()
+        },
+    )?;
+    if output.timed_out {
+        return Err(GitError::TimedOut("git ls-files --stage"));
+    }
+    ensure_success(&output, "git ls-files --stage failed")?;
+    let count = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|record| record.get(..6) == Some(b"160000"))
+        .count();
+    Ok(ProbeCount {
+        count: count.min(u32::MAX as usize) as u32,
+        truncated: output.truncated,
+    })
+}
+
+fn capture_report(
+    repo: &ResolvedGitDirectory,
+    admin: &Admin,
+    snapshot: &Snapshot,
+) -> Result<CaptureReport> {
+    let ignored = probe(
+        repo,
+        admin,
+        os_args([
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+        ]),
+        PROBE_STDOUT_CAP,
+    )?;
+    let staged = staged_paths(repo, admin)?;
+    let submodules = submodule_entries(repo, admin)?;
+    Ok(CaptureReport::of(snapshot, &ignored, &staged, &submodules))
+}
+
+fn random_id() -> Result<String> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).map_err(|e| {
+        GitError::command("git checkpoint create", format!("no random source: {e}"))
+    })?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn storage_pressure(repo: &ResolvedGitDirectory, owned_refs: u32) -> Result<StoragePressure> {
+    let output = run_ok(
+        repo,
+        os_args(["count-objects", "-v"]),
+        "git count-objects failed",
+    )?;
+    let mut loose_objects = 0u32;
+    let mut loose_kib = 0u64;
+    let mut packed_objects = 0u32;
+    let mut packed_kib = 0u64;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let Some((key, value)) = line.split_once(": ") else {
+            continue;
+        };
+        let Ok(value) = value.trim().parse::<u64>() else {
+            continue;
+        };
+        match key {
+            "count" => loose_objects = value.min(u64::from(u32::MAX)) as u32,
+            "size" => loose_kib = value,
+            "in-pack" => packed_objects = value.min(u64::from(u32::MAX)) as u32,
+            "size-pack" => packed_kib = value,
+            _ => {}
+        }
+    }
+    Ok(StoragePressure {
+        loose_objects,
+        loose_kib,
+        packed_objects,
+        packed_kib,
+        owned_refs,
+        shared_objects: true,
+    })
+}
+
+/// The manual refs this worktree owns, newest first.
+fn list_manual(repo: &ResolvedGitDirectory, mine: &str) -> Result<Vec<ManualCheckpoint>> {
+    let prefix = refs::manual_checkpoint_prefix();
+    let output = run_ok(
+        repo,
+        os_args(["for-each-ref", LIST_FORMAT, prefix.as_str()]),
+        "git for-each-ref failed",
+    )?;
+    let mut manual: Vec<ManualCheckpoint> = parse_ref_records(&output.stdout)
+        .into_iter()
+        .filter(|record| record.worktree_id.as_deref() == Some(mine))
+        .filter_map(|record| record.manual())
+        .collect();
+    manual.sort_by(|a, b| {
+        b.created_at_secs
+            .cmp(&a.created_at_secs)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Ok(manual)
+}
+
+/// The retained turn checkpoints this worktree owns, by task then turn.
+fn list_turns(repo: &ResolvedGitDirectory, mine: &str) -> Result<Vec<CheckpointInfo>> {
+    let prefix = refs::checkpoint_prefix();
+    let output = run_ok(
+        repo,
+        os_args(["for-each-ref", LIST_FORMAT, prefix.as_str()]),
+        "git for-each-ref failed",
+    )?;
+    let mut turns: Vec<CheckpointInfo> = parse_ref_records(&output.stdout)
+        .into_iter()
+        .filter(|record| record.worktree_id.as_deref() == Some(mine))
+        .filter_map(info_of)
+        .collect();
+    turns.sort_by(|a, b| a.task_id.cmp(&b.task_id).then_with(|| a.turn.cmp(&b.turn)));
+    Ok(turns)
+}
+
+/// The pre-restore safety refs this worktree owns, newest first.
+fn list_safety(repo: &ResolvedGitDirectory, mine: &str) -> Result<Vec<SafetyRef>> {
+    let prefix = refs::checkpoint_prefix();
+    let output = run_ok(
+        repo,
+        os_args(["for-each-ref", LIST_FORMAT, prefix.as_str()]),
+        "git for-each-ref failed",
+    )?;
+    let mut safety: Vec<SafetyRef> = parse_ref_records(&output.stdout)
+        .into_iter()
+        .filter(|record| record.worktree_id.as_deref() == Some(mine))
+        .filter_map(|record| {
+            let (task, _) = refs::parse_prerestore_ref(&record.name)?;
+            let task_id = task.to_string();
+            Some(SafetyRef {
+                ref_name: record.name,
+                task_id,
+                commit: record.commit,
+                tree: record.tree,
+                parent: record.parent,
+                created_at_secs: record.created_at_secs,
+            })
+        })
+        .collect();
+    safety.sort_by(|a, b| {
+        b.created_at_secs
+            .cmp(&a.created_at_secs)
+            .then_with(|| a.ref_name.cmp(&b.ref_name))
+    });
+    Ok(safety)
+}
+
+fn groups_for(repo: &ResolvedGitDirectory, mine: &str) -> Result<CheckpointList> {
+    let manual = list_manual(repo, mine)?;
+    let turns = list_turns(repo, mine)?;
+    let safety = list_safety(repo, mine)?;
+    let owned = manual.len() + turns.len() + safety.len();
+    Ok(CheckpointList {
+        manual,
+        turns,
+        safety,
+        storage: storage_pressure(repo, owned.min(u32::MAX as usize) as u32)?,
+    })
+}
+
+/// Creates a manual checkpoint of the worktree's tracked and non-ignored files.
+///
+/// HEAD, the real index and the working tree are never modified: the snapshot
+/// uses a private copy of the index and the commit object is published under a
+/// new manual ref that never replaces an existing one.
+pub fn create_manual(
+    registry: &WorkspaceRegistry,
+    worktree: &str,
+    name: Option<&str>,
+    workspace: &WorkspaceEnv,
+) -> Result<ManualCheckpointCreated> {
+    let name = normalize_manual_name(name)?;
+    let started = Instant::now();
+    let repo = open_worktree(registry, worktree, workspace)?;
+    ensure_supported(&repo)?;
+    let admin = Admin::new(&repo)?;
+    let lock = lock_for_repo(&repo);
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let mine = admin.worktree_id()?;
+
+    let snapshot = snapshot_tree(&repo, true)?;
+    let capture = capture_report(&repo, &admin, &snapshot)?;
+    let parent = head_commit_opt(&repo)?;
+
+    for _ in 0..MANUAL_ID_ATTEMPTS {
+        let id = random_id()?;
+        let subject = manual_subject(&id, name.as_deref(), &mine, &capture);
+        let commit = write_commit(&repo, &admin, &snapshot.tree, parent.as_deref(), &subject)?;
+        let ref_name = refs::manual_checkpoint_ref(&id);
+        // The empty old value makes this fail instead of replacing a ref that
+        // already exists, so two checkpoints can never share an identity.
+        let output = run(
+            &repo,
+            admin.plumb(os_args([
+                "update-ref",
+                ref_name.as_str(),
+                commit.as_str(),
+                "",
+            ]))?,
+        )?;
+        if output.timed_out {
+            return Err(GitError::TimedOut("git update-ref"));
+        }
+        if output.exit_code == Some(0) {
+            return Ok(ManualCheckpointCreated {
+                checkpoint: ManualCheckpoint {
+                    ref_name,
+                    id,
+                    name: name.clone(),
+                    commit,
+                    tree: snapshot.tree.clone(),
+                    parent,
+                    created_at_secs: now_secs(),
+                    capture: Some(capture.clone()),
+                },
+                limits: LIMITS,
+                duration_ms: started.elapsed().as_millis() as u64,
+            });
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.contains("already exists") {
+            return Err(GitError::command(
+                "git update-ref failed",
+                stderr.trim().to_string(),
+            ));
+        }
+    }
+    Err(GitError::command(
+        "git checkpoint create",
+        "could not allocate a free checkpoint identity",
+    ))
+}
+
+/// Every recovery point this worktree owns: manual checkpoints, retained turn
+/// checkpoints and restore safety refs, with repository-level storage context.
+pub fn list_groups(
+    registry: &WorkspaceRegistry,
+    worktree: &str,
+    workspace: &WorkspaceEnv,
+) -> Result<CheckpointList> {
+    let repo = open_worktree(registry, worktree, workspace)?;
+    let admin = Admin::new(&repo)?;
+    match admin.existing_worktree_id() {
+        Some(mine) => groups_for(&repo, &mine),
+        None => Ok(CheckpointList {
+            manual: Vec::new(),
+            turns: Vec::new(),
+            safety: Vec::new(),
+            storage: storage_pressure(&repo, 0)?,
+        }),
+    }
+}
+
+/// The metadata and captured paths of one recovery point this worktree owns.
+pub fn inspect(
+    registry: &WorkspaceRegistry,
+    worktree: &str,
+    reference: &str,
+    workspace: &WorkspaceEnv,
+) -> Result<CheckpointInspection> {
+    let kind =
+        recovery_kind(reference).ok_or_else(|| GitError::InvalidRef(reference.to_string()))?;
+    let repo = open_worktree(registry, worktree, workspace)?;
+    let admin = Admin::new(&repo)?;
+    let mine = admin.existing_worktree_id().ok_or_else(|| {
+        GitError::command(
+            "git checkpoint inspect",
+            "no such checkpoint for this worktree",
+        )
+    })?;
+    let output = run_ok(
+        &repo,
+        os_args(["for-each-ref", LIST_FORMAT, reference]),
+        "git for-each-ref failed",
+    )?;
+    let record = parse_ref_records(&output.stdout)
+        .into_iter()
+        .find(|record| record.name == reference)
+        .ok_or_else(|| {
+            GitError::command(
+                "git checkpoint inspect",
+                "no such checkpoint for this worktree",
+            )
+        })?;
+    if record.worktree_id.as_deref() != Some(mine.as_str()) {
+        return Err(GitError::command(
+            "git checkpoint inspect",
+            "no such checkpoint for this worktree",
+        ));
+    }
+
+    let (name, task_id, turn, capture) = match kind {
+        RecoveryKind::Manual => {
+            let manual = record.manual().ok_or_else(|| {
+                GitError::command(
+                    "git checkpoint inspect",
+                    "unreadable manual checkpoint record",
+                )
+            })?;
+            (manual.name, None, None, manual.capture)
+        }
+        RecoveryKind::Turn => {
+            let (task, turn) = refs::parse_checkpoint_ref(&record.name)
+                .ok_or_else(|| GitError::InvalidRef(reference.to_string()))?;
+            (None, Some(task.to_string()), Some(turn), None)
+        }
+        RecoveryKind::Safety => {
+            let (task, _) = refs::parse_prerestore_ref(&record.name)
+                .ok_or_else(|| GitError::InvalidRef(reference.to_string()))?;
+            (None, Some(task.to_string()), None, None)
+        }
+    };
+
+    let parent_tree = match &record.parent {
+        Some(parent) => tree_of(&repo, parent)?,
+        None => empty_tree(&repo)?,
+    };
+    let changes = diff_trees(&repo, &parent_tree, &record.tree)?;
+    let changed_total = changes.len() as u32;
+    let changed_paths: Vec<ChangedPath> = changes
+        .into_iter()
+        .take(MAX_INSPECTED_PATHS)
+        .map(|change| ChangedPath {
+            path: change.path,
+            status: change.status,
+        })
+        .collect();
+    let changed_truncated = changed_total as usize > changed_paths.len();
+
+    Ok(CheckpointInspection {
+        ref_name: record.name,
+        kind,
+        name,
+        task_id,
+        turn,
+        commit: record.commit,
+        tree: record.tree,
+        parent: record.parent.clone(),
+        created_at_secs: record.created_at_secs,
+        capture,
+        limits: LIMITS,
+        changed_paths,
+        changed_total,
+        changed_truncated,
+        head_moved: head_commit_opt(&repo)? != record.parent,
+    })
+}
+
+/// Deletes exactly the named recovery refs this worktree owns.
+///
+/// Nothing is deleted by default, references from another worktree or another
+/// installation are refused, and no Git garbage collection is ever run: content
+/// objects stay until Git itself prunes them.
+pub fn cleanup(
+    registry: &WorkspaceRegistry,
+    worktree: &str,
+    references: &[String],
+    workspace: &WorkspaceEnv,
+) -> Result<CleanupReport> {
+    let repo = open_worktree(registry, worktree, workspace)?;
+    let admin = Admin::new(&repo)?;
+    let lock = lock_for_repo(&repo);
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let mine = admin.existing_worktree_id();
+
+    let mut removed = Vec::new();
+    let mut refused = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for reference in references {
+        if !seen.insert(reference.as_str()) {
+            continue;
+        }
+        let Some(kind) = recovery_kind(reference) else {
+            refused.push(CleanupRefused {
+                ref_name: reference.clone(),
+                reason: "not-a-recovery-ref".into(),
+            });
+            continue;
+        };
+        let output = run(
+            &repo,
+            os_args(["for-each-ref", LIST_FORMAT, reference.as_str()]),
+        )?;
+        let record = parse_ref_records(&output.stdout)
+            .into_iter()
+            .find(|record| record.name == *reference);
+        let Some(record) = record else {
+            refused.push(CleanupRefused {
+                ref_name: reference.clone(),
+                reason: "missing".into(),
+            });
+            continue;
+        };
+        let reason = match (record.worktree_id.as_deref(), mine.as_deref()) {
+            (None, _) => Some("unknown-owner"),
+            (Some(owner), Some(mine)) if owner == mine => None,
+            (Some(_), _) => Some("another-worktree"),
+        };
+        if let Some(reason) = reason {
+            refused.push(CleanupRefused {
+                ref_name: reference.clone(),
+                reason: reason.into(),
+            });
+            continue;
+        }
+        // The expected old value makes a concurrent move of the ref a refusal
+        // rather than a deletion of something the caller never saw.
+        let deleted = run(
+            &repo,
+            admin.plumb(os_args([
+                "update-ref",
+                "-d",
+                reference.as_str(),
+                record.commit.as_str(),
+            ]))?,
+        )?;
+        if deleted.timed_out {
+            return Err(GitError::TimedOut("git update-ref"));
+        }
+        if deleted.exit_code == Some(0) {
+            removed.push(CleanupRemoved {
+                ref_name: reference.clone(),
+                kind,
+            });
+        } else {
+            refused.push(CleanupRefused {
+                ref_name: reference.clone(),
+                reason: "changed".into(),
+            });
+        }
+    }
+    if !removed.is_empty() {
+        clear_last_restore(&admin);
+    }
+    let remaining = list_groups(registry, worktree, workspace)?;
+    Ok(CleanupReport {
+        removed,
+        refused,
+        remaining,
+        atomic: false,
+    })
 }
 
 #[cfg(test)]

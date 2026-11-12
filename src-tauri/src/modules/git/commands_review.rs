@@ -4,7 +4,10 @@
 use tauri::{AppHandle, Manager};
 
 use crate::modules::git::branch::{self, BranchCreated, UpstreamInfo};
-use crate::modules::git::checkpoint::{self, CheckpointCreated, CheckpointInfo, RestoreReport};
+use crate::modules::git::checkpoint::{
+    self, CheckpointCreated, CheckpointInfo, CheckpointInspection, CheckpointList, CleanupReport,
+    ManualCheckpointCreated, RestoreReport,
+};
 use crate::modules::git::review::{
     self, ApplyHunksRequest, ApplyOutcome, GitDiffScope, GitDiffSummary, GitFileDiff,
 };
@@ -210,6 +213,61 @@ pub async fn git_checkpoint_prune(
     let workspace = WorkspaceEnv::from_option(workspace);
     blocking(app, move |r| {
         checkpoint::prune(r, &worktree, &task_id, &workspace).map_err(Into::into)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_checkpoint_manual_create(
+    worktree: String,
+    name: Option<String>,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<ManualCheckpointCreated, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    blocking(app, move |r| {
+        checkpoint::create_manual(r, &worktree, name.as_deref(), &workspace).map_err(Into::into)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_checkpoint_groups(
+    worktree: String,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<CheckpointList, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    blocking(app, move |r| {
+        checkpoint::list_groups(r, &worktree, &workspace).map_err(Into::into)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_checkpoint_inspect(
+    worktree: String,
+    reference: String,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<CheckpointInspection, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    blocking(app, move |r| {
+        checkpoint::inspect(r, &worktree, &reference, &workspace).map_err(Into::into)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_checkpoint_cleanup(
+    worktree: String,
+    refs: Vec<String>,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<CleanupReport, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    blocking(app, move |r| {
+        checkpoint::cleanup(r, &worktree, &refs, &workspace).map_err(Into::into)
     })
     .await
 }
