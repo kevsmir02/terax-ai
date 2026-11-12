@@ -3314,6 +3314,12 @@ async function quitScenario(run: ScenarioRun): Promise<unknown> {
     `spaces ${spaceNames.join(",")}; buffers ${survey.totals.buffers}; processes ${survey.totals.processes}`,
   );
   await check(
+    "the summary names the unsaved buffers",
+    summaryText.includes("workflow-file.txt") &&
+      summaryText.includes("quit-notes.txt"),
+    `names ${summaryText.includes("workflow-file.txt")}/${summaryText.includes("quit-notes.txt")}`,
+  );
+  await check(
     "the summary does not claim control of detached services",
     summaryText.includes("keep running") &&
       summaryText.includes("outside Terax"),

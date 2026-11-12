@@ -95,6 +95,18 @@ function OptOutRow({
   );
 }
 
+/** Up to `limit` names, then a count: a summary, not a wall of paths. */
+function namesOf(
+  items: ReadonlyArray<{ title: string; space: string }>,
+  limit = 6,
+): string {
+  const named = items
+    .slice(0, limit)
+    .map((item) => `${item.title} (${item.space})`);
+  const rest = items.length - named.length;
+  return rest > 0 ? `${named.join(", ")} and ${rest} more` : named.join(", ");
+}
+
 function noteText(note: QuitState["note"]): string {
   switch (note) {
     case "changed":
@@ -147,6 +159,18 @@ export function QuitDialog({
                 {noteText(quit.note)}
               </AlertDialogDescription>
             </AlertDialogHeader>
+            {survey.totals.buffers > 0 && (
+              <p className="-mt-3 text-[12px] text-muted-foreground">
+                {namesOf(
+                  survey.spaces.flatMap((space) =>
+                    space.buffers.map((buffer) => ({
+                      title: buffer.title,
+                      space: space.name,
+                    })),
+                  ),
+                )}
+              </p>
+            )}
             {canOptOutOfQuitPrompt(survey) ? (
               <OptOutRow checked={optOut} onCheckedChange={setOptOut} />
             ) : null}
