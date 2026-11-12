@@ -12,7 +12,7 @@
  * and outside the project root. Only automatic consumers call in here.
  *
  * Retained consumers:
- *  - `src/modules/markdown/MarkdownPreviewPane.tsx` (preview image filter)
+ *  - `src/modules/markdown/MarkdownContent.tsx` (preview image filter)
  *  - `src/modules/markdown/lib/assetPath.ts` (documented boundary)
  * The native side reads the *same* data file (`src-tauri/src/modules/fs/
  * access_policy.rs`), so `pathPolicy.json` is the single place a future
