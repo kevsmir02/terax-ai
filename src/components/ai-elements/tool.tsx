@@ -122,8 +122,8 @@ export type ToolProps = ComponentProps<typeof Collapsible> & {
 };
 
 // Tools whose `input` carries large/streaming content (file bodies, sub-
-// agent prompts, todo lists). The AI diff tab is the canonical place to
-// view file changes; for the rest, the header summary + final output is
+// agent prompts, todo lists). The approval card summarizes what a file
+// change touches; for the rest, the header summary + final output is
 // enough. Re-rendering streamed input on every token both stalls the UI
 // and duplicates information.
 const HEAVY_CONTENT_TOOLS = new Set([
@@ -694,7 +694,7 @@ function formatBytes(n: number): string {
 
 function CodeBlockMini({ code }: { code: string; language: string }) {
   // Tool input/output is debug-grade detail — JSON arrives pre-formatted and
-  // file content is shown in the editor diff tab. Highlighting here is not
+  // file bodies are summarized in the approval card. Highlighting here is not
   // worth the parser hop.
   return (
     <pre className="max-h-60 overflow-auto rounded bg-muted/40 p-2 font-mono text-[11px] leading-relaxed text-foreground whitespace-pre-wrap">

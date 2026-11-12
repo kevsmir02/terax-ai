@@ -120,9 +120,8 @@ function PreviewBlock({
     );
   }
   // For file mutations we deliberately do NOT preview content here —
-  // streamed write/edit content thrashes the UI and the AI diff tab is the
-  // authoritative place to review the change. Show just the path + a
-  // one-line size hint so the user knows what's being touched.
+  // streamed write/edit content thrashes the UI. Show just the path and a
+  // one-line size hint so the user knows what the approval would touch.
   if (toolName === "write_file") {
     const content = typeof input.content === "string" ? input.content : "";
     const lines = content ? content.split("\n").length : 0;
@@ -130,7 +129,7 @@ function PreviewBlock({
       <div className="space-y-0.5 font-mono text-[11px]">
         <div className="text-muted-foreground">{String(input.path ?? "")}</div>
         <div className="text-[10.5px] text-muted-foreground/80">
-          {lines} line{lines === 1 ? "" : "s"} · review in the diff tab
+          {lines} line{lines === 1 ? "" : "s"}
         </div>
       </div>
     );
@@ -147,8 +146,7 @@ function PreviewBlock({
           {input.replace_all ? " · replace all" : ""}
         </div>
         <div className="text-[10.5px] text-muted-foreground/80">
-          −{removed} / +{added} line{added === 1 && removed === 1 ? "" : "s"} ·
-          review in the diff tab
+          −{removed} / +{added} line{added === 1 && removed === 1 ? "" : "s"}
         </div>
       </div>
     );
@@ -161,8 +159,7 @@ function PreviewBlock({
       <div className="space-y-0.5 font-mono text-[11px]">
         <div className="text-muted-foreground">{String(input.path ?? "")}</div>
         <div className="text-[10.5px] text-muted-foreground/80">
-          {edits.length} edit{edits.length === 1 ? "" : "s"} · review in the
-          diff tab
+          {edits.length} edit{edits.length === 1 ? "" : "s"}
         </div>
       </div>
     );
