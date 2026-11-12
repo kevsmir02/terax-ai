@@ -1130,7 +1130,8 @@ mod tests {
     }
 
     #[test]
-    fn hook_kinds_map_to_legacy_intents() {        let facts = |kind: HookKind, notification: Option<&str>| {
+    fn hook_kinds_map_to_legacy_intents() {
+        let facts = |kind: HookKind, notification: Option<&str>| {
             let mut facts = HookFacts::new(kind);
             facts.notification_type = notification.map(str::to_string);
             facts
