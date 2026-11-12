@@ -9,12 +9,15 @@ import {
   ArrowDown01Icon,
   ArrowUp01Icon,
   CheckmarkCircle02Icon,
-  Loading03Icon,
   Notification01Icon,
   Notification03Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { invoke } from "@tauri-apps/api/core";
+import {
+  agentHooksStatus,
+  HOOK_AGENTS,
+  type HooksStatus,
+} from "@/modules/control/lib/hooksConfig";
 import { useMemo, useState } from "react";
 import { AgentIcon } from "../lib/agentIcon";
 import { displayAgent } from "../lib/format";
@@ -79,53 +82,36 @@ const NOTIF_LABEL: Record<AgentNotification["kind"], string> = {
   error: "failed",
 };
 
-const HOOK_AGENTS = ["claude", "codex", "gemini", "pi"] as const;
-
 function HookAgentRow({
   id,
   label,
-  ready,
-  installing,
-  onEnable,
+  status,
 }: {
   id: string;
   label: string;
-  ready: boolean;
-  installing: boolean;
-  onEnable: () => void;
+  status: HooksStatus | null;
 }) {
+  const configured = status?.configState === "installed";
+  const partial = status?.configState === "partial";
   return (
     <div className="flex items-center gap-2 px-2 py-1">
       <AgentIcon agent={id} size={14} className="shrink-0 text-muted-foreground" />
       <span className="flex-1 truncate text-[12px] text-muted-foreground">
         {label}
       </span>
-      {ready ? (
+      {configured ? (
         <span className="flex items-center gap-1 text-[11px] font-medium text-primary">
           <HugeiconsIcon
             icon={CheckmarkCircle02Icon}
             size={13}
             strokeWidth={1.75}
           />
-          enabled
+          configured
         </span>
       ) : (
-        <button
-          type="button"
-          onClick={onEnable}
-          disabled={installing}
-          className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60"
-        >
-          {installing ? (
-            <HugeiconsIcon
-              icon={Loading03Icon}
-              size={12}
-              strokeWidth={1.75}
-              className="animate-spin"
-            />
-          ) : null}
-          {installing ? "Enabling" : "Enable"}
-        </button>
+        <span className="text-[11px] text-muted-foreground/70">
+          {partial ? "partly configured" : "not configured"}
+        </span>
       )}
     </div>
   );
@@ -174,8 +160,7 @@ function NotificationRow({
 
 export function NotificationBell({ onActivate, onActivateLocal }: Props) {
   const [open, setOpen] = useState(false);
-  const [hooks, setHooks] = useState<Record<string, boolean>>({});
-  const [installing, setInstalling] = useState<string | null>(null);
+  const [hooks, setHooks] = useState<Record<string, HooksStatus | null>>({});
   const [alertsOpen, setAlertsOpen] = useState(false);
   const sessions = useAgentStore((s) => s.sessions);
   const localAgent = useAgentStore((s) => s.localAgent);
@@ -194,13 +179,15 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
     (n) => !n.read && n.kind !== "attention",
   ).length;
   const badge = waitingCount + unreadDone;
-  const enabledCount = HOOK_AGENTS.filter((id) => hooks[id] === true).length;
+  const enabledCount = HOOK_AGENTS.filter(
+    (id) => hooks[id]?.configState === "installed",
+  ).length;
 
   const refreshHooks = () => {
     for (const id of HOOK_AGENTS) {
-      invoke<boolean>("agent_hooks_status", { agent: id })
-        .then((ok) => setHooks((h) => ({ ...h, [id]: ok })))
-        .catch(() => setHooks((h) => ({ ...h, [id]: false })));
+      agentHooksStatus(id)
+        .then((status) => setHooks((h) => ({ ...h, [id]: status })))
+        .catch(() => setHooks((h) => ({ ...h, [id]: null })));
     }
   };
 
@@ -209,18 +196,6 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
     if (next) {
       markAllRead();
       refreshHooks();
-    }
-  };
-
-  const enableHooks = async (id: string) => {
-    setInstalling(id);
-    try {
-      await invoke("agent_enable_hooks", { agent: id });
-      setHooks((h) => ({ ...h, [id]: true }));
-    } catch {
-      setHooks((h) => ({ ...h, [id]: false }));
-    } finally {
-      setInstalling(null);
     }
   };
 
@@ -347,18 +322,22 @@ export function NotificationBell({ onActivate, onActivateLocal }: Props) {
               />
             </span>
           </button>
-          {alertsOpen
-            ? HOOK_AGENTS.map((id) => (
+          {alertsOpen ? (
+            <>
+              {HOOK_AGENTS.map((id) => (
                 <HookAgentRow
                   key={id}
                   id={id}
                   label={displayAgent(id)}
-                  ready={hooks[id] === true}
-                  installing={installing === id}
-                  onEnable={() => enableHooks(id)}
+                  status={hooks[id] ?? null}
                 />
-              ))
-            : null}
+              ))}
+              <p className="px-2 pt-1 pb-0.5 text-[10px] leading-relaxed text-muted-foreground/70">
+                Hooks are opt-in: review, install or remove them in Settings →
+                Agents.
+              </p>
+            </>
+          ) : null}
         </div>
       </PopoverContent>
     </Popover>

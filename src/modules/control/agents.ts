@@ -13,11 +13,26 @@ export {
   type TerminalNotificationKind,
 } from "./lib/agentEvents";
 export {
-  agentHooksInstalled,
+  agentHooksStatus,
   applyAgentHooksPlan,
-  disableAgentHooks,
-  enableAgentHooks,
+  type HookActivation,
+  HOOK_AGENTS,
   type HooksAction,
+  type HooksApply,
+  type HooksApplyOutcome,
+  type HooksConfigState,
   type HooksPlan,
+  type HooksStatus,
+  type HooksSupport,
   planAgentHooks,
 } from "./lib/hooksConfig";
+export {
+  confirmable,
+  emptyHooksReview,
+  hooksReviewReducer,
+  hooksReviewSummary,
+  type HooksReviewEvent,
+  type HooksReviewPhase,
+  type HooksReviewState,
+  type HooksReviewSummary,
+} from "./lib/hooksInstall";
