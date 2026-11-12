@@ -420,7 +420,7 @@ export default function App() {
 
   const isTabDirty = useCallback((id: number): boolean => {
     const tab = tabsRef.current.find((t) => t.id === id);
-    if (!tab || tab.kind !== "editor") return false;
+    if (tab?.kind !== "editor") return false;
     return editorRefs.current.get(id)?.isDirty() ?? tab.dirty;
   }, []);
 
@@ -602,7 +602,7 @@ export default function App() {
       const tabId = newTab(path);
       setTimeout(() => {
         const tab = tabsRef.current.find((x) => x.id === tabId);
-        if (!tab || tab.kind !== "terminal") return;
+        if (tab?.kind !== "terminal") return;
         const t = terminalRefs.current.get(tab.activeLeafId);
         if (!t) return;
         t.write(`cd ${quoteShellArg(path)}\r`);
