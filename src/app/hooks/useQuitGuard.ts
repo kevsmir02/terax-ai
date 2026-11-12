@@ -41,7 +41,16 @@ import {
 } from "@/modules/shutdown/native";
 import { useSpaces } from "@/modules/spaces";
 import type { Tab } from "@/modules/tabs";
-import { leafHasForegroundProcess, leafIds } from "@/modules/terminal";
+import {
+  leavesForPtyIds,
+  ptyIdsForLeaves,
+} from "@/modules/shutdown/lib/terminalWork";
+import {
+  leafHasForegroundProcess,
+  leafIdForPty,
+  leafIds,
+  ptyIdForLeaf,
+} from "@/modules/terminal";
 
 function confirmRunningTerminal(): boolean {
   return usePreferencesStore.getState().confirmCloseRunningTerminal;
@@ -91,7 +100,7 @@ async function probeProcesses(tabs: readonly Tab[]): Promise<ProcessHazard[]> {
   return probed.filter((hazard): hazard is ProcessHazard => hazard !== null);
 }
 
-function allLeafIds(tabs: readonly Tab[]): number[] {
+function terminalLeaves(tabs: readonly Tab[]): number[] {
   return tabs
     .filter((tab) => tab.kind === "terminal")
     .flatMap((tab) => leafIds(tab.paneTree));
@@ -233,13 +242,21 @@ export function useQuitGuard(deps: QuitGuardDeps): QuitGuard {
           break;
         }
         case "terminate": {
-          const ids = allLeafIds(depsRef.current.tabsRef.current);
+          const ids = ptyIdsForLeaves(
+            terminalLeaves(depsRef.current.tabsRef.current),
+            ptyIdForLeaf,
+          );
           if (ids.length === 0) {
+            // A terminal whose PTY has not spawned yet has nothing to signal;
+            // its shell starts after the window closes, if at all.
             dispatch({ type: "terminated", survivors: [] });
             break;
           }
           const report = await terminateAppOwnedWork(ids, effect.graceMs);
-          dispatch({ type: "terminated", survivors: report.survived });
+          dispatch({
+            type: "terminated",
+            survivors: leavesForPtyIds(report.survived, leafIdForPty),
+          });
           break;
         }
         case "force-close-terminals": {

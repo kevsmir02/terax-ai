@@ -569,7 +569,11 @@ fn terminate_sessions(
 
     for (id, session) in &targets {
         signal_app_owned_work(session);
-        log::info!("pty_terminate: asked id={id} to exit");
+        log::info!(
+            "pty_terminate: asked id={id} (shell={} children={}) to exit",
+            session.shell_pid,
+            foreground::children_of(session.shell_pid).len()
+        );
     }
 
     // Poll instead of sleeping the whole grace: a cooperating job is usually
@@ -597,23 +601,13 @@ fn terminate_sessions(
     }
 }
 
+/// "Is there still work in this terminal?" means *children of the shell*, not
+/// "is the shell alive": every terminal has a shell, so counting the shell would
+/// report an idle prompt as a survivor and turn every quit into a force prompt.
+/// A shell that exits takes its children with it, so this is also false once the
+/// work is gone.
 fn session_has_work(session: &Session) -> bool {
-    if session.shell_pid == 0 {
-        return false;
-    }
-    if foreground::shell_has_children(session.shell_pid) {
-        return true;
-    }
-    // The shell going away is the work ending too; a session whose process is
-    // gone is not "still running".
-    #[cfg(unix)]
-    {
-        unsafe { libc::kill(session.shell_pid as i32, 0) == 0 }
-    }
-    #[cfg(not(unix))]
-    {
-        false
-    }
+    session.shell_pid != 0 && foreground::shell_has_children(session.shell_pid)
 }
 
 /// SIGTERM for the job group the terminal is showing, plus any children of the
@@ -837,6 +831,31 @@ mod tests {
         wait_for("the forced job to exit", || {
             !foreground::shell_has_children(session.shell_pid)
         });
+    }
+
+    #[test]
+    fn an_idle_shell_waiting_for_input_is_not_a_survivor() {
+        // Regression: counting "the shell process is alive" as work made every
+        // idle terminal a survivor, so every quit ended in a force prompt.
+        let state = Arc::new(PtyState::default());
+        let session = open_running(&state, 1, "read line");
+        wait_for("the shell to block on input", || {
+            !foreground::shell_has_children(session.shell_pid)
+        });
+
+        let report = terminate_sessions(&state, vec![1], 200);
+
+        assert_eq!(report.terminated, vec![1]);
+        assert!(report.survived.is_empty());
+        // Nothing was signalled, so the idle shell is still there.
+        assert_eq!(
+            unsafe { libc::kill(session.shell_pid as i32, 0) },
+            0,
+            "an idle shell must not be terminated by the graceful pass"
+        );
+        if let Some(session) = state.take(1) {
+            reap(1, session, "test cleanup");
+        }
     }
 
     #[test]

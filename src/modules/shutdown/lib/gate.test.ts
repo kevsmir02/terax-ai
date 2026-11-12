@@ -64,7 +64,10 @@ describe("quit gate", () => {
 
     // Nothing to answer, but the terminals still get SIGTERM: work that started
     // after the probe must not be silently hung up on.
-    const closing = step(surveying.state, { type: "surveilled", survey: quiet });
+    const closing = step(surveying.state, {
+      type: "surveilled",
+      survey: quiet,
+    });
     expect(closing.state.phase).toBe("terminating");
     expect(kinds(closing.effects)).toEqual(["terminate"]);
 

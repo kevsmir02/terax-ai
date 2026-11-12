@@ -87,6 +87,16 @@ the terminal's process tree are invisible to both calls, which the prompt says.
 Bounded and non-escalating is deliberate: `pty_terminate` clamps its grace to 10 s, runs
 on a blocking thread, and holds no session lock while sleeping.
 
+Two details the app-lab caught, each now a named test:
+
+- **"Still running" means the shell has children**, not "the shell is alive". Every
+  terminal has a shell, so counting the shell reported an idle prompt as a survivor and
+  turned every quit into a force prompt (`an_idle_shell_waiting_for_input_is_not_a_survivor`).
+- **Panes and sessions are different id spaces.** Leaves are pane ids, sessions are PTY
+  ids; both are small integers, so crossing them silently signals the wrong terminal and
+  names the wrong survivor in the prompt. `lib/terminalWork.ts` translates in both
+  directions and keeps an unmapped survivor instead of hiding it.
+
 ## Restoration
 
 Quitting persists the same layout the Spaces feature already stores
