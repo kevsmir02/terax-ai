@@ -10,7 +10,6 @@
 import { useId, useState } from "react";
 import {
   canOptOutOfQuitPrompt,
-  describeDiscard,
   describeQuit,
   type QuitDraft,
   type QuitState,
@@ -281,9 +280,4 @@ export function QuitDialog({
       </AlertDialogContent>
     </AlertDialog>
   );
-}
-
-/** The confirmation's own wording, for the app-lab to assert on. */
-export function discardSummary(quit: QuitState): string {
-  return quit.survey ? describeDiscard(quit.survey) : "";
 }

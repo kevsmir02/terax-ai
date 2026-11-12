@@ -20,7 +20,6 @@ export {
 } from "./lib/gate";
 export {
   canOptOutOfQuitPrompt,
-  describeDiscard,
   describeQuit,
   hasNewQuitHazards,
   quitHazardIds,

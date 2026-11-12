@@ -228,25 +228,3 @@ export function describeQuit(survey: QuitSurvey): string {
   );
   return lines.join(" ");
 }
-
-/** What the confirmation covers, for wording "quit anyway" honestly. */
-export function describeDiscard(survey: QuitSurvey): string {
-  const { buffers, processes, drafts } = survey.totals;
-  const parts: string[] = [];
-  if (buffers > 0) {
-    parts.push(
-      `discards unsaved text in ${buffers} ${plural(buffers, "file", "files")}`,
-    );
-  }
-  if (processes > 0) {
-    parts.push(
-      `terminates ${processes} ${plural(processes, "process", "processes")}`,
-    );
-  }
-  if (drafts > 0) {
-    parts.push(
-      `loses ${drafts} unsaved ${plural(drafts, "recovery draft", "recovery drafts")}`,
-    );
-  }
-  return parts.length === 0 ? "Nothing is at stake." : `This ${list(parts)}.`;
-}

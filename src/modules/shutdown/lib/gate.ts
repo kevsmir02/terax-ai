@@ -30,6 +30,7 @@ import {
   hasNewQuitHazards,
   type QuitHazardIds,
   quitHazardIds,
+  quitNeedsResolution,
   type QuitSurvey,
 } from "./survey";
 
@@ -137,7 +138,7 @@ export function reduceQuit(state: QuitState, event: QuitEvent): QuitTransition {
 
     case "surveilled": {
       if (state.phase === "surveying") {
-        if (event.survey.spaces.length === 0) {
+        if (!quitNeedsResolution(event.survey)) {
           // Nothing to answer — but the terminals may still hold work the probe
           // did not see (a process started since), so the graceful pass runs
           // before the window closes. It never forces: survivors are a question.
