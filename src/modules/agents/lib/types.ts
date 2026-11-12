@@ -10,7 +10,7 @@
  */
 export type AgentStatus = "running" | "attention";
 
-export type AgentSource = "terminal" | "local";
+export type AgentSource = "terminal";
 
 type AgentSignalKind =
   | "started"
@@ -52,8 +52,3 @@ export type AgentNotification = {
  * failed run.
  */
 export type NotificationKind = "attention" | "turn-finished" | "error";
-
-export type LocalAgentState = {
-  agent: string;
-  status: AgentStatus;
-} | null;

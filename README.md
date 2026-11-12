@@ -2,7 +2,7 @@
   <img src="public/logo.png" width="144" height="144" alt="Terax" />
   <h1>Terax</h1>
 
-  <p><strong>Lightweight Terminal-first AI-native dev workspace.</strong></p>
+  <p><strong>Lightweight terminal-first workspace for external coding agents.</strong></p>
   <p>
     <a href="https://terax.app">Website</a>
     ·
@@ -36,7 +36,7 @@
 
 ---
 
-Terax is a lightweight open-source terminal-first AI-native development environment (ADE) built on Tauri 2 + Rust and React 19. A native PTY backend with a WebGL renderer, an agentic AI side-panel that runs against your own keys or fully local models, plus a code editor, file explorer, source control with a git graph, and a web preview pane built in. About 7-8 MB on disk. No telemetry. No account.
+Terax is a lightweight open-source terminal-first development workspace built on Tauri 2 + Rust and React 19. A native PTY backend with a WebGL renderer, tabs, splits and a block terminal for launching independently installed coding agents (Claude Code, Codex, Gemini CLI, OpenCode, Grok), plus a code editor, file explorer, source control with a git graph, rendered Markdown and a web preview pane. About 7-8 MB on disk. No telemetry. No account.
 
 > [!NOTE]
 > Over the past few months, most of my development time went into building [Zephium](https://zephium.app), a new browser-native work environment rebuilt for humans and agents.
@@ -50,7 +50,7 @@ Terax is a lightweight open-source terminal-first AI-native development environm
 <table>
   <tr>
     <td align="center"><img src="docs/web-preview.png" alt="Web preview" /><br/><sub>Web preview of local dev servers</sub></td>
-    <td align="center"><img src="docs/ai-workflow.png" alt="AI window" /><br/><sub>Agentic AI workflow with edit diffs in the code editor</sub></td>
+    <td align="center"><img src="docs/editor.png" alt="Code editor" /><br/><sub>CodeMirror editing with syntax highlighting, find and replace</sub></td>
   </tr>
   <tr>
     <td align="center"><img src="docs/themes.png" alt="Themes and background image" style="margin-top: 12px;"/><br/><sub>Custom themes, presets, and background images</sub></td>
@@ -94,7 +94,6 @@ Terax is a lightweight open-source terminal-first AI-native development environm
 - Catppuccin icon theme
 - Fuzzy search, keyboard navigation, inline rename, context actions
 - Live updates when files change on disk
-- Attach files and selections directly to the AI side-panel
 
 ### Web preview
 
@@ -108,15 +107,13 @@ Terax is a lightweight open-source terminal-first AI-native development environm
 - Background images with adjustable opacity and blur
 - Editor theme is independent from the app theme
 
-### AI
+### External coding agents
 
-- **BYOK providers:** OpenAI, Anthropic, Google (Gemini), Groq, xAI (Grok), Cerebras, OpenRouter, DeepSeek, Mistral, plus any OpenAI-compatible endpoint
-- **Local / offline:** LM Studio, MLX, Ollama
-- **Agentic workflow:** plans, sub-agents, project memory via `TERAX.md`, file read / write / edit / multi-edit / grep / glob, bash with approval gating, background processes
-- **Coding-agent orchestration:** spawn Claude Code in a terminal, inspect its output, and send follow-up work through approval-gated tools
-- **Composer:** prompt snippets via `#handle`, files via `@path`, attach-to-agent from explorer or selection
-- **Custom agents** with their own system prompt and tool subset
-- **Plan mode** for multi-step work, generates and confirms before doing
+- **Any terminal agent:** launch Claude Code, Codex, Gemini CLI, OpenCode, Grok or your own command in a tab, pane or balanced 1-4 pane group
+- **Attention and completion notifications:** native when unfocused, in-app otherwise; no prompt or transcript excerpts, no focus stealing, sound off by default
+- **Hooks are opt-in:** review the exact configuration change before it is written, and only this fork's entries are added or removed
+- **Agent-aware tabs:** process status from the PTY; hook-backed agents report structured events
+- **No built-in chat:** there is no provider, API-key, conversation or built-in agent UI to maintain
 
 ## Install
 
@@ -132,12 +129,6 @@ Latest installers are on the [Releases](https://github.com/crynta/terax-ai/relea
 - **Arch / AUR:** `yay -S terax-bin` (or `paru`, etc.). Tracks the latest release.
 - **NixOS / Nix**: use the official flake - `nix profile install github:crynta/terax-ai` (non-NixOS), or import the flake and add `inputs.terax.packages.${pkgs.system}.terax` to `environment.systemPackages` (NixOS). The `nixosModules.terax` output is also available for a simpler setup.
 - **AppImage:** needs FUSE. Without it: `./Terax_*.AppImage --appimage-extract-and-run`. On Wayland with rendering glitches, try `WEBKIT_DISABLE_DMABUF_RENDERER=1`. Otherwise the `.deb` / `.rpm` packages link against the system GTK stack and tend to be smoother.
-
-## Configure AI
-
-1. Open **Settings -> AI**.
-2. Pick a provider and paste your API key. For local inference, point Terax at your LM Studio / MLX / Ollama endpoint.
-3. Keys are written to the OS keychain via `keyring`. They never touch disk or localStorage.
 
 ## Build from source
 
@@ -164,7 +155,7 @@ cd src-tauri && cargo nextest run --locked                           # or: cargo
 
 ## Tech stack
 
-Tauri 2, Rust, `portable-pty`, React 19, TypeScript, Vite, xterm.js, CodeMirror 6, Vercel AI SDK v6, Tailwind v4, shadcn/ui, Zustand.
+Tauri 2, Rust, `portable-pty`, React 19, TypeScript, Vite, libghostty (WebGPU/WebGL), CodeMirror 6, Tailwind v4, shadcn/ui, Zustand.
 
 ## Contributing
 

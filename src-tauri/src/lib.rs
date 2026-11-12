@@ -3,7 +3,7 @@ pub mod modules;
 #[cfg(target_os = "macos")]
 use modules::app_menu;
 use modules::{
-    agent, control, fs, git, history, lsp, net, pty, secrets, shell, vibrancy, workspace,
+    agent, control, fs, git, history, net, pty, secrets, shell, vibrancy, workspace,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -268,7 +268,6 @@ pub fn run() {
         .manage(fs::assets::AssetGrants::default())
         .manage(git::watch::GitWatchState::default())
         .manage(history::HistoryState::default())
-        .manage(lsp::LspState::default())
         .manage(fs::supersede::Supersede::default())
         .manage(fs::index::FileIndexState::default())
         .manage({
@@ -319,12 +318,6 @@ pub fn run() {
             fs::clipboard::fs_clipboard_paths,
             fs::watch::fs_watch_add,
             fs::watch::fs_watch_remove,
-            lsp::lsp_detect,
-            lsp::lsp_host_pid,
-            lsp::lsp_resolve_root,
-            lsp::lsp_spawn,
-            lsp::lsp_send,
-            lsp::lsp_kill,
             fs::search::fs_search,
             fs::search::fs_warm_index,
             fs::search::fs_list_files,
@@ -441,14 +434,11 @@ pub fn run() {
                         state.destroy_webview(&label);
                     }
                 }
-                // Servers exit on stdin EOF, but destructors are not guaranteed
-                // on process exit; kill explicitly.
+                // Destructors are not guaranteed to run on process exit;
+                // shut owned resources down explicitly.
                 tauri::RunEvent::Exit => {
                     #[cfg(target_os = "macos")]
                     modules::window_presentation::macos::uninstall();
-                    if let Some(state) = app.try_state::<lsp::LspState>() {
-                        state.kill_all();
-                    }
                     if let Some(state) = app.try_state::<control::ControlState>() {
                         state.shutdown();
                     }

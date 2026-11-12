@@ -6,7 +6,6 @@ describe("agent session store", () => {
   beforeEach(() => {
     useAgentStore.setState({
       sessions: {},
-      localAgent: null,
       notifications: [],
     });
   });
@@ -53,23 +52,6 @@ describe("agent session store", () => {
     useAgentStore.getState().start(7, 3, "claude");
     useAgentStore.getState().finish(7);
     expect(useAgentStore.getState().sessions[7]).toBeUndefined();
-  });
-
-  it("dedupes local agent state when neither status nor agent changed", () => {
-    useAgentStore.getState().setLocalAgent({ agent: "pi", status: "running" });
-    const before = useAgentStore.getState().localAgent;
-
-    useAgentStore.getState().setLocalAgent({ agent: "pi", status: "running" });
-
-    expect(useAgentStore.getState().localAgent).toBe(before);
-
-    useAgentStore
-      .getState()
-      .setLocalAgent({ agent: "pi", status: "attention" });
-    expect(useAgentStore.getState().localAgent).toEqual({
-      agent: "pi",
-      status: "attention",
-    });
   });
 
   it("keeps the fifty most recent notifications, newest first", () => {

@@ -3,14 +3,12 @@ import type { PaneNode } from "@/modules/terminal";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { traceEager } from "../../../../scripts/eager-graph.mjs";
 import { useAgentStore } from "../store/agentStore";
-import { useManagedAgentsStore } from "../store/managedAgentsStore";
 import type { AgentSignal } from "../lib/types";
 
 const seams = vi.hoisted(() => ({
   osNotify: vi.fn(async () => "requested" as const),
   playSound: vi.fn(),
   showToast: vi.fn(),
-  chat: vi.fn(),
 }));
 
 // The bridge reaches the terminal module only for the pty->leaf mapping and the
@@ -45,9 +43,6 @@ vi.mock("../lib/sound", () => ({
 }));
 vi.mock("../components/AgentToast", () => ({
   showAgentToast: seams.showToast,
-}));
-vi.mock("@/modules/ai/store/chatRuntime", () => ({
-  getOrCreateChat: seams.chat,
 }));
 
 const { handleAgentSignal } = await import("./AgentNotificationsBridge");
@@ -94,26 +89,13 @@ function signal(kind: AgentSignal["kind"], id = LEAF_ID): AgentSignal {
   return { id, kind, agent: "claude" };
 }
 
-function supervised(leafId = LEAF_ID) {
-  useManagedAgentsStore.getState().register({
-    leafId,
-    tabId: TAB_ID,
-    sessionId: "session-1",
-    task: "ship the release",
-    cwd: null,
-  });
-  return useManagedAgentsStore.getState().agents[leafId];
-}
-
 beforeEach(() => {
   vi.clearAllMocks();
-  useAgentStore.setState({ sessions: {}, localAgent: null, notifications: [] });
-  useManagedAgentsStore.setState({ agents: {} });
+  useAgentStore.setState({ sessions: {}, notifications: [] });
 });
 
 describe("agent signal notifications", () => {
-  it("routes a finished turn to the bell and the OS without a managed review", () => {
-    const before = supervised();
+  it("routes a finished turn to the bell and the OS", () => {
     handleAgentSignal(signal("started"), ctx);
     handleAgentSignal(signal("finished"), ctx);
 
@@ -132,11 +114,6 @@ describe("agent signal notifications", () => {
       },
     ]);
     expect(seams.osNotify).toHaveBeenCalledOnce();
-
-    // No supervision: the review bookkeeping of the managed agent is untouched
-    // and no chat turn is queued for it.
-    expect(useManagedAgentsStore.getState().agents[LEAF_ID]).toEqual(before);
-    expect(seams.chat).not.toHaveBeenCalled();
   });
 
   it("routes attention to the bell and the OS", () => {
@@ -152,13 +129,11 @@ describe("agent signal notifications", () => {
     expect(seams.osNotify).toHaveBeenCalledOnce();
   });
 
-  it("drops the session on exit and leaves the managed agent alone", () => {
-    const before = supervised();
+  it("drops the session on exit", () => {
     handleAgentSignal(signal("started"), ctx);
     handleAgentSignal(signal("exited"), ctx);
 
     expect(useAgentStore.getState().sessions[LEAF_ID]).toBeUndefined();
-    expect(useManagedAgentsStore.getState().agents[LEAF_ID]).toEqual(before);
   });
 
   it("never reports a completed turn for a process that just exited", () => {
@@ -216,11 +191,10 @@ describe("notification bridge dependencies", () => {
       "src/modules/agents/components/AgentNotificationsBridge.tsx",
     );
 
-    // Chat stores/runtime, the AI tools, the local notification bridge and the
-    // managed-review bookkeeping are supervision. `modules/ai/config` stays
-    // reachable on purpose: it is the provider catalog the settings store shares.
+    // The bridge carries external-agent signals only. The built-in chat
+    // runtime, tools and supervision bookkeeping were removed (ticket #12).
     const supervision = [
-      /[/\\]modules[/\\]ai[/\\](?:store|components|hooks|tools)[/\\]/,
+      /[/\\]modules[/\\]ai[/\\]/,
       /[/\\]modules[/\\]agents[/\\]lib[/\\]review\.ts$/,
       /[/\\]modules[/\\]agents[/\\]store[/\\]managedAgentsStore\.ts$/,
     ];

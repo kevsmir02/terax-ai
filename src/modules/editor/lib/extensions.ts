@@ -10,7 +10,6 @@ import { chromeTheme } from "./chromeTheme";
 export const languageCompartment = new Compartment();
 export const wrapCompartment = new Compartment();
 export const vimCompartment = new Compartment();
-export const lspCompartment = new Compartment();
 export const indentCompartment = new Compartment();
 
 export function indentExtension(unit: string): Extension {
