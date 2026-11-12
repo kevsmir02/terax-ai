@@ -4,8 +4,11 @@ import type {
   ApplyHunksRequest,
   ApplyOutcome,
   BranchCreated,
+  CheckpointCleanupReport,
   CheckpointCreated,
+  CheckpointGroups,
   CheckpointInfo,
+  CheckpointInspection,
   GitBranchListResult,
   GitCommitFileChange,
   GitCommitResult,
@@ -21,6 +24,7 @@ import type {
   GitRepoInfo,
   GitStatusSnapshot,
   GitWatchInfo,
+  ManualCheckpointCreated,
   ProjectConfig,
   RestoreReport,
   TaskArchive,
@@ -305,6 +309,38 @@ export const git = {
     invoke<number>("git_checkpoint_prune", {
       worktree,
       taskId,
+      workspace: currentWorkspaceEnv(),
+    }),
+
+  // ---- manual checkpoints (refs/terax-workspace/manual-checkpoints/<id>)
+  /** Captures tracked and non-ignored files; never moves HEAD or the real index. */
+  checkpointManualCreate: (worktree: string, name: string | null = null) =>
+    invoke<ManualCheckpointCreated>("git_checkpoint_manual_create", {
+      worktree,
+      name,
+      workspace: currentWorkspaceEnv(),
+    }),
+  /** This worktree's recovery points, grouped: manual, turn and safety refs. */
+  checkpointGroups: (worktree: string) =>
+    invoke<CheckpointGroups>("git_checkpoint_groups", {
+      worktree,
+      workspace: currentWorkspaceEnv(),
+    }),
+  /** Metadata, stored capture record and captured paths of one owned ref. */
+  checkpointInspect: (worktree: string, ref: string) =>
+    invoke<CheckpointInspection>("git_checkpoint_inspect", {
+      worktree,
+      reference: ref,
+      workspace: currentWorkspaceEnv(),
+    }),
+  /**
+   * Deletes exactly the listed refs this worktree owns. No default "clean all",
+   * no Git garbage collection, and no byte-reclamation promise.
+   */
+  checkpointCleanup: (worktree: string, refs: string[]) =>
+    invoke<CheckpointCleanupReport>("git_checkpoint_cleanup", {
+      worktree,
+      refs,
       workspace: currentWorkspaceEnv(),
     }),
 

@@ -35,9 +35,14 @@ Scenarios (`--scenario`):
   quit           Linux quit: the survey across Spaces, a repeated close that is not consent, cancel,
                  save-then-quit, graceful termination, the survivor prompt, a confirmed force, and a
                  reload that restores the layout without replaying commands (pass/fail in page.log)
+  git            Linux destructive-Git seam: a dirty buffer blocks a panel discard, stale and
+                 unacknowledged plans are refused, a confirmed discard still restores its file
+  checkpoints    Linux manual-checkpoint seam: two same-named captures keep distinct identities,
+                 limits/exclusions are disclosed, inspection lists captured paths, explicit cleanup
+                 removes only the named ref, and HEAD/the index/working files never move
 
-Linux currently implements `workflow`, `spaces`, `markdown`, `preview`, `images`, `resource`,
-`stress` and `startup` (WebKitGTK); the measured scenarios above stay
+Linux currently implements `workflow`, `spaces`, `quit`, `markdown`, `git`, `checkpoints`,
+`preview`, `images`, `resource`, `stress` and `startup` (WebKitGTK); the measured scenarios above stay
 macOS-only until ticket 02 (sampling) and ticket 32 (input/resize/layers). On Linux the app is
 built with `--no-bundle` into `<target>/<profile>/terax`.
 
@@ -92,7 +97,19 @@ SYSTEM = platform.system()
 # measured scenarios (tabs, resize, split-drag, occlusion, agents-steady, idle, fs-churn, input)
 # stay unavailable here: WebKitGTK has no occlusion signal, no layer-tree mirror and no native
 # input hook (ticket 32).
-LINUX_SCENARIOS = ("workflow", "spaces", "quit", "markdown", "git", "preview", "images", "resource", "stress", "startup")
+LINUX_SCENARIOS = (
+    "workflow",
+    "spaces",
+    "quit",
+    "markdown",
+    "git",
+    "checkpoints",
+    "preview",
+    "images",
+    "resource",
+    "stress",
+    "startup",
+)
 SCENARIOS = list(dict.fromkeys([*app_report.SCENARIOS, *LINUX_SCENARIOS]))
 IDENTIFIER = linux_profile.disposable_identifier("app-lab", "stable")
 PRODUCT_NAME = "Terax App Lab"
@@ -630,6 +647,9 @@ def host_timeout(args, scenario: dict) -> float:
         return 720
     if name == "images":
         return 600
+    if name == "checkpoints":
+        # A few native Git commands in a scratch repository: no rendering cycles.
+        return 300
     if name == "quit":
         # Two Spaces, the survey, save-then-quit, a 2 s grace pass, the survivor
         # prompt and a reload pass with a fresh boot.
@@ -951,6 +971,39 @@ def prepare_git_fixture(workspace: Path) -> dict:
     }
 
 
+def prepare_checkpoint_fixture(workspace: Path) -> dict:
+    """The Git fixture plus what a manual capture must disclose.
+
+    Two unstaged edits stay in the working tree, one file is staged in the real
+    index and two entries are ignored. A checkpoint may capture the tracked and
+    non-ignored contents, but it must report those exclusions and leave HEAD,
+    the index and the files where they are. Nothing here touches a real project.
+    """
+    fixture = prepare_git_fixture(workspace)
+    repo = Path(fixture["repo"])
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Terax App Lab",
+        "GIT_AUTHOR_EMAIL": "app-lab@example.invalid",
+        "GIT_COMMITTER_NAME": "Terax App Lab",
+        "GIT_COMMITTER_EMAIL": "app-lab@example.invalid",
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
+    (repo / ".gitignore").write_text("build/\n*.log\n")
+    (repo / "build").mkdir(parents=True, exist_ok=True)
+    (repo / "build/ignored.txt").write_text("never captured\n")
+    (repo / "notes.log").write_text("never captured\n")
+    (repo / "src/staged.ts").write_text("export const staged = true;\n")
+    subprocess.run(["git", "add", "src/staged.ts"], cwd=repo, env=env, check=True)
+    fixture.update({
+        "ignoredFile": str(repo / "build/ignored.txt"),
+        "ignoredCount": 2,
+        "stagedFile": str(repo / "src/staged.ts"),
+        "stagedCount": 1,
+    })
+    return fixture
+
+
 def prepare_image_fixtures(workspace: Path, source: Path) -> dict:
     """Copy the committed image fixtures the `images` scenario opens.
 
@@ -1044,7 +1097,7 @@ def scenario_json_linux(
             scenario["pdf"]["holdMs"] = args.pdf_hold_ms
     if args.scenario == "images" and images:
         scenario.update({"images": images})
-    if args.scenario == "git" and git_fixture:
+    if args.scenario in ("git", "checkpoints") and git_fixture:
         scenario.update({"git": git_fixture})
     if args.scenario in ("resource", "stress") and fixtures:
         node = shutil.which("node")
@@ -1533,6 +1586,8 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         image_fixtures = prepare_image_fixtures(workspace, source)
     elif args.scenario == "git":
         git_fixture = prepare_git_fixture(workspace)
+    elif args.scenario == "checkpoints":
+        git_fixture = prepare_checkpoint_fixture(workspace)
     else:
         token = uuid.uuid4().hex[:10]
         first_line = f"workflow-file {token}"
@@ -1644,6 +1699,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     failed: BaseException | None = None
     workflow: dict = {}
     git_scenario: dict = {}
+    checkpoint_scenario: dict = {}
     markdown: dict = {}
     images: dict = {}
     started = time.monotonic()
@@ -1686,6 +1742,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                     manifest["samples"].append({"phase": "done", "tMonoNs": time.monotonic_ns(), "event": app_report.slim_event(event)})
                     workflow = event.get("workflow") or {}
                     git_scenario = event.get("git") or {}
+                    checkpoint_scenario = event.get("checkpoints") or {}
                     markdown = event.get("markdown") or {}
                     if event.get("images") is not None:
                         images = event["images"]
@@ -1770,6 +1827,15 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
                 manifest["qualification"]["failures"].append({
                     "phase": "git-guard",
                     "reasons": ["destructive Git guard scenario failed"],
+                })
+        if args.scenario == "checkpoints":
+            checkpoint_report = checkpoint_scenario
+            manifest["checkpointScenario"] = checkpoint_report
+            if not checkpoint_report or not checkpoint_report.get("pass"):
+                manifest["qualification"]["qualified"] = False
+                manifest["qualification"]["failures"].append({
+                    "phase": "checkpoints",
+                    "reasons": ["manual checkpoint scenario failed"],
                 })
         manifest["images"] = images
         # The fixture server is the independent process previews are served by; these counters
@@ -1877,6 +1943,14 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             for step in steps:
                 if not step.get("ok"):
                     print(f"  failed: {step.get('name')}: {step.get('detail')}")
+    if args.scenario == "checkpoints":
+        steps = checkpoint_scenario.get("steps") or []
+        passed = sum(1 for step in steps if step.get("ok"))
+        print(f"checkpoints {'PASS' if checkpoint_scenario.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
+        if not checkpoint_scenario.get("pass"):
+            for step in steps:
+                if not step.get("ok"):
+                    print(f"  failed: {step.get('name')}: {step.get('detail')}")
     isolation = manifest["isolation"]
     print(
         f"coexistence {'PASS' if isolation['upstreamStateUnchanged'] else 'FAIL'}: "
@@ -1902,6 +1976,12 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         return 2
     if args.scenario == "images" and not images.get("pass"):
         print("Run failed: the images scenario reported a failing step (see page.log).", file=sys.stderr)
+        return 2
+    if args.scenario == "checkpoints" and not checkpoint_scenario.get("pass"):
+        print(
+            "Run failed: the manual checkpoint scenario reported a failing step (see page.log).",
+            file=sys.stderr,
+        )
         return 2
     if not isolation["upstreamStateUnchanged"]:
         print(

@@ -4609,6 +4609,267 @@ async function gitScenario(run: ScenarioRun): Promise<unknown> {
   return { git: { pass, steps } };
 }
 
+/**
+ * Manual checkpoints through the real app's native commands and a scratch
+ * repository: two captures with the same optional name keep distinct
+ * identities, grouped listing/inspection disclose capture limits, explicit
+ * cleanup deletes only what it names, and HEAD, the real index and the working
+ * files are never touched. No agent turn, hook or terminal is involved.
+ */
+type ListedCheckpoint = {
+  ref: string;
+  id: string;
+  name: string | null;
+  commit: string;
+  tree: string;
+  parent: string | null;
+  createdAtSecs: number;
+  capture: {
+    consistent: boolean;
+    ignoredFiles: number;
+    stagedFiles: number;
+    incomplete: boolean;
+    warnings: string[];
+  } | null;
+};
+
+type CreatedCheckpoint = ListedCheckpoint & {
+  limits: {
+    atomic: boolean;
+    capturesIgnoredFiles: boolean;
+    capturesSubmoduleContents: boolean;
+    capturesIndexState: boolean;
+  };
+  durationMs: number;
+};
+
+type CheckpointGroupsReply = {
+  manual: ListedCheckpoint[];
+  turns: unknown[];
+  safety: unknown[];
+  storage: { ownedRefs: number; sharedObjects: boolean; looseObjects: number };
+};
+
+type CheckpointInspectionReply = {
+  kind: string;
+  name: string | null;
+  changedPaths: { path: string; status: string }[];
+  changedTotal: number;
+  headMoved: boolean;
+  capture: ListedCheckpoint["capture"];
+};
+
+type CleanupReply = {
+  removed: { ref: string; kind: string }[];
+  refused: { ref: string; reason: string }[];
+  remaining: CheckpointGroupsReply;
+  atomic: boolean;
+};
+
+async function checkpointsScenario(run: ScenarioRun): Promise<unknown> {
+  const fixture = run.scenario.git;
+  if (!fixture)
+    throw new Error(
+      "the checkpoints scenario needs a scratch repository (scripts/app-lab/run.py creates it)",
+    );
+  const steps: WorkflowStep[] = [];
+  const check = async (name: string, ok: boolean, detail: string) => {
+    steps.push({ name, ok, detail });
+    await run.log(`[checkpoints] ${ok ? "PASS" : "FAIL"} ${name}: ${detail}`);
+  };
+  const workspace = { kind: "local" } as const;
+  const call = <T>(command: string, args: Record<string, unknown>) =>
+    invoke<T>(command, { ...args, workspace });
+  const readFile = (path: string) =>
+    invoke<{ kind: string; content?: string }>("fs_read_file", {
+      path,
+      workspace,
+      force: false,
+    }).then((result) => (result.kind === "text" ? (result.content ?? "") : ""));
+  const headSha = async () => {
+    const log = await call<{ sha: string }[]>("git_log", {
+      repoRoot: fixture.repo,
+      limit: 1,
+      beforeSha: null,
+    });
+    return log[0]?.sha ?? null;
+  };
+  const status = () =>
+    call<{
+      changedFiles: {
+        path: string;
+        staged: boolean;
+        unstaged: boolean;
+        untracked: boolean;
+      }[];
+    }>("git_status", { repoRoot: fixture.repo });
+
+  try {
+    await run.booted();
+    await call("workspace_authorize", { path: fixture.repo });
+    const headBefore = await headSha();
+    const diskBefore = await readFile(fixture.fileA);
+    const statusBefore = await status();
+
+    // 1. Creation is independent of any task, turn or agent hook; the optional
+    //    name is a label, and the identity is a fresh opaque id.
+    const first = await call<CreatedCheckpoint>(
+      "git_checkpoint_manual_create",
+      { worktree: fixture.repo, name: "app-lab checkpoint" },
+    );
+    const second = await call<CreatedCheckpoint>(
+      "git_checkpoint_manual_create",
+      { worktree: fixture.repo, name: "app-lab checkpoint" },
+    );
+    await check(
+      "two same-named checkpoints keep distinct identities",
+      first.id !== second.id &&
+        first.ref !== second.ref &&
+        /^[0-9a-f]{32}$/.test(first.id) &&
+        first.ref.startsWith("refs/terax-workspace/manual-checkpoints/") &&
+        first.name === "app-lab checkpoint",
+      `ids ${first.id.slice(0, 8)} != ${second.id.slice(0, 8)}`,
+    );
+    await check(
+      "creation reports its capture limits instead of implying a backup",
+      first.limits.atomic === false &&
+        first.limits.capturesIgnoredFiles === false &&
+        first.limits.capturesSubmoduleContents === false &&
+        first.limits.capturesIndexState === false,
+      `limits ${JSON.stringify(first.limits)}`,
+    );
+    await check(
+      "the capture discloses ignored and staged files",
+      first.capture !== null &&
+        first.capture.ignoredFiles === fixture.ignoredCount &&
+        first.capture.stagedFiles === fixture.stagedCount,
+      `capture ${JSON.stringify(first.capture)}`,
+    );
+    await run.sync("checkpoints-created", {
+      captured: [first.id, second.id],
+      ignored: first.capture?.ignoredFiles ?? null,
+      staged: first.capture?.stagedFiles ?? null,
+    });
+
+    // 2. The working files, the real index and HEAD are where the user left
+    //    them: a checkpoint is added reachability, not a checkout.
+    const headAfter = await headSha();
+    const diskAfter = await readFile(fixture.fileA);
+    const statusAfter = await status();
+    const stagedAfter = statusAfter.changedFiles
+      .filter((file) => file.staged)
+      .map((file) => file.path)
+      .sort();
+    const stagedBefore = statusBefore.changedFiles
+      .filter((file) => file.staged)
+      .map((file) => file.path)
+      .sort();
+    await check(
+      "HEAD, the index and the working files are unchanged",
+      headAfter === headBefore &&
+        diskAfter === diskBefore &&
+        JSON.stringify(stagedAfter) === JSON.stringify(stagedBefore) &&
+        stagedAfter.join(",") === "src/staged.ts",
+      `head ${headAfter === headBefore}; disk ${diskAfter === diskBefore}; staged ${stagedAfter.join(",")}`,
+    );
+    await run.sync("checkpoints-untouched", { head: headBefore });
+
+    // 3. Grouped listing and inspection.
+    const groups = await call<CheckpointGroupsReply>("git_checkpoint_groups", {
+      worktree: fixture.repo,
+    });
+    await check(
+      "listing shows both owned checkpoints and storage as shared context",
+      groups.manual.length === 2 &&
+        groups.storage.ownedRefs === 2 &&
+        groups.storage.sharedObjects === true &&
+        !("reclaimedBytes" in groups.storage),
+      `${groups.manual.length} manual; owned ${groups.storage.ownedRefs}`,
+    );
+    const inspection = await call<CheckpointInspectionReply>(
+      "git_checkpoint_inspect",
+      { worktree: fixture.repo, reference: first.ref },
+    );
+    const inspected = inspection.changedPaths.map((change) => change.path);
+    await check(
+      "inspection names the captured paths and the stored capture record",
+      inspection.kind === "manual" &&
+        inspection.name === "app-lab checkpoint" &&
+        inspection.headMoved === false &&
+        inspected.includes("src/a.ts") &&
+        inspected.includes("src/b.ts") &&
+        inspection.changedTotal === inspected.length &&
+        inspection.capture?.ignoredFiles === fixture.ignoredCount,
+      `paths ${inspected.join(",")}`,
+    );
+    await run.sync("checkpoints-inspected", {
+      paths: inspected.length,
+      kind: inspection.kind,
+    });
+
+    // 4. Explicit cleanup deletes exactly the named ref, keeps the other one and
+    //    refuses a ref this worktree does not own.
+    const cleanup = await call<CleanupReply>("git_checkpoint_cleanup", {
+      worktree: fixture.repo,
+      refs: [first.ref, "refs/heads/main"],
+    });
+    await check(
+      "cleanup removes the named checkpoint and refuses an unrelated ref",
+      cleanup.removed.length === 1 &&
+        cleanup.removed[0]?.ref === first.ref &&
+        cleanup.removed[0]?.kind === "manual" &&
+        cleanup.refused.some(
+          (refused) =>
+            refused.ref === "refs/heads/main" &&
+            refused.reason === "not-a-recovery-ref",
+        ) &&
+        cleanup.remaining.manual.length === 1 &&
+        cleanup.remaining.manual[0]?.ref === second.ref &&
+        cleanup.atomic === false,
+      `removed ${cleanup.removed.length}; refused ${cleanup.refused.length}; left ${cleanup.remaining.manual.length}`,
+    );
+    const refusedInspect = await invoke<unknown>("git_checkpoint_inspect", {
+      worktree: fixture.repo,
+      reference: first.ref,
+      workspace,
+    }).then(
+      () => null,
+      (error: unknown) => String(error),
+    );
+    await check(
+      "the removed checkpoint is no longer inspectable",
+      refusedInspect?.includes("no such checkpoint for this worktree") === true,
+      `error ${refusedInspect ?? "none"}`,
+    );
+
+    const after = await headSha();
+    await check(
+      "cleanup leaves HEAD and the working file untouched",
+      after === headBefore && (await readFile(fixture.fileA)) === diskBefore,
+      `head ${after === headBefore}`,
+    );
+    await run.sync("checkpoints-cleaned", {
+      remaining: cleanup.remaining.manual.length,
+    });
+
+    const pass = steps.every((step) => step.ok);
+    await run.log(
+      `[checkpoints] ${pass ? "PASS" : "FAIL"} summary: ${steps.filter((step) => !step.ok).length} failures of ${steps.length}`,
+    );
+    return { checkpoints: { pass, steps } };
+  } catch (error) {
+    return {
+      checkpoints: {
+        pass: false,
+        steps: [
+          ...steps,
+          { name: "scenario completed", ok: false, detail: String(error) },
+        ],
+      },
+    };
+  }
+}
+
 const SCENARIOS: Record<
   BenchScenario["name"],
   (run: ScenarioRun) => Promise<unknown>
@@ -4626,6 +4887,7 @@ const SCENARIOS: Record<
   spaces: spacesScenario,
   quit: quitScenario,
   git: gitScenario,
+  checkpoints: checkpointsScenario,
   preview: previewScenario,
   images: imagesScenario,
   resource: resourceScenario,

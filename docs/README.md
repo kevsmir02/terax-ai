@@ -23,6 +23,7 @@ If a guide conflicts with `TERAX.md`, `TERAX.md` wins.
 - [Rendered Markdown ownership](architecture/markdown-rendering.md) - the retained Markdown/code renderer, its local-image policy, the AI-named compatibility entry points, and what must survive the AI removal.
 - [Document and decoded-resource limits](architecture/resource-limits.md) - the approved text, image, PDF, viewer and media ceilings, their enforcing owners, and the refusal/override behaviour required at each limit.
 - [PDF reader path](architecture/pdf-reader.md) - whether the embedded viewer can satisfy the PDF contract, the real-app evidence behind that decision, and the dedicated on-demand reader ticket #31 must implement.
+- [Manual checkpoints](architecture/checkpoints.md) - agent-independent capture/list/inspect/cleanup, the disclosed capture limits, worktree ownership, and why deleting a ref is not reclaimed bytes.
 
 ## Terminal migration and validation
 
