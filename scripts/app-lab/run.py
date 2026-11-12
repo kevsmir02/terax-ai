@@ -152,6 +152,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--stream-rate", type=float, default=400, help="resource: streaming lines per second per pane (default 400)")
     p.add_argument("--stream-seconds", type=float, help="resource: seconds of sustained terminal streaming (default: --duration or 30)")
     p.add_argument("--close-cycles", type=int, default=3, help="resource: editor open/close cycles (default 3)")
+    p.add_argument("--idle-seconds", type=float, default=5, help="resource: idle-terminal hold before the workload (default 5)")
     p.add_argument("--startup-repeats", type=int, default=3, help="startup: launches per run; the first is cold (fresh profile), the rest warm (default 3)")
     p.add_argument("--compare-format", choices=["table", "tsv", "json"], default="table", help="with --compare/--candidate: one line per metric (tsv) or machine-readable json")
     p.add_argument("--list-metrics", action="store_true", help="print every metric name a Linux report can produce and exit")
@@ -827,6 +828,7 @@ def scenario_json_linux(args, file: Path | None, first_line: str | None, workspa
             "streamSeconds": int(args.stream_seconds if args.stream_seconds is not None else (args.duration or 30)),
             "closeCycles": args.close_cycles,
             "cycles": args.cycles if args.cycles is not None else 3,
+            "idleSeconds": args.idle_seconds,
             "hiddenMs": args.hidden_ms,
             "visibleMs": args.visible_ms,
             "streamCommand": f"exec {node} {HERE / 'stream-sim.mjs'} --rate {args.stream_rate:g}",

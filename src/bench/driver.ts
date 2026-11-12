@@ -1070,6 +1070,11 @@ async function resourceScenario(
     tabs: app().tabs.length,
     panes: app().tabs.reduce((sum, tab) => sum + paneLeaves(tab), 0),
   });
+  // Idle terminal: one live shell, nothing running, no streaming or agents yet. The orchestrator
+  // derives idle CPU from the cumulative CPU counters of the booted and idle samples.
+  const idleSeconds = scenario.idleSeconds ?? 5;
+  await pause(idleSeconds * 1000);
+  await run.sync("idle", { idleSeconds, tabs: app().tabs.length });
 
   const spaceA = app().activeSpaceId ?? app().tabs[0]?.spaceId;
   if (!spaceA) throw new Error("the application reports no active Space");

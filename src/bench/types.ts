@@ -114,6 +114,8 @@ export type BenchScenario = {
   streams?: number;
   /** resource/stress: editor tab open/close cycles. */
   closeCycles?: number;
+  /** resource/stress: seconds the app is left idle (one shell, no agents) before the workload. */
+  idleSeconds?: number;
 };
 
 export type BenchConfig = {

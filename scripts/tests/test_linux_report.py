@@ -29,28 +29,31 @@ def memory(host=100, web=200, gpu=50, net=20, workload=30, private=None):
     return linux_proc.aggregate(processes)
 
 
-def sample(phase, **figures):
+def sample(phase, t=1_000_000_000, cpu=1.0, **figures):
+    block = memory(**figures)
+    for entry in block["byRole"].values():
+        entry["cpuSeconds"] = round(entry["cpuSeconds"] * cpu, 3)
     return {
         "phase": phase,
-        "tMonoNs": 1,
+        "tMonoNs": t,
         "event": {"phase": phase, "diag": {"tabs": []}},
-        "memory": memory(**figures),
+        "memory": block,
     }
 
 
 def report() -> dict:
     samples = [
-        sample("booted", host=60, web=80, gpu=20, net=10, workload=0),
-        sample("baseline", host=100, web=200, gpu=50, net=20, workload=30),
-        sample("measure-start", host=100, web=220, gpu=50, net=20, workload=35),
-        sample("stream-start", host=100, web=230, gpu=50, net=20, workload=35),
-        sample("stream-end", host=105, web=260, gpu=50, net=20, workload=40),
-        sample("measure-end", host=104, web=250, gpu=50, net=20, workload=40),
-        sample("cycle-1-hidden", host=104, web=250, gpu=50, net=20, workload=40),
-        sample("cycle-1-visible", host=104, web=251, gpu=50, net=20, workload=40),
-        sample("close-cycle-1-open", host=105, web=255, gpu=50, net=20, workload=40),
-        sample("close-cycle-1-closed", host=104, web=251, gpu=50, net=20, workload=40),
-        sample("end+30s", host=103, web=248, gpu=50, net=20, workload=40),
+        sample("booted", t=1_000_000_000, host=60, web=80, gpu=20, net=10, workload=0),
+        sample("baseline", t=6_000_000_000, cpu=2.0, host=100, web=200, gpu=50, net=20, workload=30),
+        sample("measure-start", t=11_000_000_000, host=100, web=220, gpu=50, net=20, workload=35),
+        sample("stream-start", t=16_000_000_000, host=100, web=230, gpu=50, net=20, workload=35),
+        sample("stream-end", t=21_000_000_000, host=105, web=260, gpu=50, net=20, workload=40),
+        sample("measure-end", t=26_000_000_000, host=104, web=250, gpu=50, net=20, workload=40),
+        sample("cycle-1-hidden", t=31_000_000_000, host=104, web=250, gpu=50, net=20, workload=40),
+        sample("cycle-1-visible", t=36_000_000_000, host=104, web=251, gpu=50, net=20, workload=40),
+        sample("close-cycle-1-open", t=41_000_000_000, host=105, web=255, gpu=50, net=20, workload=40),
+        sample("close-cycle-1-closed", t=46_000_000_000, host=104, web=251, gpu=50, net=20, workload=40),
+        sample("end+30s", t=51_000_000_000, host=103, web=248, gpu=50, net=20, workload=40),
     ]
     series = [
         {"tMonoNs": 1_000_000_000, "wallMs": 1700000000000, "loadAverage": [1.0],
@@ -99,6 +102,13 @@ class MetricsTest(unittest.TestCase):
         self.assertAlmostEqual(metrics["delta.stream.app_pss_mib"], 35.0)  # web +30, host +5
         # baseline -> settle: app 370 -> 421, total 400 -> 451
         self.assertAlmostEqual(metrics["delta.baseline_to_settle.total_pss_mib"], 61.0)
+
+    def test_segment_cpu_between_consecutive_phases(self):
+        metrics = linux_report.compute_metrics(report())
+        name = "booted->baseline"  # 5 s apart; host 1.0 -> 2.0 CPU-seconds is 20% of one core
+        self.assertIn(f"segment.{name}.cpu_pct.host", metrics)
+        self.assertAlmostEqual(metrics[f"segment.{name}.cpu_pct.host"], 20.0)
+        self.assertGreater(metrics[f"segment.{name}.cpu_pct.app_total"], 0)
 
     def test_startup_metrics_and_warm_median(self):
         metrics = linux_report.compute_metrics(report())

@@ -40,7 +40,7 @@ MIB = linux_proc.MIB
 
 # Phases every summary prints, in order (after them, any phase present in the report).
 KEY_PHASES = (
-    "blank", "booted", "setup", "space-a", "space-b", "baseline", "measure-start", "stream-start",
+    "blank", "booted", "idle", "setup", "space-a", "space-b", "baseline", "measure-start", "stream-start",
     "stream-end", "measure-end", "cycles-complete", "end+10s", "end+30s",
 )
 # The metric families this module produces, for `run.py --list-metrics` and for anyone writing a
@@ -166,6 +166,39 @@ def _timeline_metrics(metrics: dict, report: dict, prefix: str = "timeline") -> 
     metrics[f"{prefix}.cpu_percent_intervals"] = found["intervals"]
 
 
+def _segment_metrics(metrics: dict, report: dict) -> None:
+    """CPU and wall time between consecutive event samples (e.g. booted -> idle).
+
+    Each sample carries the cumulative utime+stime of every role, so the difference over a known
+    span is a real per-phase average (idle terminal, streaming window, hide cycle), independent of
+    the 1 Hz whole-run timeline.
+    """
+    ordered = samples(report)
+    for before, after in zip(ordered, ordered[1:]):
+        seconds = (after["tMonoNs"] - before["tMonoNs"]) / 1e9
+        if seconds <= 0:
+            continue
+        name = f"{phase_of(before)}->{phase_of(after)}"
+        roles = set(memory(before).get("byRole") or {}) | set(memory(after).get("byRole") or {})
+        cpu: dict[str, float] = {}
+        for role in roles:
+            first = ((memory(before).get("byRole") or {}).get(role) or {}).get("cpuSeconds")
+            second = ((memory(after).get("byRole") or {}).get(role) or {}).get("cpuSeconds")
+            if first is None or second is None:
+                continue
+            delta = float(second) - float(first)
+            if delta > 0:
+                cpu[role] = 100.0 * delta / seconds
+        if not cpu:
+            continue
+        metrics[f"segment.{name}.seconds"] = round(seconds, 3)
+        for role, value in sorted(cpu.items()):
+            metrics[f"segment.{name}.cpu_pct.{role}"] = round(value, 3)
+        metrics[f"segment.{name}.cpu_pct.app_total"] = round(
+            sum(value for role, value in cpu.items() if role in linux_proc.APP_ROLES), 3
+        )
+
+
 def _interval_memory(metrics: dict, name: str, start: dict, end: dict) -> None:
     before, after = memory(start), memory(end)
     metrics[f"delta.{name}.total_pss_mib"] = (after["total"]["pss"] - before["total"]["pss"]) / MIB
@@ -187,6 +220,7 @@ def compute_metrics(report: dict) -> dict[str, float]:
         _memory_metrics(metrics, phase, sample)
     _startup_metrics(metrics, report)
     _timeline_metrics(metrics, report)
+    _segment_metrics(metrics, report)
     for start, end, name in (
         ("measure-start", "measure-end", "measure"),
         ("measure-end", "end+30s", "settle"),
