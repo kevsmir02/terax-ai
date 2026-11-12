@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use portable_pty::CommandBuilder;
 
 use crate::modules::control::ShellControlEnv;
+use crate::modules::identity;
 use crate::modules::workspace::{self, WorkspaceEnv};
 
 #[cfg(windows)]
@@ -192,9 +193,9 @@ fn apply_common(
 ) {
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
-    cmd.env("TERAX_TERMINAL", "1");
+    cmd.env(identity::env("TERMINAL"), "1");
     if blocks {
-        cmd.env("TERAX_BLOCKS", "1");
+        cmd.env(identity::env("BLOCKS"), "1");
     }
     let appimage_overrides = workspace::appimage_env_overrides();
     let clean_path = match appimage_overrides.iter().find(|(key, _)| *key == "PATH") {
@@ -212,11 +213,11 @@ fn apply_common(
         }
     }
     if let Some(control) = control {
-        cmd.env("TERAX_CONTROL_ADDR", &control.address);
-        cmd.env("TERAX_CONTROL_TOKEN", &control.token);
-        cmd.env("TERAX_PANE_ID", control.pane_id.to_string());
+        cmd.env(identity::env("CONTROL_ADDR"), &control.address);
+        cmd.env(identity::env("CONTROL_TOKEN"), &control.token);
+        cmd.env(identity::env("PANE_ID"), control.pane_id.to_string());
         if let Some(path) = &control.cli_path {
-            cmd.env("TERAX_CLI", path);
+            cmd.env(identity::env("CLI"), path);
         }
         if let Some(bin_dir) = &control.cli_bin_dir {
             let paths = std::iter::once(bin_dir.clone()).chain(
@@ -253,6 +254,7 @@ mod unix {
     use std::fs;
     use std::path::{Path, PathBuf};
 
+    use crate::modules::identity;
     use portable_pty::CommandBuilder;
 
     const ZSHENV: &str = include_str!("scripts/zshenv.zsh");
@@ -362,7 +364,7 @@ mod unix {
         Ok(cmd)
     }
 
-    /// What the child zsh gets as `TERAX_USER_ZDOTDIR`.
+    /// What the child zsh gets as the fork's `USER_ZDOTDIR` variable.
     #[derive(Debug, PartialEq, Eq)]
     enum UserZdotdir {
         /// The inherited `ZDOTDIR` is the user's own.
@@ -391,11 +393,11 @@ mod unix {
                         // Guard against Terax-in-Terax :)
                         match user_zdotdir_for(std::env::var("ZDOTDIR").ok().as_deref(), &zdotdir) {
                             UserZdotdir::Set(user) => {
-                                cmd.env("TERAX_USER_ZDOTDIR", user);
+                                cmd.env(identity::env("USER_ZDOTDIR"), user);
                             }
                             UserZdotdir::Keep => {}
                             UserZdotdir::Clear => {
-                                cmd.env_remove("TERAX_USER_ZDOTDIR");
+                                cmd.env_remove(identity::env("USER_ZDOTDIR"));
                             }
                         }
                         cmd.env("ZDOTDIR", &zdotdir);
@@ -446,13 +448,27 @@ mod unix {
 
     fn integration_root() -> Result<PathBuf, String> {
         let home = dirs::home_dir().ok_or_else(|| "could not resolve home dir".to_string())?;
-        let root = home.join(".cache").join("terax").join("shell-integration");
+        integration_root_in(&home)
+    }
+
+    /// This fork writes its integration wrappers into its own cache directory. The
+    /// upstream application's `~/.cache/terax/shell-integration` is another
+    /// application's state: it is never read, rewritten or removed here.
+    fn integration_root_in(home: &Path) -> Result<PathBuf, String> {
+        let root = home
+            .join(".cache")
+            .join(identity::namespace())
+            .join("shell-integration");
         fs::create_dir_all(&root).map_err(|e| format!("create {}: {e}", root.display()))?;
         Ok(root)
     }
 
     fn prepare_zdotdir() -> Result<PathBuf, String> {
-        let dir = integration_root()?.join("zsh");
+        prepare_zdotdir_in(integration_root()?)
+    }
+
+    fn prepare_zdotdir_in(root: PathBuf) -> Result<PathBuf, String> {
+        let dir = root.join("zsh");
         fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
         write_if_changed(&dir.join(".zshenv"), ZSHENV)?;
         write_if_changed(&dir.join(".zprofile"), ZPROFILE)?;
@@ -462,7 +478,11 @@ mod unix {
     }
 
     fn prepare_bash_rcfile() -> Result<PathBuf, String> {
-        let dir = integration_root()?.join("bash");
+        prepare_bash_rcfile_in(integration_root()?)
+    }
+
+    fn prepare_bash_rcfile_in(root: PathBuf) -> Result<PathBuf, String> {
+        let dir = root.join("bash");
         fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
         let rc = dir.join("bashrc");
         write_if_changed(&rc, BASHRC)?;
@@ -471,9 +491,17 @@ mod unix {
 
     fn prepare_fish_conf_d() -> Result<(), String> {
         let home = dirs::home_dir().ok_or_else(|| "could not resolve home dir".to_string())?;
+        prepare_fish_conf_d_in(&home)
+    }
+
+    /// Our file inside fish's shared `conf.d`; upstream's `terax.fish` sits next to it.
+    fn prepare_fish_conf_d_in(home: &Path) -> Result<(), String> {
         let dir = home.join(".config").join("fish").join("conf.d");
         fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-        write_if_changed(&dir.join("terax.fish"), FISH_INIT)?;
+        write_if_changed(
+            &dir.join(format!("{}.fish", identity::namespace())),
+            FISH_INIT,
+        )?;
         Ok(())
     }
 
@@ -540,7 +568,7 @@ mod unix {
                 UserZdotdir::Set("/home/me/.config/zsh".into())
             );
             // Launched by a command in another Terax terminal: keep the
-            // TERAX_USER_ZDOTDIR it inherited.
+            // the USER_ZDOTDIR variable it inherited.
             assert_eq!(
                 user_zdotdir_for(Some("/cache/terax/shell-integration/zsh"), integration),
                 UserZdotdir::Keep
@@ -552,7 +580,7 @@ mod unix {
         #[test]
         fn zsh_starts_from_the_integration_dir_and_forgets_a_stale_user_zdotdir() {
             let mut cmd = CommandBuilder::new("/bin/zsh");
-            cmd.env("TERAX_USER_ZDOTDIR", "/left/over/from/a/parent/terminal");
+            cmd.env(identity::env("USER_ZDOTDIR"), "/left/over/from/a/parent/terminal");
             apply_shell_init(&mut cmd, &Shell::Zsh, "/bin/zsh");
             let zdotdir = cmd.get_env("ZDOTDIR").expect("ZDOTDIR is set");
             assert!(Path::new(zdotdir).ends_with("shell-integration/zsh"));
@@ -560,11 +588,11 @@ mod unix {
             match std::env::var("ZDOTDIR") {
                 Ok(user) if !user.is_empty() && Path::new(&user) != Path::new(zdotdir) => {
                     assert_eq!(
-                        cmd.get_env("TERAX_USER_ZDOTDIR"),
+                        cmd.get_env(&identity::env("USER_ZDOTDIR")),
                         Some(std::ffi::OsStr::new(&user))
                     );
                 }
-                _ => assert_eq!(cmd.get_env("TERAX_USER_ZDOTDIR"), None),
+                _ => assert_eq!(cmd.get_env(&identity::env("USER_ZDOTDIR")), None),
             }
             for file in [".zshenv", ".zprofile", ".zshrc", ".zlogin"] {
                 assert!(Path::new(zdotdir).join(file).is_file(), "{file}");
@@ -775,7 +803,7 @@ mod windows {
         }
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
-        cmd.env("TERAX_TERMINAL", "1");
+        cmd.env(identity::env("TERMINAL"), "1");
         super::ensure_utf8_locale(&mut cmd);
         log::info!("spawning WSL shell: {distro} ({shell_path})");
         Ok(cmd)
@@ -805,7 +833,7 @@ mod windows {
             ) => {
                 args.push("env".to_string());
                 if let Some(user_zdotdir) = user_zdotdir {
-                    args.push(format!("TERAX_USER_ZDOTDIR={user_zdotdir}"));
+                    args.push(format!("{}={user_zdotdir}", identity::env("USER_ZDOTDIR")));
                 }
                 args.push(format!("ZDOTDIR={zdotdir}"));
                 args.push(shell_path.to_string());
@@ -854,8 +882,9 @@ mod windows {
     fn prepare_wsl_integration_dir(distro: &str, shell: &str) -> Result<(String, PathBuf), String> {
         let home = crate::modules::workspace::wsl_home(distro.to_string())?;
         let linux_dir = format!(
-            "{}/.cache/terax/shell-integration/{shell}",
-            home.trim_end_matches('/')
+            "{}/.cache/{}/shell-integration/{shell}",
+            home.trim_end_matches('/'),
+            identity::namespace()
         );
         let unc_dir = crate::modules::workspace::wsl_path_to_unc(distro, &linux_dir);
         fs::create_dir_all(&unc_dir).map_err(|e| format!("create {}: {e}", unc_dir.display()))?;
@@ -901,7 +930,7 @@ mod windows {
         let linux_dir = format!("{}/.config/fish/conf.d", home.trim_end_matches('/'));
         let unc_dir = crate::modules::workspace::wsl_path_to_unc(distro, &linux_dir);
         fs::create_dir_all(&unc_dir).map_err(|e| format!("create {}: {e}", unc_dir.display()))?;
-        let unc_file = unc_dir.join("terax.fish");
+        let unc_file = unc_dir.join(format!("{}.fish", identity::namespace()));
         let content = normalize_script(super::fish_init_script());
         write_if_changed(&unc_file, &content)?;
         Ok(())
@@ -923,7 +952,11 @@ mod windows {
     }
 
     fn prepare_bash_rcfile() -> Result<PathBuf, String> {
-        let dir = integration_root()?.join("bash");
+        prepare_bash_rcfile_in(integration_root()?)
+    }
+
+    fn prepare_bash_rcfile_in(root: PathBuf) -> Result<PathBuf, String> {
+        let dir = root.join("bash");
         fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
         let rc = dir.join("bashrc");
         write_if_changed(&rc, &normalize_script(super::bashrc_script()))?;
@@ -1061,7 +1094,7 @@ mod windows {
                     "/home/vinicios/repo".to_string(),
                     "--exec".to_string(),
                     "env".to_string(),
-                    "TERAX_USER_ZDOTDIR=/home/vinicios/.config/zsh".to_string(),
+                    format!("{}=/home/vinicios/.config/zsh", identity::env("USER_ZDOTDIR")),
                     "ZDOTDIR=/home/vinicios/.cache/terax/shell-integration/zsh".to_string(),
                     "/usr/bin/zsh".to_string(),
                     "-l".to_string(),
@@ -1236,6 +1269,7 @@ mod tests {
     use portable_pty::CommandBuilder;
 
     use super::{apply_common, cmd_prompt, sanitize_shell_override, ShellControlEnv};
+    use crate::modules::identity;
 
     #[test]
     fn cmd_prompt_reports_the_cwd_before_the_users_own_prompt() {
@@ -1289,16 +1323,16 @@ mod tests {
         apply_common(&mut command, None, false, Some(&control));
 
         assert_eq!(
-            command.get_env("TERAX_CONTROL_ADDR"),
+            command.get_env(identity::env("CONTROL_ADDR")),
             Some(OsStr::new("127.0.0.1:1234"))
         );
         assert_eq!(
-            command.get_env("TERAX_CONTROL_TOKEN"),
+            command.get_env(identity::env("CONTROL_TOKEN")),
             Some(OsStr::new("secret"))
         );
-        assert_eq!(command.get_env("TERAX_PANE_ID"), Some(OsStr::new("42")));
+        assert_eq!(command.get_env(identity::env("PANE_ID")), Some(OsStr::new("42")));
         assert_eq!(
-            command.get_env("TERAX_CLI"),
+            command.get_env(identity::env("CLI")),
             Some(OsStr::new("/app/terax-cli"))
         );
         assert_eq!(

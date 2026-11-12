@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::modules::git::checkpoint::{self, RestoreRefusal};
 use crate::modules::git::errors::GitError;
+use crate::modules::git::refs;
 use crate::modules::git::review::{
     self, ApplyMode, ApplySelection, CheckpointEndpoint, GitDiffScope, RefusalCode,
 };
@@ -109,9 +110,8 @@ fn a_forced_restore_leaves_a_safety_ref_that_restores_the_overwritten_work() {
     let safety = report
         .safety
         .expect("a forced restore returns its safety ref");
-    assert!(safety
-        .ref_name
-        .starts_with("refs/terax/checkpoints/t/prerestore-"));
+    assert!(safety.ref_name.starts_with(&refs::checkpoint_prefix()));
+    assert!(!safety.ref_name.starts_with("refs/terax/"));
     assert_eq!(
         repo.git(&["rev-parse", &safety.ref_name]).trim(),
         safety.commit
@@ -193,7 +193,8 @@ fn a_refused_restore_writes_nothing() {
     repo.commit_all("base");
     let cp = checkpoint::create(&repo.registry, &repo.path(), "t", 1, &repo.ws).unwrap();
     repo.write("a.txt", "edited\n");
-    let refs_before = repo.git(&["for-each-ref", "refs/terax"]);
+    let root = refs::ref_root();
+    let refs_before = repo.git(&["for-each-ref", &root]);
     let refused = checkpoint::restore(
         &repo.registry,
         &repo.path(),
@@ -203,7 +204,7 @@ fn a_refused_restore_writes_nothing() {
     )
     .unwrap();
     assert!(!refused.restored && refused.safety.is_none());
-    assert_eq!(repo.git(&["for-each-ref", "refs/terax"]), refs_before);
+    assert_eq!(repo.git(&["for-each-ref", &root]), refs_before);
 }
 
 #[test]
@@ -222,11 +223,11 @@ fn prune_removes_safety_refs_too() {
     )
     .unwrap();
     assert!(repo
-        .git(&["for-each-ref", "refs/terax"])
+        .git(&["for-each-ref", &refs::ref_root()])
         .contains("prerestore-"));
     let pruned = checkpoint::prune(&repo.registry, &repo.path(), "t", &repo.ws).unwrap();
     assert_eq!(pruned, 2);
-    assert_eq!(repo.git(&["for-each-ref", "refs/terax"]).trim(), "");
+    assert_eq!(repo.git(&["for-each-ref", &refs::ref_root()]).trim(), "");
 }
 
 // ------------------------------------ 5: a checkpoint belongs to its worktree
@@ -697,16 +698,15 @@ fn a_pinned_tree_must_be_an_existing_tree_id() {
 
 #[test]
 fn the_worktree_endpoint_still_deserializes_from_the_old_wire_shape() {
-    let scope: GitDiffScope = serde_json::from_str(
-        r#"{"kind":"checkpoint","from":{"kind":"ref","name":"refs/terax/checkpoints/t/1"},"to":{"kind":"worktree"}}"#,
-    )
-    .unwrap();
+    let ours = refs::checkpoint_ref("t", 1);
+    let wire = format!(
+        r#"{{"kind":"checkpoint","from":{{"kind":"ref","name":"{ours}"}},"to":{{"kind":"worktree"}}}}"#
+    );
+    let scope: GitDiffScope = serde_json::from_str(&wire).unwrap();
     assert_eq!(
         scope,
         GitDiffScope::Checkpoint {
-            from: CheckpointEndpoint::Ref {
-                name: "refs/terax/checkpoints/t/1".into()
-            },
+            from: CheckpointEndpoint::Ref { name: ours.clone() },
             to: CheckpointEndpoint::Worktree { tree: None },
         }
     );

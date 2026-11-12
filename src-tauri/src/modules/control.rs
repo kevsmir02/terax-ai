@@ -755,7 +755,15 @@ fn generate_token() -> Result<String, String> {
 fn descriptor_path() -> Result<PathBuf, String> {
     let cache =
         dirs::cache_dir().ok_or_else(|| "could not resolve user cache directory".to_string())?;
-    let dir = cache.join("terax");
+    descriptor_path_in(&cache)
+}
+
+/// The control descriptor lives under this fork's own cache directory (see
+/// `modules::identity`), never under the upstream `terax` directory that an installed
+/// upstream application uses: two running applications must not publish the same
+/// descriptor, and this one must never read, overwrite or delete the other's.
+fn descriptor_path_in(cache: &Path) -> Result<PathBuf, String> {
+    let dir = cache.join(crate::modules::identity::namespace());
     std::fs::create_dir_all(&dir)
         .map_err(|error| format!("create control directory {}: {error}", dir.display()))?;
     #[cfg(unix)]

@@ -47,7 +47,7 @@ function requireArtifact(path, label) {
 }
 
 const target =
-  process.env.TERAX_CLI_TARGET?.trim() ||
+  process.env.TERAX_WORKSPACE_FORK_CLI_TARGET?.trim() ||
   process.env.CARGO_BUILD_TARGET?.trim() ||
   hostTriple();
 const cargoArgs = [

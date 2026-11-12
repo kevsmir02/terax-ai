@@ -70,7 +70,7 @@ pub(crate) struct Store {
 
 impl Store {
     pub fn open(home: &Path) -> Result<Self> {
-        let dir = home.join(".terax");
+        let dir = crate::modules::identity::home_state_dir(home);
         std::fs::create_dir_all(&dir)?;
         let lock = OpenOptions::new()
             .read(true)

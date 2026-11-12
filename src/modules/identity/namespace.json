@@ -1,0 +1,19 @@
+{
+  "provisional": true,
+  "note": "PROVISIONAL working identity of the personal Linux workspace fork. It is deliberately not the upstream Terax identity and it is not shippable branding: the final product name, release owner/URL and signing keys are decided in ticket #39/#40. This table is the single source of the fork-owned names: the Rust application, the Python runners and the frontend checks all read it, and RENAME HERE FIRST. A build tool that forces a literal (src-tauri/tauri.conf.json) is compared against this table by tests instead of duplicating it.",
+  "finalIdentityTicket": 39,
+  "appIdentifier": "dev.terax-workspace.fork",
+  "namespace": "terax-workspace",
+  "envPrefix": "TERAX_WORKSPACE_FORK",
+  "sharedChildEnv": [
+    "TERAX_TASK",
+    "TERAX_PORT",
+    "TERAX_PORT_*",
+    "TERAX_WORKSPACE_PATH",
+    "TERAX_ROOT_PATH"
+  ],
+  "upstream": {
+    "appIdentifier": "app.crynta.terax",
+    "namespace": "terax"
+  }
+}
