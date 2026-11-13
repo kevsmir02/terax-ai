@@ -13,6 +13,7 @@ or non-x86-64 target that this fork does not build or distribute.
 """
 
 import json
+import subprocess
 import re
 import sys
 import tempfile
@@ -108,6 +109,14 @@ PUBLICATION_ACTIONS = (
     "release-drafter",
     "pypi-publish",
     "docker push",
+)
+
+# The only repository secrets the release workflow may read: the maintainer's
+# passphrase-protected minisign key and its passphrase, injected for the signer step only. They
+# grant authenticity, not publication, and the gate still decides.
+RELEASE_SIGNING_SECRETS = (
+    "TERAX_RELEASE_SIGNING_KEY",
+    "TERAX_RELEASE_SIGNING_KEY_PASSPHRASE",
 )
 
 
@@ -512,6 +521,12 @@ class ReleaseWorkflowTest(unittest.TestCase):
         # its publication identity and signing trust, the release workflow must have no way to
         # publish. Flipping `provisional` to false is the deliberate change that relaxes this,
         # and even then the gate has to remain the thing that decides.
+        #
+        # The one secret the workflow is allowed to read is the release signing key: it grants
+        # authenticity, not publication, it is injected only for the signer step, and the gate
+        # still refuses every release while the contract is provisional. Any other `secrets.`
+        # reference, any write permission and every publication action stay forbidden, and the
+        # secret may not be echoed (see `ReleaseSigningWorkflowTest`).
         contract = release_contract()
         code = workflow_code(RELEASE)
         permissions = yaml.safe_load(code).get("permissions") or {}
@@ -519,8 +534,7 @@ class ReleaseWorkflowTest(unittest.TestCase):
             self.assertIn("scripts/release_gate.py", code)
             return
         for forbidden in (*PUBLICATION_ACTIONS, "tagName", "releaseName", "releaseBody",
-                          "releaseDraft", "prerelease", "contents: write", "id-token: write",
-                          "secrets."):
+                          "releaseDraft", "prerelease", "contents: write", "id-token: write"):
             self.assertNotIn(
                 forbidden,
                 code,
@@ -528,6 +542,14 @@ class ReleaseWorkflowTest(unittest.TestCase):
                 "releaseContract.json is provisional: a tag or dispatch would otherwise publish "
                 "unchecked, untrusted artifacts",
             )
+        allowed_secrets = set(RELEASE_SIGNING_SECRETS)
+        found = set(re.findall(r"secrets\.([A-Za-z0-9_]+)", code))
+        self.assertEqual(
+            found - allowed_secrets,
+            set(),
+            "release.yml may read only the release signing secrets while the contract is "
+            "provisional; anything else could publish",
+        )
         for name, granted in permissions.items():
             self.assertNotIn("write", str(granted), f"release.yml grants {name}: write")
 
@@ -552,6 +574,132 @@ class ReleaseWorkflowTest(unittest.TestCase):
         self.assertIn("package manager", docs)
         for path in workflow_files():
             self.assertNotIn("Auto-update is built in", text(path), f"{path.name}")
+
+
+class ReleaseSigningWorkflowTest(unittest.TestCase):
+    """A tag signs the staged bytes before the artifact gate, and refuses without a key.
+
+    The security property here is narrow and absolute: the workflow may not publish, and it may
+    not treat unsigned bytes as a release. Asserting the order (staging → signing → artifact gate
+    → upload) and the named refusals is what keeps a later edit from "simplifying" the signer
+    step away.
+    """
+
+    def setUp(self) -> None:
+        if yaml is None:
+            self.fail("PyYAML is not installed, so workflow YAML validation cannot run.")
+        self.workflow = yaml.safe_load(text(RELEASE))
+        self.body = text(RELEASE)
+        self.code = workflow_code(RELEASE)
+
+    def steps(self) -> list[dict]:
+        return self.workflow["jobs"]["build-candidate"]["steps"]
+
+    def step_index(self, needle: str) -> int:
+        for index, step in enumerate(self.steps()):
+            if needle in str(step.get("run", "")):
+                return index
+        raise AssertionError(f"no release step runs {needle!r}")
+
+    def signer_step(self) -> dict:
+        index = self.step_index("tauri signer sign")
+        return self.steps()[index]
+
+    def test_the_signer_runs_after_staging_and_before_the_artifact_gate(self) -> None:
+        staging = self.step_index("sha256sum -c SHA256SUMS")
+        signing = self.step_index("tauri signer sign")
+        gate = next(
+            index for index, step in enumerate(self.steps())
+            if "scripts/release_gate.py" in str(step.get("run", ""))
+            and "--candidate" in str(step.get("run", ""))
+        )
+        upload = next(
+            index for index, step in enumerate(self.steps())
+            if "actions/upload-artifact" in str(step.get("uses", ""))
+        )
+        self.assertLess(staging, signing, "the signed bytes must be the staged bytes")
+        self.assertLess(signing, gate, "the gate verifies what was signed and announced")
+        self.assertLess(gate, upload)
+        # The manifest is written inside the signer step, after the signatures exist.
+        run = self.signer_step()["run"]
+        self.assertLess(run.index("tauri signer sign"),
+                        run.index("scripts/release_signing.py"),
+                        "latest.json describes signatures that already exist")
+
+    def test_the_signer_uses_the_release_secret_and_the_workflows_signer(self) -> None:
+        step = self.signer_step()
+        env = step.get("env") or {}
+        self.assertEqual(
+            env.get("TAURI_SIGNING_PRIVATE_KEY"),
+            f"${{{{ secrets.{RELEASE_SIGNING_SECRETS[0]} }}}}",
+        )
+        self.assertEqual(
+            env.get("TAURI_SIGNING_PRIVATE_KEY_PASSWORD"),
+            f"${{{{ secrets.{RELEASE_SIGNING_SECRETS[1]} }}}}",
+        )
+        run = step["run"]
+        # `tauri signer sign` reads the passphrase-protected key itself; the signing material is
+        # never handed to another process or written into the checkout.
+        self.assertIn("node_modules/.bin/tauri signer sign", run)
+        self.assertIn("--app-version", run, "the signature is bound to the release version")
+        for artifact in ('*.rpm', '*.deb', "PKGBUILD"):
+            self.assertIn(artifact, run, f"every released artifact format is signed ({artifact})")
+        self.assertNotIn("src/modules/identity", run)
+
+    def test_the_signer_refuses_by_name_when_the_key_is_absent(self) -> None:
+        run = self.signer_step()["run"]
+        self.assertIn("signing-key-missing", run)
+        self.assertIn("signing-passphrase-missing", run)
+        self.assertIn("exit 3", run, "a missing key fails the job instead of skipping signing")
+        self.assertIn("nothing is published", run)
+        # The refusal happens before any signing call, so a missing secret cannot leave a
+        # partially signed set behind for a later step to announce.
+        self.assertLess(run.index("signing-key-missing"),
+                        run.index("tauri signer sign"))
+
+    def test_no_secret_is_echoed_and_only_public_details_are_logged(self) -> None:
+        run = self.signer_step()["run"]
+        self.assertNotIn("set -x", run)
+        for leak in ("echo $TAURI_SIGNING_PRIVATE_KEY",
+                     'echo "$TAURI_SIGNING_PRIVATE_KEY"',
+                     "env | ", "printenv"):
+            self.assertNotIn(leak, run)
+        self.assertIn("--show-key-id", run, "the public key id is the one signing detail logged")
+        self.assertIn("sha256sum", run, "artifact hashes are logged")
+        self.assertIn("$GITHUB_STEP_SUMMARY", run)
+
+    def test_no_committed_file_holds_a_minisign_secret_key(self) -> None:
+        # A secret in the tree is unrecoverable once pushed. The provisioning script writes keys
+        # outside the repository; this guard is the one that would catch a mistake.
+        listing = subprocess.run(
+            ["git", "-C", str(REPO), "ls-files"], capture_output=True, text=True, check=True
+        ).stdout.splitlines()
+        # Assembled from parts so this guard file does not itself trip the scan.
+        markers = (
+            "untrusted comment: " + "minisign secret key",
+            "trusted comment: " + "minisign secret key",
+        )
+        for relative in listing:
+            path = REPO / relative
+            if not path.is_file() or path.stat().st_size > 4 * 1024 * 1024:
+                continue
+            body = path.read_text(errors="ignore")
+            for marker in markers:
+                self.assertNotIn(marker, body, f"{relative} appears to contain a signing secret")
+
+    def test_the_manifest_is_produced_by_the_signer_not_by_hand(self) -> None:
+        run = self.steps()[self.step_index("scripts/release_signing.py")]["run"]
+        self.assertIn("--candidate linux-packages", run)
+        self.assertIn("--from-signatures", run)
+        self.assertIn("--commit", run, "the manifest is bound to the triggering commit")
+        self.assertIn("steps.target.outputs.commit", run)
+        self.assertIn("steps.target.outputs.tag", run)
+
+    def test_the_signed_set_still_leaves_only_as_a_workflow_artifact(self) -> None:
+        self.assertIn("name: linux-x86_64-packages", self.body)
+        self.assertIn("linux-packages/", self.body)
+        for forbidden in PUBLICATION_ACTIONS:
+            self.assertNotIn(forbidden, self.code)
 
 
 class DocumentationPlatformClaimTest(unittest.TestCase):
