@@ -32,7 +32,7 @@
 
 ---
 
-Terax is a lightweight open-source terminal-first development workspace built on Tauri 2 + Rust and React 19. A native PTY backend with a WebGL renderer, tabs, splits and a block terminal for launching independently installed coding agents (Claude Code, Codex, Gemini CLI, OpenCode, Grok), plus a code editor, file explorer, source control with a git graph, rendered Markdown and a web preview pane. About 7-8 MB on disk. No telemetry. No account.
+Codr (an unofficial Linux fork of Terax) is a lightweight open-source terminal-first development workspace built on Tauri 2 + Rust and React 19. A native PTY backend with a WebGL renderer, tabs, splits and a block terminal for launching independently installed coding agents (Claude Code, Codex, Gemini CLI, OpenCode, Grok), plus a code editor, file explorer, source control with a git graph, rendered Markdown and a web preview pane. About 7-8 MB on disk. No telemetry. No account.
 
 > [!NOTE]
 > Over the past few months, most of my development time went into building [Zephium](https://zephium.app), a new browser-native work environment rebuilt for humans and agents.
@@ -178,4 +178,4 @@ Issues and PRs are welcome! Feel free to open issues, suggest features, or submi
 
 ## License
 
-Terax is licensed under the Apache-2.0 License. For more information on our dependencies, see [Apache License 2.0](LICENSE).
+Codr is licensed under the Apache-2.0 License (derived from upstream Terax). For more information on our dependencies, see [Apache License 2.0](LICENSE).

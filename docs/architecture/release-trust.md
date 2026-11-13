@@ -51,8 +51,10 @@ around a build:
 5. **Upload**: the signed set leaves as a run-scoped workflow artifact.
 
 There is no publication code path in this repository: no release object, no upload-to-release
-action, no write permission while the contract is provisional. Creating the draft release and a
-human publishing it belong to the release ticket (#45); the gate only decides.
+action, and no write permission on PRs; release signing secrets (`TERAX_RELEASE_SIGNING_KEY` and
+`TERAX_RELEASE_SIGNING_KEY_PASSPHRASE`) are read only during the signer step once configured.
+Creating the draft release and a human publishing it belong to the release ticket (#45); the gate
+only decides.
 
 ## The signed set and the manifest
 
@@ -66,7 +68,7 @@ human publishing it belong to the release ticket (#45); the gate only decides.
   "pub_date": "2026-11-13T00:00:00Z",
   "tag": "v1.0.0",
   "commit": "<40-hex triggering commit>",
-  "signing": { "keyId": "D0E48EC629BB2484", "fingerprint": "sha256:…", "algorithm": "minisign" },
+  "signing": { "keyId": "94097B75DB498B21", "fingerprint": "sha256:a02fd6ac492d1f070919bde106c20c0a376fbcdb6db8bc4c17ca0efd68197487", "algorithm": "minisign" },
   "platforms": {
     "linux-x86_64":      { "url": "…/…_amd64.deb", "signature": "…", "size": 123, "sha256": "…", "format": "deb" },
     "linux-x86_64-rpm":  { "url": "…/….x86_64.rpm", "signature": "…", "size": 456, "sha256": "…", "format": "rpm" },
@@ -169,13 +171,14 @@ version, every announced target points at a staged file, its sha256 and size mat
 committed one, the signed version matches the announced one, and the published `.minisig` is the same
 signature as the manifest entry.
 
-What the application verifies at discovery time (`src/modules/updater/releaseSignature.ts`):
-structure, version binding, provisioned trust root presence, and key ID match against
-`releaseContract.json`. Unprovisioned trust roots, malformed envelopes, version mismatches, or foreign
-key IDs fail closed (`check-failed: signature`) without offering an update. Install-time
-cryptographic verification does not exist in-app because the app never downloads or installs
-packages; inspect downloaded artifacts against `.minisig` files before running `dnf`, `apt`, or
-`makepkg`.
+What the application verifies at discovery time (`src/modules/updater/releaseSignature.ts` and
+`src/modules/updater/minisign.ts`): structure, version binding, provisioned trust root presence,
+key ID match, and the Ed25519 global signature over `(signature || trusted comment)` against
+`releaseContract.json`. Unprovisioned trust roots, malformed envelopes, version mismatches,
+foreign key IDs, or forged/tampered global signatures fail closed (`check-failed: signature`)
+without offering an update. Install-time payload verification does not exist in-app because the app
+never downloads or installs packages; inspect downloaded artifacts against `.minisig` files before
+running `dnf`, `apt`, or `makepkg`.
 
 ## Offline recovery
 
@@ -232,16 +235,20 @@ reports a signature failure, and the answer is a new signed release, not a bypas
   records.
 - **The Arch recipe is built.** `PKGBUILD` is signed and announced as the Arch-facing artifact, but it
   is authored, not built: no `makepkg` run is claimed, here or in `linux-packages.md`.
-- **Discovery-time authenticity.** The application's check is structural until an install path
-  exists; only the artifact bytes carry a cryptographic claim.
-- **A published release.** This change adds signing and verification. It publishes nothing, and no
-  hosted run of the release workflow exists.
+- **Discovery-time vs payload authenticity.** Discovery verifies the Ed25519 global signature over
+  the artifact signature block and signed `version:` trusted comment against `trust.publicKey`,
+  failing closed on any tamper; full payload BLAKE2b/Ed25519 verification happens in
+  `scripts/release_gate.py` (and manually via `minisign -Vm`) because discovery never downloads
+  installer bytes.
+- **A published release.** Ticket #40 settled identity (`Codr`, `kevsmir02/terax-ai`) and
+  committed the public trust root (`94097B75DB498B21`). It publishes nothing yet, GitHub Actions
+  signing secrets still require maintainer upload before a release tag can run, and no hosted run
+  of the release workflow exists yet (#45).
 
-## The refusal that stays until the key exists
+## Gate refusals that stay active
 
-`releaseContract.json` is provisional, so `scripts/release_gate.py` refuses with
-`publication-provisional`, `signing-trust-missing` and `signing-input-missing` before a build, and,
-over a staged set, with `artifact-signature-unverifiable` because no trust root is provisioned.
-Flipping the contract is the deliberate, reviewed change that lifts the first refusal; the gate still
-requires a provisioned public key, a present signing input and signatures that verify. Until then the
-tagged-release gate refuses, and that refusal is the correct behaviour rather than a missing feature.
+`releaseContract.json` now has `provisional: false`, `trust.provisioned: true`, and the committed
+public key, so `publication-provisional` and `signing-trust-missing` are lifted. `scripts/release_gate.py`
+still refuses closed on `signing-input-missing` (until the release secrets are injected), any
+missing/stale CI evidence, any checksum mismatch, or any signature that fails verification against
+`trust.publicKey`.

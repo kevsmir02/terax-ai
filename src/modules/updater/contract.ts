@@ -1,4 +1,5 @@
 import rawContract from "./releaseContract.json";
+import { parseMinisignPublicKey } from "./minisign";
 
 /**
  * The fork-owned release contract.
@@ -41,55 +42,6 @@ export interface UpdaterContract {
 export const releaseContract = rawContract as UpdaterContract;
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
-
-export function decodeBase64(value: string): Uint8Array | null {
-  try {
-    const binary = atob(value.trim());
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    return bytes;
-  } catch {
-    return null;
-  }
-}
-
-export function formatMinisignKeyId(keyIdBytes: Uint8Array): string {
-  let hex = "";
-  for (let i = keyIdBytes.length - 1; i >= 0; i--) {
-    hex += (keyIdBytes[i] ?? 0).toString(16).toUpperCase().padStart(2, "0");
-  }
-  return hex;
-}
-
-export function parseMinisignPublicKey(
-  value: string,
-): { keyIdHex: string; keyIdBytes: Uint8Array } | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  let text = trimmed;
-  if (!trimmed.startsWith("untrusted comment: ")) {
-    const raw = decodeBase64(trimmed);
-    if (!raw) return null;
-    text = new TextDecoder().decode(raw);
-  }
-  const lines = text
-    .split("\n")
-    .map((line) => line.replace(/\r$/, ""))
-    .filter((line) => line !== "");
-  if (lines.length < 2 || !(lines[0] ?? "").startsWith("untrusted comment: ")) {
-    return null;
-  }
-  const keyBytes = decodeBase64(lines[1] ?? "");
-  if (keyBytes?.length !== 42) return null;
-  if (String.fromCharCode(keyBytes[0] ?? 0, keyBytes[1] ?? 0) !== "Ed") {
-    return null;
-  }
-  const keyIdBytes = keyBytes.slice(2, 10);
-  return {
-    keyIdHex: formatMinisignKeyId(keyIdBytes),
-    keyIdBytes,
-  };
-}
 
 function parseUrl(value: string): URL | null {
   try {
@@ -180,13 +132,23 @@ export function contractProblems(contract: UpdaterContract): string[] {
         problems.push(
           "provisioned trust publicKey is not a valid minisign key",
         );
-      } else if (
-        contract.trust.keyId &&
-        contract.trust.keyId.toUpperCase() !== parsedKey.keyIdHex
-      ) {
-        problems.push(
-          `trust keyId ${contract.trust.keyId} does not match publicKey (${parsedKey.keyIdHex})`,
-        );
+      } else {
+        if (
+          contract.trust.keyId &&
+          contract.trust.keyId.toUpperCase() !== parsedKey.keyIdHex
+        ) {
+          problems.push(
+            `trust keyId ${contract.trust.keyId} does not match publicKey (${parsedKey.keyIdHex})`,
+          );
+        }
+        if (
+          contract.trust.fingerprint &&
+          contract.trust.fingerprint.toLowerCase() !== parsedKey.fingerprint
+        ) {
+          problems.push(
+            `trust fingerprint ${contract.trust.fingerprint} does not match publicKey (${parsedKey.fingerprint})`,
+          );
+        }
       }
     }
   }

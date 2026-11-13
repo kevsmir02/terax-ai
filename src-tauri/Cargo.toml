@@ -2,7 +2,7 @@
 name = "terax"
 version = "1.0.0"
 description = "Codr - Linux terminal workspace with editor, source control and previews (unofficial fork of Terax)"
-authors = ["crynta"]
+authors = ["kevsmir02"]
 license = "Apache-2.0"
 edition = "2021"
 default-run = "terax"

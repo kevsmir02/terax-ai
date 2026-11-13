@@ -1,25 +1,21 @@
+import { isLoopbackEndpoint, type UpdaterContract } from "./contract";
 import {
-  decodeBase64,
   formatMinisignKeyId,
-  isLoopbackEndpoint,
+  inspectSignatureEnvelope,
   parseMinisignPublicKey,
-  type UpdaterContract,
-} from "./contract";
-import type {
-  AvailableRelease,
-  ReleaseArtifact,
-  ReleaseTrust,
-} from "./releaseManifest";
+  verifyMinisignGlobalSignature,
+} from "./minisign";
+import type { AvailableRelease, ReleaseTrust } from "./releaseManifest";
 
 /**
  * Artifact trust at *discovery* time.
  *
- * A minisign signature covers the artifact bytes, so a check that never downloads the
- * package cannot cryptographically verify the installer payload; full payload
- * verification stays at release gating and package verification time. Discovery fails
- * closed on malformed signature envelopes, version mismatches in the signed trusted
- * comment, unprovisioned trust roots, or signatures whose key ID does not match the
- * provisioned trust root.
+ * A minisign signature covers the installer bytes, so a check that never downloads the
+ * package cannot cryptographically verify the installer payload; full payload verification
+ * stays at release gating and offline package verification (`minisign -Vm`). Discovery still
+ * verifies the minisign envelope, key ID, signed `version:` trusted comment, and Ed25519
+ * global signature over `(signature || trusted comment)` against the provisioned trust root,
+ * failing closed on any mismatch or unprovisioned key.
  */
 
 type VerifyResult =
@@ -29,82 +25,7 @@ type VerifyResult =
 export type ReleaseVerifier = (input: {
   release: Omit<AvailableRelease, "trust">;
   contract: UpdaterContract;
-}) => VerifyResult;
-
-type EnvelopeResult =
-  | { ok: true; keyIdBytes: Uint8Array; hasGlobalSignature: boolean }
-  | { ok: false; detail: string };
-
-/** Structural inspection of a minisign signature envelope. */
-function inspectSignatureEnvelope(
-  artifact: ReleaseArtifact,
-  version: string,
-): EnvelopeResult {
-  const lines = artifact.signature
-    .split("\n")
-    .map((line) => line.replace(/\r$/, ""))
-    .filter((line, index, all) => index < all.length - 1 || line !== "");
-
-  if (lines.length < 3) {
-    return { ok: false, detail: "signature envelope is incomplete" };
-  }
-  if (!(lines[0] ?? "").startsWith("untrusted comment: ")) {
-    return { ok: false, detail: "signature has no untrusted comment line" };
-  }
-
-  const signatureBytes = decodeBase64(lines[1] ?? "");
-  if (signatureBytes?.length !== 74) {
-    return {
-      ok: false,
-      detail: "signature block is not a 74-byte minisign signature",
-    };
-  }
-  const algorithm = String.fromCharCode(
-    signatureBytes[0] ?? 0,
-    signatureBytes[1] ?? 0,
-  );
-  if (algorithm !== "Ed" && algorithm !== "ED") {
-    return {
-      ok: false,
-      detail: `unknown signature algorithm ${JSON.stringify(algorithm)}`,
-    };
-  }
-
-  const trusted = lines[2] ?? "";
-  if (
-    !trusted.startsWith("trusted comment: ") ||
-    trusted.trim() === "trusted comment:"
-  ) {
-    return { ok: false, detail: "signature has no trusted comment" };
-  }
-
-  const globalSignature = lines[3];
-  let hasGlobalSignature = false;
-  if (globalSignature !== undefined && globalSignature !== "") {
-    const bytes = decodeBase64(globalSignature);
-    if (bytes?.length !== 64) {
-      return { ok: false, detail: "global signature is not 64 bytes" };
-    }
-    hasGlobalSignature = true;
-  }
-
-  // Tauri records the signed version in the trusted comment. When present, it must be the
-  // version being announced, otherwise a crafted manifest could pair a newer version with
-  // an older signed artifact.
-  const signedVersion = /(?:^|\s)version:(\S+)/.exec(trusted)?.[1];
-  if (signedVersion !== undefined && signedVersion !== version) {
-    return {
-      ok: false,
-      detail: `signed version ${signedVersion} does not match manifest version ${version}`,
-    };
-  }
-
-  return {
-    ok: true,
-    keyIdBytes: signatureBytes.slice(2, 10),
-    hasGlobalSignature,
-  };
-}
+}) => VerifyResult | Promise<VerifyResult>;
 
 function keyIdsEqual(left: Uint8Array, right: Uint8Array): boolean {
   if (left.length !== right.length) return false;
@@ -114,13 +35,14 @@ function keyIdsEqual(left: Uint8Array, right: Uint8Array): boolean {
   return true;
 }
 
-/** Fails closed unless trust is provisioned and the signature key ID matches it. */
-function failClosedVerifier({
+/** Fails closed unless trust is provisioned and the Ed25519 global signature verifies. */
+async function failClosedVerifier({
   release,
   contract,
-}: Parameters<ReleaseVerifier>[0]): VerifyResult {
-  const envelope = inspectSignatureEnvelope(release.artifact, release.version);
-  if (!envelope.ok) return envelope;
+}: Parameters<ReleaseVerifier>[0]): Promise<VerifyResult> {
+  const inspected = inspectSignatureEnvelope(release.artifact, release.version);
+  if (!inspected.ok) return inspected;
+  const { envelope } = inspected;
   if (!contract.trust.provisioned || contract.trust.publicKey === "") {
     return {
       ok: false,
@@ -134,7 +56,7 @@ function failClosedVerifier({
       detail: "provisioned trust root public key is invalid",
     };
   }
-  if (!envelope.hasGlobalSignature) {
+  if (!envelope.globalSignatureBytes) {
     return {
       ok: false,
       detail: "signature envelope is missing its global signature line",
@@ -144,6 +66,14 @@ function failClosedVerifier({
     return {
       ok: false,
       detail: `signature key id ${formatMinisignKeyId(envelope.keyIdBytes)} does not match provisioned trust root ${publicKey.keyIdHex}`,
+    };
+  }
+  const verified = await verifyMinisignGlobalSignature(publicKey, envelope);
+  if (!verified) {
+    return {
+      ok: false,
+      detail:
+        "signature failed cryptographic verification against provisioned trust root",
     };
   }
   return { ok: true, trust: "verified" };

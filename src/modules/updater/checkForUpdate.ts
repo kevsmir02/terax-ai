@@ -273,7 +273,7 @@ export async function checkForUpdate({
       };
     }
 
-    const verified = verify({ release: parsed.release, contract });
+    const verified = await verify({ release: parsed.release, contract });
     if (!verified.ok) {
       return fail(
         { reason: "signature", detail: verified.detail, retryable: false },

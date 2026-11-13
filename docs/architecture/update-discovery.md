@@ -93,14 +93,15 @@ It settles into one of three outcomes:
 | `available` | A newer stable release exists, its envelope passed inspection and an explicit verifier accepted it. |
 | `failed` | Check failed: `offline`, `timeout`, `rate-limited`, `server-error`, `bad-payload`, `unsupported-channel`, `unsupported-target`, `signature`, `no-endpoint`, `misconfigured`. |
 
-Artifact trust at discovery time checks structure and key identity: a valid minisign envelope,
-a trusted comment that names the announced version, a provisioned trust root, and an 8-byte key ID
-matching `trust.publicKey`. Because discovery never downloads the artifact bytes, full Ed25519/
-BLAKE2b verification over the package payload happens in `scripts/release_gate.py` before
-publication (and offline via `minisign -Vm` before manual installation). Production discovery fails
-closed (`check-failed: signature`) on unprovisioned keys, malformed envelopes, version mismatches,
-or mismatched key IDs. A development build against loopback fixtures labels releases
-`fixture-unverified`, and the UI says so.
+Artifact trust at discovery time checks structure, key identity, and the Ed25519 global
+signature: a valid minisign envelope, a trusted comment that names the announced version, a
+provisioned trust root, an 8-byte key ID matching `trust.publicKey`, and a valid Ed25519 global
+signature over `(signature || trusted comment)`. Because discovery never downloads the artifact bytes,
+full Ed25519/BLAKE2b verification over the package payload happens in `scripts/release_gate.py`
+before publication (and offline via `minisign -Vm` before manual installation). Production discovery
+fails closed (`check-failed: signature`) on unprovisioned keys, malformed envelopes, version
+mismatches, mismatched key IDs, or forged/tampered global signatures. A development build against
+loopback fixtures labels releases `fixture-unverified`, and the UI says so.
 
 Release *production*, unlike discovery, does verify cryptographically: the release gate checks every
 announced artifact's signature against the committed public key before a release could be published

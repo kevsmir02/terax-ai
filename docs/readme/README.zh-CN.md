@@ -128,7 +128,7 @@ Terax 是一个轻量、开源、终端优先的 AI 原生开发环境（ADE）�
 
 Install the RPM (`sudo dnf install ./codr-*.x86_64.rpm`) or the DEB (`sudo apt
 install ./codr_*_amd64.deb`) from the
-[Releases](https://github.com/crynta/terax-ai/releases/latest) page with your package manager.
+[Releases](https://github.com/kevsmir02/terax-ai/releases/latest) page with your package manager.
 Fedora 44 KDE Plasma on Wayland is the primary validation target; Debian 13 still needs an
 actual graphical WebKitGTK session, and package install/upgrade validation is ticket #44.
 `packaging/arch/PKGBUILD` carries an Arch recipe that is authored but **not built**, so it is

@@ -73,6 +73,14 @@ describe("fork release contract", () => {
     expect(
       contractProblems({
         ...releaseContract,
+        endpoints: [
+          "http://github.com/kevsmir02/terax-ai/releases/latest/download/latest.json",
+        ],
+      }),
+    ).not.toEqual([]);
+    expect(
+      contractProblems({
+        ...releaseContract,
         trust: { ...releaseContract.trust, provisioned: false, publicKey: "" },
       }),
     ).not.toEqual([]);
@@ -80,6 +88,22 @@ describe("fork release contract", () => {
       contractProblems({
         ...releaseContract,
         trust: { ...releaseContract.trust, publicKey: "not-a-valid-key" },
+      }),
+    ).not.toEqual([]);
+    expect(
+      contractProblems({
+        ...releaseContract,
+        trust: { ...releaseContract.trust, keyId: "0000000000000000" },
+      }),
+    ).not.toEqual([]);
+    expect(
+      contractProblems({
+        ...releaseContract,
+        trust: {
+          ...releaseContract.trust,
+          fingerprint:
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        },
       }),
     ).not.toEqual([]);
   });

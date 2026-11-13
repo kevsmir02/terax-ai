@@ -122,21 +122,21 @@ NOT_VALIDATED = (
     "Debian 13 graphical WebKitGTK behaviour",
     "Arch packaging: the PKGBUILD is authored, not built, and no makepkg run exists",
     "dependency resolution by dnf/apt/pacman (no package transaction was executed)",
-    "signature/trust provisioning and update-artifact verification",
-    "updater discovery, download approval and installation (issue #37)",
+    "signed package verification by dnf/apt/pacman (artifacts use minisign .minisig, not DNF/APT repo signatures)",
+    "updater discovery, download approval and installation against a published release",
     "coexistence with an installed upstream Terax build in one profile",
 )
 
 KNOWN_GAPS = (
-    "Update discovery is issue #37: this candidate inherits the fork-owned release contract "
-    "(non-live `.invalid` endpoint, no provisioned trust root), so it cannot query or install "
-    "an upstream release. Until #39/#40 provision the real endpoint and key, no update can be "
-    "verified, and candidates must not be published.",
-    "The deb Maintainer field is derived by Tauri from the Cargo authors (upstream credit), "
-    "not from the candidate vendor. Final maintainer/branding identity is tickets #39/#40.",
+    "Update discovery points at the settled kevsmir02/terax-ai release feed with provisioned "
+    "minisign trust root 94097B75DB498B21; candidate builds still keep createUpdaterArtifacts=false "
+    "and wait for post-build minisign signing, GitHub Actions secret provisioning, and the first "
+    "published release (issue #45).",
+    "Managed DNF/APT repository signing remains deferred: packages carry .minisig signatures "
+    "rather than native RPM/APT repository metadata signatures.",
     "The CLI launcher command exposed inside terminal sessions is still `terax` (documented "
     "deferral in docs/architecture/namespace-isolation.md); only the installed sidecar path "
-    "moved to the candidate name.",
+    "moved to the settled name `codr-cli`.",
 )
 
 

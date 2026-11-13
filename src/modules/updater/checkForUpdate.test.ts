@@ -304,7 +304,7 @@ describe("checkForUpdate", () => {
     expect(outcome.failure.detail).toMatch(/key id/i);
   });
 
-  it("verifies key id ownership when a release matches the provisioned trust root", async () => {
+  it("refuses a release when the signature has no global signature or a forged signature", async () => {
     const parsed = JSON.parse(fixture("stable.json")) as {
       version: string;
       channel: string;
@@ -319,34 +319,134 @@ describe("checkForUpdate", () => {
     const sigBytes = new Uint8Array(74);
     sigBytes.set([0x45, 0x64, 0x21, 0x8b, 0x49, 0xdb, 0x75, 0x7b, 0x09, 0x94]);
     const sigB64 = Buffer.from(sigBytes).toString("base64");
-    const globalB64 = Buffer.from(new Uint8Array(64)).toString("base64");
-    const matchingManifest = {
+    const forgedGlobalB64 = Buffer.from(new Uint8Array(64)).toString("base64");
+
+    const makeManifest = (signatureLines: string[]) => ({
       ...parsed,
       platforms: {
         "linux-x86_64": {
           ...parsed.platforms["linux-x86_64"],
-          signature: [
-            "untrusted comment: signature from codr release key",
-            sigB64,
-            "trusted comment: timestamp:1759233600\tfile:codr_0.10.0_amd64.deb\tversion:0.10.0",
-            globalB64,
-          ].join("\n"),
+          signature: signatureLines.join("\n"),
         },
       },
+    });
+
+    const missingGlobal = makeManifest([
+      "untrusted comment: signature from codr release key",
+      sigB64,
+      "trusted comment: timestamp:1759233600\tfile:codr_0.10.0_amd64.deb\tversion:0.10.0",
+    ]);
+    const forgedGlobal = makeManifest([
+      "untrusted comment: signature from codr release key",
+      sigB64,
+      "trusted comment: timestamp:1759233600\tfile:codr_0.10.0_amd64.deb\tversion:0.10.0",
+      forgedGlobalB64,
+    ]);
+
+    for (const candidateManifest of [missingGlobal, forgedGlobal]) {
+      const { fetchImpl } = recordingFetch(() =>
+        jsonResponse(JSON.stringify(candidateManifest)),
+      );
+      const outcome = await checkForUpdate({
+        ...baseOptions,
+        fetchImpl,
+        sleep: noSleep,
+        verify: productionTrust,
+      });
+      expect(outcome.kind).toBe("failed");
+      if (outcome.kind !== "failed") return;
+      expect(outcome.failure.reason).toBe("signature");
+    }
+
+    const badKeyContract = {
+      ...contract,
+      trust: { ...contract.trust, provisioned: true, publicKey: "not-a-key" },
     };
     const { fetchImpl } = recordingFetch(() =>
-      jsonResponse(JSON.stringify(matchingManifest)),
+      jsonResponse(JSON.stringify(forgedGlobal)),
     );
-    const outcome = await checkForUpdate({
+    const badKeyOutcome = await checkForUpdate({
       ...baseOptions,
+      contract: badKeyContract,
       fetchImpl,
       sleep: noSleep,
       verify: productionTrust,
     });
+    expect(badKeyOutcome.kind).toBe("failed");
+    if (badKeyOutcome.kind !== "failed") return;
+    expect(badKeyOutcome.failure.reason).toBe("signature");
+  });
 
-    expect(outcome.kind).toBe("available");
-    if (outcome.kind !== "available") return;
-    expect(outcome.release.trust).toBe("verified");
+  it("cryptographically verifies Ed25519 global signatures and rejects tampering", async () => {
+    // Generated via scripts/minisign.py with an ephemeral test seed (key ID 0807060504030201).
+    const testContract = {
+      ...contract,
+      trust: {
+        ...contract.trust,
+        provisioned: true,
+        keyId: "0807060504030201",
+        fingerprint:
+          "sha256:4aae5adfaec533abc5bb99ae90c148c5bea0d170508ac87e72d980de1b1b21c7",
+        publicKey:
+          "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDA4MDcwNjA1MDQwMzAyMDEKUldRQkFnTUVCUVlIQ0VDOGZzc0cybmdOcy9IY1JLYXQrU3huaGxmQmhpQTVmK3ZUTFpLeVJJdHUK",
+      },
+    };
+    const validSignature =
+      "untrusted comment: signature from codr test key\n" +
+      "RUQBAgMEBQYHCJGL0TEpFZDylpT2aCLltLfk3+qxEneOawWXqJlacplklTaquoYjx45Tajrehpmu+n26l98jwd+U7hfhmHnjSgM=\n" +
+      "trusted comment: timestamp:1759233600\tfile:codr_0.10.0_amd64.deb\tversion:0.10.0\n" +
+      "vIgaGyzd7VVHAUjubYtGk+c1KZrt21JcBTNv94ApEyAOve6YneCRHOOrhsMTTOHuf5i+lB/14grJJftQmEtVDw==\n";
+    const parsed = JSON.parse(fixture("stable.json")) as {
+      version: string;
+      channel: string;
+      notes: string;
+      pub_date: string;
+      platforms: Record<
+        string,
+        { url: string; signature: string; size: number }
+      >;
+    };
+    const makeSignedManifest = (signature: string) => ({
+      ...parsed,
+      platforms: {
+        "linux-x86_64": {
+          ...parsed.platforms["linux-x86_64"],
+          signature,
+        },
+      },
+    });
+
+    const { fetchImpl } = recordingFetch(() =>
+      jsonResponse(JSON.stringify(makeSignedManifest(validSignature))),
+    );
+    const verifiedOutcome = await checkForUpdate({
+      ...baseOptions,
+      contract: testContract,
+      fetchImpl,
+      sleep: noSleep,
+      verify: productionTrust,
+    });
+    expect(verifiedOutcome.kind).toBe("available");
+    if (verifiedOutcome.kind !== "available") return;
+    expect(verifiedOutcome.release.trust).toBe("verified");
+
+    const tamperedComment = validSignature.replace(
+      "timestamp:1759233600",
+      "timestamp:1759233601",
+    );
+    const { fetchImpl: tamperedFetch } = recordingFetch(() =>
+      jsonResponse(JSON.stringify(makeSignedManifest(tamperedComment))),
+    );
+    const tamperedOutcome = await checkForUpdate({
+      ...baseOptions,
+      contract: testContract,
+      fetchImpl: tamperedFetch,
+      sleep: noSleep,
+      verify: productionTrust,
+    });
+    expect(tamperedOutcome.kind).toBe("failed");
+    if (tamperedOutcome.kind !== "failed") return;
+    expect(tamperedOutcome.failure.reason).toBe("signature");
   });
 
   it("refuses a prerelease payload on the stable channel", async () => {
