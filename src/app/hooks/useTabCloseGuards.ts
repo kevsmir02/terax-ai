@@ -10,6 +10,7 @@ import {
   saveAllForClose,
   saveThenClose,
 } from "@/app/hooks/tabCloseGuards";
+import type { RecoveryCloseIntent } from "@/modules/editor";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import {
   type CloseTabsPlan,
@@ -28,9 +29,18 @@ function confirmRunningTerminal(): boolean {
 type Params = {
   tabs: Tab[];
   activeId: number;
-  disposeTab: (id: number) => void;
+  /** Closes one tab, resolving its recovery draft as `intent` says. */
+  disposeTab: (id: number, intent: RecoveryCloseIntent) => void;
   disposeDeletedTabs: (ids: number[]) => void;
-  disposeTabs: (anchorId: number, plan: CloseTabsPlan) => void;
+  /**
+   * Closes a planned set. `discardIds` is required: a bulk close must state
+   * which buffers the confirmation resolved by discarding.
+   */
+  disposeTabs: (
+    anchorId: number,
+    plan: CloseTabsPlan,
+    discardIds: readonly number[],
+  ) => void;
   /** Resolves true only when the buffer is fully persisted. */
   saveTab: (id: number) => Promise<boolean>;
   isTabDirty: (id: number) => boolean;
@@ -97,7 +107,7 @@ export function useTabCloseGuards({
           return;
         }
       }
-      disposeTab(id);
+      disposeTab(id, "keep-draft");
     },
     [tabs, disposeTab],
   );
@@ -152,7 +162,7 @@ export function useTabCloseGuards({
         setPendingCloseMany({ kind, anchorId, plan, ...hazards });
         return;
       }
-      disposeTabs(anchorId, withCurrentActive(plan));
+      disposeTabs(anchorId, withCurrentActive(plan), []);
     },
     [disposeTabs, evaluateCloseMany, planCloseMany, withCurrentActive],
   );
@@ -183,9 +193,12 @@ export function useTabCloseGuards({
       setCloseManyConfirming(false);
       return;
     }
+    // "Close anyway" is an explicit discard for the buffers it named; a
+    // buffer that became clean meanwhile simply keeps whatever it has.
     disposeTabs(
       pendingCloseMany.anchorId,
       withCurrentActive(pendingCloseMany.plan),
+      hazards.dirtyIds,
     );
     setPendingCloseMany(null);
     setCloseManyConfirming(false);
@@ -220,6 +233,7 @@ export function useTabCloseGuards({
       disposeTabs(
         pendingCloseMany.anchorId,
         withCurrentActive(pendingCloseMany.plan),
+        [],
       );
       setPendingCloseMany(null);
     } catch {
@@ -240,7 +254,7 @@ export function useTabCloseGuards({
 
   const confirmClose = useCallback(() => {
     if (pendingCloseTab !== null) {
-      disposeTab(pendingCloseTab);
+      disposeTab(pendingCloseTab, "discard");
       setPendingCloseTab(null);
     }
     setCloseSaveState("idle");
@@ -266,7 +280,7 @@ export function useTabCloseGuards({
           save: (tabId) => saveTabRef.current(tabId),
           isDirty: (tabId) => isTabDirtyRef.current(tabId),
           exists: (tabId) => tabsRef.current.some((tab) => tab.id === tabId),
-          close: (tabId) => disposeTab(tabId),
+          close: (tabId) => disposeTab(tabId, "keep-draft"),
         },
         id,
       );
@@ -282,7 +296,8 @@ export function useTabCloseGuards({
   }, [pendingCloseTab, disposeTab]);
 
   const confirmTerminalClose = useCallback(() => {
-    if (pendingTerminalCloseTab !== null) disposeTab(pendingTerminalCloseTab);
+    if (pendingTerminalCloseTab !== null)
+      disposeTab(pendingTerminalCloseTab, "keep-draft");
     setPendingTerminalCloseTab(null);
   }, [pendingTerminalCloseTab, disposeTab]);
 

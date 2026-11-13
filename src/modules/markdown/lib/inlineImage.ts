@@ -16,6 +16,11 @@
 //
 // Everything here is pure data and pure functions, so the refusal-before-mount
 // guarantee is testable in a plain Node test (no browser, no DOM).
+//
+// One failure needs the file itself: a local image above the asset-delivery
+// ceiling is answered with 413 by the native handler, which an `<img>` can only
+// observe as a load error. `fileBytes` (measured after the failure) lets the
+// state machine name that limit instead of blaming the image's bytes.
 
 import {
   imageFormatForEmbeddedPath,
@@ -24,8 +29,10 @@ import {
 import {
   imageBudgetDecision,
   type LimitAlternative,
+  mibLabel,
   type ViewerAdmission,
 } from "@/modules/preview/lib/limits";
+import { ASSET_DELIVERY } from "@/modules/preview/lib/assetDelivery";
 import {
   type ImageProbeOutcome,
   imageViewerState,
@@ -62,6 +69,13 @@ export type MarkdownImageInput = {
   /** The table released this image to make room for another viewer. */
   readonly evicted: boolean;
   readonly decodeFailed: boolean;
+  /**
+   * Size of a local file when it is known, measured only after a failed load
+   * (a remote or `data:` reference has none). Above the asset-delivery ceiling
+   * the native handler refused the file, so the load error is a limit of ours
+   * and not a defect in the image.
+   */
+  readonly fileBytes?: number | null;
 };
 
 export type MarkdownImageState =
@@ -112,6 +126,14 @@ export type MarkdownImageState =
       retryable: boolean;
     }
   | {
+      /** A local file above the asset-delivery ceiling: refused before decode. */
+      kind: "file-too-large";
+      bytes: number;
+      limitBytes: number;
+      reason: string;
+      alternatives: readonly LimitAlternative[];
+    }
+  | {
       kind: "ready";
       width: number | null;
       height: number | null;
@@ -136,6 +158,14 @@ export function markdownImageState(
  */
 function fileImageState(input: MarkdownImageInput): MarkdownImageState {
   if (input.source.kind !== "file") return measuredImageState(input);
+  // A file above the delivery ceiling is answered with 413 by the native asset
+  // handler, and an `<img>` cannot read that body: all it reports is a load
+  // error. Explaining that as a decode failure would blame the file for a
+  // limit of ours, so the size decides the explanation.
+  if (input.decodeFailed) {
+    const refusal = deliveryRefusal(input.fileBytes);
+    if (refusal !== null) return refusal;
+  }
   const state = imageViewerState({
     format: input.source.format,
     probe: input.probe,
@@ -148,6 +178,44 @@ function fileImageState(input: MarkdownImageInput): MarkdownImageState {
   // instead of asserting so a future change cannot turn it into a blank pane.
   if (state.kind === "hidden") return { kind: "deferred" };
   return state;
+}
+
+/**
+ * The refusal a failed load of a too-large local file deserves, or null when
+ * the size is unknown or inside the ceiling (a genuine decode failure).
+ *
+ * The ceiling is read from `ASSET_DELIVERY`, the TypeScript mirror of the
+ * native handler's limits, so the wording cannot drift from what refused the
+ * file.
+ */
+function deliveryRefusal(
+  bytes: number | null | undefined,
+): MarkdownImageState | null {
+  if (typeof bytes !== "number" || !Number.isFinite(bytes)) return null;
+  if (bytes <= ASSET_DELIVERY.readBytes) return null;
+  return {
+    kind: "file-too-large",
+    bytes,
+    limitBytes: ASSET_DELIVERY.readBytes,
+    reason: fileTooLargeReason(bytes),
+    alternatives: ["open-externally"],
+  };
+}
+
+function fileTooLargeReason(bytes: number): string {
+  const size = mibLabel(bytes);
+  if (bytes > ASSET_DELIVERY.overrideBytes) {
+    return (
+      `This image file is ${size}, above the ` +
+      `${mibLabel(ASSET_DELIVERY.overrideBytes)} ceiling an explicit load can ` +
+      "reach, so the document did not load it. Open it externally to view it."
+    );
+  }
+  return (
+    `This image file is ${size}, above the ` +
+    `${mibLabel(ASSET_DELIVERY.readBytes)} preview read limit, so the document ` +
+    "could not load it. Open it externally to view it."
+  );
 }
 
 /**

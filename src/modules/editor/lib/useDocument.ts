@@ -23,7 +23,7 @@ import {
 import { detectEol, type Eol, normalizeToLf, restoreEol } from "./eol";
 import type { DiskTarget } from "./recovery/cleanup";
 import type { RecoveryRecord } from "./recovery/model";
-import { useRecovery } from "./recovery/useRecovery";
+import { type RecoveryCloseIntent, useRecovery } from "./recovery/useRecovery";
 
 type ReadResult =
   | {
@@ -550,6 +550,7 @@ export function useDocument({ path, visible, onDirtyChange, buffer }: Options) {
     applyRecoveredText,
     saveDraftCopy,
     dismissDraft,
-    discardRecovery: () => recoveryRef.current.discard(),
+    releaseRecovery: (intent: RecoveryCloseIntent) =>
+      recoveryRef.current.release(intent),
   };
 }

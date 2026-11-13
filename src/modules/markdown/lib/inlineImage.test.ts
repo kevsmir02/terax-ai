@@ -222,6 +222,54 @@ describe("markdown inline image decisions", () => {
     expect(markdownImageRegistration(state)).toBeNull();
   });
 
+  it("names the file size when a local image was refused above the delivery ceiling", () => {
+    // The native asset handler answers 413 for a file above the preview read
+    // ceiling, so the <img> only sees a load error. Reporting that as "may be
+    // corrupt" blames the file for a limit of ours.
+    const input = {
+      ...base,
+      probe: measured(64, 64),
+      admission: { ...admit, decodedBytes: 64 * 64 * 4 },
+      decodeFailed: true,
+      fileBytes: 14 * MIB,
+    };
+    const state = markdownImageState(input);
+
+    expect(state.kind).toBe("file-too-large");
+    if (state.kind !== "file-too-large") return;
+    expect(state.bytes).toBe(14 * MIB);
+    expect(state.limitBytes).toBe(10 * MIB);
+    expect(state.reason).toContain("14 MiB");
+    expect(state.reason).toContain("10 MiB preview read limit");
+    expect(state.alternatives).toContain("open-externally");
+    expect(markdownImageMounts(input.source, state)).toBe(false);
+    expect(markdownImageRegistration(state)).toBeNull();
+  });
+
+  it("still reports a real decode failure for a file inside the delivery ceiling", () => {
+    const state = markdownImageState({
+      ...base,
+      probe: measured(64, 64),
+      admission: { ...admit, decodedBytes: 64 * 64 * 4 },
+      decodeFailed: true,
+      fileBytes: 2 * MIB,
+    });
+    expect(state.kind).toBe("decode-error");
+    if (state.kind !== "decode-error") return;
+    expect(state.reason).toContain("corrupt");
+  });
+
+  it("keeps the measured-at-load decode error for a remote image", () => {
+    // A remote reference has no size to measure here; its load failure keeps
+    // the honest "could not render" answer.
+    const state = markdownImageState({
+      ...base,
+      source: remote(),
+      decodeFailed: true,
+    });
+    expect(state.kind).toBe("decode-error");
+  });
+
   it("treats an svg inline image as a vector that claims no decoded bytes", () => {
     const source: MarkdownImageSource = {
       kind: "file",

@@ -547,6 +547,78 @@ describe("cleanup", () => {
     expect(storage.records.get("buf-a")?.text).toBe("newest");
   });
 
+  it("discards the draft when the buffer is closed by an explicit discard", async () => {
+    const h = harness();
+    const buf = openBuffer(h, { bufferId: "buf-a", spaceId: "sp-a" });
+    buf.edit({ text: "durable draft", diskRevision: null });
+    await h.advance(2000);
+    expect(h.storage.records.get("buf-a")?.text).toBe("durable draft");
+
+    // Typing arms a coalesced write, then "Discard & Close" resolves it.
+    buf.edit({ text: "discarded text", diskRevision: null });
+    await buf.discardAndDispose();
+    // A timer armed before the close, and a later quit flush, must not write
+    // the text the person explicitly discarded.
+    await h.advance(10_000);
+    await h.manager.flushAll();
+
+    expect(h.storage.writes.map((record) => record.text)).toEqual([
+      "durable draft",
+    ]);
+    expect(h.storage.records.has("buf-a")).toBe(false);
+    expect(
+      await h.manager.recoverable({
+        bufferId: "buf-new",
+        spaceId: "sp-a",
+        path: "/home/me/notes.txt",
+      }),
+    ).toEqual([]);
+  });
+
+  it("leaves another Space's draft for the same pathname alone when one closes", async () => {
+    const h = harness();
+    const a = openBuffer(h, { bufferId: "buf-a", spaceId: "sp-a" });
+    const b = openBuffer(h, { bufferId: "buf-b", spaceId: "sp-b" });
+    a.edit({ text: "same path", diskRevision: null });
+    b.edit({ text: "same path", diskRevision: null });
+    await h.advance(2000);
+    expect(h.storage.records.size).toBe(2);
+
+    await a.discardAndDispose();
+    await h.advance(10_000);
+
+    expect(h.storage.records.has("buf-a")).toBe(false);
+    expect(h.storage.records.get("buf-b")?.text).toBe("same path");
+    expect(
+      (
+        await h.manager.recoverable({
+          bufferId: "buf-c",
+          spaceId: "sp-b",
+          path: "/home/me/notes.txt",
+        })
+      ).map((record) => record.bufferId),
+    ).toEqual(["buf-b"]);
+  });
+
+  it("cleans up exactly the saved revision when a saved buffer closes", async () => {
+    const h = harness();
+    const buf = openBuffer(h, { bufferId: "buf-a", spaceId: "sp-a" });
+    buf.edit({ text: "line one", diskRevision: null });
+    await h.advance(2000);
+    buf.edit({ text: "line two", diskRevision: null });
+    await h.advance(2000);
+
+    // "Save & Close" writes the older snapshot; the newer typing stays.
+    await buf.saved({
+      writtenText: "line one",
+      resolvedRevision: buf.revisionOf("line one") ?? undefined,
+    });
+    buf.dispose();
+    await h.advance(10_000);
+
+    expect(h.storage.records.get("buf-a")?.text).toBe("line two");
+  });
+
   it("is pure: the selection rule matches the stored records it is given", async () => {
     const h = harness();
     const buf = openBuffer(h, { bufferId: "buf-a" });

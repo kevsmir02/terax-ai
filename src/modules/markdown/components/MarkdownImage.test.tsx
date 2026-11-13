@@ -76,6 +76,24 @@ describe("MarkdownImageView", () => {
     expect(html).toContain("<img");
   });
 
+  it("explains a file refused above the delivery ceiling without blaming the file", () => {
+    const html = render({
+      kind: "file-too-large",
+      bytes: 14 * 1024 * 1024,
+      limitBytes: 10 * 1024 * 1024,
+      reason:
+        "This image file is 14 MiB, above the 10 MiB preview read limit, so " +
+        "the document could not load it. Open it externally to view it.",
+      alternatives: ["open-externally"],
+    });
+    expect(html).toContain('data-markdown-image-state="file-too-large"');
+    expect(html).toContain("14 MiB");
+    expect(html).toContain("10 MiB preview read limit");
+    expect(html).toContain("Open externally");
+    expect(html).not.toContain("corrupt");
+    expect(html).not.toContain("<img");
+  });
+
   it("offers the close-another-viewer alternative instead of drawing", () => {
     const html = render({
       kind: "admission-refused",
