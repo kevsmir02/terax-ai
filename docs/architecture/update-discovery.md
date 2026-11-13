@@ -105,6 +105,10 @@ throttle. The hook never blocks the UI and never downloads.
 
 ## Install handoff (deliberately unimplemented)
 
+The supported upgrade path is the accepted **package-tool handoff after safe closure**;
+`docs/architecture/update-handoff.md` records that decision, what it does and does not
+guarantee, and what issue #39 still owns.
+
 `requestDownload` requires explicit approval and returns `not-implemented` with ticket
 #39. The state machine has no `installed`/`ready` state: `handoff-unavailable` is the
 furthest a user request goes. Arch guidance (pacman/makepkg/AUR helper) and the deb/rpm
