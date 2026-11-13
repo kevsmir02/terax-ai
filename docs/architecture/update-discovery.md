@@ -48,6 +48,34 @@ ignore it. `pnpm dev:update-fixtures` serves `src/modules/updater/fixtures` on
 `/stable-prerelease.json`, plus `/rate-limited`, `/offline`, `/malformed` failure routes).
 No route serves a package.
 
+## Tagged releases: a gate that refuses, not a publish
+
+`src/modules/updater/releaseContract.json` is also the gate's only source for publication identity
+and trust. `.github/workflows/release.yml` is started by a `v<major>.<minor>.<patch>` tag or by
+`workflow_dispatch`, and its first step is `scripts/release_gate.py --preconditions-only`: tag
+agrees with the application version (stable only), every job `ci.yml` declares is green for that
+exact commit, and publication identity plus signing trust are decided. Only then does the job
+build, and a second gate stage binds the staged artifacts to the triggering commit and their
+sha256.
+
+Today the third precondition cannot hold, so a tag fails loudly before any artifact is produced
+and nothing is published anywhere — the workflow has no write permission, no release-upload action
+and no signing secret, and the gate has no publish code path. The refusal names each missing input
+and the ticket that supplies it; `docs/architecture/linux-packages.md` carries the full table:
+
+| Missing input | Ticket |
+| --- | --- |
+| Release owner/URL, final identity, signing key and its trust root | #40 (breakdown ticket 39) |
+| Candidate validated on Fedora, Debian and Arch | #44 |
+| Complete candidate with retained workflows verified | #42 |
+| First public stable release, support claims | #45 |
+
+The gate and its refusals are implemented and unit-tested (`scripts/tests/test_release_gate.py`);
+the workflow's own hosted run and any publication are not, and are not claimed. Flipping
+`provisional` to `false` in the contract is the deliberate change that relaxes the guard test in
+`scripts/tests/test_ci_workflows.py` — after which the gate still refuses a placeholder endpoint,
+an unprovisioned trust root or a missing signing input.
+
 ## Check behavior
 
 `checkForUpdate` GETs only the manifest endpoint, with:
@@ -85,7 +113,10 @@ never requests privilege.
 
 ## Not claimed
 
-- No live fork release endpoint, owner URL or signing key exists yet.
+- No live fork release endpoint, owner URL or signing key exists yet. A version tag therefore
+  publishes nothing: the gate refuses (see above), and no hosted run of the release workflow exists.
+- No tagged release, signing, upload or public artifact discovery has been exercised end to end;
+  those are release-only claims owned by #40/#44/#45.
 - No RPM/DEB/Arch install, upgrade, signature rejection or package-lock behavior has been
   validated. That needs the packaged-app seam with real artifacts.
 - No readiness interval, privilege interval or failed-transaction recovery is implemented
