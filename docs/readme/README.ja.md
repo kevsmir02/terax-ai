@@ -1,3 +1,8 @@
+<!-- fork-copy: upstream translation; the authoritative description of this build is ../../README.md -->
+
+> [!IMPORTANT]
+> この翻訳は上流の Terax のものです。このフォークは、ここで説明されている組み込み AI 機能（チャット、自動補完、AI による変更レビュー、プロバイダーと API キーの設定）を削除しました。このリポジトリが配布するビルドについては [`README.md`](../../README.md) を参照してください。
+
 <div align="center">
   <img src="../../public/logo.png" width="144" height="144" alt="Terax" />
   <h1>Terax</h1>

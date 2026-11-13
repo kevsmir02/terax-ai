@@ -323,12 +323,18 @@ it("permits the loopback origin the media element actually uses", () => {
 });
 
 it("keeps img-src to the sources the security model documents", () => {
-  // `docs/architecture/security-model.md` documents `https:` (for a consented
-  // remote image), the app's own origin, `data:`, `blob:` and the asset scheme
-  // — and nothing else. The loopback origins are a *media* transport (WebKit
-  // bug 146351 makes the media element unable to load `asset:`), not an image
-  // one: an `img-src` that named any local HTTP service would let a preview
-  // image URL read bytes from whatever listens on that port.
+  // `docs/architecture/security-model.md` documents the app's own origin,
+  // `data:`, `blob:`, the asset scheme, `https:` (a consented remote image) and
+  // the two loopback origins — and nothing else. The loopback entries are not a
+  // general network allowance: the renderer's consent policy is the boundary,
+  // and a document's remote image has no `src` until the person picks "Load
+  // remote images". They exist because a deliberate choice must not be silently
+  // overruled by the transport policy: a project whose README points at a local
+  // dev server (`http://localhost:3000/...`) is the ordinary case, and the
+  // counted `--scenario markdown` fixture proves consent with a loopback server
+  // (spec line 171 requires that consent be observed in the real webview).
+  // Nothing outside loopback is reachable over plain HTTP: no other `http:`
+  // origin and no scheme wildcard may appear.
   const config = JSON.parse(
     readFileSync(
       new URL("../../src-tauri/tauri.conf.json", import.meta.url),
@@ -351,8 +357,17 @@ it("keeps img-src to the sources the security model documents", () => {
       "https://asset.localhost",
       "blob:",
       "https:",
+      "http://127.0.0.1:*",
+      "http://localhost:*",
     ].sort(),
   );
+  const plainHttp = (img ?? []).filter(
+    (source: string) =>
+      source.startsWith("http://") && !source.includes("asset.localhost"),
+  );
+  // Only a loopback host may be reached over plain HTTP, never `*` or a
+  // wildcard on a routable name.
+  expect(plainHttp).toEqual(["http://127.0.0.1:*", "http://localhost:*"]);
 });
 
 it("allows a consented remote image to load, while the policy gates it", () => {

@@ -58,6 +58,10 @@ export function releaseDecodedViewer(
   viewers: readonly ViewerEntry[],
   id: string,
 ): readonly ViewerEntry[] {
+  // Keep the array identity when there is nothing to release: a refused
+  // viewer's cleanup then cannot look like a table change (which would make
+  // the refusal retry loop forever).
+  if (!viewers.some((viewer) => viewer.id === id)) return viewers;
   return viewers.filter((viewer) => viewer.id !== id);
 }
 

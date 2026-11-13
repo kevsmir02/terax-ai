@@ -825,7 +825,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
    *
    * - `pin = true` (default) — opens or activates a **persistent** tab.
    *   If the path is currently in the preview slot it is promoted in-place.
-   *   Use this for programmatic opens (AI diff, New File dialog, etc.).
+   *   Use this for programmatic opens (a diff, the New File dialog, etc.).
    * - `pin = false` — VSCode-style **preview** tab. A single shared slot is
    *   reused: if a persistent tab for the path already exists it is activated;
    *   otherwise the current preview slot is replaced with the new path.

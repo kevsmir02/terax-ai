@@ -1,3 +1,8 @@
+<!-- fork-copy: upstream translation; the authoritative description of this build is ../../README.md -->
+
+> [!IMPORTANT]
+> 此译文来自上游 Terax。本分支已移除其中描述的内置 AI 功能（聊天、自动补全、AI 修改审查，以及提供商与 API 密钥设置）。本仓库发布的构建请参见 [`README.md`](../../README.md)。
+
 <div align="center">
   <img src="../../public/logo.png" width="144" height="144" alt="Terax" />
   <h1>Terax</h1>

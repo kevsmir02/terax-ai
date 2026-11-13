@@ -16,6 +16,8 @@ when the AI feature is deleted.
 | `src/modules/markdown/MarkdownPreviewPane.tsx` | document read/watch loop (`useMarkdownDocument`), scroll restoration, loading/error/binary/oversized states, the rendered/raw toggle, the asset grant |
 | `src/modules/markdown/MarkdownContent.tsx` | the rendered surface: Streamdown in `mode="static"` with `parseIncompleteMarkdown={false}`, `raw` + `sanitize` + local-image rewrite + `harden` rehype plugins |
 | `src/modules/markdown/components/MarkdownCode.tsx` | Streamdown `components.code` override: inline pill vs fenced block |
+| `src/modules/markdown/components/MarkdownImage.tsx` | Streamdown `components.img` override: lazy header probe, the 64 MiB decoded decision and decoded-viewer admission for one inline image |
+| `src/modules/markdown/lib/inlineImage.ts` | pure inline-image decision: deferred/probing/measuring/refused/admitting/ready, viewer id and what claims decoded bytes |
 | `src/modules/markdown/components/CodeBlock.tsx` | fenced code: language label, highlighting, copy, run-in-terminal, still-streaming placeholder |
 | `src/modules/markdown/lib/codeHighlight.ts` | Lezer tokenization of fenced code (`classHighlighter`, `tok-*` classes) |
 | `src/modules/markdown/lib/assetPath.ts` | relative image resolution, preview boundary, per-image policy decision, rehype rewrite |
@@ -73,6 +75,30 @@ blank pane or broken icon. The document itself cannot turn that into a load:
 - **Inline `data:` images** are kept because they fetch nothing, and an
   `asset://` URL written into the document is dropped outright.
 
+## Inline image budget
+
+Bounding the transferred asset response does not bound the decoded pixels, so an
+inline image obeys the same contract as the dedicated image surface:
+
+1. a local image is probed with the existing native `fs_image_probe` once it
+   intersects the viewport (and its tab is on screen),
+2. `imageBudgetDecision` applies the approved 64 MiB decoded ceiling from the
+   header dimensions *before* an `<img>` is mounted,
+3. an admitted raster registers with `viewerAdmission`, so inline images count
+   toward the four-viewer/192 MiB application-wide budget, and its slot is
+   released when the document closes or is replaced.
+
+A refused image renders its reason in the document and claims nothing. A remote
+reference the person consented to load and an inline `data:` image have no path
+for the header probe, so their element mounts lazily only to report its
+intrinsic size; the same ceiling and admission then decide whether it stays.
+The asset policy above is unchanged: the probe adds no grant and the admission
+table grants no access, so an unprobed, remote or outside-root image still needs
+the explicit choice. The probe canonicalizes an automatic local image against
+the document boundary before reading its header, so a symlink that leaves the
+root is refused without the outside target being read; an outside file the
+person explicitly granted is probed under that consent instead.
+
 ## Links
 
 `MarkdownLink` prevents the default for every href, so document content can
@@ -89,6 +115,9 @@ opener. A relative, `file:` or custom-scheme link is inert
   (`textReadDecision`, `data-syntax="off"`).
 - A hidden tab does not read and does not request an asset grant until it is
   first shown; while hidden it only marks itself stale. On show it reads once.
+- Inline images below the viewport, on a hidden tab or in a closed document are
+  not probed, not decoded and hold no admission slot. Closing or replacing the
+  document releases the image slots and the tab-owned asset grant.
 - `createDocumentLoad` discards a completion whose document closed or whose
   request is no longer the newest, so a slow read cannot resurrect content.
 - Grants belong to the tab scope: closing the tab (or its Space) revokes them in
@@ -125,7 +154,15 @@ ownership.
   Space root (never a terminal cwd) and follows the document's own Space.
 - `src/modules/markdown/lib/{assetPath,documentAssets,linkAction,documentLoad}.test.ts`
   - reference classification, remote/outside consent, inert links and stale
-    load completions.
+    load completions; `assetPath.test.ts` also pins the source tags the bounded
+    inline-image surface needs.
+- `src/modules/markdown/lib/inlineImage.test.ts` - an over-ceiling inline image
+  is refused before mount and claims no decoded bytes, admission is registered
+  and released, an off-screen image is never probed, and a remote/`data:` image
+  is measured before the same decision.
+- `src/modules/markdown/components/MarkdownImage.test.tsx` - the drawn states:
+  no `<img>` while probing/refused/admission-blocked, the element only once
+  admitted.
 - `src/modules/markdown/useMarkdownDocument.test.ts` - a hidden tab does not
   read, a change while hidden reads once on show, stale/older completions are
   discarded, and only the explicit action forces the 50 MiB read.

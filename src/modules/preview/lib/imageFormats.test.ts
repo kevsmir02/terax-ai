@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   IMAGE_FORMATS,
   imageDecodeSupport,
+  imageFormatForEmbeddedPath,
   imageFormatForPath,
   imageFormatInfo,
   imageFormatLabel,
@@ -30,6 +31,8 @@ describe("image routing", () => {
     // The engine decodes inline SVG (measured below), but a file tab stays
     // editable text instead of being taken over by the image surface.
     expect(imageFormatForPath("/repo/drawing.svg")).toBeNull();
+    // Embedded in a document it is an inline vector, not a file tab.
+    expect(imageFormatForEmbeddedPath("/repo/drawing.svg")).toBe("svg");
     expect(imageDecodeSupport("svg")).toBe("verified");
     expect(IMAGE_FORMATS.svg.kind).toBe("vector");
   });

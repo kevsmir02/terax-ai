@@ -65,7 +65,7 @@ Terax is a lightweight open-source terminal-first development workspace built on
 
 ### Terminal
 
-- xterm.js with WebGL renderer, multi-tab with background streaming
+- libghostty terminal model with a WebGPU/WebGL renderer, multi-tab with background streaming
 - GPU-accelerated block-based terminal with editor-like command input
 - Native PTY backend via `portable-pty` (zsh, bash, fish)
 - Split panels (horizontal and vertical)
@@ -76,7 +76,7 @@ Terax is a lightweight open-source terminal-first development workspace built on
 ### Code editor
 
 - CodeMirror 6 (supports all popular languages - TS/JS, Rust, Python, Go, C/C++, Java, HTML/CSS, JSON, Markdown, etc.)
-- Opt-in language server support with diagnostics, navigation, completion, formatting, and custom servers
+- Syntax highlighting for the bundled languages, find and replace, and vim mode — no language servers or diagnostics
 - Rendered Markdown plus image, video, audio, and PDF viewing
 - Vim mode
 - Built-in editor themes including Kanagawa, Catppuccin, Rosé Pine, Everforest, Dracula, Solarized, Nord, Tokyo Night, GitHub, and Xcode

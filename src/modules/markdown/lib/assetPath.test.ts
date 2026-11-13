@@ -189,10 +189,15 @@ describe("classifyImageReference", () => {
 });
 
 describe("rehypeLocalImages", () => {
+  type Properties = {
+    src?: string;
+    alt?: string;
+    [attribute: string]: unknown;
+  };
   const img = (src: string, alt = "") => ({
     type: "element",
     tagName: "img",
-    properties: { src, alt } as { src?: string; alt?: string },
+    properties: { src, alt } as Properties,
     children: [],
   });
   const run = (
@@ -233,6 +238,63 @@ describe("rehypeLocalImages", () => {
   it("rewrites allowed relative images at any depth", () => {
     expect(run("./a.png")).toBe("asset:///w/p/docs/a.png");
     expect(run("../img/a.svg")).toBe("asset:///w/p/img/a.svg");
+  });
+
+  it("marks every managed image with its source for the bounded surface", () => {
+    const local = runNode("./a.png");
+    expect(local.properties?.["data-terax-image"]).toBe("file");
+    expect(local.properties?.["data-terax-image-path"]).toBe("/w/p/docs/a.png");
+    expect(local.properties?.["data-terax-image-key"]).toBeTruthy();
+    // An automatic local image is probed inside the document boundary.
+    expect(local.properties?.["data-terax-image-guard"]).toBe("/w/p");
+
+    // An explicitly granted outside file is probed under that consent.
+    const granted = runNode("../../../home/me/pic.png", undefined, undefined, {
+      granted: new Set(["/home/me/pic.png"]),
+    });
+    expect(granted.properties?.["data-terax-image"]).toBe("file");
+    expect(granted.properties?.["data-terax-image-guard"]).toBeUndefined();
+
+    const remote = runNode("https://example.com/b.png", undefined, undefined, {
+      allowRemote: true,
+    });
+    expect(remote.properties?.["data-terax-image"]).toBe("remote");
+    expect(remote.properties?.["data-terax-image-path"]).toBeUndefined();
+
+    const inline = runNode("data:image/png;base64,AAAA");
+    expect(inline.properties?.["data-terax-image"]).toBe("data");
+  });
+
+  it("keys an image by its source offset so blocks and re-renders agree", () => {
+    const node = {
+      ...img("./a.png"),
+      position: { start: { offset: 42 } },
+    };
+    const tree = {
+      type: "root",
+      children: [{ type: "element", tagName: "p", children: [node] }],
+    };
+    rehypeLocalImages("/w/p/docs/readme.md", (p) => `asset://${p}`, {
+      ...policy("/w/p"),
+    })()(tree);
+    expect(node.properties?.["data-terax-image-key"]).toBe("o42");
+  });
+
+  it("gives repeated references distinct keys so each claim is its own slot", () => {
+    const first = img("./same.png");
+    const second = img("./same.png");
+    const tree = {
+      type: "root",
+      children: [{ type: "element", tagName: "p", children: [first, second] }],
+    };
+    rehypeLocalImages("/w/p/docs/readme.md", (p) => `asset://${p}`, {
+      ...policy("/w/p"),
+    })()(tree);
+    expect(first.properties?.["data-terax-image-key"]).toBeTruthy();
+    expect(second.properties?.["data-terax-image-key"]).toBeTruthy();
+    expect(first.properties?.["data-terax-image-key"]).not.toBe(
+      second.properties?.["data-terax-image-key"],
+    );
   });
 
   it("never fetches remote images without deliberate consent", () => {

@@ -54,8 +54,9 @@ Scenarios (`--scenario`):
 
 Linux currently implements `workflow`, `spaces`, `quit`, `markdown`, `git`, `checkpoints`,
 `worktree`, `preview`, `images`, `resource`, `stress` and `startup` (WebKitGTK); the measured
-scenarios above stay
-macOS-only until ticket 02 (sampling) and ticket 32 (input/resize/layers). On Linux the app is
+scenarios above refuse to run here because WebKitGTK exposes no occlusion signal, no composited
+layer tree and no native input injection (`resize`, `split-drag`, `occlusion`, `input`, `tabs`,
+`idle`, `agents-steady` and `fs-churn`). On Linux the app is
 built with `--no-bundle` into `<target>/<profile>/terax`.
 
 The app runs from an isolated bundle (an identifier inside the fork product namespace, its own
@@ -110,7 +111,7 @@ SYSTEM = platform.system()
 # Scenarios the Linux/WebKitGTK runner implements with real /proc sampling. The macOS-only
 # measured scenarios (tabs, resize, split-drag, occlusion, agents-steady, idle, fs-churn, input)
 # stay unavailable here: WebKitGTK has no occlusion signal, no layer-tree mirror and no native
-# input hook (ticket 32).
+# input hook.
 LINUX_SCENARIOS = (
     "workflow",
     "spaces",
@@ -553,9 +554,9 @@ def main() -> int:
         raise SystemExit("--scenario is required")
     if SYSTEM == "Linux" and not args.build_only and args.scenario not in LINUX_SCENARIOS:
         raise SystemExit(
-            f"On Linux the implemented scenarios are {', '.join(LINUX_SCENARIOS)}; the macOS-only "
-            "measured scenarios wait for ticket 32 (WebKitGTK has no occlusion signal, layer tree "
-            "or native input hook)."
+            f"On Linux the implemented scenarios are {', '.join(LINUX_SCENARIOS)}; the measured "
+            "scenarios that need it cannot run here (WebKitGTK has no occlusion signal, composited "
+            "layer tree or native input hook)."
         )
     if SYSTEM == "Darwin" and args.scenario not in app_report.SCENARIOS:
         raise SystemExit(
@@ -1368,7 +1369,7 @@ LIMITATIONS_LINUX = [
     "equivalent here, so only Pss/Rss/private/shared/swap per role are reported. WebKit's JS "
     "heap and malloc zones cannot be separated from the rest of the web process.",
     "The 1 Hz timeline can miss sub-second peaks; event samples are the more precise figures.",
-    "No layer tree, occlusion state or native input injection exists on WebKitGTK (ticket 32), "
+    "No layer tree, occlusion state or native input injection exists on WebKitGTK, "
     "so hidden-window behaviour is measured from window visibility only and document "
     "visibility is advisory.",
     "Package size covers the bench binary and the frontend dist only; real deb/rpm/AppImage "
@@ -1394,6 +1395,24 @@ def _png_bytes(width: int, height: int) -> bytes:
 
     header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(b"".join(rows), 9)) + chunk(b"IEND", b"")
+
+
+def _png_header_only(width: int, height: int) -> bytes:
+    """A valid PNG header with no pixel data.
+
+    The native header probe reports the dimensions without decoding, so this
+    tiny file stands in for an image whose decoded raster would be enormous
+    (20 000 x 20 000 RGBA is ~1.5 GiB). The webview must never receive it: the
+    inline-image decision refuses it before an `<img>` mounts.
+    """
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IEND", b"")
 
 
 def _text_file(path: Path, lines: int, width: int = 96, seed: int = 1) -> None:
@@ -1495,6 +1514,9 @@ def prepare_markdown_fixtures(workspace: Path, output: Path) -> dict:
     pixel = _png_bytes(16, 16)
     for path in (docs / "pixel.png", outside / "pixel.png", shared / "outside.png"):
         path.write_bytes(pixel)
+    # Header dimensions far beyond the approved 64 MiB decoded ceiling; the
+    # 45-byte file is enough for the native probe and must never be decoded.
+    (docs / "oversized.png").write_bytes(_png_header_only(20_000, 20_000))
     secret = output / "markdown-secret.png"
     secret.write_bytes(pixel)
     escape = docs / "escape.png"
@@ -1507,6 +1529,7 @@ def prepare_markdown_fixtures(workspace: Path, output: Path) -> dict:
         "# Inside the Space\n\n"
         "The image below is anchored to the configured Space root.\n\n"
         "![inside](./pixel.png)\n\n"
+        "![oversized](./oversized.png)\n\n"
         "![escape](./escape.png)\n"
     )
     outside_doc = outside / "readme.md"
@@ -1552,6 +1575,7 @@ def prepare_markdown_fixtures(workspace: Path, output: Path) -> dict:
             handle.write(line)
             written += len(line)
         handle.write("```\n")
+        handle.write("\n![too large](./oversized.png)\n")
     return {
         "workspace": str(workspace),
         "insideDoc": str(inside),

@@ -1,3 +1,8 @@
+<!-- fork-copy: upstream translation; the authoritative description of this build is ../../README.md -->
+
+> [!IMPORTANT]
+> Esta traducción proviene de Terax upstream. Este fork eliminó las superficies de IA integradas que describe (chat, autocompletado, revisión de cambios con IA y ajustes de proveedor y claves de API). [`README.md`](../../README.md) describe la compilación que publica este repositorio.
+
 <div align="center">
   <img src="../../public/logo.png" width="144" height="144" alt="Terax" />
   <h1>Terax</h1>

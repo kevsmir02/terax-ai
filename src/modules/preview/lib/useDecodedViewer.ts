@@ -36,6 +36,19 @@ export function useDecodedViewer({
   const evicted = useViewerAdmissionStore((state) =>
     state.viewers.some((viewer) => viewer.id === id && viewer.evicted),
   );
+  // A refusal is a snapshot of the table, not a verdict forever: when another
+  // viewer releases its slot (a hidden tab closing, an image scrolling away),
+  // a refused preview must be able to take the room. `attempt` re-runs the
+  // admission effect only after such a change.
+  const viewers = useViewerAdmissionStore((state) => state.viewers);
+  const [attempt, setAttempt] = useState(0);
+  const refused = admission?.kind === "refuse";
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a table change is the trigger, not a value the body reads.
+  useEffect(() => {
+    if (!refused) return;
+    setAttempt((value) => value + 1);
+  }, [viewers, refused]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `attempt` re-runs admission after a refusal; the request itself is unchanged.
   useEffect(() => {
     if (!enabled) {
       setAdmission(null);
@@ -49,6 +62,6 @@ export function useDecodedViewer({
     };
     setAdmission(useViewerAdmissionStore.getState().admit(request));
     return () => useViewerAdmissionStore.getState().release(id);
-  }, [id, tabId, decodedBytes, visible, enabled]);
+  }, [id, tabId, decodedBytes, visible, enabled, attempt]);
   return { admission, evicted };
 }

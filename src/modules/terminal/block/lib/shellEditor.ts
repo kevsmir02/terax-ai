@@ -67,7 +67,7 @@ export type ShellEditorOptions = {
   onChange?: (text: string) => void;
 };
 
-/** The empty-input hint; `hint` is the shortcut that switches to the AI input. */
+/** The empty-input placeholder shown while the shell input is empty. */
 export const shellPlaceholder = () => "Run a command  -  ↑ history";
 
 export type ShellEditorHandle = {

@@ -20,7 +20,7 @@
  * | 10 MiB normal read | `src-tauri/src/modules/fs/file.rs` (`MAX_READ_BYTES`) | the native reader refuses and reports `limit` |
  * | 50 MiB explicit override | `src-tauri/src/modules/fs/file.rs` (`FORCE_MAX_READ_BYTES`) | reached only through the explicit "open anyway" action |
  * | 4 MiB syntax ceiling | this module, consumed by `src/modules/editor/EditorPane.tsx` | a TypeScript-only editing behaviour |
- * | 64 MiB image decode | `src/modules/preview/lib/imageViewer.ts` via `imageBudgetDecision`, fed by the native header probe `fs_image_probe` | dimensions are read from the header before the `<img>` mounts; an oversized image is refused, not decoded and then discarded |
+ * | 64 MiB image decode | `src/modules/preview/lib/imageViewer.ts` and `src/modules/markdown/lib/inlineImage.ts` via `imageBudgetDecision`, fed by the native header probe `fs_image_probe` | dimensions are read from the header before the `<img>` mounts; an oversized image is refused, not decoded and then discarded. A remote/`data:` Markdown reference has no probeable path and is measured at load |
  * | 4 viewers / 192 MiB decoded | `src/modules/preview/lib/viewerAdmission.ts` via `decideViewerAdmission` | hidden viewers may be released, a visible one is never evicted |
  * | 10/50 MiB asset delivery, chunking, outstanding reads | `src-tauri/src/modules/fs/assets.rs` (`DeliveryLimits`), mirrored by `src/modules/preview/lib/assetDelivery.ts` | derived from the read and override ceilings; a range response is one chunk |
  *

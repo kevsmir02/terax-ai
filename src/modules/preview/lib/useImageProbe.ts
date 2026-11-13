@@ -19,6 +19,12 @@ type ProbeState = {
 export function useImageProbe(
   path: string,
   enabled: boolean,
+  /**
+   * Folder a document-owned image must resolve inside (canonical check in the
+   * native probe). The image surface passes nothing: the file was opened
+   * deliberately, not chosen by a document.
+   */
+  boundary?: string,
 ): {
   probe: ImageProbeOutcome | null;
   retry: () => void;
@@ -34,6 +40,7 @@ export function useImageProbe(
     void invoke<ImageProbeOutcome>("fs_image_probe", {
       path,
       workspace: currentWorkspaceEnv(),
+      ...(boundary ? { boundary } : {}),
     })
       .then((probe) => {
         if (!disposed) setResult({ key, probe });
@@ -49,7 +56,7 @@ export function useImageProbe(
     return () => {
       disposed = true;
     };
-  }, [path, key, enabled]);
+  }, [path, key, enabled, boundary]);
 
   return {
     probe: result.key === key ? result.probe : null,

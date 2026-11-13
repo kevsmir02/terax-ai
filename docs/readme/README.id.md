@@ -1,3 +1,8 @@
+<!-- fork-copy: upstream translation; the authoritative description of this build is ../../README.md -->
+
+> [!IMPORTANT]
+> Terjemahan ini berasal dari Terax upstream. Fork ini menghapus permukaan AI bawaan yang dijelaskannya (chat, pelengkapan otomatis, tinjauan perubahan oleh AI, serta pengaturan penyedia dan kunci API). [`README.md`](../../README.md) menjelaskan build yang diterbitkan repositori ini.
+
 <div align="center">
   <img src="../../public/logo.png" width="144" height="144" alt="Terax" />
   <h1>Terax</h1>

@@ -20,8 +20,13 @@ function render(
   );
 }
 
+// A rendered image is managed by the bounded inline-image surface: the
+// source is bound, but no <img> exists until the header probe and the decoded
+// viewer admission have both said yes.
 function imageSources(html: string): string[] {
-  return [...html.matchAll(/<img[^>]*\bsrc="([^"]*)"/g)].map((m) => m[1] ?? "");
+  return [...html.matchAll(/data-markdown-image-src="([^"]*)"/g)].map(
+    (m) => m[1] ?? "",
+  );
 }
 
 describe("MarkdownContent", () => {

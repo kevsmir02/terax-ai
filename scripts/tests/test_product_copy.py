@@ -46,6 +46,8 @@ ROADMAP_QUALIFIERS = (
     "no longer",
     "external",
     "not this fork",
+    "no built-in",
+    "there is no",
 )
 
 # The retained product: a terminal workspace with an editor, source control and previews.
@@ -71,14 +73,14 @@ def shipped_descriptions() -> dict[str, str]:
     }
 
 
-def offending_lines(body: str) -> list[str]:
+def offending_lines(body: str, name: str = ROADMAP.name) -> list[str]:
     found: list[str] = []
     for number, line in enumerate(body.splitlines(), start=1):
         if not any(pattern.search(line) for pattern in REMOVED_AI_CLAIMS):
             continue
         if any(qualifier in line.lower() for qualifier in ROADMAP_QUALIFIERS):
             continue
-        found.append(f"{ROADMAP.name}:{number}: {line.strip()}")
+        found.append(f"{name}:{number}: {line.strip()}")
     return found
 
 
@@ -131,6 +133,68 @@ class RoadmapCopyTest(unittest.TestCase):
         body = ROADMAP.read_text()
         self.assertIn("Linux x86-64 only", body)
         self.assertIn("package tool", body)
+
+
+class TranslatedReadmeCopyTest(unittest.TestCase):
+    """The 11 translated READMEs are upstream snapshots, not this build's copy.
+
+    They describe the AI-native product that ticket #12/#14 removed, and a
+    translation cannot be kept in step with every wording change here. The
+    honest form is a banner on each file that names the authoritative copy, so a
+    reader cannot mistake an upstream AI screenshot or a "Settings -> AI" step
+    for something this build ships. The marker is ASCII and language-neutral so
+    this test can find it in every translation.
+    """
+
+    MARKER = "<!-- fork-copy: upstream translation"
+
+    def translations(self) -> list[Path]:
+        return sorted((REPO / "docs/readme").glob("README.*.md"))
+
+    def test_every_translation_is_marked_as_an_upstream_snapshot(self) -> None:
+        files = self.translations()
+        self.assertEqual(len(files), 11, f"expected the 11 translations, found {len(files)}")
+        for path in files:
+            body = path.read_text()
+            self.assertTrue(
+                body.startswith(self.MARKER),
+                f"{path} does not start with the upstream-translation marker",
+            )
+            self.assertIn(
+                "../../README.md",
+                body.split("\n\n")[0] + body.split("\n\n")[1],
+                f"{path} must point the reader at the authoritative README",
+            )
+
+    def test_the_authoritative_readme_advertises_no_removed_ai_feature(self) -> None:
+        # The banner's promise is only honest while the copy it points at is
+        # clean; this is the reason a reader is told to prefer it.
+        self.assertEqual(
+            offending_lines((REPO / "README.md").read_text(), "README.md"),
+            [],
+            "README.md advertises a surface this fork removed, or must mark the line "
+            "as upstream/removed",
+        )
+
+    def test_the_authoritative_readme_names_what_the_editor_and_terminal_are(self) -> None:
+        # Two surfaces this fork replaced or deleted: the terminal model moved to
+        # libghostty (no xterm.js dependency) and language servers were removed
+        # with ticket #11 (editing keeps highlighting, find and vim mode). The
+        # upstream note may still say xterm was replaced, so the patterns name an
+        # advertised feature rather than a bare product name.
+        body = (REPO / "README.md").read_text().lower()
+        self.assertNotIn(
+            "xterm.js with",
+            body,
+            "README.md still advertises xterm.js as the renderer; the terminal runs libghostty",
+        )
+        self.assertNotIn(
+            "language server support",
+            body,
+            "README.md still advertises language servers; ticket #11 removed them",
+        )
+        self.assertIn("libghostty", body)
+        self.assertIn("linux x86-64 only", body)
 
 
 if __name__ == "__main__":

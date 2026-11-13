@@ -150,7 +150,11 @@ writes: a document inside the Space root, an outside document, a symlink escape,
 runner counts, a link document, a document of hostile references and a document above the 4 MiB
 syntax ceiling. It asserts the image
 loads from the configured Space root, that changing the terminal cwd through `setLeafCwd` leaves the
-same `asset://` token and pixels in place, that the symlink escape is refused (`naturalWidth 0`), that
+same `asset://` token and pixels in place, that an inline image whose header declares a
+20 000 x 20 000 raster (~1.5 GiB decoded) is refused with the 64 MiB reason and **no `<img>` in
+the document**, that the same oversized image at the end of the 4 MiB document stays `deferred`
+(not probed) until it is scrolled into view and is then refused, that the symlink escape is
+refused (the bounded surface ends in a read/decode error with no `<img>`), that
 an outside document loads from its own folder and only loads a sibling image after the "Allow"
 button, that the remote image is absent and the fixture server recorded zero hits until "Load remote
 images" is chosen (then one), that a relative link neither navigates the app nor opens a tab, that a
@@ -339,7 +343,9 @@ per metric), `json` the same medians machine-readable, `table` the aligned table
 `prepare_fixtures()` and never committed.
 
 **Still not available on Linux:** native key/IME input, stepped/live resize, synthetic divider
-drags, the composited layer tree, forced GC and soak scenarios (ticket 32). Per-process GPU/VRAM is
+drags, the composited layer tree, forced GC and soak scenarios — WebKitGTK exposes no occlusion
+signal, no layer-tree mirror and no native input hook, so those scenarios refuse to run rather than
+report a vacuous pass. Per-process GPU/VRAM is
 not attributable from `/proc`, WebKit malloc zones cannot be split out, and PDF/codec rendering is
 not claimed (see each report's `limitations`). `resize`, `split-drag`, `occlusion`, `input`, `tabs`,
 `idle`, `agents-steady` and `fs-churn` refuse to run on Linux rather than pretend to measure.

@@ -153,6 +153,19 @@ export function imageFormatForPath(path: string): ImageFormat | null {
   return info?.routed ? info.id : null;
 }
 
+/**
+ * Format of an image embedded in a document. Unlike {@link imageFormatForPath}
+ * this includes SVG: an explicitly opened `.svg` stays an editable text tab,
+ * but the same file referenced by a Markdown document is rendered as an
+ * inline vector (measured in the `images` app-lab scenario).
+ */
+export function imageFormatForEmbeddedPath(path: string): ImageFormat | null {
+  const name = path.replace(/\\/g, "/").split("/").pop() ?? "";
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0 || dot === name.length - 1) return null;
+  return BY_EXTENSION.get(name.slice(dot + 1).toLowerCase())?.id ?? null;
+}
+
 /** The table entry for a canonical format id, or null when unmeasured. */
 export function imageFormatInfo(format: string): ImageFormatInfo | null {
   return format in IMAGE_FORMATS ? IMAGE_FORMATS[format as ImageFormat] : null;

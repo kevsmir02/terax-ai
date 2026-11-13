@@ -63,7 +63,7 @@ export const PreviewAddressBar = forwardRef<PreviewAddressBarHandle, Props>(
     const inputRef = useRef<HTMLInputElement>(null);
 
     // Keep draft in sync when the parent updates the URL externally
-    // (AI tool, detected localhost chip, etc.).
+    // (a detected localhost chip, etc.).
     useEffect(() => {
       setDraft(url);
     }, [url]);
