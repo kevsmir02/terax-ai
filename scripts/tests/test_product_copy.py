@@ -12,6 +12,11 @@ system or keys in the OS keychain is a false claim with no code behind it.
 `ROADMAP.md` keeps upstream's history, so a line may still *name* a removed feature when it also
 says it is upstream's, removed or external. The metadata descriptions cannot: they are shipped
 verbatim and describe this build.
+
+The install section makes a second promise a reader acts on: the packaged install/upgrade path
+is not validated yet. `DistroValidationReferenceTest` reads the owning ticket from
+`docs/architecture/linux-packages.md` and requires the README and all 11 translations to cite
+that issue, so the promise cannot quietly point at unrelated work.
 """
 
 from __future__ import annotations
@@ -25,6 +30,11 @@ REPO = Path(__file__).resolve().parent.parent.parent
 TAURI_CONFIG = REPO / "src-tauri/tauri.conf.json"
 CARGO_MANIFEST = REPO / "src-tauri/Cargo.toml"
 ROADMAP = REPO / "ROADMAP.md"
+LINUX_PACKAGES = REPO / "docs/architecture/linux-packages.md"
+
+# A line that makes the packaged-path validation promise, and an issue reference on it.
+VALIDATION_WORD = re.compile(r"validat", re.IGNORECASE)
+ISSUE_REF = re.compile(r"#(\d+)")
 
 # Claims about the built-in AI surface that ticket #12/#14 removed. They are matched against
 # prose, so they name the specific feature rather than the word "AI" alone.
@@ -195,6 +205,54 @@ class TranslatedReadmeCopyTest(unittest.TestCase):
         )
         self.assertIn("libghostty", body)
         self.assertIn("linux x86-64 only", body)
+
+
+class DistroValidationReferenceTest(unittest.TestCase):
+    """The packaged install/upgrade promise must point at the ticket that owns it.
+
+    `docs/architecture/linux-packages.md` names the ticket that accepts the candidate on the
+    three distributions; the READMEs repeat that promise. A reference to a different issue is
+    a reader following the wrong work, so the number is read from the architecture document
+    instead of being restated here.
+    """
+
+    def readmes(self) -> list[Path]:
+        return [REPO / "README.md"] + sorted(
+            (REPO / "docs/readme").glob("README.*.md")
+        )
+
+    def expected_issue(self) -> str:
+        match = re.search(
+            r"acceptance\s+\(#(\d+)\)", LINUX_PACKAGES.read_text(encoding="utf-8")
+        )
+        if not match:
+            raise AssertionError(
+                f"{LINUX_PACKAGES} no longer names the distribution-validation ticket"
+            )
+        return match.group(1)
+
+    def validation_issue_refs(self, body: str) -> list[str]:
+        refs: list[str] = []
+        for line in body.splitlines():
+            if VALIDATION_WORD.search(line):
+                refs.extend(ISSUE_REF.findall(line))
+        return refs
+
+    def test_every_readme_points_the_packaged_path_at_the_validation_ticket(self) -> None:
+        expected = self.expected_issue()
+        for path in self.readmes():
+            refs = self.validation_issue_refs(path.read_text(encoding="utf-8"))
+            self.assertTrue(
+                refs,
+                f"{path.name} no longer states which ticket validates the packaged "
+                "install/upgrade path",
+            )
+            self.assertEqual(
+                sorted(set(refs)),
+                [expected],
+                f"{path.name} points the packaged-path validation promise at the wrong "
+                f"issue; it belongs to #{expected}",
+            )
 
 
 if __name__ == "__main__":
