@@ -11,7 +11,7 @@
 # the local source with the signed release tarball and its published hash.
 
 pkgname=terax-workspace
-pkgver=0.9.0
+pkgver=1.0.0
 pkgrel=1
 # The source revision this recipe is aligned with; refreshed by the packaging runner.
 _commit=1742389cbf5ae4026b9a99ae9e5278ec7b33f721

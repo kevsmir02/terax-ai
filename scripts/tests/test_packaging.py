@@ -14,6 +14,7 @@ import json
 import sys
 import tarfile
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -141,9 +142,13 @@ class CandidateIdentityTest(unittest.TestCase):
 
     def test_the_version_is_one_value_in_every_input(self) -> None:
         version = packaging.version()
+        self.assertEqual(version, "1.0.0")
         self.assertRegex(version, r"^\d+\.\d+\.\d+$")
         self.assertEqual(json.loads(packaging.TAURI_CONFIG.read_text())["version"], version)
         self.assertEqual(json.loads(packaging.PACKAGE_JSON.read_text())["version"], version)
+        cargo = tomllib.loads(packaging.CARGO_MANIFEST.read_text())
+        self.assertEqual(cargo["package"]["version"], version)
+        self.assertEqual(cargo["workspace"]["package"]["version"], version)
 
 
 class TargetTest(unittest.TestCase):
@@ -419,7 +424,7 @@ class ArchRecipeTest(unittest.TestCase):
         self.assertEqual(packaging.arch_problems(), [])
         recipe = packaging.PKGBUILD.read_text()
         self.assertIn("pkgname=terax-workspace", recipe)
-        self.assertIn("pkgver=0.9.0", recipe)
+        self.assertIn("pkgver=1.0.0", recipe)
         self.assertIn("arch=('x86_64')", recipe)
         self.assertIn("NOT BUILT", recipe)
         # No upstream package/binary identity in the recipe.
