@@ -1,28 +1,113 @@
-name: Release candidate
+name: Release gate
+
+# A version tag is a claim, and this workflow exists to check it. It never publishes: the gate is
+# `scripts/release_gate.py`, which has no publish path and refuses unless
+#
+#   * the tag agrees with the application version and is a stable `v<major>.<minor>.<patch>` tag,
+#   * every job `ci.yml` declares is green for exactly the tagged commit,
+#   * the candidate set was built from that same commit and hashes to its recorded checksums, and
+#   * publication identity and signing trust are decided.
+#
+# The last precondition is not decided yet: `src/modules/updater/releaseContract.json` is
+# provisional, no fork signing key exists and the endpoint is a non-resolving placeholder. So a
+# tag runs this workflow, gets a named refusal before a single artifact is produced, and fails
+# loudly. A tag trigger is safe here precisely because the gate refuses everything today;
+# `.github/workflows/release.yml` gains no write permission, no upload-to-release action and no
+# signing secret until that contract is settled (breakdown ticket 39 = GitHub issue #40), and
+# `scripts/tests/test_ci_workflows.py` derives that rule from the contract itself.
+#
+# `workflow_dispatch` with `dry_run: true` is the safe exercise path: the whole gate — including
+# the artifact-identity stage — runs against the local candidate set and prints its decision,
+# while still uploading only a run-scoped workflow artifact.
 
 on:
-  # Nothing here publishes, and nothing triggers it automatically. The gate that would make a
-  # version tag safe — tag/application-version agreement, required CI green for that exact commit,
-  # authenticated artifacts and install/upgrade evidence — is ticket #40 (GitHub issue #41) and is
-  # on an execution hold. Until that gate exists a tag must produce no artifact set at all, so this
-  # workflow only builds, verifies and hands out a candidate set when a maintainer asks for one.
-  # `scripts/tests/test_ci_workflows.py` fails if a tag trigger or any release upload comes back
-  # without the gate.
+  push:
+    tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to evaluate (v<major>.<minor>.<patch>)
+        required: true
+      dry_run:
+        description: Run the whole gate against the local artifact set and print the decision
+        type: boolean
+        default: false
+
+# Read-only, and only what the gate needs: the repository to build from and the check runs to
+# read. There is no token here that could create a release.
+permissions:
+  contents: read
+  checks: read
 
 jobs:
   build-candidate:
     # Linux x86-64 is the only platform this fork builds or distributes (ticket #34). The package
     # formats come from `bundle.targets` in `src-tauri/tauri.conf.json` (`rpm`, `deb`), and the
     # packaging runner builds exactly those two, so there is no AppImage, no macOS leg, no Windows
-    # leg and no aarch64 leg to keep in step. This job produces and inspects candidates;
-    # publishing them is issue #41.
-    name: build-candidate (linux x86-64, no publication)
+    # leg and no aarch64 leg to keep in step.
+    name: gate + candidate (linux x86-64, no publication)
     runs-on: ubuntu-22.04
-    permissions:
-      contents: read
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Tags are what this workflow is about, so the checkout must follow the tag ref rather
+          # than the default branch: a dispatch names a tag, a push *is* one.
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'push' && github.ref || format('refs/tags/{0}', inputs.tag) }}
+          persist-credentials: false
+
+      - name: Resolve the triggering tag and commit
+        id: target
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "push" ]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="$INPUT_TAG"
+          fi
+          test -n "$tag" || { echo "::error::no release tag: a v* push or the tag input is required"; exit 2; }
+          commit="$(git rev-parse HEAD)"
+          git rev-parse "refs/tags/$tag" >/dev/null
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
+          printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Collect the check runs for that exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The gate reads the evidence GitHub holds for this commit; it never accepts a claim
+          # that CI was green. `--slurp` keeps the paginated pages as one JSON array. The record
+          # and the gate reports live outside the checkout: `scripts/package-candidate/run.py`
+          # refuses to build from a dirty tree, and an untracked report would make it dirty.
+          gh api \
+            "repos/${{ github.repository }}/commits/${{ steps.target.outputs.commit }}/check-runs?per_page=100" \
+            --paginate --slurp > "$RUNNER_TEMP/ci-status.json"
+          python3 -c 'import json, os; pages = json.load(open(os.path.join(os.environ["RUNNER_TEMP"], "ci-status.json"))); print("check-run pages:", len(pages))'
+
+      - name: Release gate (tag, version, required CI, publication inputs)
+        # This runs *before* the build: a tag or dispatch that fails a precondition fails the job
+        # before any artifact exists. The refusal names every missing input, so the log says why
+        # instead of "skipped".
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          arguments=(
+            --tag "${{ steps.target.outputs.tag }}"
+            --commit "${{ steps.target.outputs.commit }}"
+            --ci-status "$RUNNER_TEMP/ci-status.json"
+            --preconditions-only
+            --report "$RUNNER_TEMP/gate-preconditions.json"
+            --step-summary "$GITHUB_STEP_SUMMARY"
+          )
+          if [ "${DRY_RUN:-false}" = "true" ]; then
+            arguments+=(--dry-run)
+          fi
+          python3 scripts/release_gate.py "${arguments[@]}"
 
       - name: Install Linux build dependencies
         run: |
@@ -68,7 +153,7 @@ jobs:
         # `inputs/tauri.candidate.conf.json` from the shared identity table
         # (`src/modules/identity/namespace.json` via `scripts/packaging.py`) and passes it with
         # `--config`. A base-config build would ship upstream's product name, description and
-        # `/usr/bin/terax` instead of the candidate identity.
+        # the upstream binary path instead of the candidate identity.
         run: python3 scripts/package-candidate/run.py
 
       - name: Verify the candidate identity and stage the artifacts
@@ -91,8 +176,8 @@ jobs:
           test "$(dpkg-deb -f linux-packages/*.deb Architecture)" = "amd64"
           test "$(rpm -qp --queryformat '%{ARCH}' linux-packages/*.rpm)" = "x86_64"
           dpkg-deb -x linux-packages/*.deb unpacked-deb
-          # The candidate installs this fork's workspace binaries. Upstream's `/usr/bin/terax`
-          # here would mean the overlay was not applied, which the packaging runner refuses.
+          # The candidate installs this fork's workspace binaries. Upstream's binary path here
+          # would mean the overlay was not applied, which the packaging runner refuses.
           test ! -e unpacked-deb/usr/bin/terax
           unpacked-deb/usr/bin/*-cli --help
           file unpacked-deb/usr/bin/*
@@ -100,9 +185,33 @@ jobs:
           (cd linux-packages && sha256sum -c SHA256SUMS)
           stat --printf='%n %s bytes\n' linux-packages/* >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Release gate (immutable artifact identity)
+        # The second half of the gate: the set that would be published must be the set built for
+        # the triggering commit, with no missing, extra or substituted file. Reached only when the
+        # preconditions passed; in a dry run it reports the artifact stage too.
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          arguments=(
+            --tag "${{ steps.target.outputs.tag }}"
+            --commit "${{ steps.target.outputs.commit }}"
+            --ci-status "$RUNNER_TEMP/ci-status.json"
+            --candidate linux-packages
+            --report "$RUNNER_TEMP/gate-artifacts.json"
+            --step-summary "$GITHUB_STEP_SUMMARY"
+          )
+          if [ "${DRY_RUN:-false}" = "true" ]; then
+            arguments+=(--dry-run)
+          fi
+          python3 scripts/release_gate.py "${arguments[@]}"
+
       - name: Upload the candidate artifact set
         uses: actions/upload-artifact@v7
         with:
           name: linux-x86_64-packages
-          path: linux-packages/
+          path: |
+            linux-packages/
+            ${{ runner.temp }}/gate-preconditions.json
+            ${{ runner.temp }}/gate-artifacts.json
           if-no-files-found: error
