@@ -111,6 +111,8 @@ The secret key is a **minisign** secret key file, passphrase-protected, generate
   the release job needs it;
 - at release time the key and passphrase are injected as two repository secrets,
   `TERAX_RELEASE_SIGNING_KEY` and `TERAX_RELEASE_SIGNING_KEY_PASSPHRASE`, only for the signer step.
+  The pre-build and post-staging gate steps receive only a boolean presence flag
+  (`TERAX_RELEASE_SIGNING_KEY_PRESENT`) so raw key bytes never enter their environments.
   `tauri signer sign` reads them; the key material is never echoed, never written into the
   checkout, and the workflow logs only the public key id and the artifact hashes;
 - only the **public** key, its key id and its fingerprint are committed, in
@@ -240,15 +242,15 @@ reports a signature failure, and the answer is a new signed release, not a bypas
   failing closed on any tamper; full payload BLAKE2b/Ed25519 verification happens in
   `scripts/release_gate.py` (and manually via `minisign -Vm`) because discovery never downloads
   installer bytes.
-- **A published release.** Ticket #40 settled identity (`Codr`, `kevsmir02/terax-ai`) and
-  committed the public trust root (`94097B75DB498B21`). It publishes nothing yet, GitHub Actions
-  signing secrets still require maintainer upload before a release tag can run, and no hosted run
-  of the release workflow exists yet (#45).
+- **A published release.** Ticket #40 settled identity (`Codr`, `kevsmir02/terax-ai`),
+  committed the public trust root (`94097B75DB498B21`), and provisioned the GitHub Actions signing
+  secrets. Ticket #41 completed the release gate, signing pipeline, and gate secret-presence wiring.
+  Nothing publishes yet: no hosted run of the release workflow exists yet (#45).
 
 ## Gate refusals that stay active
 
 `releaseContract.json` now has `provisional: false`, `trust.provisioned: true`, and the committed
 public key, so `publication-provisional` and `signing-trust-missing` are lifted. `scripts/release_gate.py`
-still refuses closed on `signing-input-missing` (until the release secrets are injected), any
-missing/stale CI evidence, any checksum mismatch, or any signature that fails verification against
-`trust.publicKey`.
+still refuses closed on `signing-input-missing` (when neither a key env var nor
+`TERAX_RELEASE_SIGNING_KEY_PRESENT=true` is set), any missing/stale CI evidence, any checksum
+mismatch, or any signature that fails verification against `trust.publicKey`.

@@ -92,6 +92,7 @@ jobs:
         # instead of "skipped".
         env:
           DRY_RUN: ${{ inputs.dry_run }}
+          TERAX_RELEASE_SIGNING_KEY_PRESENT: ${{ secrets.TERAX_RELEASE_SIGNING_KEY != '' && secrets.TERAX_RELEASE_SIGNING_KEY_PASSPHRASE != '' }}
         run: |
           set -euo pipefail
           arguments=(
@@ -246,6 +247,7 @@ jobs:
         # preconditions passed; in a dry run it reports the artifact stage too.
         env:
           DRY_RUN: ${{ inputs.dry_run }}
+          TERAX_RELEASE_SIGNING_KEY_PRESENT: ${{ secrets.TERAX_RELEASE_SIGNING_KEY != '' && secrets.TERAX_RELEASE_SIGNING_KEY_PASSPHRASE != '' }}
         run: |
           set -euo pipefail
           arguments=(

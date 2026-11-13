@@ -57,6 +57,7 @@ RELEASE_CONTRACT = packaging.RELEASE_CONTRACT
 # injects for `tauri signer sign`.
 SIGNING_KEY_ENV = "TERAX_RELEASE_SIGNING_KEY"
 SIGNING_KEY_ENVS = release_signing.SIGNING_KEY_ENVS
+SIGNING_INPUT_PRESENT_ENV = "TERAX_RELEASE_SIGNING_KEY_PRESENT"
 # Release tags are `v<major>.<minor>.<patch>` here; the fork publishes stable only.
 TAG_PATTERN = re.compile(r"^v(?P<version>\d+\.\d+\.\d+)$")
 PRERELEASE_PATTERN = re.compile(r"^v\d+\.\d+\.\d+-[0-9A-Za-z.]+$")
@@ -303,6 +304,17 @@ def _host(endpoint: str) -> str:
     return (urlsplit(endpoint).hostname or "").lower()
 
 
+def _has_signing_input(environment: dict) -> bool:
+    """True when signing secrets exist (raw key env or CI boolean presence flag)."""
+    if any(str(environment.get(name) or "").strip() != "" for name in SIGNING_KEY_ENVS):
+        return True
+    return str(environment.get(SIGNING_INPUT_PRESENT_ENV) or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
 def _publication_refusals(contract_path: Path, environment: dict) -> list[Refusal]:
     """Why this repository must not publish yet, and the ticket that decides each input."""
     try:
@@ -400,20 +412,14 @@ def _publication_refusals(contract_path: Path, environment: dict) -> list[Refusa
             )
         )
 
-    signing_input = next(
-        (
-            name for name in SIGNING_KEY_ENVS
-            if str(environment.get(name) or "").strip() != ""
-        ),
-        "",
-    )
-    if signing_input == "":
+    if not _has_signing_input(environment):
         refusals.append(
             Refusal(
                 "signing-input-missing",
-                f"no signing input is present in the environment ({' or '.join(SIGNING_KEY_ENVS)}); "
-                "it is a fork-owned secret provisioned outside the repository, never in it (its "
-                "value is never read into a message, report or log)",
+                f"no signing input is present in the environment ({' or '.join(SIGNING_KEY_ENVS)}, "
+                f"or {SIGNING_INPUT_PRESENT_ENV}=true); it is a fork-owned secret provisioned "
+                "outside the repository, never in it (its value is never read into a message, "
+                "report or log)",
                 ticket or None,
             )
         )

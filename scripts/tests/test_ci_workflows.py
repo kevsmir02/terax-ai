@@ -626,6 +626,32 @@ class ReleaseSigningWorkflowTest(unittest.TestCase):
                         run.index("scripts/release_signing.py"),
                         "latest.json describes signatures that already exist")
 
+    def test_gate_steps_receive_signing_presence_without_secret_bytes(self) -> None:
+        gate_steps = [
+            step for step in self.steps()
+            if "scripts/release_gate.py" in str(step.get("run", ""))
+        ]
+        self.assertEqual(len(gate_steps), 2)
+        for step in gate_steps:
+            env = step.get("env") or {}
+            presence = str(env.get("TERAX_RELEASE_SIGNING_KEY_PRESENT", ""))
+            for secret_name in RELEASE_SIGNING_SECRETS:
+                self.assertIn(f"secrets.{secret_name} != ''", presence)
+            self.assertNotIn("TAURI_SIGNING_PRIVATE_KEY", env)
+            self.assertNotIn("TAURI_SIGNING_PRIVATE_KEY_PASSWORD", env)
+
+    def test_release_workflow_stays_read_only_and_bounded_to_signing_secrets(self) -> None:
+        # Until #45 implements publication, release.yml must remain non-publishing regardless of
+        # contract provisional status.
+        permissions = self.workflow.get("permissions") or {}
+        for forbidden in (*PUBLICATION_ACTIONS, "tagName", "releaseName", "releaseBody",
+                          "releaseDraft", "prerelease", "contents: write", "id-token: write"):
+            self.assertNotIn(forbidden, self.code)
+        for name, granted in permissions.items():
+            self.assertNotIn("write", str(granted), f"release.yml grants {name}: write")
+        found = set(re.findall(r"secrets\.([A-Za-z0-9_]+)", self.code))
+        self.assertEqual(found - set(RELEASE_SIGNING_SECRETS), set())
+
     def test_the_signer_uses_the_release_secret_and_the_workflows_signer(self) -> None:
         step = self.signer_step()
         env = step.get("env") or {}

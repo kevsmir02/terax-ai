@@ -772,6 +772,25 @@ class PublicationInputTest(GateTestCase):
         self.assertNotIn(secret, json.dumps(decision.as_dict()))
         self.assertNotIn(secret, "\n".join(entry.message for entry in decision.refusals))
 
+    def test_the_workflow_presence_flag_satisfies_signing_input_without_secret_bytes(self) -> None:
+        # The workflow gate steps evaluate secret presence via TERAX_RELEASE_SIGNING_KEY_PRESENT
+        # so raw key material stays scoped exclusively to the signer step.
+        ok = self.decide(
+            contract_path=self.settled(),
+            environment={release_gate.SIGNING_INPUT_PRESENT_ENV: "true"},
+        )
+        self.assertNotIn("signing-input-missing", codes(ok))
+        self.assertTrue(ok.publishable)
+
+        for absent in ("false", "", "0"):
+            with self.subTest(value=absent):
+                refused = self.decide(
+                    contract_path=self.settled(),
+                    environment={release_gate.SIGNING_INPUT_PRESENT_ENV: absent},
+                )
+                self.assertIn("signing-input-missing", codes(refused))
+                self.assertFalse(refused.publishable)
+
     def test_no_secret_value_ever_reaches_the_decision(self) -> None:
         secret = "SECRET-SIGNING-MATERIAL-DO-NOT-LOG"
         contract = self.settled()

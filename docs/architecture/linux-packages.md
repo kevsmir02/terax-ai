@@ -38,15 +38,13 @@ signing secret in the environment the step refuses (`signing-key-missing` /
 `signing-passphrase-missing`) rather than skipping. `docs/architecture/release-trust.md` owns trust,
 custody, key replacement and what is *not* promised.
 
-**Release gating status.** Publication identity and the independent minisign trust root (key ID
-`94097B75DB498B21`) are settled in `src/modules/updater/releaseContract.json` (`"provisional": false`)
-and `src/modules/identity/namespace.json`. No stable release is published yet:
+**Release gating status.** Publication identity, the independent minisign trust root (key ID
+`94097B75DB498B21`), the GitHub Actions signing secrets, complete candidate assembly (#42),
+and final whole-app resource budgets (#43) are settled. No stable release is published yet:
 
 | Remaining gate | Owned by |
 | --- | --- |
-| Upload signing secrets (`TERAX_RELEASE_SIGNING_KEY` and passphrase) into GitHub Actions secrets | Maintainer before tagging |
 | A candidate validated on Fedora, Debian and Arch | issue #44 |
-| A complete candidate with the retained workflows verified | issue #42 |
 | The first public stable release and its support claims | issue #45 |
 
 The release workflow remains non-publishing (`contents: read`/`checks: read`, no release-upload

@@ -271,10 +271,11 @@ Do not add one to the other, and do not derive one from the other.
 
 ## Deliberately not decided here
 
-- **Whole-application startup time and memory targets.** Issue #43 accepts
-  those from measured final evidence. These viewer ceilings are not a startup
-  budget, not a total-RSS target and not evidence that a lightweight release
-  gate is met.
+- **Whole-application startup time and memory targets.** Issue #43 accepted the
+  final whole-application resource budgets on 2026-11-13 (see
+  `docs/architecture/app-lab.md`, "Approved whole-application budgets (issue #43)").
+  The viewer ceilings in `limits.ts` remain document-level admission bounds,
+  not startup or total-PSS budgets.
 - **Package size.** Unrelated to runtime ceilings; issue #42 and the release
   tickets own it.
 - **Codec and format support.** Which image/media formats actually decode is
