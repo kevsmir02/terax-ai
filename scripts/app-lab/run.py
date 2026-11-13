@@ -2619,6 +2619,26 @@ def run_linux_startup(args, binary: Path, source: Path, output: Path) -> int:
     return 0
 
 
+def recovery_write_step(
+    acknowledged: dict, returncode: int | None, operations: list[dict]
+) -> dict:
+    """Launch 1 passes only when both drafts were acknowledged and SIGKILL ended the process."""
+    drafts = acknowledged.get("drafts") or []
+    signalled = any(
+        operation.get("action") == "signal" and operation.get("signal") == "SIGKILL"
+        for operation in operations
+    )
+    crashed = returncode == -signal.SIGKILL and signalled
+    return {
+        "name": "the harness killed the app after the acknowledged recovery write",
+        "ok": len(drafts) == 2 and crashed,
+        "detail": (
+            f"acknowledged {len(drafts)} draft(s); "
+            f"exit {returncode}; harness signal {signalled}"
+        ),
+    }
+
+
 def run_linux_recovery(args, binary: Path, source: Path, output: Path) -> int:
     """Crash recovery across two launches of the real app (#46 S2-25).
 
@@ -2707,6 +2727,8 @@ def run_linux_recovery(args, binary: Path, source: Path, output: Path) -> int:
             }
             if phase == "restore":
                 scenario["recovery"]["expectedBufferIds"] = acknowledged.get("bufferIds", [])
+                scenario["recovery"]["expectedText"] = acknowledged.get("text")
+                scenario["recovery"]["expectedOtherText"] = acknowledged.get("otherText")
             server = ReportServer(workspace)
             launch_env = {
                 **env,
@@ -2788,6 +2810,7 @@ def run_linux_recovery(args, binary: Path, source: Path, output: Path) -> int:
                     except subprocess.TimeoutExpired:
                         pass
                 server.httpd.shutdown()
+                server.httpd.server_close()
                 log.close()
                 if server.log:
                     (output / f"page-{launch}.log").write_text("\n".join(server.log))
@@ -2798,23 +2821,11 @@ def run_linux_recovery(args, binary: Path, source: Path, output: Path) -> int:
             result["interference"] = server.operations
             manifest["recovery"]["launches"].append(result)
             if phase == "write":
-                signalled = any(
-                    operation.get("action") == "signal" and operation.get("signal") == "SIGKILL"
-                    for operation in server.operations
-                )
-                crashed = returncode == -signal.SIGKILL and signalled
-                steps.append({
-                    "name": "the harness killed the app after the acknowledged recovery write",
-                    "ok": bool(acknowledged) and crashed,
-                    "detail": (
-                        f"acknowledged {len(acknowledged.get('drafts') or [])} draft(s); "
-                        f"exit {returncode}; harness signal {signalled}"
-                    ),
-                })
-                if not (acknowledged and crashed):
+                step = recovery_write_step(acknowledged, returncode, server.operations)
+                steps.append(step)
+                if not step["ok"]:
                     raise RuntimeError(
-                        f"launch 1 did not crash through the harness signal: exit {returncode}; "
-                        f"acknowledged {bool(acknowledged)}"
+                        f"launch 1 did not crash cleanly after recovery ack: {step['detail']}"
                     )
             else:
                 done_report = result.get("done") or {}

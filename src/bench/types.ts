@@ -263,9 +263,12 @@ export type BenchScenario = {
     phase: "write" | "restore";
     file: string;
     otherFile: string;
-    /** write: the text to type. restore: the text the first launch acknowledged. */
+    /** write: the text to insert. restore: the inserted token text. */
     text: string;
     otherText: string;
+    /** restore: the exact full buffer text launch 1 acknowledged for each file. */
+    expectedText?: string;
+    expectedOtherText?: string;
     /** restore: the buffer ids the first launch reported durable. */
     expectedBufferIds?: string[];
   };

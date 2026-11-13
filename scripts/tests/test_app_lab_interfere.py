@@ -45,6 +45,7 @@ class InterfereTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.server.httpd.shutdown()
+        self.server.httpd.server_close()
         self.scratch.cleanup()
 
     def post(self, payload) -> tuple[int, dict]:
@@ -59,7 +60,8 @@ class InterfereTest(unittest.TestCase):
             with urllib.request.urlopen(request, timeout=10) as response:
                 return response.status, json.loads(response.read())
         except urllib.error.HTTPError as error:
-            return error.code, json.loads(error.read() or b"{}")
+            with error:
+                return error.code, json.loads(error.read() or b"{}")
 
     # ---------------------------------------------------------------- write
     def test_write_inside_the_workspace_succeeds(self) -> None:
@@ -201,6 +203,7 @@ class InterfereTest(unittest.TestCase):
             self.assertFalse((self.workspace / "a.txt").exists())
         finally:
             bare.httpd.shutdown()
+            bare.httpd.server_close()
 
     def test_every_accepted_action_is_recorded_as_evidence(self) -> None:
         self.post(
@@ -228,6 +231,28 @@ class RecoveryScenarioWiringTest(unittest.TestCase):
         timeout = self.run.host_timeout(Args(), {"name": "recovery"})
         self.assertGreaterEqual(timeout, 240)
         self.assertLessEqual(timeout, 900)
+
+    def test_recovery_write_step_requires_two_acknowledged_drafts_and_sigkill(self) -> None:
+        sigkill = [{"action": "signal", "signal": "SIGKILL"}]
+        empty_ack = {"drafts": [], "bufferIds": []}
+        self.assertFalse(
+            self.run.recovery_write_step(empty_ack, -signal.SIGKILL, sigkill)["ok"]
+        )
+        one_ack = {"drafts": [{"bufferId": "a"}], "bufferIds": ["a"]}
+        self.assertFalse(
+            self.run.recovery_write_step(one_ack, -signal.SIGKILL, sigkill)["ok"]
+        )
+        two_ack = {
+            "drafts": [{"bufferId": "a"}, {"bufferId": "b"}],
+            "bufferIds": ["a", "b"],
+        }
+        self.assertFalse(self.run.recovery_write_step(two_ack, 0, sigkill)["ok"])
+        self.assertFalse(
+            self.run.recovery_write_step(two_ack, -signal.SIGKILL, [])["ok"]
+        )
+        self.assertTrue(
+            self.run.recovery_write_step(two_ack, -signal.SIGKILL, sigkill)["ok"]
+        )
 
 
 if __name__ == "__main__":

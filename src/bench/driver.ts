@@ -1743,18 +1743,18 @@ async function workflowScenario(
         "typing during a pending save keeps the tab open with the newer text",
         stillOpen &&
           run.app().pendingGuards().closeSaveState === "incomplete" &&
-          activeEditorText().includes(newerText) &&
+          bufferText(staleTab).includes(newerText) &&
           staleDisk.includes(firstText) &&
           !staleDisk.includes(newerText) &&
           elapsed >= delay / 2,
-        `open ${stillOpen}; state ${run.app().pendingGuards().closeSaveState}; newer ${activeEditorText().includes(newerText)}; disk stale ${staleDisk.includes(firstText) && !staleDisk.includes(newerText)}; ${Math.round(elapsed)}ms`,
+        `open ${stillOpen}; state ${run.app().pendingGuards().closeSaveState}; newer ${bufferText(staleTab).includes(newerText)}; disk stale ${staleDisk.includes(firstText) && !staleDisk.includes(newerText)}; ${Math.round(elapsed)}ms`,
       );
       run.app().cancelPendingClose();
       await pause(200);
       await check(
         "cancelling the incomplete save-and-close keeps the newer text",
         run.app().tabs.some((tab) => tab.id === staleTab) &&
-          activeEditorText().includes(newerText),
+          bufferText(staleTab).includes(newerText),
         `tabs ${run.app().tabs.length}`,
       );
       await run.sync("workflow-stale-typing", {
@@ -6911,24 +6911,38 @@ async function recoveryScenario(
     run.app().editEditor(fileTab, config.text);
     const otherTab = await open(config.otherFile);
     run.app().editEditor(otherTab, config.otherText);
+    await run.waitFor(
+      () =>
+        (run.app().readEditor(fileTab) ?? "").includes(config.text) &&
+        (run.app().readEditor(otherTab) ?? "").includes(config.otherText),
+      "the dirty recovery buffers",
+    );
+    const expectedText = run.app().readEditor(fileTab) ?? "";
+    const expectedOtherText = run.app().readEditor(otherTab) ?? "";
     const deadline = performance.now() + 30_000;
     let acknowledged: RecoveryRecord[] = [];
     while (performance.now() < deadline) {
       const records = await drafts();
       const own = recordFor(records, config.file);
       const other = recordFor(records, config.otherFile);
-      if (own?.text === config.text && other?.text === config.otherText) {
+      if (own?.text === expectedText && other?.text === expectedOtherText) {
         acknowledged = [own, other];
         break;
       }
       await pause(200);
     }
+    if (acknowledged.length !== 2) {
+      throw new Error(
+        await failed(
+          "the recovery write is acknowledged before the crash",
+          `stored ${(await drafts()).map((record) => `${record.path.split("/").pop()}:${record.bufferRevision}`).join(",") || "none"}`,
+        ),
+      );
+    }
     await check(
       "the recovery write is acknowledged before the crash",
-      acknowledged.length === 2,
-      acknowledged.length === 2
-        ? `drafts ${acknowledged.map((record) => record.bufferId).join(",")}`
-        : `stored ${(await drafts()).map((record) => `${record.path.split("/").pop()}:${record.bufferRevision}`).join(",") || "none"}`,
+      true,
+      `drafts ${acknowledged.map((record) => record.bufferId).join(",")}`,
     );
     await run.sync("recovery-acked", {
       drafts: acknowledged.map((record) => ({
@@ -6936,8 +6950,8 @@ async function recoveryScenario(
         path: record.path,
         bufferRevision: record.bufferRevision,
       })),
-      text: config.text,
-      otherText: config.otherText,
+      text: acknowledged[0].text,
+      otherText: acknowledged[1].text,
     });
     // Ask the harness (not the app) to force-terminate the process group. The reply is sent
     // before the signal, so this request returns; the page then dies with the process.
@@ -6947,6 +6961,8 @@ async function recoveryScenario(
   }
 
   // ------------------------------------------------------------- restore (after the crash)
+  const expectedText = config.expectedText ?? config.text;
+  const expectedOtherText = config.expectedOtherText ?? config.otherText;
   const fileTab = await open(config.file);
   const otherTab = await open(config.otherFile);
   try {
@@ -6976,12 +6992,14 @@ async function recoveryScenario(
   );
   await check(
     "the offered draft carries the last acknowledged text",
-    own?.text === config.text &&
-      other?.text === config.otherText &&
+    own?.text === expectedText &&
+      other?.text === expectedOtherText &&
+      own.text.includes(config.text) &&
+      other.text.includes(config.otherText) &&
       (config.expectedBufferIds ?? []).every((id) =>
         offered.some((record) => record.bufferId === id),
       ),
-    `own ${own?.text === config.text}; other ${other?.text === config.otherText}; ids ${JSON.stringify(config.expectedBufferIds ?? [])}`,
+    `own ${own?.text === expectedText}; other ${other?.text === expectedOtherText}; ids ${JSON.stringify(config.expectedBufferIds ?? [])}`,
   );
   if (own) {
     const compare = bannerButton(config.file, "Compare");
@@ -7038,7 +7056,7 @@ async function recoveryScenario(
   await check(
     "discarding removes exactly that draft",
     recordFor(remaining, config.file) === undefined &&
-      left?.text === config.otherText &&
+      left?.text === expectedOtherText &&
       left?.bufferId === other?.bufferId &&
       banner(config.file) === null &&
       banner(config.otherFile) !== null,
