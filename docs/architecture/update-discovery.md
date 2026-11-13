@@ -55,13 +55,17 @@ and trust. `.github/workflows/release.yml` is started by a `v<major>.<minor>.<pa
 `workflow_dispatch`, and its first step is `scripts/release_gate.py --preconditions-only`: tag
 agrees with the application version (stable only), every job `ci.yml` declares is green for that
 exact commit, and publication identity plus signing trust are decided. Only then does the job
-build, and a second gate stage binds the staged artifacts to the triggering commit and their
-sha256.
+build, sign the staged artifacts with the maintainer's minisign key, write the stable `latest.json`,
+and run the second gate stage, which binds the staged artifacts to the triggering commit, their
+sha256 and a signature that must verify under the committed public key.
 
 Today the third precondition cannot hold, so a tag fails loudly before any artifact is produced
 and nothing is published anywhere — the workflow has no write permission, no release-upload action
-and no signing secret, and the gate has no publish code path. The refusal names each missing input
-and the ticket that supplies it; `docs/architecture/linux-packages.md` carries the full table:
+and no way to publish, and the gate has no publish code path. The one secret it reads is the
+release signing key, injected for the signer step only; without it the signer refuses by name
+(`signing-key-missing`). The refusal names each missing input and the ticket that supplies it;
+`docs/architecture/linux-packages.md` carries the full table; trust, custody, verification and key
+replacement are `docs/architecture/release-trust.md`:
 
 | Missing input | Ticket |
 | --- | --- |
@@ -98,6 +102,11 @@ trusted comment that names the announced version, and a provisioned trust root. 
 that does not download the artifact cannot cryptographically verify it, so the production
 verifier fails closed (`check-failed: signature`) until #40 provisions keys. A development
 build against loopback fixtures labels releases `fixture-unverified`, and the UI says so.
+
+Release *production*, unlike discovery, does verify cryptographically: the release gate checks every
+announced artifact's signature against the committed public key before a release could be published
+(`docs/architecture/release-trust.md`). A published `latest.json` and its `.minisig` files are what
+that gate accepted; the application still only inspects structure because it never downloads.
 
 Automatic checks run at most once per `check.intervalMs` (6 h), tracked under the fork's
 namespaced key (`terax-workspace:updater:last-check`). An explicit user check bypasses the

@@ -489,8 +489,11 @@ Stored upstream conversations and credentials are never read, migrated or delete
 - `bundle.createUpdaterArtifacts` is `false` and the updater endpoints are the fork's non-live
   `.invalid` contract values (`src/modules/updater/releaseContract.json`). The application never
   downloads, installs or restarts itself: RPM/DEB upgrades go through the distribution's package
-  tool (the explicit package-tool handoff), and Arch stays package-tool managed. Signing, release
-  trust and publication gates belong to tickets #39/#40.
+  tool (the explicit package-tool handoff), and Arch stays package-tool managed. The bundler's
+  updater payloads are not this fork's release artifacts: the release job signs the staged
+  `.rpm`/`.deb`/`PKGBUILD` with minisign and writes `latest.json`
+  (`scripts/release_signing.py`, `docs/architecture/release-trust.md`), and the tagged-release gate
+  still refuses until the maintainer provisions the real key (issue #40).
 - `bundle.resources` includes the upstream Ghostty, Restty, ghostty-web, and xterm.js license notices under `licenses/terminal/`. Repository documentation and test-only reference WASM cores are not packaged; the frontend includes only the adapted SIMD and scalar cores.
 
 ### Known gotchas

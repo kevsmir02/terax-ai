@@ -17,17 +17,26 @@ and this fork has never published. The tag starts a decision made by one script,
 | Every job `ci.yml` declares is green for *exactly* the tagged commit | `ci-evidence-missing`, `ci-commit-mismatch`, `ci-job-missing`, `ci-job-not-green` |
 | Publication identity and signing trust are decided | `publication-provisional`, `publication-endpoint-missing`, `publication-endpoint-upstream`, `signing-trust-missing`, `signing-input-missing` |
 | The staged set is the candidate built for that commit | `artifact-commit-mismatch`, `artifact-dirty-build`, `artifact-version-mismatch`, `artifact-missing`, `artifact-extra`, `artifact-checksum-mismatch`, `artifact-manifest-problem` |
+| The signed manifest announces this commit, version and artifact set, and every signature verifies under the committed key | `artifact-update-manifest-missing`, `artifact-update-manifest-invalid`, `artifact-update-version-mismatch`, `artifact-update-commit-mismatch`, `artifact-update-channel-mismatch`, `artifact-update-artifact-missing`, `artifact-update-artifact-uncovered`, `artifact-update-checksum-mismatch`, `artifact-signature-missing`, `artifact-signature-mismatch`, `artifact-signature-invalid`, `artifact-signature-key-mismatch`, `artifact-signature-version-mismatch`, `artifact-signature-unverifiable`, `artifact-signing-trust-unreadable` |
 
 The gate runs twice in one job, and the order is the invariant:
 
 1. `--preconditions-only` runs **before** the build, so a tag or dispatch that fails the
    tag/version comparison, the green-CI requirement or the publication-input check fails the job
    **before any artifact exists**;
-2. `--candidate linux-packages` runs **after** staging and binds what would be published to an
+2. after staging **and signing**, `--candidate linux-packages` binds what would be published to an
    immutable identity: the triggering commit, the tag, the version, the sha256 of every artifact
-   and in `SHA256SUMS`, and a digest over all of them. Missing, extra or substituted files are
-   refusals, not warnings. The schema and identity rules are the packaging runner's own
-   (`packaging.manifest_problems`), not a second copy.
+   and in `SHA256SUMS`, a digest over all of them, and a minisign signature over each signed
+   artifact that must verify under `releaseContract.json`'s committed public key. Missing, extra or
+   substituted files are refusals, not warnings. The schema and identity rules are the packaging
+   runner's own (`packaging.manifest_problems`), not a second copy.
+
+Signing happens between the two stages (`.github/workflows/release.yml`):
+`node_modules/.bin/tauri signer sign --app-version <version>` signs the staged `.rpm`, `.deb` and
+`PKGBUILD`, and `scripts/release_signing.py` writes `<artifact>.minisig` plus `latest.json`. With no
+signing secret in the environment the step refuses (`signing-key-missing` /
+`signing-passphrase-missing`) rather than skipping. `docs/architecture/release-trust.md` owns trust,
+custody, key replacement and what is *not* promised.
 
 **Why it refuses today.** Publication identity and signing trust are undecided, so
 `src/modules/updater/releaseContract.json` stays `"provisional": true` (that file is the single
@@ -44,11 +53,12 @@ input separately, and each names the ticket that supplies it:
 
 Until those land, the gate is the thing that keeps a tag from publishing: a refusal fails the job
 loudly instead of skipping publication, the workflow asks for `contents: read`/`checks: read`
-only, it contains no release-upload action and no signing secret, and the script has no code that
-could upload. `scripts/tests/test_ci_workflows.py` derives that rule from `releaseContract.json`,
-so flipping `provisional` to `false` is the deliberate, reviewed change that relaxes it — and even
-then the gate still refuses while the endpoint is a reserved placeholder, the trust root is
-unprovisioned or the signing input is absent.
+only, it contains no release-upload action, and the script has no code that could upload. The one
+secret the workflow reads is the release signing key, injected for the signer step only: it grants
+authenticity, not publication. `scripts/tests/test_ci_workflows.py` derives that rule from
+`releaseContract.json`, so flipping `provisional` to `false` is the deliberate, reviewed change that
+relaxes it, and even then the gate still refuses while the endpoint is a reserved placeholder, the
+trust root is unprovisioned, the signing input is absent or a signature does not verify.
 
 **Exercising it safely.** No tag and no public release are needed:
 
@@ -57,12 +67,18 @@ unprovisioned or the signing input is absent.
 python3 scripts/release_gate.py --tag v0.9.0 --commit "$(git rev-parse HEAD)" \
   --ci-status ci-status.json --preconditions-only --dry-run
 
-# 2. over a local candidate set: the whole gate, including artifact identity
+# 2. sign a staged set and write its manifest (a fixture key here; the release workflow uses
+#    `tauri signer sign` and --from-signatures instead)
+TERAX_RELEASE_SIGNING_KEY="$(cat fixture-key.json)" \
+  python3 scripts/release_signing.py --candidate linux-packages --version 0.9.0 \
+  --tag v0.9.0 --commit "$(git rev-parse HEAD)"
+
+# 3. over that staged set: the whole gate, including artifact identity and signatures
 python3 scripts/release_gate.py --tag v0.9.0 --commit "$(git rev-parse HEAD)" \
-  --ci-status ci-status.json --candidate dist-packages/<candidate> --dry-run \
+  --ci-status ci-status.json --candidate linux-packages --dry-run \
   --report gate-report.json
 
-# 3. the same thing in CI: dispatch the workflow with `dry_run: true`
+# 4. the same thing in CI: dispatch the workflow with `dry_run: true`
 ```
 
 `--dry-run` prints the decision (JSON on stdout, a human refusal list on stderr, a markdown table
@@ -72,9 +88,14 @@ missing and its value is never read into a log, report or summary.
 
 Validated here: the gate's refusals and the identity it binds, unit-tested with fixtures (matching
 tag, mismatched tag, prerelease tag, missing/extra/substituted artifact, wrong commit, missing CI
-job, non-green CI, missing signing input, unsettled/ settled contract) and pinned against the
-workflow by the guard test. **Not validated:** a real hosted run of the workflow itself (no
-tagged release has been run through GitHub Actions), and any publication — that is #45's job.
+job, non-green CI, missing signing input, unsettled/settled contract, missing or tampered
+`latest.json`, and signatures that are missing, from another key, over other bytes or bound to
+another version), plus the signer and the provisioning script. The verifier
+(`scripts/minisign.py`) is pinned against a signature produced by the real `tauri signer sign` and
+against RFC 8032's test vector, and the workflow order is pinned by the guard test. **Not
+validated:** a real hosted run of the workflow itself (no tagged release has been run through
+GitHub Actions), signing with the maintainer's real key (none is provisioned), and any publication
+(that is #45's job).
 
 Updates are never installed by the application. A user installs or upgrades the RPM/DEB with
 their package manager (`dnf`, `apt`); the application never downloads, installs or restarts
@@ -158,6 +179,10 @@ with a disposable `HOME`/`XDG` profile under the run output.
   `sources/` (a `git archive` tarball of the revision) and `arch/PKGBUILD` (the recipe pinned to
   that revision and source hash).
 
+A candidate directory is not a release. The release job stages the two packages, `manifest.json`,
+`SHA256SUMS` and `arch/PKGBUILD` into `linux-packages/`, signs them (`<artifact>.minisig`) and
+writes `latest.json`; it adds no build log, evidence or source tarball to the published set.
+
 A failed run still writes `manifest.json`, with `validation.build.status = "failed"`, the failing
 stage, exit code and the log tail. A missing directory is therefore not the failure signal.
 
@@ -170,9 +195,10 @@ CLI executes (`--help`) from the extracted deb; the licence resources are presen
 
 Not proven — recorded in `manifest.json` under `notValidated`: install/upgrade/remove with a real
 package manager, the graphical application started from a package on Fedora 44 KDE Wayland,
-Debian 13 WebKitGTK behaviour, dependency resolution by dnf/apt/pacman, signature/trust, updater
-discovery and installation (#37), and coexistence with an installed upstream build. Package
-extraction is not runtime certification.
+Debian 13 WebKitGTK behaviour, dependency resolution by dnf/apt/pacman, native package/repository
+signature trust (the artifacts carry minisign signatures, which `dnf`/`apt` do not consume; see
+[release trust](release-trust.md)), updater discovery and installation (#37), and coexistence with
+an installed upstream build. Package extraction is not runtime certification.
 
 ## Arch recipe
 
@@ -186,9 +212,11 @@ environment that records package versions. The packaging runner writes a revisio
 
 - Update discovery is issue #37: a candidate inherits the fork-owned release contract — a
   non-live `.invalid` endpoint and no provisioned trust root — so it cannot query or install an
-  upstream release. Candidates are built with `createUpdaterArtifacts=false`. Until #40/#41
-  provision the real endpoint and key, no update can be verified and nothing may be published.
-  The tagged-release gate (`scripts/release_gate.py`) enforces that refusal; publishing is #45.
+  upstream release. Candidates keep `bundle.createUpdaterArtifacts=false` because the bundler's
+  updater payloads are not this fork's release artifacts; authenticity is the post-build minisign
+  step (`scripts/release_signing.py`), not that switch. Until #40/#41 provision the real endpoint
+  and key, no signature can be verified against a committed key and nothing may be published. The
+  tagged-release gate (`scripts/release_gate.py`) enforces that refusal; publishing is #45.
 - The deb `Maintainer` field is derived by the bundler from the Cargo authors (upstream credit),
   not from the candidate vendor; final maintainer identity belongs to #40.
 
