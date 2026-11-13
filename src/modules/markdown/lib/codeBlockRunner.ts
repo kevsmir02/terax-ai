@@ -3,7 +3,7 @@
  *
  * The code block renderer is retained Markdown UI, but only the app shell knows
  * which tab is active and how to write into its PTY. The shell publishes that
- * action here instead of the renderer reaching into an AI store.
+ * action here instead of the renderer reaching into an editor store.
  */
 
 export type CodeBlockRunner = (command: string) => boolean;

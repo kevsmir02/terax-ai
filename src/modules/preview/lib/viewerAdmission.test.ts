@@ -175,6 +175,14 @@ describe("admitDecodedViewer", () => {
     const remaining = releaseDecodedViewer(viewers, "gone");
     expect(remaining.map((entry) => entry.id)).toEqual(["stays"]);
   });
+
+  it("keeps the table identity when there is nothing to release", () => {
+    // A refused viewer's cleanup releases an id the table never admitted.
+    // Returning the same array keeps that from reading as a table change,
+    // which is what re-arms a refusal retry.
+    const viewers = [viewer("stays", MIB)];
+    expect(releaseDecodedViewer(viewers, "never-admitted")).toBe(viewers);
+  });
 });
 
 describe("viewer admission store", () => {

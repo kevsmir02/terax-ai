@@ -131,13 +131,34 @@ observed applying in issue #30; the 32 MiB per-page render ceiling is still cont
 only until issue #31, because WebKit's own PDF document never asks this module — see
 `docs/architecture/pdf-reader.md`.
 
-Markdown previews (issue #27) inline images go through the same asset delivery bounds
-but are not counted as separate decoded viewers, because each image is bounded by its
-asset response. The document read is the same 10 MiB contract with the explicit
-"Open anyway" override up to 50 MiB, and code highlighting is off above 4 MiB. A
-document outside the Space root is anchored to its own directory; assets beyond that
-boundary or on the network need the explicit choice described in
-`markdown-rendering.md`, so browsing cannot pull an unbounded remote set on its own.
+Markdown previews (issue #27) inline images follow the same decoded-resource
+contract as the image surface, because bounding the *transferred* asset response
+does not bound the decoded pixels: a 10 MiB 20 000×20 000 PNG still expands to
+about 1.5 GiB in the webview. A visible local image is therefore probe-first:
+the same native `fs_image_probe` reads its header, `imageBudgetDecision` applies
+the approved 64 MiB decoded ceiling before any `<img>` mounts, and a raster that
+is shown is registered with `viewerAdmission`, so inline images count toward the
+four-viewer/192 MiB application-wide budget. An image below the viewport, or on
+a tab that is not on screen, is neither probed nor decoded; its admission slot
+and its tab-owned asset grant are released when the document closes or is
+replaced. An image that is refused shows the reason in the document instead of a
+mounted element. The probe canonicalizes an automatic local image against the
+document boundary, so a symlink that leaves the folder is refused before its
+outside target is read; an outside file the person explicitly granted is probed
+under that consent.
+
+Two references have no file path for the native probe: a remote image the person
+explicitly consented to load, and an inline `data:` image. Their element mounts
+lazily to report its intrinsic size, and the same 64 MiB decision and admission
+table then decide whether it stays; an oversized one is removed with the same
+in-document reason. This is a measured-at-load guarantee for those two kinds,
+not a before-mount one, and it is the only path that briefly decodes before the
+ceiling is applied. The document read is the same 10 MiB contract with the
+explicit "Open anyway" override up to 50 MiB, and code highlighting is off above
+4 MiB. A document outside the Space root is anchored to its own directory;
+assets beyond that boundary or on the network still need the explicit choice
+described in `markdown-rendering.md`, so browsing cannot pull an unbounded
+remote set on its own.
 
 ### Audio and video
 

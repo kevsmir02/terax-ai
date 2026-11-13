@@ -189,6 +189,8 @@ export function MarkdownPreviewPane({
               />
               <MarkdownContent
                 path={path}
+                tabId={tabId}
+                visible={visible}
                 boundary={boundary}
                 content={content}
                 grantedAssets={grantedAssets}

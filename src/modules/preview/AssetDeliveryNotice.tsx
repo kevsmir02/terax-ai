@@ -2,7 +2,7 @@ import { Alert02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { LimitAlternative } from "./lib/limits";
 
-const ALTERNATIVE_LABELS: Record<LimitAlternative, string> = {
+export const ALTERNATIVE_LABELS: Record<LimitAlternative, string> = {
   "open-externally": "Open externally",
   downscale: "Show a smaller version",
   "reduce-zoom": "Reduce the zoom",

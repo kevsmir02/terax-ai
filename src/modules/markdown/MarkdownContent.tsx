@@ -9,6 +9,11 @@ import {
   MarkdownCode,
   type MarkdownCodeProps,
 } from "./components/MarkdownCode";
+import {
+  MarkdownImage,
+  type MarkdownImageProps,
+  MarkdownImageVisibility,
+} from "./components/MarkdownImage";
 import { rehypeLocalImages } from "./lib/assetPath";
 import { markdownRenderKey } from "./lib/documentAssets";
 import { MarkdownLink } from "./MarkdownLink";
@@ -16,6 +21,10 @@ import { MarkdownLink } from "./MarkdownLink";
 export type MarkdownContentProps = {
   /** Path of the rendered document; relative images resolve against it. */
   path: string;
+  /** The tab that owns the decoded-viewer slots for inline images. */
+  tabId?: number;
+  /** False while the tab is not on screen: inline images do no work. */
+  visible?: boolean;
   /** The folder local images may come from (`previewBoundary`). */
   boundary: string;
   content: string;
@@ -35,6 +44,8 @@ export type MarkdownContentProps = {
 
 export const MarkdownContent = memo(function MarkdownContent({
   path,
+  tabId = 0,
+  visible = true,
   boundary,
   content,
   assetUrlFor,
@@ -51,15 +62,18 @@ export const MarkdownContent = memo(function MarkdownContent({
       code: (props: MarkdownCodeProps) => (
         <MarkdownCode {...props} syntax={syntax} />
       ),
+      img: (props: Omit<MarkdownImageProps, "tabId" | "documentPath">) => (
+        <MarkdownImage {...props} tabId={tabId} documentPath={path} />
+      ),
     }),
-    [syntax],
+    [syntax, tabId, path],
   );
   const rehypePlugins = useMemo(() => {
     const d = defaultRehypePlugins;
     return [
       d.raw,
       d.sanitize,
-      rehypeLocalImages(path, (abs) => assetUrlFor?.(abs) ?? "data:,", {
+      rehypeLocalImages(path, (abs) => assetUrlFor?.(abs), {
         boundary,
         isReadable: (abs) => checkReadable(abs).ok,
         granted: grantedAssets,
@@ -91,16 +105,18 @@ export const MarkdownContent = memo(function MarkdownContent({
           </button>
         </div>
       )}
-      <Streamdown
-        key={renderKey}
-        className="select-text [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
-        components={components}
-        rehypePlugins={rehypePlugins}
-        mode="static"
-        parseIncompleteMarkdown={false}
-      >
-        {content}
-      </Streamdown>
+      <MarkdownImageVisibility.Provider value={visible}>
+        <Streamdown
+          key={renderKey}
+          className="select-text [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
+          components={components}
+          rehypePlugins={rehypePlugins}
+          mode="static"
+          parseIncompleteMarkdown={false}
+        >
+          {content}
+        </Streamdown>
+      </MarkdownImageVisibility.Provider>
     </>
   );
 });

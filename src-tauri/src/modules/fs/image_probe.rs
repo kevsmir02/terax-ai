@@ -340,7 +340,25 @@ fn le_u24(bytes: &[u8], at: usize) -> Option<u32> {
 }
 
 /// Reads at most [`PROBE_MAX_BYTES`] from a regular file and parses it.
-pub fn probe_file(path: &Path) -> Result<ImageProbeOutcome, String> {
+///
+/// When `boundary` is supplied (the Markdown surface's document root), the
+/// *canonical* target must stay inside it. A document cannot make the probe
+/// read a header through a symlink that leaves its folder; the alternative
+/// would be a read the asset delivery layer refuses later anyway.
+pub fn probe_file(
+    path: &Path,
+    boundary: Option<&Path>,
+) -> Result<ImageProbeOutcome, String> {
+    if let Some(root) = boundary {
+        let root = std::fs::canonicalize(root).map_err(|error| error.to_string())?;
+        let canonical = std::fs::canonicalize(path).map_err(|error| error.to_string())?;
+        if canonical != root && !canonical.starts_with(&root) {
+            return Err(
+                "This image resolves outside the folder the document may load from, so its header was not read."
+                    .into(),
+            );
+        }
+    }
     let metadata = std::fs::metadata(path).map_err(|error| error.to_string())?;
     if !metadata.is_file() {
         return Err("only regular files can be inspected as images".into());
@@ -366,9 +384,13 @@ pub fn probe_file(path: &Path) -> Result<ImageProbeOutcome, String> {
 pub async fn fs_image_probe(
     path: String,
     workspace: Option<WorkspaceEnv>,
+    boundary: Option<String>,
 ) -> Result<ImageProbeOutcome, String> {
     super::blocking(move || {
-        probe_file(&resolve_path(&path, &WorkspaceEnv::from_option(workspace)))
+        let workspace = WorkspaceEnv::from_option(workspace);
+        let path = resolve_path(&path, &workspace);
+        let boundary = boundary.map(|root| resolve_path(&root, &workspace));
+        probe_file(&path, boundary.as_deref())
     })
     .await
 }
@@ -507,7 +529,7 @@ mod tests {
         let path = dir.path().join("photo.png");
         std::fs::write(&path, PNG).unwrap();
         assert_eq!(
-            dimensions(probe_file(&path).unwrap()),
+            dimensions(probe_file(&path, None).unwrap()),
             ("png".into(), 64, 64)
         );
     }
@@ -515,12 +537,42 @@ mod tests {
     #[test]
     fn refuses_a_missing_file_with_an_error() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(probe_file(&dir.path().join("missing.png")).is_err());
+        assert!(probe_file(&dir.path().join("missing.png"), None).is_err());
     }
 
     #[test]
     fn refuses_a_directory() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(probe_file(dir.path()).is_err());
+        assert!(probe_file(dir.path(), None).is_err());
+    }
+
+    #[test]
+    fn allows_a_file_inside_the_document_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let docs = dir.path().join("docs");
+        std::fs::create_dir_all(&docs).unwrap();
+        let path = docs.join("photo.png");
+        std::fs::write(&path, PNG).unwrap();
+        assert_eq!(
+            dimensions(probe_file(&path, Some(&docs)).unwrap()),
+            ("png".into(), 64, 64)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_a_symlink_that_resolves_outside_the_document_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let docs = dir.path().join("docs");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&docs).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let secret = outside.join("secret.png");
+        std::fs::write(&secret, PNG).unwrap();
+        let escape = docs.join("escape.png");
+        std::os::unix::fs::symlink(&secret, &escape).unwrap();
+
+        let error = probe_file(&escape, Some(&docs)).unwrap_err();
+        assert!(error.contains("outside the folder"), "{error}");
     }
 }

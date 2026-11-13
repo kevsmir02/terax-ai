@@ -1970,6 +1970,23 @@ function markdownImage(alt: string): HTMLImageElement | null {
   );
 }
 
+/**
+ * The bounded inline-image wrapper for one rendered image. The `<img>` itself
+ * exists only after the header probe and decoded-viewer admission, so the
+ * wrapper's state is what a refusal or a lazy (not yet probed) image exposes.
+ */
+function markdownImageHost(alt: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(
+    `[data-markdown-image-alt="${alt}"]`,
+  );
+}
+
+function markdownImageStateOf(alt: string): string | null {
+  return (
+    markdownImageHost(alt)?.getAttribute("data-markdown-image-state") ?? null
+  );
+}
+
 /** A document-rendered link; the hardened href may be normalized to `/path`. */
 function markdownLink(fragment: string): HTMLAnchorElement | null {
   return (
@@ -2082,18 +2099,48 @@ async function markdownScenario(
   );
   try {
     await run.waitFor(
-      () => markdownImage("escape")?.complete === true,
+      () =>
+        ["decode-error", "unreadable", "corrupt"].includes(
+          markdownImageStateOf("escape") ?? "",
+        ),
       "the symlink escape attempt",
       15_000,
     );
   } catch (error) {
     throw new Error(await failed("symlink escape refused", String(error)));
   }
-  const escaped = markdownImage("escape");
+  const escapedState = markdownImageStateOf("escape");
+  const escapedHost = markdownImageHost("escape");
   await check(
     "symlink escape refused",
-    escaped !== null && escaped.naturalWidth === 0,
-    `naturalWidth ${escaped?.naturalWidth ?? "missing"}`,
+    escapedHost !== null && escapedHost.querySelector("img") === null,
+    `state ${escapedState ?? "missing"}, img ${escapedHost?.querySelector("img") ? "present" : "absent"}`,
+  );
+
+  // The same document also references an image whose header declares a
+  // 20 000 x 20 000 raster (~1.5 GiB decoded). The header probe must refuse it
+  // before an <img> mounts, and the reason must be in the document.
+  try {
+    await run.waitFor(
+      () => markdownImageStateOf("oversized") === "oversized",
+      "the oversized inline image refusal",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(
+      await failed(
+        "oversized inline image refused",
+        `${String(error)}; ${domState()}`,
+      ),
+    );
+  }
+  const oversizedHost = markdownImageHost("oversized");
+  await check(
+    "oversized inline image is refused before mount",
+    oversizedHost !== null &&
+      oversizedHost.querySelector("img") === null &&
+      (oversizedHost.textContent ?? "").includes("64 MiB"),
+    `state ${markdownImageStateOf("oversized") ?? "missing"}, text ${JSON.stringify((oversizedHost?.textContent ?? "").slice(0, 120))}`,
   );
 
   // 2. The mutable terminal cwd changes; the document's access must not follow it.
@@ -2193,7 +2240,12 @@ async function markdownScenario(
       20_000,
     );
   } catch (error) {
-    throw new Error(await failed("consented remote load", String(error)));
+    throw new Error(
+      await failed(
+        "consented remote load",
+        `${String(error)}; state ${markdownImageStateOf("remote") ?? "missing"}, host ${markdownImageHost("remote") ? "present" : "absent"}, hits ${beforeConsent}, ${domState()}`,
+      ),
+    );
   }
   const afterConsent = await remoteHits();
   await check(
@@ -2304,7 +2356,10 @@ async function markdownScenario(
     );
   } catch (error) {
     throw new Error(
-      await failed("large document without syntax", String(error)),
+      await failed(
+        "large document without syntax",
+        `${String(error)}; active ${run.app().activeId}, large image ${markdownImageStateOf("large") ?? "missing"}, syntax ${document.querySelector("[data-syntax]")?.getAttribute("data-syntax") ?? "missing"}, ${domState()}`,
+      ),
     );
   }
   const largeSrc = markdownImage("large")?.src ?? "";
@@ -2312,6 +2367,35 @@ async function markdownScenario(
     "large document opens without syntax",
     largeSrc.includes("token="),
     largeSrc || "no asset src",
+  );
+  // The same document ends with an oversized image far below the fold. It must
+  // not be probed until it is near the viewport; scrolling it in performs the
+  // probe and produces the same in-document refusal.
+  const offscreenState = markdownImageStateOf("too large");
+  await check(
+    "off-screen inline image is not probed",
+    offscreenState === "deferred",
+    `state ${offscreenState ?? "missing"}`,
+  );
+  markdownImageHost("too large")?.scrollIntoView({ block: "end" });
+  try {
+    await run.waitFor(
+      () => markdownImageStateOf("too large") === "oversized",
+      "the off-screen image probe after scrolling",
+      20_000,
+    );
+  } catch (error) {
+    throw new Error(
+      await failed(
+        "off-screen inline image refused after scrolling",
+        String(error),
+      ),
+    );
+  }
+  await check(
+    "scrolled-in oversized image is refused before mount",
+    markdownImageHost("too large")?.querySelector("img") === null,
+    `state ${markdownImageStateOf("too large") ?? "missing"}`,
   );
   run.app().closeTab(largeTab);
   await pause(1000);

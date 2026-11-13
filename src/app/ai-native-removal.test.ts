@@ -336,3 +336,56 @@ describe("architecture docs describe the retained contracts", () => {
       expect(catalog, name).not.toContain(`\`${name}\``);
   });
 });
+
+describe("shipped copy describes the retained product", () => {
+  /**
+   * Product descriptions that only the removed built-in AI feature justified.
+   * A historical note such as "the built-in AI feature used to own this" is
+   * not a claim that the feature exists, so the patterns name an advertised
+   * product surface instead of the bare word.
+   */
+  const AI_PRODUCT_CLAIMS = [
+    /\bAI-native\b/i,
+    /\bAI[- ]powered\b/i,
+    /\bAI[- ]first\b/i,
+    /\bAI terminal\b/i,
+    /\bAI (?:agents?|assistant|copilot)\b/i,
+    /\bbuilt-in AI (?:assistant|chat|copilot)\b/i,
+  ];
+
+  /** Source copy this guard owns: the client, its entry pages and the manifest. */
+  function copyFiles(): string[] {
+    return [
+      ...filesUnder(srcRoot, /\.(?:ts|tsx)$/, [/\.(?:test|bench)\.tsx?$/]),
+      path.join(repoRoot, "index.html"),
+      path.join(repoRoot, "settings.html"),
+      path.join(repoRoot, "package.json"),
+    ];
+  }
+
+  it("recognises an AI-product claim without flagging a removal note", () => {
+    const claims = (text: string) =>
+      AI_PRODUCT_CLAIMS.some((pattern) => pattern.test(text));
+    expect(claims("Terax — an open-source AI-native terminal emulator")).toBe(
+      true,
+    );
+    expect(
+      claims("…with multi-tab, file explorer, code editor, and AI agents."),
+    ).toBe(true);
+    expect(
+      claims(
+        "The built-in AI provider/model section is gone with the removed feature.",
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps AI-product claims out of the client sources and entry pages", () => {
+    const hits = copyFiles().flatMap((file) => {
+      const text = readFileSync(file, "utf8");
+      return AI_PRODUCT_CLAIMS.filter((pattern) => pattern.test(text)).map(
+        (pattern) => `${relative(file)}: ${pattern}`,
+      );
+    });
+    expect(hits).toEqual([]);
+  });
+});
