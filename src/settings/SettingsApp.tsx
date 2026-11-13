@@ -2,11 +2,13 @@ import { Toaster } from "@/components/ui/sonner";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { WindowControls } from "@/components/WindowControls";
 import { IS_MAC, USE_CUSTOM_WINDOW_CONTROLS } from "@/lib/platform";
-import type { SettingsTab } from "@/modules/settings/openSettingsWindow";
+import {
+  normalizeSettingsTab,
+  type SettingsTab,
+} from "@/settings/lib/tabRouting";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { WindowActivityBridge } from "@/modules/theme";
 import {
-  AiScanIcon,
   InformationCircleIcon,
   KeyboardIcon,
   PaintBoardIcon,
@@ -21,7 +23,6 @@ import { AboutSection } from "./sections/AboutSection";
 import { AgentsSection } from "./sections/AgentsSection";
 import { EditorSection } from "./sections/EditorSection";
 import { GeneralSection } from "./sections/GeneralSection";
-import { ModelsSection } from "./sections/ModelsSection";
 import { ShortcutsSection } from "./sections/ShortcutsSection";
 import { ThemesSection } from "./sections/ThemesSection";
 
@@ -55,7 +56,6 @@ const TABS: {
     icon: KeyboardIcon,
     component: ShortcutsSection,
   },
-  { id: "models", label: "Models", icon: AiScanIcon, component: ModelsSection },
   {
     id: "agents",
     label: "Agents",
@@ -70,24 +70,10 @@ const TABS: {
   },
 ];
 
-const VALID_TABS: SettingsTab[] = [
-  "general",
-  "editor",
-  "themes",
-  "shortcuts",
-  "models",
-  "agents",
-  "about",
-];
-
 function readInitialTab(): SettingsTab {
   if (typeof window === "undefined") return "general";
   const url = new URL(window.location.href);
-  const t = url.searchParams.get("tab");
-  // Back-compat: legacy "ai" / "connections" → "models".
-  if (t === "ai" || t === "connections") return "models";
-  if (t && (VALID_TABS as string[]).includes(t)) return t as SettingsTab;
-  return "general";
+  return normalizeSettingsTab(url.searchParams.get("tab")) ?? "general";
 }
 
 export function SettingsApp() {
@@ -101,13 +87,8 @@ export function SettingsApp() {
 
   useEffect(() => {
     const apply = (detail: string) => {
-      if (detail === "ai" || detail === "connections") {
-        setActive("models");
-        return;
-      }
-      if ((VALID_TABS as string[]).includes(detail)) {
-        setActive(detail as SettingsTab);
-      }
+      const tab = normalizeSettingsTab(detail);
+      if (tab) setActive(tab);
     };
     const unlistenPromise = getCurrentWebviewWindow().listen<string>(
       "terax:settings-tab",

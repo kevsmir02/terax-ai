@@ -81,7 +81,9 @@ export function isNeighbourAware(codepoint: number): boolean {
  * `isGraphicsElement`).
  */
 export function isNonGraphicsSymbol(codepoint: number): boolean {
-  return isPrivateUse(codepoint) && !(codepoint >= 0xe0b0 && codepoint <= 0xe0d7);
+  return (
+    isPrivateUse(codepoint) && !(codepoint >= 0xe0b0 && codepoint <= 0xe0d7)
+  );
 }
 
 /** Whether a glyph with a blank cell after it, away from the last column, after no symbol, is roomy. */
@@ -271,7 +273,12 @@ export function drawGlyph(
   context.save();
   if (layout.clip) {
     context.beginPath();
-    context.rect(layout.clip.x, layout.clip.y, layout.clip.width, layout.clip.height);
+    context.rect(
+      layout.clip.x,
+      layout.clip.y,
+      layout.clip.width,
+      layout.clip.height,
+    );
     context.clip();
   }
   context.translate(layout.penX, layout.baselineY);

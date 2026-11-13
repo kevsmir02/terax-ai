@@ -46,15 +46,31 @@ describe("theme application", () => {
     applyTheme(
       theme({
         dark: variant({
-          colors: { background: "#111111", cardForeground: "#eeeeee", radius: "8px" },
+          colors: {
+            background: "#111111",
+            cardForeground: "#eeeeee",
+            radius: "8px",
+          },
           terminal: {
             background: "#000000",
             cursor: "#ffffff",
             ansi: [
-              "#010101", "#020202", "#030303", "#040404",
-              "#050505", "#060606", "#070707", "#080808",
-              "#090909", "#0a0a0a", "#0b0b0b", "#0c0c0c",
-              "#0d0d0d", "#0e0e0e", "#0f0f0f", "#101010",
+              "#010101",
+              "#020202",
+              "#030303",
+              "#040404",
+              "#050505",
+              "#060606",
+              "#070707",
+              "#080808",
+              "#090909",
+              "#0a0a0a",
+              "#0b0b0b",
+              "#0c0c0c",
+              "#0d0d0d",
+              "#0e0e0e",
+              "#0f0f0f",
+              "#101010",
             ],
           },
         }),
@@ -87,12 +103,20 @@ describe("theme application", () => {
     const { applyTheme } = await loadModule();
 
     applyTheme(
-      theme({ dark: variant({ colors: { primary: "#123456" }, terminal: { cursor: "#abcdef" } }) }),
+      theme({
+        dark: variant({
+          colors: { primary: "#123456" },
+          terminal: { cursor: "#abcdef" },
+        }),
+      }),
       "dark",
     );
     removed.length = 0;
 
-    applyTheme(theme({ dark: variant({ colors: { accent: "#654321" } }) }), "dark");
+    applyTheme(
+      theme({ dark: variant({ colors: { accent: "#654321" } }) }),
+      "dark",
+    );
 
     const removedSet = new Set(removed);
     expect(removedSet.has("--primary")).toBe(true);
@@ -122,7 +146,9 @@ describe("theme application", () => {
     const { applyTheme } = await loadModule();
 
     applyTheme(
-      theme({ dark: variant({ colors: { background: "", foreground: "#ffffff" } }) }),
+      theme({
+        dark: variant({ colors: { background: "", foreground: "#ffffff" } }),
+      }),
       "dark",
     );
 

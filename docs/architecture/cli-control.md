@@ -17,7 +17,7 @@ terax hook <agent> <event>
 
 The app must already be running. A command launched inside a Terax pane targets that pane's space, even if another space or tab has UI focus. An external client without pane context falls back to the active UI context.
 
-`terax hook` is the entry point agent hooks call. It reads the hook JSON from stdin and delivers it with `TERAX_PANE_ID`. It does nothing outside a Terax pane, never exits non-zero, and prints `{}` unless it is returning a permission decision. `TERAX_HOOK_TIMEOUT` (seconds, default 600, at most 900) bounds how long it waits for a decision, `TERAX_HOOK_WAIT=0` disables waiting, and `TERAX_HOOK_DEBUG=1` prints why a delivery failed to stderr.
+`terax hook` is the entry point agent hooks call. It reads the hook JSON from stdin and delivers it with `CODR_PANE_ID`. It does nothing outside a Terax pane, never exits non-zero, and prints `{}` unless it is returning a permission decision. `CODR_HOOK_TIMEOUT` (seconds, default 600, at most 900) bounds how long it waits for a decision, `CODR_HOOK_WAIT=0` disables waiting, and `CODR_HOOK_DEBUG=1` prints why a delivery failed to stderr. All names come from `src/modules/identity/namespace.json`; a shell that only carries upstream's `TERAX_*` variables is another installation's and leaves the hook inert.
 
 ## Components
 
@@ -32,7 +32,7 @@ Rust handles `ping`, `capabilities`, authentication, and file validation directl
 
 ## Transport and authentication
 
-The app binds an ephemeral loopback TCP port and writes a discovery descriptor to the user cache directory under `terax/control.json`. The descriptor contains the protocol version, address, process id, app version, and a random 256-bit token.
+The app binds an ephemeral loopback TCP port and writes a discovery descriptor to the user cache directory under `codr/control.json` (this fork's namespace; an installed upstream Terax uses its own `terax/` directory and the two never share a descriptor - see [namespace isolation](namespace-isolation.md)). The descriptor contains the protocol version, address, process id, app version, and a random 256-bit token.
 
 Security properties:
 
@@ -49,13 +49,13 @@ Security properties:
 - File paths are canonicalized and required to reference a regular file inside an authorized workspace before the editor is opened.
 - The descriptor is removed only when it still belongs to the exiting process, so an older instance cannot delete a newer instance's endpoint.
 
-The token is injected into Terax-spawned native shells together with `TERAX_PANE_ID`. Child coding agents inherit the caller context intentionally, which gives them the same local UI-control capability as the terminal that launched them. Tokens must never be logged or added to command output.
+The token is injected into Terax-spawned native shells together with `CODR_PANE_ID`. Child coding agents inherit the caller context intentionally, which gives them the same local UI-control capability as the terminal that launched them. Tokens must never be logged or added to command output.
 
 ## Command discovery inside a PTY
 
 The packaged helper is named `terax-cli` because a macOS app bundle places sidecars beside the GUI executable, which is already named `terax`. At app startup Terax creates a user-private, per-process `bin/terax` hard link to the packaged helper, falling back to a symlink on Unix or a copy on Windows. That directory is prepended to the PTY `PATH`.
 
-Existing Bash, Zsh, Fish, and PowerShell integration also defines an interactive `terax` function that executes `$TERAX_CLI`. The real PATH entry is still required because non-interactive child shells do not reliably inherit shell functions.
+Existing Bash, Zsh, Fish, and PowerShell integration also defines an interactive `terax` function that executes `$CODR_CLI`. The real PATH entry is still required because non-interactive child shells do not reliably inherit shell functions.
 
 Launcher directories for exited processes are removed at the next control-server startup. Live process ids are preserved regardless of directory age.
 
@@ -87,6 +87,7 @@ These limits are explicit so unsupported paths fail as unavailable instead of si
 ## See also
 
 - [`TERAX.md`](../../TERAX.md) - architecture source of truth
+- [`Agent capabilities`](agent-capabilities.md) - which agents Terax can launch and what their status, events and notifications actually prove
 - [Two-process model](two-process-model.md) - Tauri IPC boundary
 - [PTY shell integration](pty-shell-integration.md) - environment injection and shell startup
 - [Security model](security-model.md) - workspace and secret boundaries

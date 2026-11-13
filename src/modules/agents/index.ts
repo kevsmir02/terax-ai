@@ -3,6 +3,6 @@ export { NotificationBell } from "./components/NotificationBell";
 export {
   type AgentLaunchRequest,
   findAgentLauncher,
-  validateAgentLaunchCommand,
+  resolveAgentLaunchCommand,
 } from "./lib/launcher";
 export { nextAttentionTarget } from "./store/agentStore";

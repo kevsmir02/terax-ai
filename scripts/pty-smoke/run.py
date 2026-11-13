@@ -1,4 +1,4 @@
-"""Run the real PTY transport inside the real Tauri webview (macOS debug build)."""
+"""Run the real PTY transport inside the real Tauri webview (macOS/Linux debug build)."""
 import argparse
 import http.server
 import json
@@ -11,6 +11,11 @@ import tempfile
 import threading
 import uuid
 
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import linux_profile  # noqa: E402
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--output", type=Path)
 parser.add_argument("--idle-ms", type=int, default=35000)
@@ -21,13 +26,62 @@ parser.add_argument("--dev", action="store_true", help="load the page from a Vit
 parser.add_argument("--only", default="", help="comma list of scenarios: latency,spinners,flood,idle (default: all)")
 parser.add_argument("--driver", default="driver-new.ts", help="driver-new.ts (multiplexed stream) or driver-old.ts (channels)")
 parser.add_argument("--repo", type=Path, help="tree to build and run (default: this checkout)")
+parser.add_argument("--self-test", action="store_true", help="prove the disposable-profile preflight refuses unsafe runs, then exit")
+parser.add_argument("--disable-dmabuf", action="store_true", help="Linux: WEBKIT_DISABLE_DMABUF_RENDERER=1 (README workaround for broken GL/compositing)")
 args = parser.parse_args()
-if platform.system() != "Darwin":
-    raise SystemExit("This smoke runner currently supports macOS only.")
+SYSTEM = platform.system()
+if SYSTEM not in ("Darwin", "Linux"):
+    raise SystemExit(f"This smoke runner supports macOS and Linux, not {SYSTEM}.")
 root = Path(__file__).resolve().parent
 repo = (args.repo or root.parent.parent).resolve()
 output = (args.output or Path(tempfile.mkdtemp(prefix="terax-pty-smoke-"))).resolve()
 output.mkdir(parents=True, exist_ok=True)
+
+
+def self_test() -> int:
+    """The preflight, exercised with deliberately unsafe environments (no build, no launch)."""
+    scratch = Path(tempfile.mkdtemp(prefix="terax-pty-smoke-selftest-"))
+    try:
+        home = scratch / "home"
+        safe = linux_profile.profile_env(home)
+        outside = {**safe, "HOME": str(Path.home())}
+        no_cache = {name: value for name, value in safe.items() if name != "XDG_CACHE_HOME"}
+        cases = [
+            (
+                "product identifier",
+                linux_profile.PRODUCT_IDENTIFIER,
+                safe,
+            ),
+            (
+                "upstream identifier",
+                linux_profile.UPSTREAM_IDENTIFIER,
+                safe,
+            ),
+            ("foreign identifier namespace", "com.example.other", safe),
+            ("HOME outside the run output", linux_profile.disposable_identifier("pty-smoke", "test"), outside),
+            ("missing XDG_CACHE_HOME", linux_profile.disposable_identifier("pty-smoke", "test"), no_cache),
+            ("missing XDG_DATA_HOME", linux_profile.disposable_identifier("pty-smoke", "test"), {**safe, "XDG_DATA_HOME": ""}),
+        ]
+        failures = []
+        for name, identifier, env in cases:
+            found = linux_profile.problems(identifier, env, scratch, require_isolated=False)
+            ok = bool(found)
+            print(f"[self-test] {'PASS' if ok else 'FAIL'} {name}: {found or 'accepted'}")
+            if not ok:
+                failures.append(name)
+        accepted = linux_profile.problems(
+            linux_profile.disposable_identifier("pty-smoke", "test"), safe, scratch, require_isolated=False
+        )
+        print(f"[self-test] {'PASS' if not accepted else 'FAIL'} disposable profile accepted: {accepted}")
+        if accepted:
+            failures.append("disposable profile accepted")
+        return 1 if failures else 0
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+if args.self_test:
+    raise SystemExit(self_test())
 finished = threading.Event()
 result = {}
 
@@ -94,7 +148,7 @@ def check_gate(gate):
 
 server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
 threading.Thread(target=server.serve_forever, daemon=True).start()
-identifier = f"app.crynta.terax.pty-smoke-{uuid.uuid4().hex[:12]}"
+identifier = linux_profile.disposable_identifier("pty-smoke")
 real = json.loads((repo / "src-tauri/tauri.conf.json").read_text())
 config = output / "tauri.conf.json"
 dev_port = None
@@ -125,6 +179,18 @@ env = {**os.environ,
        "TERAX_SMOKE_FAST": "1" if args.fast else "0",
        "TERAX_SMOKE_IDLE_MS": str(args.idle_ms),
        "TERAX_SMOKE_SPIN_SECONDS": str(args.spin_seconds)}
+home = None
+run_env = env
+if SYSTEM == "Linux":
+    # Disposable profile: private HOME and XDG tree under the output, live display/bus kept.
+    # Only the launched app gets this environment: the build still needs the real HOME for the
+    # cargo/pnpm caches.
+    home = output / "home"
+    linux_profile.prepare(home, output)
+    run_env = {**env, **linux_profile.profile_env(home)}
+    linux_profile.preflight(identifier, run_env, output, require_isolated=False)
+    if args.disable_dmabuf:
+        run_env["WEBKIT_DISABLE_DMABUF_RENDERER"] = "1"
 process = None
 dev_server = None
 try:
@@ -153,7 +219,7 @@ try:
     metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version=1", "--manifest-path", "src-tauri/Cargo.toml"], cwd=repo))
     target = output / "cargo-target" if args.dev else Path(metadata["target_directory"])
     with (output / "app.log").open("w") as log:
-        process = subprocess.Popen([str(target / "debug/terax")], cwd=repo, stdout=log, stderr=log)
+        process = subprocess.Popen([str(target / "debug/terax")], cwd=home or repo, env=run_env, stdout=log, stderr=log)
         budget = 240 + args.idle_ms / 1000 + args.spin_seconds * 6
         if not finished.wait(budget):
             raise RuntimeError(f"PTY smoke timed out after {budget:.0f}s (see {output / 'app.log'})")
@@ -171,7 +237,10 @@ finally:
         dev_server.wait(timeout=10)
     server.shutdown()
     (output / "result.json").write_text(json.dumps({"scope": "Real Tauri debug webview and login shell, local report server, isolated profile", **result}, indent=2) + "\n")
-    profile = Path.home() / "Library/Application Support" / identifier
-    if profile.exists():
-        shutil.rmtree(profile)
+    if home is not None:
+        linux_profile.cleanup(home, output)
+    else:
+        profile = Path.home() / "Library/Application Support" / identifier
+        if profile.exists():
+            shutil.rmtree(profile)
 print(f"Saved {output / 'result.json'}")

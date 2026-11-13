@@ -12,7 +12,7 @@
   # Terax's directory is still ZDOTDIR here (see zshenv.zsh). /etc/zshrc on
   # macOS derives HISTFILE from it, so move that to the user's directory.
   _terax_zdotdir="${ZDOTDIR-}"
-  _terax_user_zdotdir="${TERAX_USER_ZDOTDIR:-${HOME-}}"
+  _terax_user_zdotdir="${CODR_USER_ZDOTDIR:-${HOME-}}"
   if [[ -n "${HISTFILE-}" && "${HISTFILE-}" == "$_terax_zdotdir"/* ]]; then
     HISTFILE="$_terax_user_zdotdir/${HISTFILE:t}"
   fi
@@ -23,36 +23,36 @@
 _terax_zshrc_setup() {
   emulate -L zsh
 
-  if [[ -n "${TERAX_CLI-}" && -x "${TERAX_CLI-}" ]]; then
+  if [[ -n "${CODR_CLI-}" && -x "${CODR_CLI-}" ]]; then
     terax() {
-      command "$TERAX_CLI" "$@"
+      command "$CODR_CLI" "$@"
     }
   fi
 
   # Re-source guard within a single shell (e.g. user runs `source $ZDOTDIR/.zshrc`).
   # This is NOT exported, so each nested zsh installs its own hooks — desired,
   # since every interactive shell needs its own prompt integration.
-  if [[ -n "${__TERAX_HOOKS_LOADED-}" ]]; then
+  if [[ -n "${__CODR_HOOKS_LOADED-}" ]]; then
     # Sourced again while a command runs: leave ZDOTDIR as it was found.
     if [[ -n "$_terax_zdotdir" ]]; then export ZDOTDIR="$_terax_zdotdir"; else unset ZDOTDIR; fi
     return 0
   fi
-  __TERAX_HOOKS_LOADED=1
+  __CODR_HOOKS_LOADED=1
   autoload -Uz add-zsh-hook 2>/dev/null
 
   # ZDOTDIR has two faces. While a command runs it is exported as Terax's
   # directory, so a shell that command starts (exec zsh, a nested zsh, zsh -l)
   # reads the integration scripts again; at the prompt, in hooks and in widgets
   # it is the user's own value (or unset), so code that reads $ZDOTDIR lazily
-  # finds their files. TERAX_USER_ZDOTDIR carries the user's value to children.
+  # finds their files. CODR_USER_ZDOTDIR carries the user's value to children.
   _terax_zd_integration="$_terax_zdotdir"
-  if [[ -n "${TERAX_USER_ZDOTDIR-}" || "${ZDOTDIR-}" != "$_terax_user_zdotdir" ]]; then
+  if [[ -n "${CODR_USER_ZDOTDIR-}" || "${ZDOTDIR-}" != "$_terax_user_zdotdir" ]]; then
     _terax_zd_has_user=1
     _terax_zd_user="${ZDOTDIR:-$_terax_user_zdotdir}"
-    export TERAX_USER_ZDOTDIR="$_terax_zd_user"
+    export CODR_USER_ZDOTDIR="$_terax_zd_user"
   else
     _terax_zd_has_user=
-    unset TERAX_USER_ZDOTDIR
+    unset CODR_USER_ZDOTDIR
   fi
 
   _terax_zdotdir_prompt() {
@@ -186,7 +186,7 @@ _terax_zshrc_setup() {
     # In block mode the host renders its own input bar, so suppress the shell
     # prompt entirely (keep only the OSC 133 B marker) and add a leading blank
     # line so frozen command blocks get vertical breathing room.
-    if [[ -n "${TERAX_BLOCKS-}" ]]; then
+    if [[ -n "${CODR_BLOCKS-}" ]]; then
       # Spacing reserved for the host-drawn block header lives in the prompt
       # (the grid is WebGL, not CSS). Later prompts get two blank rows: the
       # upper one is the previous block's end gap (above its divider), the lower
@@ -215,7 +215,7 @@ _terax_zshrc_setup() {
     emulate -L zsh
     [[ -n "${_terax_end_pending-}" ]] || return 0
     _terax_end_pending=
-    if [[ -n "${TERAX_BLOCKS-}" && -n "${_terax_block_ps1-}" && "${PS1-}" != "$_terax_block_ps1" ]]; then
+    if [[ -n "${CODR_BLOCKS-}" && -n "${_terax_block_ps1-}" && "${PS1-}" != "$_terax_block_ps1" ]]; then
       # A framework rebuilt the prompt after our precmd (powerlevel10k runs
       # last): the host draws the input bar, so take the shell prompt back.
       PS1="$_terax_block_ps1"
@@ -255,7 +255,7 @@ _terax_zshrc_setup() {
     emulate -L zsh
     # Mark that a real command ran, so the next prompt switches from one blank
     # row (first prompt, no block above) to two (end gap + header row).
-    [[ -n "${TERAX_BLOCKS-}" ]] && _terax_block_seen=1
+    [[ -n "${CODR_BLOCKS-}" ]] && _terax_block_seen=1
     local cmd="${1//[[:cntrl:]]/ }"
     printf '\e]133;C;%s\e\\' "${cmd[1,256]}"
   }

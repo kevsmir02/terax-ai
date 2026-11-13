@@ -1,5 +1,5 @@
 //! Per-agent-turn checkpoints. A checkpoint is a commit object reachable only
-//! from `refs/terax/checkpoints/<task>/<turn>`, built from a private copy of
+//! from `refs/<namespace>/checkpoints/<task>/<turn>`, built from a private copy of
 //! the index, so the user's index, HEAD, branches and working files are never
 //! touched by creating one. Restoring does write the working tree (and syncs the
 //! index entries of the files it changed), but only the paths that differ.
@@ -15,8 +15,8 @@ use serde::Serialize;
 use crate::modules::git::diff::{parse_raw_numstat_z, DiffFileSummary, FileStatus};
 use crate::modules::git::errors::{GitError, Result};
 use crate::modules::git::plumbing::{
-    git_dir, head_commit_opt, lock_for_repo, open_worktree, os_args, run, run_ok, stdout_text,
-    verify_tree,
+    common_dir, empty_tree, forward_slashes, git_dir, head_commit_opt, lock_for_repo, open_worktree,
+    os_args, run, run_ok, stdout_text, verify_tree,
 };
 use crate::modules::git::process::{ensure_success, run_git_with, RunOptions};
 use crate::modules::git::refs;
@@ -636,7 +636,7 @@ pub(crate) fn task_snapshot(
     let mut random = [0u8; 16];
     getrandom::fill(&mut random).map_err(|e| GitError::command("task snapshot", e.to_string()))?;
     let suffix: String = random.iter().map(|b| format!("{b:02x}")).collect();
-    let reference = format!("refs/terax/tasks/{id}/archive/{suffix}");
+    let reference = format!("{}{suffix}", refs::task_archive_prefix(id));
     run_ok(
         repo,
         admin.plumb(os_args(["update-ref", &reference, &commit, ""]))?,
@@ -767,6 +767,7 @@ struct RefRecord {
     tree: String,
     parent: Option<String>,
     created_at_secs: i64,
+    subject: String,
     worktree_id: Option<String>,
 }
 
@@ -787,6 +788,7 @@ fn parse_ref_records(output: &[u8]) -> Vec<RefRecord> {
                 tree,
                 parent,
                 created_at_secs,
+                subject: subject.to_string(),
                 worktree_id: subject_worktree_id(subject).map(str::to_string),
             })
         })
@@ -978,7 +980,7 @@ fn now_millis() -> u64 {
 }
 
 /// Records `tree` (the working tree about to be overwritten) under a fresh
-/// `refs/terax/checkpoints/<task>/prerestore-<millis>` ref. An existing ref is
+/// `refs/<namespace>/checkpoints/<task>/prerestore-<millis>` ref. An existing ref is
 /// never replaced.
 fn write_safety_snapshot(
     repo: &ResolvedGitDirectory,
@@ -1321,6 +1323,1833 @@ pub fn restore(
     Ok(report)
 }
 
+// ---------------------------------------------------------------------------
+// Manual checkpoints
+//
+// A manual checkpoint is not tied to an agent task or turn: it has its own
+// random id, its own ref root (`refs/<namespace>/manual-checkpoints/<id>`) and
+// an optional name that is a label, never part of the identity. Creation reuses
+// the bounded snapshot above (a private copy of the index, `git add -A`, up to
+// three verification passes) and records what it excluded or could not capture
+// in the commit subject, so a later listing and inspection disclose the same
+// limitations without trusting creation-time state.
+// ---------------------------------------------------------------------------
+
+/// Longest accepted manual checkpoint name, in characters.
+pub const MAX_MANUAL_NAME_CHARS: usize = 120;
+const MAX_INSPECTED_PATHS: usize = 200;
+/// Cap for the ignored/staged path probes: enough to count them, never a walk
+/// over an arbitrarily large ignored tree.
+const PROBE_STDOUT_CAP: usize = 256 * 1024;
+/// Cap for the submodule scan of the index.
+const INDEX_SCAN_CAP: usize = 4 * 1024 * 1024;
+const MANUAL_ID_ATTEMPTS: u32 = 8;
+
+const MANUAL_SUBJECT_PREFIX: &str = "terax manual ";
+const CAPTURE_MARK: &str = " [capture ";
+const CAPTURE_VERSION: &str = "v1";
+const UNNAMED: &str = "(unnamed)";
+
+/// What kind of recovery point a ref is.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RecoveryKind {
+    /// A manual, optionally named checkpoint.
+    Manual,
+    /// A retained per-task/per-turn checkpoint.
+    Turn,
+    /// A pre-restore snapshot kept so a restore can be undone.
+    Safety,
+}
+
+/// What a manual capture did and did not include. Persisted with the checkpoint
+/// (in its commit subject) so inspection reports the same facts later.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureReport {
+    /// Two consecutive snapshot passes produced the same tree.
+    pub consistent: bool,
+    pub passes: u32,
+    /// Files that kept changing under the snapshot and were left out.
+    pub unstable_count: u32,
+    /// Files Git could not read; the rest of the tree was still captured.
+    pub warnings: Vec<String>,
+    /// Ignored files and directories under the worktree. Never captured.
+    pub ignored_files: u32,
+    /// The ignored listing hit its read cap: the count is a lower bound.
+    pub ignored_truncated: bool,
+    /// Paths staged in the real index at capture time. Staging is not recorded.
+    pub staged_files: u32,
+    pub staged_truncated: bool,
+    /// Submodules recorded as their commit pointer only.
+    pub submodules: u32,
+    pub submodules_truncated: bool,
+    /// The capture is not a complete, stable snapshot of the working tree.
+    pub incomplete: bool,
+}
+
+impl CaptureReport {
+    fn of(
+        snapshot: &Snapshot,
+        ignored: &ProbeCount,
+        staged: &ProbeCount,
+        submodules: &ProbeCount,
+    ) -> Self {
+        let unstable_count = snapshot.unstable_paths.len() as u32;
+        Self {
+            consistent: snapshot.consistent,
+            passes: snapshot.passes,
+            unstable_count,
+            warnings: snapshot.warnings.clone(),
+            ignored_files: ignored.count,
+            ignored_truncated: ignored.truncated,
+            staged_files: staged.count,
+            staged_truncated: staged.truncated,
+            submodules: submodules.count,
+            submodules_truncated: submodules.truncated,
+            incomplete: !snapshot.consistent || unstable_count > 0 || !snapshot.warnings.is_empty(),
+        }
+    }
+}
+
+/// A manual checkpoint as the frontend sees it (creation result and listing).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualCheckpoint {
+    #[serde(rename = "ref")]
+    pub ref_name: String,
+    /// The opaque identity: 32 hex digits, never a fallback to task/turn slots.
+    pub id: String,
+    /// The user's optional name; a label, not an identity.
+    pub name: Option<String>,
+    pub commit: String,
+    pub tree: String,
+    /// HEAD at capture time; `None` for an unborn branch.
+    pub parent: Option<String>,
+    pub created_at_secs: i64,
+    /// `None` only when the stored record is missing or unreadable.
+    pub capture: Option<CaptureReport>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualCheckpointCreated {
+    #[serde(flatten)]
+    pub checkpoint: ManualCheckpoint,
+    pub limits: CheckpointLimits,
+    pub duration_ms: u64,
+}
+
+/// A pre-restore safety snapshot this worktree owns.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SafetyRef {
+    #[serde(rename = "ref")]
+    pub ref_name: String,
+    /// The turn checkpoint whose restore saved it.
+    pub task_id: String,
+    pub commit: String,
+    pub tree: String,
+    pub parent: Option<String>,
+    pub created_at_secs: i64,
+}
+
+/// Repository-wide object context for retained recovery points. Deliberately
+/// not a reclaimable-byte estimate: objects are content-addressed and shared
+/// between refs, and this application never runs Git garbage collection.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StoragePressure {
+    /// Loose objects in the repository, all refs included (`git count-objects -v`).
+    pub loose_objects: u32,
+    pub loose_kib: u64,
+    /// Objects already packed (`in-pack` / `size-pack`).
+    pub packed_objects: u32,
+    pub packed_kib: u64,
+    /// Recovery refs this worktree owns: manual + turn + safety.
+    pub owned_refs: u32,
+    /// Always true: deleting a ref removes reachability, not a measurable number
+    /// of bytes, until Git itself prunes unreachable objects.
+    pub shared_objects: bool,
+}
+
+/// Every recovery point this worktree owns, grouped by kind.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointList {
+    pub manual: Vec<ManualCheckpoint>,
+    pub turns: Vec<CheckpointInfo>,
+    pub safety: Vec<SafetyRef>,
+    pub storage: StoragePressure,
+}
+
+/// What one worktree registration still owns, counted by kind.
+///
+/// Worktree removal refuses while this is non-empty: the refs are stored by the
+/// repository, but the ownership marker that makes them listable, restorable
+/// and cleanable lives in the worktree's administrative directory, which
+/// removal deletes.
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnedRecoveryRefs {
+    pub total: u32,
+    pub manual: u32,
+    pub turns: u32,
+    pub safety: u32,
+    /// The ref names, capped: a refusal names what has to be cleaned up.
+    pub sample: Vec<String>,
+}
+
+const MAX_RECOVERY_SAMPLE: usize = 20;
+
+/// Whether two spellings name the same location, without touching the
+/// filesystem: a worktree whose directory is gone cannot be canonicalized.
+fn same_location(a: &str, b: &Path) -> bool {
+    let normalize = |path: &str| {
+        let path = forward_slashes(path);
+        let path = path.trim_end_matches('/').to_string();
+        if cfg!(windows) {
+            path.to_lowercase()
+        } else {
+            path
+        }
+    };
+    normalize(a) == normalize(&b.to_string_lossy())
+}
+
+/// The worktree's private git directory, found *through the repository*.
+///
+/// An existing directory answers with its own `.git` (a directory for the main
+/// worktree, a `gitdir:` file for a linked one). A directory that is already
+/// gone is matched through the administrative entries under
+/// `<common>/worktrees/<name>/gitdir`, so a missing worktree never loses its
+/// ownership marker before the caller decides what to do with its refs.
+fn admin_dir_at(repo: &ResolvedGitDirectory, path: &str) -> Result<Option<PathBuf>> {
+    let expected = Path::new(path).join(".git");
+    match std::fs::symlink_metadata(&expected) {
+        Ok(meta) if meta.is_dir() => return Ok(Some(expected)),
+        Ok(_) => {
+            if let Ok(text) = std::fs::read_to_string(&expected) {
+                if let Some(target) = text.trim().strip_prefix("gitdir:") {
+                    let target = target.trim();
+                    if !target.is_empty() {
+                        let directory = Path::new(target);
+                        let directory = if directory.is_absolute() {
+                            directory.to_path_buf()
+                        } else {
+                            expected.parent().unwrap_or(Path::new(".")).join(directory)
+                        };
+                        return Ok(Some(directory));
+                    }
+                }
+            }
+        }
+        Err(_) => {}
+    }
+    let common = common_dir(repo)?;
+    let Ok(entries) = std::fs::read_dir(common.join("worktrees")) else {
+        return Ok(None);
+    };
+    for entry in entries.flatten() {
+        let Ok(target) = std::fs::read_to_string(entry.path().join("gitdir")) else {
+            continue;
+        };
+        if same_location(target.trim(), &expected) {
+            return Ok(Some(entry.path()));
+        }
+    }
+    Ok(None)
+}
+
+fn admin_at(repo: &ResolvedGitDirectory, path: &str) -> Result<Option<Admin>> {
+    Ok(admin_dir_at(repo, path)?.map(|dir| Admin {
+        hooks: dir.join(NO_HOOKS_DIR),
+        dir,
+    }))
+}
+
+/// The recovery refs this *worktree registration* owns, by path.
+///
+/// Works from the repository and its administrative directories, so the answer
+/// is the same whether the working directory is present or gone, and a ref
+/// owned by another worktree is never counted.
+pub fn owned_recovery_refs(
+    repo: &ResolvedGitDirectory,
+    worktree: &str,
+) -> Result<OwnedRecoveryRefs> {
+    let Some(admin) = admin_at(repo, worktree)? else {
+        return Ok(OwnedRecoveryRefs::default());
+    };
+    let Some(mine) = admin.existing_worktree_id() else {
+        return Ok(OwnedRecoveryRefs::default());
+    };
+    let manual = list_manual(repo, &mine)?;
+    let turns = list_turns(repo, &mine)?;
+    let safety = list_safety(repo, &mine)?;
+    let mut sample = Vec::new();
+    for name in manual
+        .iter()
+        .map(|checkpoint| checkpoint.ref_name.as_str())
+        .chain(turns.iter().map(|checkpoint| checkpoint.ref_name.as_str()))
+        .chain(safety.iter().map(|snapshot| snapshot.ref_name.as_str()))
+    {
+        if sample.len() < MAX_RECOVERY_SAMPLE {
+            sample.push(name.to_string());
+        }
+    }
+    Ok(OwnedRecoveryRefs {
+        total: (manual.len() + turns.len() + safety.len()) as u32,
+        manual: manual.len() as u32,
+        turns: turns.len() as u32,
+        safety: safety.len() as u32,
+        sample,
+    })
+}
+
+fn no_groups(repo: &ResolvedGitDirectory) -> Result<CheckpointList> {
+    Ok(CheckpointList {
+        manual: Vec::new(),
+        turns: Vec::new(),
+        safety: Vec::new(),
+        storage: storage_pressure(repo, 0)?,
+    })
+}
+
+fn owned_groups(repo: &ResolvedGitDirectory, worktree: &str) -> Result<CheckpointList> {
+    match admin_at(repo, worktree)?.and_then(|admin| admin.existing_worktree_id()) {
+        Some(mine) => groups_for(repo, &mine),
+        None => no_groups(repo),
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointInspection {
+    #[serde(rename = "ref")]
+    pub ref_name: String,
+    pub kind: RecoveryKind,
+    pub name: Option<String>,
+    pub task_id: Option<String>,
+    pub turn: Option<u32>,
+    pub commit: String,
+    pub tree: String,
+    pub parent: Option<String>,
+    pub created_at_secs: i64,
+    pub capture: Option<CaptureReport>,
+    pub limits: CheckpointLimits,
+    /// Paths that differ between the checkpoint and its recorded parent (HEAD at
+    /// capture time), capped at `MAX_INSPECTED_PATHS`.
+    pub changed_paths: Vec<ChangedPath>,
+    pub changed_total: u32,
+    pub changed_truncated: bool,
+    /// HEAD is not where it was when the checkpoint was taken. Commits are left
+    /// alone; inspection only reports it.
+    pub head_moved: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupRemoved {
+    #[serde(rename = "ref")]
+    pub ref_name: String,
+    pub kind: RecoveryKind,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupRefused {
+    #[serde(rename = "ref")]
+    pub ref_name: String,
+    /// `not-a-recovery-ref`, `missing`, `unknown-owner`, `another-worktree` or
+    /// `changed`, when the ref moved between the check and the deletion.
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupReport {
+    pub removed: Vec<CleanupRemoved>,
+    pub refused: Vec<CleanupRefused>,
+    /// The groups after the deletion, so the UI never has to guess.
+    pub remaining: CheckpointList,
+    /// Every deletion is its own `update-ref`; a failure midway leaves earlier
+    /// deletions in place and reports them.
+    pub atomic: bool,
+}
+
+fn recovery_kind(name: &str) -> Option<RecoveryKind> {
+    if refs::parse_manual_checkpoint_ref(name).is_some() {
+        Some(RecoveryKind::Manual)
+    } else if refs::parse_checkpoint_ref(name).is_some() {
+        Some(RecoveryKind::Turn)
+    } else if refs::parse_prerestore_ref(name).is_some() {
+        Some(RecoveryKind::Safety)
+    } else {
+        None
+    }
+}
+
+fn normalize_manual_name(name: Option<&str>) -> Result<Option<String>> {
+    let Some(name) = name else {
+        return Ok(None);
+    };
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.chars().count() > MAX_MANUAL_NAME_CHARS {
+        return Err(GitError::command(
+            "git checkpoint create",
+            format!("the checkpoint name is longer than {MAX_MANUAL_NAME_CHARS} characters"),
+        ));
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err(GitError::command(
+            "git checkpoint create",
+            "the checkpoint name cannot contain control characters or line breaks",
+        ));
+    }
+    if trimmed == UNNAMED {
+        return Err(GitError::command(
+            "git checkpoint create",
+            "that name is reserved for an unnamed checkpoint",
+        ));
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
+/// One line of the commit subject, so the existing single-line `for-each-ref`
+/// listing can carry it: id, optional name, the capture record and the owning
+/// worktree. The worktree marker stays last, as `subject_worktree_id` expects.
+fn manual_subject(
+    id: &str,
+    name: Option<&str>,
+    worktree_id: &str,
+    capture: &CaptureReport,
+) -> String {
+    let record = format!(
+        "{CAPTURE_VERSION} c={} p={} u={} i={} it={} s={} st={} m={} mt={} w={}",
+        u8::from(capture.consistent),
+        capture.passes,
+        capture.unstable_count,
+        capture.ignored_files,
+        u8::from(capture.ignored_truncated),
+        capture.staged_files,
+        u8::from(capture.staged_truncated),
+        capture.submodules,
+        u8::from(capture.submodules_truncated),
+        capture.warnings.join(",")
+    );
+    let label = name.unwrap_or(UNNAMED);
+    format!(
+        "{MANUAL_SUBJECT_PREFIX}{id} {label}{CAPTURE_MARK}{record}]{WORKTREE_MARK}{worktree_id}"
+    )
+}
+
+fn parse_manual_subject(subject: &str) -> Option<(String, Option<String>)> {
+    let rest = subject.strip_prefix(MANUAL_SUBJECT_PREFIX)?;
+    let (id, rest) = rest.split_once(' ')?;
+    if !refs::is_valid_manual_checkpoint_id(id) {
+        return None;
+    }
+    let rest = rest.rsplit_once(WORKTREE_MARK)?.0;
+    let label = match rest.rsplit_once(CAPTURE_MARK) {
+        Some((label, record)) => {
+            record.strip_suffix(']')?;
+            label
+        }
+        None => rest,
+    };
+    let label = label.trim();
+    let name = (!label.is_empty() && label != UNNAMED).then(|| label.to_string());
+    Some((id.to_string(), name))
+}
+
+fn parse_capture_record(record: &str) -> Option<CaptureReport> {
+    let mut fields = std::collections::HashMap::new();
+    let mut parts = record.split(' ');
+    if parts.next()? != CAPTURE_VERSION {
+        return None;
+    }
+    for part in parts {
+        let (key, value) = part.split_once('=')?;
+        fields.insert(key, value);
+    }
+    let number = |key: &str| fields.get(key)?.parse::<u32>().ok();
+    let flag = |key: &str| number(key).map(|value| value != 0);
+    let warnings: Vec<String> = fields
+        .get("w")?
+        .split(',')
+        .filter(|code| !code.is_empty())
+        .map(str::to_string)
+        .collect();
+    let consistent = flag("c")?;
+    let unstable_count = number("u")?;
+    Some(CaptureReport {
+        consistent,
+        passes: number("p")?,
+        unstable_count,
+        incomplete: !consistent || unstable_count > 0 || !warnings.is_empty(),
+        warnings,
+        ignored_files: number("i")?,
+        ignored_truncated: flag("it")?,
+        staged_files: number("s")?,
+        staged_truncated: flag("st")?,
+        submodules: number("m")?,
+        submodules_truncated: flag("mt")?,
+    })
+}
+
+fn capture_record_of(subject: &str) -> Option<CaptureReport> {
+    let (_, rest) = subject.rsplit_once(CAPTURE_MARK)?;
+    let (record, _) = rest.split_once(']')?;
+    parse_capture_record(record)
+}
+
+impl RefRecord {
+    fn manual(&self) -> Option<ManualCheckpoint> {
+        let (id, name) = parse_manual_subject(&self.subject)?;
+        Some(ManualCheckpoint {
+            ref_name: self.name.clone(),
+            id,
+            name,
+            commit: self.commit.clone(),
+            tree: self.tree.clone(),
+            parent: self.parent.clone(),
+            created_at_secs: self.created_at_secs,
+            capture: capture_record_of(&self.subject),
+        })
+    }
+}
+
+/// Count of NUL-separated records, with the read-cap state the output carried.
+struct ProbeCount {
+    count: u32,
+    truncated: bool,
+}
+
+impl ProbeCount {
+    fn of(output: &GitOutput) -> Self {
+        let count = output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|record| !record.is_empty())
+            .count();
+        Self {
+            count: count.min(u32::MAX as usize) as u32,
+            truncated: output.truncated,
+        }
+    }
+}
+
+fn probe(
+    repo: &ResolvedGitDirectory,
+    admin: &Admin,
+    args: Vec<OsString>,
+    cap: usize,
+) -> Result<ProbeCount> {
+    let output = run_git_with(
+        &repo.workspace,
+        Some(&repo.git_path),
+        admin.plumb(args)?,
+        SNAPSHOT_TIMEOUT_SECS,
+        RunOptions {
+            stdout_cap: cap,
+            ..Default::default()
+        },
+    )?;
+    if output.timed_out {
+        return Err(GitError::TimedOut("git ls-files"));
+    }
+    ensure_success(&output, "git ls-files failed")?;
+    Ok(ProbeCount::of(&output))
+}
+
+fn staged_paths(repo: &ResolvedGitDirectory, admin: &Admin) -> Result<ProbeCount> {
+    let output = run_git_with(
+        &repo.workspace,
+        Some(&repo.git_path),
+        admin.plumb(os_args(["diff", "--cached", "--name-only", "-z"]))?,
+        SNAPSHOT_TIMEOUT_SECS,
+        RunOptions {
+            stdout_cap: PROBE_STDOUT_CAP,
+            ..Default::default()
+        },
+    )?;
+    if output.timed_out {
+        return Err(GitError::TimedOut("git diff --cached"));
+    }
+    ensure_success(&output, "git diff --cached failed")?;
+    Ok(ProbeCount::of(&output))
+}
+
+fn submodule_entries(repo: &ResolvedGitDirectory, admin: &Admin) -> Result<ProbeCount> {
+    let output = run_git_with(
+        &repo.workspace,
+        Some(&repo.git_path),
+        admin.plumb(os_args(["ls-files", "--stage", "-z"]))?,
+        SNAPSHOT_TIMEOUT_SECS,
+        RunOptions {
+            stdout_cap: INDEX_SCAN_CAP,
+            ..Default::default()
+        },
+    )?;
+    if output.timed_out {
+        return Err(GitError::TimedOut("git ls-files --stage"));
+    }
+    ensure_success(&output, "git ls-files --stage failed")?;
+    let count = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|record| record.get(..6) == Some(b"160000"))
+        .count();
+    Ok(ProbeCount {
+        count: count.min(u32::MAX as usize) as u32,
+        truncated: output.truncated,
+    })
+}
+
+fn capture_report(
+    repo: &ResolvedGitDirectory,
+    admin: &Admin,
+    snapshot: &Snapshot,
+) -> Result<CaptureReport> {
+    let ignored = probe(
+        repo,
+        admin,
+        os_args([
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+        ]),
+        PROBE_STDOUT_CAP,
+    )?;
+    let staged = staged_paths(repo, admin)?;
+    let submodules = submodule_entries(repo, admin)?;
+    Ok(CaptureReport::of(snapshot, &ignored, &staged, &submodules))
+}
+
+fn random_id() -> Result<String> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).map_err(|e| {
+        GitError::command("git checkpoint create", format!("no random source: {e}"))
+    })?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn storage_pressure(repo: &ResolvedGitDirectory, owned_refs: u32) -> Result<StoragePressure> {
+    let output = run_ok(
+        repo,
+        os_args(["count-objects", "-v"]),
+        "git count-objects failed",
+    )?;
+    let mut loose_objects = 0u32;
+    let mut loose_kib = 0u64;
+    let mut packed_objects = 0u32;
+    let mut packed_kib = 0u64;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let Some((key, value)) = line.split_once(": ") else {
+            continue;
+        };
+        let Ok(value) = value.trim().parse::<u64>() else {
+            continue;
+        };
+        match key {
+            "count" => loose_objects = value.min(u64::from(u32::MAX)) as u32,
+            "size" => loose_kib = value,
+            "in-pack" => packed_objects = value.min(u64::from(u32::MAX)) as u32,
+            "size-pack" => packed_kib = value,
+            _ => {}
+        }
+    }
+    Ok(StoragePressure {
+        loose_objects,
+        loose_kib,
+        packed_objects,
+        packed_kib,
+        owned_refs,
+        shared_objects: true,
+    })
+}
+
+/// The manual refs this worktree owns, newest first.
+fn list_manual(repo: &ResolvedGitDirectory, mine: &str) -> Result<Vec<ManualCheckpoint>> {
+    let prefix = refs::manual_checkpoint_prefix();
+    let output = run_ok(
+        repo,
+        os_args(["for-each-ref", LIST_FORMAT, prefix.as_str()]),
+        "git for-each-ref failed",
+    )?;
+    let mut manual: Vec<ManualCheckpoint> = parse_ref_records(&output.stdout)
+        .into_iter()
+        .filter(|record| record.worktree_id.as_deref() == Some(mine))
+        .filter_map(|record| record.manual())
+        .collect();
+    manual.sort_by(|a, b| {
+        b.created_at_secs
+            .cmp(&a.created_at_secs)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Ok(manual)
+}
+
+/// The retained turn checkpoints this worktree owns, by task then turn.
+fn list_turns(repo: &ResolvedGitDirectory, mine: &str) -> Result<Vec<CheckpointInfo>> {
+    let prefix = refs::checkpoint_prefix();
+    let output = run_ok(
+        repo,
+        os_args(["for-each-ref", LIST_FORMAT, prefix.as_str()]),
+        "git for-each-ref failed",
+    )?;
+    let mut turns: Vec<CheckpointInfo> = parse_ref_records(&output.stdout)
+        .into_iter()
+        .filter(|record| record.worktree_id.as_deref() == Some(mine))
+        .filter_map(info_of)
+        .collect();
+    turns.sort_by(|a, b| a.task_id.cmp(&b.task_id).then_with(|| a.turn.cmp(&b.turn)));
+    Ok(turns)
+}
+
+/// The pre-restore safety refs this worktree owns, newest first.
+fn list_safety(repo: &ResolvedGitDirectory, mine: &str) -> Result<Vec<SafetyRef>> {
+    let prefix = refs::checkpoint_prefix();
+    let output = run_ok(
+        repo,
+        os_args(["for-each-ref", LIST_FORMAT, prefix.as_str()]),
+        "git for-each-ref failed",
+    )?;
+    let mut safety: Vec<SafetyRef> = parse_ref_records(&output.stdout)
+        .into_iter()
+        .filter(|record| record.worktree_id.as_deref() == Some(mine))
+        .filter_map(|record| {
+            let (task, _) = refs::parse_prerestore_ref(&record.name)?;
+            let task_id = task.to_string();
+            Some(SafetyRef {
+                ref_name: record.name,
+                task_id,
+                commit: record.commit,
+                tree: record.tree,
+                parent: record.parent,
+                created_at_secs: record.created_at_secs,
+            })
+        })
+        .collect();
+    safety.sort_by(|a, b| {
+        b.created_at_secs
+            .cmp(&a.created_at_secs)
+            .then_with(|| a.ref_name.cmp(&b.ref_name))
+    });
+    Ok(safety)
+}
+
+fn groups_for(repo: &ResolvedGitDirectory, mine: &str) -> Result<CheckpointList> {
+    let manual = list_manual(repo, mine)?;
+    let turns = list_turns(repo, mine)?;
+    let safety = list_safety(repo, mine)?;
+    let owned = manual.len() + turns.len() + safety.len();
+    Ok(CheckpointList {
+        manual,
+        turns,
+        safety,
+        storage: storage_pressure(repo, owned.min(u32::MAX as usize) as u32)?,
+    })
+}
+
+/// Creates a manual checkpoint of the worktree's tracked and non-ignored files.
+///
+/// HEAD, the real index and the working tree are never modified: the snapshot
+/// uses a private copy of the index and the commit object is published under a
+/// new manual ref that never replaces an existing one.
+pub fn create_manual(
+    registry: &WorkspaceRegistry,
+    worktree: &str,
+    name: Option<&str>,
+    workspace: &WorkspaceEnv,
+) -> Result<ManualCheckpointCreated> {
+    let name = normalize_manual_name(name)?;
+    let started = Instant::now();
+    let repo = open_worktree(registry, worktree, workspace)?;
+    ensure_supported(&repo)?;
+    let admin = Admin::new(&repo)?;
+    let lock = lock_for_repo(&repo);
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let mine = admin.worktree_id()?;
+
+    let snapshot = snapshot_tree(&repo, true)?;
+    let capture = capture_report(&repo, &admin, &snapshot)?;
+    let parent = head_commit_opt(&repo)?;
+
+    for _ in 0..MANUAL_ID_ATTEMPTS {
+        let id = random_id()?;
+        let subject = manual_subject(&id, name.as_deref(), &mine, &capture);
+        let commit = write_commit(&repo, &admin, &snapshot.tree, parent.as_deref(), &subject)?;
+        let ref_name = refs::manual_checkpoint_ref(&id);
+        // The empty old value makes this fail instead of replacing a ref that
+        // already exists, so two checkpoints can never share an identity.
+        let output = run(
+            &repo,
+            admin.plumb(os_args([
+                "update-ref",
+                ref_name.as_str(),
+                commit.as_str(),
+                "",
+            ]))?,
+        )?;
+        if output.timed_out {
+            return Err(GitError::TimedOut("git update-ref"));
+        }
+        if output.exit_code == Some(0) {
+            return Ok(ManualCheckpointCreated {
+                checkpoint: ManualCheckpoint {
+                    ref_name,
+                    id,
+                    name: name.clone(),
+                    commit,
+                    tree: snapshot.tree.clone(),
+                    parent,
+                    created_at_secs: now_secs(),
+                    capture: Some(capture.clone()),
+                },
+                limits: LIMITS,
+                duration_ms: started.elapsed().as_millis() as u64,
+            });
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.contains("already exists") {
+            return Err(GitError::command(
+                "git update-ref failed",
+                stderr.trim().to_string(),
+            ));
+        }
+    }
+    Err(GitError::command(
+        "git checkpoint create",
+        "could not allocate a free checkpoint identity",
+    ))
+}
+
+/// Every recovery point this worktree owns: manual checkpoints, retained turn
+/// checkpoints and restore safety refs, with repository-level storage context.
+pub fn list_groups(
+    registry: &WorkspaceRegistry,
+    worktree: &str,
+    workspace: &WorkspaceEnv,
+) -> Result<CheckpointList> {
+    let repo = open_worktree(registry, worktree, workspace)?;
+    owned_groups(&repo, worktree)
+}
+
+/// The same groups for a worktree registration named by path, resolved from the
+/// repository instead of from the worktree's own directory.
+pub fn list_at(
+    registry: &WorkspaceRegistry,
+    repo_root: &str,
+    worktree: &str,
+    workspace: &WorkspaceEnv,
+) -> Result<CheckpointList> {
+    let repo = open_worktree(registry, repo_root, workspace)?;
+    owned_groups(&repo, worktree)
+}
+
+/// The metadata and captured paths of one recovery point this worktree owns.
+pub fn inspect(
+    registry: &WorkspaceRegistry,
+    worktree: &str,
+    reference: &str,
+    workspace: &WorkspaceEnv,
+) -> Result<CheckpointInspection> {
+    let kind =
+        recovery_kind(reference).ok_or_else(|| GitError::InvalidRef(reference.to_string()))?;
+    let repo = open_worktree(registry, worktree, workspace)?;
+    let admin = Admin::new(&repo)?;
+    let mine = admin.existing_worktree_id().ok_or_else(|| {
+        GitError::command(
+            "git checkpoint inspect",
+            "no such checkpoint for this worktree",
+        )
+    })?;
+    let output = run_ok(
+        &repo,
+        os_args(["for-each-ref", LIST_FORMAT, reference]),
+        "git for-each-ref failed",
+    )?;
+    let record = parse_ref_records(&output.stdout)
+        .into_iter()
+        .find(|record| record.name == reference)
+        .ok_or_else(|| {
+            GitError::command(
+                "git checkpoint inspect",
+                "no such checkpoint for this worktree",
+            )
+        })?;
+    if record.worktree_id.as_deref() != Some(mine.as_str()) {
+        return Err(GitError::command(
+            "git checkpoint inspect",
+            "no such checkpoint for this worktree",
+        ));
+    }
+
+    let (name, task_id, turn, capture) = match kind {
+        RecoveryKind::Manual => {
+            let manual = record.manual().ok_or_else(|| {
+                GitError::command(
+                    "git checkpoint inspect",
+                    "unreadable manual checkpoint record",
+                )
+            })?;
+            (manual.name, None, None, manual.capture)
+        }
+        RecoveryKind::Turn => {
+            let (task, turn) = refs::parse_checkpoint_ref(&record.name)
+                .ok_or_else(|| GitError::InvalidRef(reference.to_string()))?;
+            (None, Some(task.to_string()), Some(turn), None)
+        }
+        RecoveryKind::Safety => {
+            let (task, _) = refs::parse_prerestore_ref(&record.name)
+                .ok_or_else(|| GitError::InvalidRef(reference.to_string()))?;
+            (None, Some(task.to_string()), None, None)
+        }
+    };
+
+    let parent_tree = match &record.parent {
+        Some(parent) => tree_of(&repo, parent)?,
+        None => empty_tree(&repo)?,
+    };
+    let changes = diff_trees(&repo, &parent_tree, &record.tree)?;
+    let changed_total = changes.len() as u32;
+    let changed_paths: Vec<ChangedPath> = changes
+        .into_iter()
+        .take(MAX_INSPECTED_PATHS)
+        .map(|change| ChangedPath {
+            path: change.path,
+            status: change.status,
+        })
+        .collect();
+    let changed_truncated = changed_total as usize > changed_paths.len();
+
+    Ok(CheckpointInspection {
+        ref_name: record.name,
+        kind,
+        name,
+        task_id,
+        turn,
+        commit: record.commit,
+        tree: record.tree,
+        parent: record.parent.clone(),
+        created_at_secs: record.created_at_secs,
+        capture,
+        limits: LIMITS,
+        changed_paths,
+        changed_total,
+        changed_truncated,
+        head_moved: head_commit_opt(&repo)? != record.parent,
+    })
+}
+
+/// Deletes exactly the named recovery refs this worktree owns.
+///
+/// Nothing is deleted by default, references from another worktree or another
+/// installation are refused, and no Git garbage collection is ever run: content
+/// objects stay until Git itself prunes them.
+pub fn cleanup(
+    registry: &WorkspaceRegistry,
+    worktree: &str,
+    references: &[String],
+    workspace: &WorkspaceEnv,
+) -> Result<CleanupReport> {
+    let repo = open_worktree(registry, worktree, workspace)?;
+    let admin = Admin::new(&repo)?;
+    let lock = lock_for_repo(&repo);
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    cleanup_inner(&repo, &admin, references)
+}
+
+/// The same explicit cleanup for a worktree registration named by path, so the
+/// refs a worktree removal is waiting on can be deleted even after its working
+/// directory is already gone.
+pub fn cleanup_at(
+    registry: &WorkspaceRegistry,
+    repo_root: &str,
+    worktree: &str,
+    references: &[String],
+    workspace: &WorkspaceEnv,
+) -> Result<CleanupReport> {
+    let repo = open_worktree(registry, repo_root, workspace)?;
+    let admin = admin_at(&repo, worktree)?.ok_or_else(|| {
+        GitError::command(
+            "git checkpoint cleanup",
+            "this worktree has no registration to attribute recovery points to",
+        )
+    })?;
+    let lock = lock_for_repo(&repo);
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    cleanup_inner(&repo, &admin, references)
+}
+
+fn cleanup_inner(
+    repo: &ResolvedGitDirectory,
+    admin: &Admin,
+    references: &[String],
+) -> Result<CleanupReport> {
+    let mine = admin.existing_worktree_id();
+
+    let mut removed = Vec::new();
+    let mut refused = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for reference in references {
+        if !seen.insert(reference.as_str()) {
+            continue;
+        }
+        let Some(kind) = recovery_kind(reference) else {
+            refused.push(CleanupRefused {
+                ref_name: reference.clone(),
+                reason: "not-a-recovery-ref".into(),
+            });
+            continue;
+        };
+        let output = run(
+            repo,
+            os_args(["for-each-ref", LIST_FORMAT, reference.as_str()]),
+        )?;
+        let record = parse_ref_records(&output.stdout)
+            .into_iter()
+            .find(|record| record.name == *reference);
+        let Some(record) = record else {
+            refused.push(CleanupRefused {
+                ref_name: reference.clone(),
+                reason: "missing".into(),
+            });
+            continue;
+        };
+        let reason = match (record.worktree_id.as_deref(), mine.as_deref()) {
+            (None, _) => Some("unknown-owner"),
+            (Some(owner), Some(mine)) if owner == mine => None,
+            (Some(_), _) => Some("another-worktree"),
+        };
+        if let Some(reason) = reason {
+            refused.push(CleanupRefused {
+                ref_name: reference.clone(),
+                reason: reason.into(),
+            });
+            continue;
+        }
+        // The expected old value makes a concurrent move of the ref a refusal
+        // rather than a deletion of something the caller never saw.
+        let deleted = run(
+            repo,
+            admin.plumb(os_args([
+                "update-ref",
+                "-d",
+                reference.as_str(),
+                record.commit.as_str(),
+            ]))?,
+        )?;
+        if deleted.timed_out {
+            return Err(GitError::TimedOut("git update-ref"));
+        }
+        if deleted.exit_code == Some(0) {
+            removed.push(CleanupRemoved {
+                ref_name: reference.clone(),
+                kind,
+            });
+        } else {
+            refused.push(CleanupRefused {
+                ref_name: reference.clone(),
+                reason: "changed".into(),
+            });
+        }
+    }
+    if !removed.is_empty() {
+        clear_last_restore(admin);
+    }
+    let remaining = match mine.as_deref() {
+        Some(mine) => groups_for(repo, mine)?,
+        None => no_groups(repo)?,
+    };
+    Ok(CleanupReport {
+        removed,
+        refused,
+        remaining,
+        atomic: false,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Manual restore: preview, required safety capture, partial-failure recovery
+//
+// Restoring a captured working-tree content is never a Git-state undo. Before
+// a file or an index entry changes, the current working tree is captured and
+// published under a safety ref; a failed or incomplete capture, or a failed ref
+// publication, refuses before mutation and `force` does not bypass it. The
+// preflight reports the affected paths, staging effects, HEAD effect, ignored
+// files it will leave alone and the limits of the safety capture. If the
+// working tree changed after the preview, the stale preview is refused; a
+// retry after a partial failure therefore starts from a fresh preview.
+// ---------------------------------------------------------------------------
+
+const NO_SAFETY_CAPTURE: &str = "the required safety capture failed";
+
+/// Failure injection for the native seam tests. Production calls always pass
+/// `RestoreHooks::default()`, so every flag is `false` there.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct RestoreHooks {
+    pub(crate) fail_safety_capture: bool,
+    pub(crate) inconsistent_capture: bool,
+    pub(crate) fail_safety_ref: bool,
+    pub(crate) fail_after_deletes: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RestoreEffect {
+    Written,
+    Removed,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RestorePath {
+    pub path: String,
+    pub status: FileStatus,
+    pub effect: RestoreEffect,
+    /// The real index has a staged entry for this path; staging is not captured.
+    pub staged: bool,
+    /// Present on disk but excluded from the snapshot, so it is left alone.
+    pub ignored_in_the_way: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ManualRestoreRefusal {
+    /// Affected paths are staged; staging is not part of a safety capture, so
+    /// the user resolves them (unstage/commit) or forces an explicit loss.
+    StagedAffectedPaths,
+    /// The working tree changed after the preview; take a fresh preview.
+    StalePreview,
+    /// A per-turn checkpoint belongs to the retained restore path, not this one.
+    UnsupportedCheckpointKind,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RestoreFailureStage {
+    Writes,
+    IndexSync,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualRestorePreview {
+    #[serde(rename = "ref")]
+    pub ref_name: String,
+    pub kind: RecoveryKind,
+    pub name: Option<String>,
+    pub commit: String,
+    pub tree: String,
+    pub parent: Option<String>,
+    pub head_moved: bool,
+    /// Restoring never moves HEAD; it resets the index entries of touched paths.
+    pub head_effect: String,
+    pub affected: Vec<RestorePath>,
+    pub affected_total: u32,
+    pub affected_truncated: bool,
+    pub skipped: Vec<Skipped>,
+    /// Affected paths staged in the real index.
+    pub staged_total: u32,
+    /// The staged-path probe hit its read cap: staging is unknown, so mutation
+    /// is refused rather than guessed.
+    pub staged_truncated: bool,
+    /// An ignored file or directory the checkpoint holds is left alone.
+    pub ignored_in_the_way: u32,
+    /// The safety capture is a precondition, not a best effort.
+    pub requires_safety_capture: bool,
+    pub captures_index_state: bool,
+    pub captures_ignored_files: bool,
+    pub atomic: bool,
+    pub fingerprint: String,
+    pub refusal: Option<ManualRestoreRefusal>,
+    pub refusal_detail: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualRestoreReport {
+    pub restored: bool,
+    pub refusal: Option<ManualRestoreRefusal>,
+    pub refusal_detail: Option<String>,
+    pub kind: RecoveryKind,
+    /// The target was a safety ref: this recovers content, never Git state.
+    pub content_only: bool,
+    pub affected: Vec<RestorePath>,
+    pub affected_total: u32,
+    pub skipped: Vec<Skipped>,
+    pub staged_total: u32,
+    pub written: u32,
+    pub removed: u32,
+    pub safety: Option<SafetySnapshot>,
+    pub safety_retained: bool,
+    pub captures_index_state: bool,
+    pub index_synced: bool,
+    pub head_effect: String,
+    pub head_moved: bool,
+    pub atomic: bool,
+    pub capture_consistent: bool,
+    pub capture_warnings: Vec<String>,
+    /// A failure happened after mutation started; the effects listed above are
+    /// what this call knows it did.
+    pub partial: bool,
+    pub failure: Option<String>,
+    pub failure_stage: Option<RestoreFailureStage>,
+    /// The previous plan no longer describes the working tree: preview again.
+    pub retry_requires_fresh_preview: bool,
+}
+
+struct Restorable {
+    kind: RecoveryKind,
+    ref_name: String,
+    name: Option<String>,
+    commit: String,
+    tree: String,
+    parent: Option<String>,
+    /// Where a generated safety ref is filed: the manual id, or the task id a
+    /// safety ref already belongs to.
+    safety_task: String,
+}
+
+struct RestoreState {
+    target: Restorable,
+    target_tree: String,
+    head_before: Option<String>,
+    snapshot: Snapshot,
+    skipped: Vec<Skipped>,
+    affected: Vec<RestorePath>,
+    ignored_in_the_way: u32,
+    staged_truncated: bool,
+    fingerprint: String,
+}
+
+impl RestoreState {
+    fn staged_total(&self) -> u32 {
+        self.affected.iter().filter(|path| path.staged).count() as u32
+    }
+
+    fn writes(&self) -> Vec<String> {
+        self.affected
+            .iter()
+            .filter(|path| path.effect == RestoreEffect::Written && !path.ignored_in_the_way)
+            .map(|path| path.path.clone())
+            .collect()
+    }
+
+    fn deletes(&self) -> Vec<String> {
+        self.affected
+            .iter()
+            .filter(|path| path.effect == RestoreEffect::Removed && !path.ignored_in_the_way)
+            .map(|path| path.path.clone())
+            .collect()
+    }
+}
+
+/// Deterministic FNV-1a over the pieces the preview was built from. A native
+/// recheck compares it immediately before mutation, so an external writer or a
+/// failed partial restore cannot be retried with an outdated plan.
+fn restore_fingerprint(parts: &[&str]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for part in parts {
+        for byte in part.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+        hash ^= 0xff;
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn resolve_restorable(
+    repo: &ResolvedGitDirectory,
+    reference: &str,
+    mine: &str,
+) -> Result<Restorable> {
+    let kind =
+        recovery_kind(reference).ok_or_else(|| GitError::InvalidRef(reference.to_string()))?;
+    let output = run(repo, os_args(["for-each-ref", LIST_FORMAT, reference]))?;
+    let record = parse_ref_records(&output.stdout)
+        .into_iter()
+        .find(|record| record.name == reference)
+        .ok_or_else(|| {
+            GitError::command(
+                "git checkpoint restore",
+                "no such checkpoint for this worktree",
+            )
+        })?;
+    if record.worktree_id.as_deref() != Some(mine) {
+        return Err(GitError::command(
+            "git checkpoint restore",
+            "no such checkpoint for this worktree",
+        ));
+    }
+    let (name, safety_task) = match kind {
+        RecoveryKind::Manual => {
+            let manual = record.manual().ok_or_else(|| {
+                GitError::command(
+                    "git checkpoint restore",
+                    "unreadable manual checkpoint record",
+                )
+            })?;
+            (manual.name, manual.id)
+        }
+        RecoveryKind::Safety => {
+            let (task, _) = refs::parse_prerestore_ref(reference)
+                .ok_or_else(|| GitError::InvalidRef(reference.to_string()))?;
+            (None, task.to_string())
+        }
+        RecoveryKind::Turn => (None, String::new()),
+    };
+    Ok(Restorable {
+        kind,
+        ref_name: record.name,
+        name,
+        commit: record.commit,
+        tree: record.tree,
+        parent: record.parent,
+        safety_task,
+    })
+}
+
+/// Names staged in the real index, with the read-cap state (`true` means the
+/// list is incomplete and staging cannot be judged).
+fn staged_path_set(
+    repo: &ResolvedGitDirectory,
+    admin: &Admin,
+) -> Result<(std::collections::HashSet<String>, bool)> {
+    let output = run_git_with(
+        &repo.workspace,
+        Some(&repo.git_path),
+        admin.plumb(os_args(["diff", "--cached", "--name-only", "-z"]))?,
+        SNAPSHOT_TIMEOUT_SECS,
+        RunOptions {
+            stdout_cap: INDEX_SCAN_CAP,
+            ..Default::default()
+        },
+    )?;
+    if output.timed_out {
+        return Err(GitError::TimedOut("git diff --cached"));
+    }
+    ensure_success(&output, "git diff --cached failed")?;
+    let staged = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+        .map(|record| String::from_utf8_lossy(record).into_owned())
+        .collect();
+    Ok((staged, output.truncated))
+}
+
+fn restore_state(
+    repo: &ResolvedGitDirectory,
+    admin: &Admin,
+    mine: &str,
+    reference: &str,
+) -> Result<RestoreState> {
+    let target = resolve_restorable(repo, reference, mine)?;
+    if target.kind == RecoveryKind::Turn {
+        return Ok(RestoreState {
+            target,
+            target_tree: String::new(),
+            head_before: head_commit_opt(repo)?,
+            snapshot: Snapshot {
+                tree: String::new(),
+                consistent: true,
+                passes: 1,
+                warnings: Vec::new(),
+                unstable_paths: Vec::new(),
+            },
+            skipped: Vec::new(),
+            affected: Vec::new(),
+            ignored_in_the_way: 0,
+            staged_truncated: false,
+            fingerprint: String::new(),
+        });
+    }
+
+    let target_tree = tree_of(repo, &target.commit)?;
+    let snapshot = snapshot_tree(repo, true)?;
+    let changes = diff_trees(repo, &snapshot.tree, &target_tree)?;
+    let plan = plan_restore(&changes);
+    let in_snapshot: std::collections::HashSet<&str> = changes
+        .iter()
+        .filter(|change| change.status != FileStatus::Added)
+        .map(|change| change.path.as_str())
+        .collect();
+    let (staged, staged_truncated) = staged_path_set(repo, admin)?;
+
+    let mut writes: std::collections::HashSet<String> = plan.writes.iter().cloned().collect();
+    let mut ignored_in_the_way = 0u32;
+    for path in &plan.writes {
+        let exists = std::fs::symlink_metadata(repo.local_path.join(path)).is_ok();
+        if exists && !in_snapshot.contains(path.as_str()) {
+            // Ignored-file protection: the checkpoint holds this path, the
+            // snapshot does not (it is ignored now), so it stays untouched.
+            writes.remove(path);
+            ignored_in_the_way += 1;
+        }
+    }
+    let mut skipped = plan.skipped.clone();
+    for path in &plan.writes {
+        if !writes.contains(path) {
+            skipped.push(Skipped {
+                path: path.clone(),
+                reason: "ignored-file-in-the-way".into(),
+            });
+        }
+    }
+
+    let status_of = |path: &str| {
+        changes
+            .iter()
+            .find(|change| change.path == path)
+            .map(|change| change.status)
+    };
+    let mut affected: Vec<RestorePath> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for path in writes.iter().chain(plan.deletes.iter()) {
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        let Some(status) = status_of(path) else {
+            continue;
+        };
+        affected.push(RestorePath {
+            path: path.clone(),
+            status,
+            effect: if writes.contains(path) {
+                RestoreEffect::Written
+            } else {
+                RestoreEffect::Removed
+            },
+            staged: staged.contains(path),
+            ignored_in_the_way: false,
+        });
+    }
+    affected.sort_by(|a, b| a.path.cmp(&b.path));
+
+    let head_before = head_commit_opt(repo)?;
+    let mut parts: Vec<String> = vec![
+        format!("{:?}", target.kind).to_lowercase(),
+        target.ref_name.clone(),
+        target.commit.clone(),
+        target_tree.clone(),
+        snapshot.tree.clone(),
+        head_before.clone().unwrap_or_default(),
+    ];
+    for path in &affected {
+        parts.push(format!(
+            "{}:{:?}:{:?}:{}",
+            path.path, path.status, path.effect, path.staged
+        ));
+    }
+    parts.push(format!("staged-truncated:{staged_truncated}"));
+    let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
+    let fingerprint = restore_fingerprint(&refs);
+
+    Ok(RestoreState {
+        target,
+        target_tree,
+        head_before,
+        snapshot,
+        skipped,
+        affected,
+        ignored_in_the_way,
+        staged_truncated,
+        fingerprint,
+    })
+}
+
+fn preview_of(state: &RestoreState, refusal: Option<ManualRestoreRefusal>) -> ManualRestorePreview {
+    let total = state.affected.len() as u32;
+    let affected: Vec<RestorePath> = state
+        .affected
+        .iter()
+        .take(MAX_INSPECTED_PATHS)
+        .cloned()
+        .collect();
+    ManualRestorePreview {
+        ref_name: state.target.ref_name.clone(),
+        kind: state.target.kind,
+        name: state.target.name.clone(),
+        commit: state.target.commit.clone(),
+        tree: state.target.tree.clone(),
+        parent: state.target.parent.clone(),
+        head_moved: state.head_before != state.target.parent,
+        head_effect: "unchanged".into(),
+        affected,
+        affected_total: total,
+        affected_truncated: total as usize > MAX_INSPECTED_PATHS,
+        skipped: state.skipped.clone(),
+        staged_total: state.staged_total(),
+        staged_truncated: state.staged_truncated,
+        ignored_in_the_way: state.ignored_in_the_way,
+        requires_safety_capture: state.target.kind != RecoveryKind::Turn,
+        captures_index_state: false,
+        captures_ignored_files: false,
+        atomic: false,
+        fingerprint: state.fingerprint.clone(),
+        refusal,
+        refusal_detail: refusal.map(|refusal| match refusal {
+            ManualRestoreRefusal::UnsupportedCheckpointKind => {
+                "per-turn checkpoints use the retained checkpoint restore path".to_string()
+            }
+            ManualRestoreRefusal::StagedAffectedPaths => {
+                "affected paths are staged; staging is not part of a safety capture".to_string()
+            }
+            ManualRestoreRefusal::StalePreview => {
+                "the working tree changed after this preview".to_string()
+            }
+        }),
+    }
+}
+
+/// Read-only preflight for restoring captured content. Never writes a ref, a
+/// file or an index entry.
+pub fn restore_preview(
+    registry: &WorkspaceRegistry,
+    worktree: &str,
+    reference: &str,
+    workspace: &WorkspaceEnv,
+) -> Result<ManualRestorePreview> {
+    let repo = open_worktree(registry, worktree, workspace)?;
+    ensure_supported(&repo)?;
+    let admin = Admin::new(&repo)?;
+    let mine = admin.existing_worktree_id().ok_or_else(|| {
+        GitError::command(
+            "git checkpoint restore",
+            "no such checkpoint for this worktree",
+        )
+    })?;
+    let lock = lock_for_repo(&repo);
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let state = restore_state(&repo, &admin, &mine, reference)?;
+    let refusal = (state.target.kind == RecoveryKind::Turn)
+        .then_some(ManualRestoreRefusal::UnsupportedCheckpointKind);
+    Ok(preview_of(&state, refusal))
+}
+
+fn capture_problem(state: &RestoreState, consistent: bool) -> Option<String> {
+    if !consistent {
+        return Some(
+            "the required safety capture was incomplete: the working tree kept changing while it ran"
+                .to_string(),
+        );
+    }
+    let affected: std::collections::HashSet<&str> = state
+        .affected
+        .iter()
+        .map(|path| path.path.as_str())
+        .collect();
+    let unstable: Vec<&str> = state
+        .snapshot
+        .unstable_paths
+        .iter()
+        .map(String::as_str)
+        .filter(|path| affected.contains(path))
+        .collect();
+    if !unstable.is_empty() {
+        return Some(format!(
+            "the required safety capture was incomplete: affected paths kept changing ({})",
+            unstable.join(", ")
+        ));
+    }
+    None
+}
+
+fn report_of(state: &RestoreState, kind: RecoveryKind) -> ManualRestoreReport {
+    let total = state.affected.len() as u32;
+    ManualRestoreReport {
+        restored: false,
+        refusal: None,
+        refusal_detail: None,
+        kind,
+        content_only: kind == RecoveryKind::Safety,
+        affected: state
+            .affected
+            .iter()
+            .take(MAX_INSPECTED_PATHS)
+            .cloned()
+            .collect(),
+        affected_total: total,
+        skipped: state.skipped.clone(),
+        staged_total: state.staged_total(),
+        written: 0,
+        removed: 0,
+        safety: None,
+        safety_retained: false,
+        captures_index_state: false,
+        index_synced: true,
+        head_effect: "unchanged".into(),
+        head_moved: state.head_before != state.target.parent,
+        atomic: false,
+        capture_consistent: state.snapshot.consistent,
+        capture_warnings: state.snapshot.warnings.clone(),
+        partial: false,
+        failure: None,
+        failure_stage: None,
+        retry_requires_fresh_preview: false,
+    }
+}
+
+fn refuse_report(
+    state: &RestoreState,
+    kind: RecoveryKind,
+    refusal: ManualRestoreRefusal,
+    detail: String,
+) -> ManualRestoreReport {
+    let mut report = report_of(state, kind);
+    report.refusal = Some(refusal);
+    report.refusal_detail = Some(detail);
+    report
+}
+
+fn restore_manual_inner(
+    registry: &WorkspaceRegistry,
+    worktree: &str,
+    reference: &str,
+    expected_fingerprint: Option<&str>,
+    force: bool,
+    workspace: &WorkspaceEnv,
+    hooks: RestoreHooks,
+) -> Result<ManualRestoreReport> {
+    let repo = open_worktree(registry, worktree, workspace)?;
+    ensure_supported(&repo)?;
+    let admin = Admin::new(&repo)?;
+    let lock = lock_for_repo(&repo);
+    let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let mine = admin.existing_worktree_id().ok_or_else(|| {
+        GitError::command(
+            "git checkpoint restore",
+            "no such checkpoint for this worktree",
+        )
+    })?;
+
+    let state = restore_state(&repo, &admin, &mine, reference)?;
+    let kind = state.target.kind;
+    if kind == RecoveryKind::Turn {
+        return Ok(refuse_report(
+            &state,
+            kind,
+            ManualRestoreRefusal::UnsupportedCheckpointKind,
+            "per-turn checkpoints use the retained checkpoint restore path".into(),
+        ));
+    }
+
+    // The native recheck immediately before mutation. It sees external writers
+    // and the effects of a previous partial failure, so an old plan cannot be
+    // repeated.
+    if let Some(expected) = expected_fingerprint {
+        if expected != state.fingerprint {
+            return Ok(refuse_report(
+                &state,
+                kind,
+                ManualRestoreRefusal::StalePreview,
+                "the working tree changed after this preview; review a fresh preview before retrying"
+                    .into(),
+            ));
+        }
+    }
+    if state.staged_truncated {
+        return Ok(refuse_report(
+            &state,
+            kind,
+            ManualRestoreRefusal::StagedAffectedPaths,
+            "the staged-path probe was truncated, so staging cannot be judged; resolve it in the terminal"
+                .into(),
+        ));
+    }
+    if !force && state.staged_total() > 0 {
+        let detail = format!(
+            "{} affected path{} staged; staging is not part of a safety capture. Unstage or commit them, or force an explicit index effect.",
+            state.staged_total(),
+            if state.staged_total() == 1 { " is" } else { "s are" }
+        );
+        return Ok(refuse_report(
+            &state,
+            kind,
+            ManualRestoreRefusal::StagedAffectedPaths,
+            detail,
+        ));
+    }
+
+    // Everything that can fail before the working tree or index is touched
+    // happens now, and nothing below is conditional on `force`.
+    if hooks.fail_safety_capture {
+        return Err(GitError::command(
+            "git checkpoint restore",
+            format!("{NO_SAFETY_CAPTURE}: the snapshot could not be read"),
+        ));
+    }
+    let consistent = state.snapshot.consistent && !hooks.inconsistent_capture;
+    if let Some(problem) = capture_problem(&state, consistent) {
+        return Err(GitError::command("git checkpoint restore", problem));
+    }
+    if hooks.fail_safety_ref {
+        return Err(GitError::command(
+            "git checkpoint restore",
+            "the required safety ref publication failed; nothing was changed",
+        ));
+    }
+    let safety = write_safety_snapshot(
+        &repo,
+        &admin,
+        &state.target.safety_task,
+        &state.snapshot.tree,
+        state.head_before.as_deref(),
+        &mine,
+    )?;
+    let mut report = report_of(&state, kind);
+    report.safety = Some(safety);
+    report.safety_retained = true;
+
+    let writes = state.writes();
+    let deletes = state.deletes();
+    let temp = if writes.is_empty() {
+        None
+    } else {
+        let temp = TempIndex::empty(&repo)?;
+        let read = run_indexed(
+            &repo,
+            &temp,
+            os_args(["read-tree", state.target_tree.as_str()]),
+            None,
+        )?;
+        ensure_success(&read, "git read-tree failed")?;
+        Some(temp)
+    };
+
+    let mut touched: Vec<String> = Vec::new();
+    for path in &deletes {
+        match remove_tracked_path(&repo.local_path, path) {
+            Ok(true) => {
+                report.removed += 1;
+                touched.push(path.clone());
+            }
+            Ok(false) => {}
+            Err(reason) => report.skipped.push(Skipped {
+                path: path.clone(),
+                reason,
+            }),
+        }
+    }
+
+    if hooks.fail_after_deletes {
+        return Ok(partial_report(
+            report,
+            RestoreFailureStage::Writes,
+            "a later restore step failed after files were removed; the safety ref is retained"
+                .into(),
+        ));
+    }
+
+    if let Some(temp) = temp {
+        let mut list: Vec<u8> = Vec::new();
+        for path in &writes {
+            list.extend_from_slice(path.as_bytes());
+            list.push(0);
+        }
+        let checkout = run_indexed(
+            &repo,
+            &temp,
+            os_args(["checkout-index", "-f", "-z", "--stdin"]),
+            Some(list),
+        )?;
+        if let Err(error) = ensure_success(&checkout, "git checkout-index failed") {
+            return Ok(partial_report(
+                report,
+                RestoreFailureStage::Writes,
+                format!(
+                    "{error}; the safety ref is retained and write effects are not known exactly"
+                ),
+            ));
+        }
+        report.written = writes.len() as u32;
+        touched.extend(writes.iter().cloned());
+    }
+
+    touched.sort();
+    touched.dedup();
+    if !touched.is_empty() {
+        report.index_synced = sync_index_to_head(&repo, &admin, &touched);
+        if !report.index_synced {
+            return Ok(partial_report(
+                report,
+                RestoreFailureStage::IndexSync,
+                "the working files were restored but the index entries could not be reset; the safety ref is retained"
+                    .into(),
+            ));
+        }
+    }
+    report.restored = true;
+    Ok(report)
+}
+
+fn partial_report(
+    mut report: ManualRestoreReport,
+    stage: RestoreFailureStage,
+    failure: String,
+) -> ManualRestoreReport {
+    report.restored = false;
+    report.partial = true;
+    report.failure = Some(failure);
+    report.failure_stage = Some(stage);
+    report.retry_requires_fresh_preview = true;
+    report
+}
+
+/// Restores captured content after a fresh preview and a required safety
+/// capture. Never moves HEAD; index entries of touched paths are reset to HEAD,
+/// which is disclosed rather than presented as a restored index.
+pub fn restore_manual(
+    registry: &WorkspaceRegistry,
+    worktree: &str,
+    reference: &str,
+    expected_fingerprint: Option<&str>,
+    force: bool,
+    workspace: &WorkspaceEnv,
+) -> Result<ManualRestoreReport> {
+    restore_manual_inner(
+        registry,
+        worktree,
+        reference,
+        expected_fingerprint,
+        force,
+        workspace,
+        RestoreHooks::default(),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn restore_manual_with_hooks(
+    registry: &WorkspaceRegistry,
+    worktree: &str,
+    reference: &str,
+    expected_fingerprint: Option<&str>,
+    force: bool,
+    workspace: &WorkspaceEnv,
+    hooks: RestoreHooks,
+) -> Result<ManualRestoreReport> {
+    restore_manual_inner(
+        registry,
+        worktree,
+        reference,
+        expected_fingerprint,
+        force,
+        workspace,
+        hooks,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1341,7 +3170,12 @@ mod tests {
 
     #[test]
     fn parses_checkpoint_listing_in_turn_order() {
-        let listing = "refs/terax/checkpoints/t1/10\u{0}c10\u{0}tree10\u{0}p10\u{0}1700000010\nrefs/terax/checkpoints/t1/2\u{0}c2\u{0}tree2\u{0}\u{0}1700000002\nrefs/terax/checkpoints/t1/x\u{0}bad\u{0}\u{0}\u{0}0\n";
+        let prefix = refs::checkpoint_prefix();
+        let listing = format!(
+            "{prefix}t1/10\u{0}c10\u{0}tree10\u{0}p10\u{0}1700000010\n\
+             {prefix}t1/2\u{0}c2\u{0}tree2\u{0}\u{0}1700000002\n\
+             {prefix}t1/x\u{0}bad\u{0}\u{0}\u{0}0\n"
+        );
         let infos = parse_checkpoint_list(listing.as_bytes());
         assert_eq!(infos.len(), 2);
         assert_eq!(infos[0].turn, 2);
@@ -1541,7 +3375,7 @@ mod tests {
     #[test]
     fn checkpoint_info_serializes_the_ref_under_its_real_name() {
         let info = CheckpointInfo {
-            ref_name: "refs/terax/checkpoints/t/1".into(),
+            ref_name: refs::checkpoint_ref("t", 1),
             task_id: "t".into(),
             turn: 1,
             commit: "c".into(),
@@ -1551,7 +3385,7 @@ mod tests {
             worktree_id: Some("abc".into()),
         };
         let json = serde_json::to_value(&info).unwrap();
-        assert_eq!(json["ref"], "refs/terax/checkpoints/t/1");
+        assert_eq!(json["ref"], refs::checkpoint_ref("t", 1));
         assert_eq!(json["createdAtSecs"], 5);
         assert!(
             json.get("worktreeId").is_none(),

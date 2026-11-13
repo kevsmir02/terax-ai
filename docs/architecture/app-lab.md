@@ -29,6 +29,384 @@ Build time on an M4 (10 cores): cold release build including every dependency 2 
 after a frontend or app change 88 to 90 s (the frontend itself 6 s). `--reuse-build` skips
 the build, `--build-only` stops after it, `--app` runs a prebuilt `.app`.
 
+### Linux (WebKitGTK): the workflow and preview seams
+
+`--scenario workflow` drives the real WebKitGTK app through the actions this program's acceptance
+seam needs and asserts what the page renders. `--scenario preview` does the same for a web preview
+frame: it serves a fixture page from the orchestrator's own HTTP server and drives the app's own
+tab, Space and window actions around it.
+
+```sh
+# build (debug binary, private target dir, no bundle) and run the workflow
+pnpm profile:app:linux
+# equivalent, with explicit paths
+python3 scripts/app-lab/run.py --scenario workflow --profile debug \
+    --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run
+
+# the preview seam (tab/Space/window teardown, visible blur, frame boundaries)
+python3 scripts/app-lab/run.py --scenario preview --profile debug \
+    --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-preview
+
+# the Markdown seam (Space-root assets, consent, symlink escape, grant revocation)
+python3 scripts/app-lab/run.py --scenario markdown --profile debug \
+    --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-markdown
+
+# the Spaces lifecycle seam (shared checkout, switch, close guards, Space deletion)
+python3 scripts/app-lab/run.py --scenario spaces --profile debug \
+    --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-spaces
+
+# the worktree seam (creation through the panel dialog, derived access, opening the
+# result as a Space, and four refusals that leave their targets untouched)
+python3 scripts/app-lab/run.py --scenario worktree --profile debug \
+    --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-worktree
+
+# the quit seam (survey across Spaces, repeated close, save-then-quit, graceful
+# termination, survivor prompt, forced exit, reload without command replay)
+python3 scripts/app-lab/run.py --scenario quit --profile debug \
+    --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-quit
+
+# the crash-recovery seam (acknowledged draft, harness SIGKILL of the process
+# group, relaunch against the same profile, offered draft, exact discard)
+python3 scripts/app-lab/run.py --scenario recovery --profile debug \
+    --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-recovery
+
+# the image seam (real decode per format, oversized/corrupt refusal, hidden-tab and
+# close-cycle release of decoded viewers and grants)
+python3 scripts/app-lab/run.py --scenario images --profile debug \
+    --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-images
+
+# the media seam (real container/codec outcomes, ranged delivery and seeking, hidden
+# pause without auto-resume, unsupported/corrupt/interrupted inputs, close cleanup)
+python3 scripts/app-lab/run.py --scenario media --profile debug \
+    --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-media
+
+# prove both refusals without running a scenario (preflight + the binary's isolation guard)
+python3 scripts/app-lab/run.py --scenario workflow --self-test
+```
+
+**Prerequisites** (Fedora 44 KDE Plasma Wayland is the primary host):
+`webkit2gtk4.1-devel`, `gtk3-devel`, `librsvg2-devel`, `openssl-devel` (the same set CI installs
+for `cargo check`), Rust stable, Node 22+, pnpm, and a live graphical session. The runner launches
+the app with `--no-bundle`; no RPM/DEB/AppImage and no `terax-cli` sidecar are involved. Under
+Xvfb a window manager is required for focus/visibility and transparency will not work; a real
+session is the supported target.
+
+**Automated run.** `.github/workflows/linux-app-smoke.yml` executes this scenario on Xvfb +
+openbox in a hosted runner, after `--self-test` proves the refusals, and uploads `report.json`,
+`page.log` and the app/build logs as the `linux-app-smoke` artifact. It runs nightly, on demand,
+and on pull requests labelled `linux-smoke`; it is evidence, not a required check
+(`docs/contributing/testing.md`, "CI").
+
+**Host stack** is recorded in the report's `environment` (never asserted): `/etc/os-release`,
+`uname -r`, architecture, `XDG_SESSION_TYPE`/`XDG_CURRENT_DESKTOP`, the live Wayland/X11 display
+names, GDK scale variables, the text-scaling factor, matched monospace/sans fonts, the
+webkit2gtk/GTK package versions (rpm, dpkg or `pkg-config`), the CPU model, logical CPUs and RAM
+from `/proc`, and the observed page `devicePixelRatio` from the last phase. Load average is
+recorded at start and end.
+
+**Isolation** (`scripts/linux_profile.py`, shared with `scripts/pty-smoke`): the run gets a
+per-run identifier (`<fork identifier>.app-lab-<hex>`, derived from
+`src/modules/identity/namespace.json`), its own `HOME` **and** its own
+`XDG_DATA_HOME`/`XDG_CONFIG_HOME`/`XDG_CACHE_HOME`/`XDG_STATE_HOME` under `<output>/home`, while
+`XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`, `DISPLAY` and `DBUS_SESSION_BUS_ADDRESS` keep coming from the
+live session. `XDG_CACHE_HOME` is mandatory: the control server writes
+`$XDG_CACHE_HOME/codr/control.json` and `codr/run/<pid>/bin/terax`, which are
+keyed by the fork namespace, *not* by identifier — inheriting the real cache directory would
+overwrite the installed application's live descriptor. The preflight refuses (before the build and
+again before the launch) the fork product identifier, **any upstream Terax identifier**, an
+identifier outside the fork product namespace, a missing/relative or out-of-output `HOME`/`XDG_*`
+directory, the installed app's cache directory, and a bench launch without
+`TERAX_BENCH_ISOLATED=1`. `--self-test` exercises every case, proves the coexistence checker both
+passes on an untouched upstream tree and fails on a modified one, and then launches the real bench
+binary without that variable, asserting it exits nonzero with the guard's message. The profile is
+removed before and after the run; `linux_profile.cleanup` refuses paths outside the output
+directory. `python3 -m unittest discover -s scripts/tests` covers the same invariants (allow and
+deny) without a build.
+
+**Coexistence** (`scripts/namespace_sentinels.py`): before the launch the runner writes a synthetic
+*installed upstream Terax* into the same disposable profile — its app config/data/state files, its
+`control.json` and per-pid launcher under `$XDG_CACHE_HOME/terax/`, its shell-integration files, its
+`conf.d/terax.fish`, and the hook groups it owns in `~/.claude/settings.json`,
+`~/.codex/hooks.json`, `~/.gemini/settings.json` and `.pi/agent/extensions/terax-notifications.ts`.
+After the app exits, every file and every upstream directory tree is re-hashed. The manifest records
+`isolation.upstreamStateUnchanged`, the list of any changes, and the fork's own state
+(`isolation.fork`): the descriptor it published, its data directory and its shell-integration
+directory. A changed, deleted or newly created upstream file fails the run (exit 3).
+
+`scripts/app-lab/isolation_report.py` builds that block for **every** Linux report — including the
+cold/warm `startup` scenario — from the environment the preflight actually accepted (it re-runs
+`linux_profile.problems()` and refuses to record a block otherwise), and validates it before the
+report is written. A startup report without the private-HOME/XDG record, the disposable identifier
+or the upstream-sentinel result cannot exist; `scripts/tests/test_isolation_report.py` asserts the
+rejection an empty/defaulted block would otherwise slip through. `config.harness.revision` records
+which harness produced a report, which matters when `--app` measures a binary built from another
+tree.
+
+**The workflow** (in `src/bench/driver.ts`): a real login shell spawns in the first tab; a written
+marker is echoed back and asserted to appear exactly once; a second terminal tab opens; the first
+tab's active pane splits and the new leaf gets a live session; the app switches away and back with
+the marker still in scrollback; a temp file opens through the app's own tab planner (`openFileTab`)
+and the editor's rendered text is asserted. On Linux the workflow then drives the two save
+conflicts that used to be unit-only evidence (ticket #46): an **external writer** rewrites
+`workflow-conflict.txt` from the harness while the buffer is dirty, and the app's save must show
+the conflict dialog with both versions, compare, Save As, reload and overwrite; overwriting is
+bound to the reviewed revision, so a second external change refuses the click and re-reviews
+instead of clobbering it; an unreadable target (mode 000 through the harness) leaves overwrite
+disabled; reload adopts the disk text. Then **stale typing** opens `workflow-stale.txt`, starts a
+save-and-close while the bench build holds the native write open (`TERAX_BENCH_WRITE_DELAY_MS`),
+types again, and asserts the tab stays open with the newer text and that only the stale snapshot
+reached the disk. Each step emits `[workflow] PASS|FAIL …` to `page.log`; the structured summary
+(`token`, `pass`, `steps`) rides the final `done` sync, the report stores it under `workflow`, and
+the runner exits 2 when any step failed.
+
+**Harness interference** (`POST /interfere`, `ReportServer`): the external write, the mode change
+and the crash are actions the application must not perform on itself, so the driver asks the
+orchestrator's own process over the loopback report server. Actions are `write` (path + content),
+`chmod` (path + permission bits) and `signal` (`target: "app"`, `SIGKILL`/`SIGTERM`); every path
+must resolve inside the scenario workspace (a symlink escape is refused), the endpoint answers
+loopback clients only, and `signal` only accepts the pid the server launched, which it kills as a
+process group. Accepted actions are stored in the report's `recovery.launches[].interference` (or
+the run's log) so a phase can be tied to the exact write or signal that produced it.
+`scripts/tests/test_app_lab_interfere.py` covers the accepted actions and every refusal.
+
+**The Markdown preview** (`--scenario markdown`) drives the real preview against fixtures the runner
+writes: a document inside the Space root, an outside document, a symlink escape, a remote pixel the
+runner counts, a link document, a document of hostile references and a document above the 4 MiB
+syntax ceiling. It asserts the image
+loads from the configured Space root, that changing the terminal cwd through `setLeafCwd` leaves the
+same `asset://` token and pixels in place, that an inline image whose header declares a
+20 000 x 20 000 raster (~1.5 GiB decoded) is refused with the 64 MiB reason and **no `<img>` in
+the document**, that the same oversized image at the end of the 4 MiB document stays `deferred`
+(not probed) until it is scrolled into view and is then refused, that the symlink escape is
+refused (the bounded surface ends in a read/decode error with no `<img>`), that
+an outside document loads from its own folder and only loads a sibling image after the "Allow"
+button, that the remote image is absent and the fixture server recorded zero hits until "Load remote
+images" is chosen (then one), that a relative link neither navigates the app nor opens a tab, that a
+hostile document leaves no executed effect, no `<script>`, no event-handler attribute, no
+`javascript:` href and no asset URL the app did not mint with a token, that
+the large document renders with `data-syntax="off"`, that closing the tab makes its old asset URL
+fail while no content resurfaces, and that closing it while its 4 MiB read is still in flight
+leaves no tab, no marker text and no syntax block behind. Pass/fail steps and the remote hit
+counters are in the report's `markdown` and `markdownServer` blocks.
+
+**The Spaces lifecycle** (`--scenario spaces`): two Spaces are created on one real checkout and the
+rendered `[data-shared-root]` badge is asserted; a shell in the first Space streams five lines
+while the app switches to the second Space, and after switching back the scrollback holds all five
+while the hidden terminal tab reported `visibility: hidden` (presentation off, output processing
+on). The scenario then drives the app's own close guards: a tab whose shell runs `sleep 30` opens
+the running-process dialog and cancel keeps it; an editor buffer edited through the real CodeMirror
+path opens the unsaved-changes dialog, cancel keeps it dirty, and Save & Close reads the persisted
+text back from disk before the tab disappears. A third Space with a dirty buffer and a running
+process is asked about and canceled first (Space, tabs and dirty text still there), then saved and
+deleted; the report records that the project directory and its `spaces-keep.txt` still exist under
+`spaceDeletion`. The runner exits 2 when any step failed. The scenario does not relaunch the app:
+restart restoration (layout, cwd and file locations cold, no command replay) is verified at the
+planning seam in `src/modules/spaces/lib/restore.test.ts`, and — for quit — by the reload pass of
+`--scenario quit` (below).
+
+**Quit** (`--scenario quit`, ticket #18): the real application quits. Two Spaces hold a dirty
+buffer (edited through CodeMirror) and a busy terminal — one job honours `SIGTERM`, one runs
+`sh -c 'trap "" TERM; exec sleep 300'`. Asking to quit opens the survey, which must name both
+Spaces, both buffers and both processes and must state that detached services keep running. A
+second close request while the dialog is open is asserted **not** to quit. Cancel keeps the window
+and both processes. Save All & Quit writes both buffers (read back from disk) and asks again with
+only the processes left. Confirming runs the bounded recovery flush, then the native graceful pass:
+the cooperating job is gone, the survivor's terminal still runs, and the survivor prompt has
+appeared. Cancelling there keeps the window open; a second round forces only after that prompt.
+Before the window would close the scenario appends one line to a replay-marker file and reloads the
+page (the boot path reaps every PTY, exactly as a relaunch would); the second pass asserts the
+Spaces and editor tabs came back, the marker still has one line — no command was replayed — and a
+quiet restored application closes without a question. The runner exits 2 when any step failed.
+A full process relaunch needs two profiles; the reload exercises the same restore path, and the
+difference is stated rather than papered over.
+
+After the two buffers are saved, the quit scenario makes the **native write fail** for a third
+one: the harness chmods `quit-stalled/` read-only (the atomic writer needs a temp file in that
+directory, so this is a real `EACCES`), and `Save All & Quit` must report `note: save-incomplete`
+and keep the buffer instead of closing; the file on disk is unchanged. Restoring the directory and
+saving again writes the text, so the failure is attributed to the write, not to the scenario.
+
+**Crash recovery** (`--scenario recovery`, ticket #46): two launches of the real app against one
+disposable profile, orchestrated like `--scenario startup` but with a different driver phase per
+launch (`run.py` `run_linux_recovery`). Launch 1 (`phase: "write"`) edits two files through
+CodeMirror and waits until `recovery_list` holds both drafts with exactly that text; only then does
+it ask `POST /interfere` for `SIGKILL` of the app's process group. The harness records the exit
+status and the request (a genuine signal death, not a graceful teardown), then starts launch 2
+(`phase: "restore"`) on the same profile and workspace. The driver opens the same files, asserts
+the "Recovered unsaved draft for …" banner is offered for each, that the stored record's text and
+buffer id are the ones launch 1 acknowledged, that Compare shows that text, and that Discard
+removes exactly that record while the sibling draft and both tabs stay. `report.json` carries
+`recovery.launches` (acknowledgement, exit code/signal, interference operations) and
+`recovery.steps`; every step is printed as a `recovery PASS|FAIL …` line and the runner exits 2 on
+failure. The Settings → Editor stored-drafts list is a separate application window, so the driver
+exercises the same `discardDraft` operation through the banner; the settings list itself remains a
+named manual check. The bench-only write delay (`TERAX_BENCH_WRITE_DELAY_MS`, honoured only with
+the `bench` cargo feature, unset in a release build) is used by the stale-typing step and does not
+exist as a product preference.
+
+**The preview** (`previewScenario`): a preview tab opens through the app's own planner
+(`openPreviewTab`) at `/preview-fixture?redirect=1`, which the orchestrator serves. The fixture page
+posts a 200 ms beat and a `pagehide` notice to the app page, so a teardown is observed as the
+frame's document really stopping rather than as an attribute change:
+
+- the server redirects the frame once; the frame follows it and the application's own document is
+  unchanged;
+- the frame is a separate untrusted document — `__TAURI__`/`__TAURI_INTERNALS__` are absent while
+  the app page has IPC, top-level navigation is refused, and a requested popup is refused (the app
+  installs no new-window handler);
+- switching to another tab, and switching to another Space, unloads the frame in the same turn (no
+  further beats) and returning re-mounts a fresh document that says why it reloaded and that
+  transient page state was lost (`[data-preview-reloaded]`). The Space cycle is repeated without
+  creating a tab, because creating one activates it and the cause is then legitimately the tab:
+  the plain switch asserts the notice names the Space, and that the intermediate render while the
+  app restores the Space's active tab does not rewrite the recorded cause;
+- the fixture server answers a ping after the tab teardown and after the tab closes, so frame
+  teardown never owns the dev server process;
+- `preview-blur` opens a separate application window (zenity/yad) so the app loses focus while its
+  window stays visible: the frame and its instance must survive, or the step is recorded as
+  skipped when no window could take focus;
+- `hide` unmaps the window: the frame unloads while `document.visibilityState` is not `visible`,
+  and showing the window reloads it; `minimize` records whatever signal this desktop reports and
+  asserts the frame unloaded only when that signal says hidden. A compositor that never reports
+  iconification is recorded as `SKIP minimize`, not as a pass: the unmapped-window step above is
+  the exercised hidden case (WebKitGTK exposes no occlusion state either);
+- closing the tab releases the frame and the fixture server still answers.
+
+The step list and the observed signals (`blurExercised`, minimize `visibility`, `reportedHidden`)
+ride the final `done` sync as `preview` next to `workflow`; the fixture server's counters
+(`fixtureLoads`, `redirectHits`, `pings`) are recorded as `previewServer`.
+
+**PDF documents** (`pdfDocuments` in `src/bench/driver.ts`, issues #30 and #31). The preview
+scenario opens six generated documents through the app's file planner.
+
+Issue #30 recorded the iframe path: the app's delivery gate, the bytes the asset server served
+(natively, through `fs::bench_probe`/`bench_asset_log`), the cross-origin frame the app could not
+read, and the lifecycle. That path is gone.
+
+Since issue #31 the reader is the app's own DOM, so the same scenario asserts, from the reader's
+own `data-pdf-*` attributes and text layer:
+
+- page count and page number, and navigation through the toolbar and the reader's key handling;
+- zoom with a real re-render: the canvas's backing-store size, its inked pixels read through
+  `getImageData`, and the bounded raster cache's byte counts;
+- the 32 MiB per-page ceiling: a 400 % A4 page renders 32,090,304 B, 800 % refuses naming the
+  ceiling and “409 %”, and taking the offered zoom really paints within the ceiling; a 72-inch page
+  refuses 100 % and offers 64 %;
+- search (match count, page navigation, highlighted span) and selectable text through a DOM
+  `Selection`;
+- the whole-file gate (12 MiB document: explicit choice with zero bytes read, then one `200` with
+  `override=1`), the corrupt-document state, and the misnamed `.pdf` opening as text;
+- hidden-tab unloading over three cycles, tab-close grant release, and no reader element left
+  behind.
+
+What it still cannot do: inject native input or take a screenshot (ticket #32), so a physical key
+press, a real drag and the clipboard round-trip, the visual crispness of a re-render, a network
+capture, a password/unsupported-feature fixture and the 4-viewer admission refusal stay named
+manual checks in `docs/architecture/pdf-reader.md`.
+
+A display render is scheduled on animation frames, which WebKit suspends for an occluded window —
+even while the page reports itself visible on this host. The reader retries a render that makes no
+progress for four seconds with print-intent scheduling and reports
+`data-pdf-render-fallback="print"`; the driver records which path painted each canvas instead of
+assuming.
+
+Fixtures are written and re-verified by `scripts/app-lab/pdf_fixtures.py` (poppler as the
+independent check) into the run's workspace, never the repository, and the manifest travels in the
+report with its verification. `--pdf-hold-ms N` keeps `text.pdf` on screen for `N` milliseconds
+after its sample so the remaining manual checks can be run against the real window.
+
+**The images** (`imagesScenario`): committed containers from
+`src-tauri/tests/fixtures/images/` are copied into the run's workspace and opened through the
+app's own file-tab planner. The driver asserts the rendered element's
+`naturalWidth`/`naturalHeight` for every format claimed as supported (it does not infer support
+from the extension), the oversized refusal before an element exists (a valid 5000×5000 IHDR with
+no pixel data), the corrupt notice, the hidden tab dropping the raster and releasing its
+decoded-viewer slot, and three open/close cycles leaving zero decoded viewers and zero tab-owned
+grant scopes. An explicitly opened SVG is asserted to stay an editable text tab. The result
+(`images.pass`, `steps`, `formats`) rides the same final `done` sync; the runner exits 2 when a
+step fails.
+
+**The media** (`mediaScenario`): committed containers from
+`src-tauri/tests/fixtures/media/` (plus a generated ~3.5 MiB WAV) are copied into the run's
+workspace and opened through the app's own file-tab planner. Support is recorded from the
+element's own `loadedmetadata`/`error` events — the extension only routes the file, and the native
+`fs_media_probe` reports the real container first. `canPlayType` is recorded beside each outcome as
+the hint it is. Because WebKitGTK cannot load media from the custom `asset:` scheme
+(`MEDIA_ERR_SRC_NOT_SUPPORTED`; WebKit bug 146351), the element is served from the same tab-owned
+grant over the bounded loopback endpoint, and the driver fetches a byte range through that endpoint
+to prove the range path. The driver asserts:
+
+- every measured container loads and reports its real container (`mp4`, `m4a`, `mov`, `webm`,
+  `ogg`, `wav`, `mp3`, `flac`, `aac` on this host);
+- a valid MP4 whose sample entry names `zzzz` reaches an honest codec error (not a blank player),
+  and Matroska is refused as unmeasured; a corrupt EBML header and WebM bytes named `.mp4` are
+  refused before an element mounts;
+- the native delivery log shows every response inside its bound — a range response at most one
+  1 MiB chunk, a whole response at most the 10 MiB read ceiling — and seeking past the first
+  chunk issues a new mid-file range;
+- playback (muted; WebKitGTK has no input injection) pauses when the tab is hidden, releases the
+  playback slot, and does not resume when the tab returns;
+- closing while playing, and closing during an interrupted load, leave no element, playback
+  session or tab-owned grant scope; reopening after the interrupt works.
+
+The result (`media.pass`, `steps`, `formats`, `manual`) rides the same final `done` sync; the
+runner exits 2 when a step fails. If this build requires a trusted gesture for playback, that
+step is reported under `media.manual` as a named manual check instead of a pass.
+
+**Focus is advisory on Linux.** Wayland lets the compositor decide focus (`set_focus` is a hint)
+and WebKitGTK exposes no occlusion state, so `qualify()` does not fail the workflow or preview
+scenario on focus: `native.appActive`/`key` are recorded per phase and summarised as a
+`qualification.advisories` entry. The snapshot's process ids come from a `/proc` scan of the app's descendants
+(`bench.rs`, Linux `platform` module), not from WebKit private API.
+
+**Whole-application measurement (ticket 02).** The Linux runner samples the app from `/proc`, not
+from the app: every phase event takes one `smaps_rollup` read per process in the host's descendant
+tree (`Pss` as the total, `Rss` kept only to show the shared-page overcount, plus
+`Private`/`Shared`/`Swap`, threads and descriptor counts), and a 1 Hz counter timeline runs for the
+whole launch. Processes are attributed by role — `host`, `web_content`, `web_content_prewarmed`,
+`gpu`, `networking`, `sandbox` (WebKitGTK's bwrap wrapper) — and everything else under the host
+(`bash`, `node` agents, the streaming fixture) is `workload`: reported separately and never added to
+the app's own figure. The in-app side of the same capability is `bench_window {cmd:"memory"}`
+(`bench.rs`): roles from the `/proc` scan plus the same `smaps_rollup` figures, and the snapshot
+carries the host's wall-clock process start (`startedUnixMs`) and the role table.
+
+```sh
+# representative workload: 2 Spaces, 4 panes, 2 busy agents, text files, active preview
+python3 scripts/app-lab/run.py --scenario resource --reuse-build \
+    --source <tree> --target-dir /home/loba/.../target --output /home/loba/.../run-resource
+# stress workload: 4 agents, 4 streaming panes, 4 MiB close-cycle file
+python3 scripts/app-lab/run.py --scenario stress --reuse-build ...
+# cold + warm startup (fresh profile, then relaunches against it)
+python3 scripts/app-lab/run.py --scenario startup --startup-repeats 3 --reuse-build ...
+# compare a stored baseline with a candidate: one line per metric
+python3 scripts/app-lab/run.py --compare baseline.json --candidate candidate.json --compare-format table
+```
+
+`--compare-format tsv` prints `metric<TAB>baseline<TAB>candidate<TAB>delta<TAB>percent` (one line
+per metric), `json` the same medians machine-readable, `table` the aligned table. `run.py
+--list-metrics` lists the metric families. `--compare` also works at the end of a run, and
+`--recompute` re-derives metrics and summary from a stored report. Reports carry `startup`
+(cold/warm: exec→navigation, navigation→boot, exec→boot, first paint), per-phase `memory` blocks,
+`series` (the timeline), `package` (bench binary, frontend dist, and what packaging would add),
+`linux.workloadFiles`, `limitations` and the host stack; fixture files themselves are regenerated by
+`prepare_fixtures()` and never committed.
+
+**Still not available on Linux:** native key/IME input, stepped/live resize, synthetic divider
+drags, the composited layer tree, forced GC and soak scenarios — WebKitGTK exposes no occlusion
+signal, no layer-tree mirror and no native input hook, so those scenarios refuse to run rather than
+report a vacuous pass. Per-process GPU/VRAM is
+not attributable from `/proc`, WebKit malloc zones cannot be split out, and PDF/codec rendering is
+not claimed (see each report's `limitations`). `resize`, `split-drag`, `occlusion`, `input`, `tabs`,
+`idle`, `agents-steady` and `fs-churn` refuse to run on Linux rather than pretend to measure.
+
+The `preview` scenario is the only Linux user of `hide`/`show`: it switches tabs/Spaces and minimizes the window to prove frame teardown, and restores it to prove the reload disclosure.
+
+**Environment knobs:** `--window WxH` (logical size, default 1280x820), `--local-storage
+KEY=VALUE` (the updater throttle is preseeded automatically so no dialog covers the window),
+`--toggle NAME=VALUE`, `--identifier` (reproduction), `--reuse-build`, `--app <binary>`, and
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` for a broken GL path (pass it through the environment; the
+pty-smoke runner has `--disable-dmabuf` for the same workaround).
+
 Keep the machine awake and unlocked and do not touch the keyboard: the benchmark window must
 stay visible, key and active. The orchestrator holds a display-sleep assertion
 (`caffeinate -d -i -u`), refuses to start while another benchmark window (renderer lab, a second
@@ -47,6 +425,14 @@ not.
 | `agents-steady` | 1 visible plus 6 hidden agent tabs for 60 s |
 | `idle` | one idle shell for 30 s |
 | `input` | real key events and input-method calls into a raw-mode PTY reader; pass/fail lines in `page.log` (no measurements) |
+| `workflow` (Linux) | acceptance workflow: shell spawn, exact echo, new tab, split, switch back, open a file and assert its rendered text; the external-writer conflict (reviewed overwrite, invalidation, unreadable target, reload) and stale typing during a pending save; sampled like the measured scenarios |
+| `images` (Linux) | image seam: representative committed containers decode in the real WebKitGTK, oversized/corrupt are refused, hidden tabs release, close cycles leave no decoded viewers or grants |
+| `media` (Linux) | media seam: real container/codec outcomes from the element, ranged delivery and seeking, hidden pause without auto-resume, unsupported/corrupt/mismatch/interrupted inputs, close releases elements, playback slots and grants |
+| `spaces` (Linux) | Space lifecycle: one checkout shared by two Spaces and its rendered indication, a switch that keeps hidden terminal output flowing while presentation stops, the running-process and unsaved-buffer close guards, and Space deletion that resolves dirty buffers/processes, leaves the project directory intact, and cancel leaving everything as it was |
+| `resource` (Linux) | idle terminal for `--idle-seconds` (5), then 2 Spaces, 4 terminal panes, `--agents` (2) busy synthetic agents, several text files, one active local preview; `--streams` (2) streaming panes for `--stream-seconds`, `--close-cycles` editor open/close cycles, `--cycles` hide/show cycles, then +10/+30 s settle |
+| `stress` (Linux) | the same shape with 4 agents, 4 streaming panes and the 4 MiB close-cycle file; a separate, clearly described workload |
+| `startup` (Linux) | boot only; `--startup-repeats` (3) launches — the first cold (fresh profile), the rest warm (same profile) |
+| `recovery` (Linux) | crash recovery: two dirty buffers, acknowledged recovery drafts, a harness SIGKILL, then one relaunch that offers the drafts, matches the acknowledged text and discards exactly one |
 
 Options that matter: `--window WxH` (default 1280x820 points), `--cwd-shell` / `--cwd-agent`
 (different directories make the explorer and git panel follow the switch), `--vibrancy on|off`,
@@ -79,12 +465,14 @@ backing size, so none is ever resized).
 
 ## Isolation
 
-The bundle is `Terax App Lab.app` with the identifier `app.crynta.terax.app-lab`, launched with
+The lab runs under a disposable identifier inside the fork identifier namespace
+(`<fork identifier>.app-lab-*`, derived from `src/modules/identity/namespace.json`), launched with
 its own `HOME` (so the control-server descriptor, shell-integration files and history never touch
-the real user's) and `TERAX_BENCH_ISOLATED=1`. The bench binary refuses to start under the product
-identifier or without that variable (`modules/bench.rs::guard`, unit tested), and the profile
-directories for the lab identifier are removed before and after every run. The user's running app
-is never touched. The shells are real login shells with an empty `HOME`; the agent is
+the real user's) and `TERAX_BENCH_ISOLATED=1`. The preflight (`scripts/linux_profile.py`) and the
+bench binary refuse the product identifier, upstream Terax's `app.crynta.terax.*` and anything
+outside the fork namespace, or a launch without that variable (`modules/bench.rs::guard`, unit
+tested), and the profile directories for the lab identifier are removed before and after every run.
+The user's running app is never touched. The shells are real login shells with an empty `HOME`; the agent is
 `scripts/app-lab/agent-sim.mjs`, an Ink-like program (12-line region erased and rewritten every 80
 ms, a spinner, 40 characters of token text every 50 ms, completed lines flushed into scrollback, a
 bordered tool block every 7 s, 300 lines of history).
@@ -135,7 +523,28 @@ when garbage collection runs, so single samples vary between runs.
 
 ## Limits
 
-macOS only, one display (2048x1152 points at 100 Hz here), fresh profile with default
-preferences (vibrancy off), no AI panel traffic, a synthetic agent instead of Codex. Footprint
-figures vary between runs because garbage collection timing decides when dead native objects
-are released; compare medians of repeats and prefer the timeline floor and the after-GC value.
+macOS for the measured scenarios: one display (2048x1152 points at 100 Hz here), fresh profile
+with default preferences (vibrancy off), no AI panel traffic, a synthetic agent instead of Codex.
+Footprint figures vary between runs because garbage collection timing decides when dead native
+objects are released; compare medians of repeats and prefer the timeline floor and the after-GC
+value. Linux has the `workflow`, `preview`, `images` and `media` acceptance scenarios plus the measured `resource`, `stress` and `startup` scenarios (WebKitGTK, Wayland): memory is Pss from `/proc`, workload processes are separate, and every report states its own `limitations` rather than claiming what was not sampled. The preview scenario also records what the platform cannot report: WebKitGTK has no occlusion state, so a preview covered by another window keeps running, and a minimize the compositor never reports is recorded as skipped rather than as a pass. The media scenario records the decoder outcomes the webview reports; playback can only be started programmatically (muted) because WebKitGTK has no trusted input injection, and that limitation is named when it applies.
+
+## Approved whole-application budgets (issue #43)
+
+Approved by the primary user on 2026-11-13 from matched `--stream-seconds 20` release measurements (`--profile release --features bench`) comparing the 2026-11-12 baseline (`c052524`, Fedora Linux 44 KDE Wayland) with the frozen `1.0.0` candidate (`be62762`, Fedora Linux 45 KDE Plasma Wayland, WebKitGTK `2.54.2`, all 4 runs `qualified: true, failures: []`, evidence at `personal/terax-baseline/evidence/2026-11-13/issue-43-budgets-matched/`):
+
+| Budget | Approved Limit | Measured Candidate | Baseline (`c052524`) |
+| --- | --- | --- | --- |
+| Idle app PSS (1 live shell) | `<= 350 MiB` | `310.29 MiB` / `311.11 MiB` | `340.43 MiB` / `341.21 MiB` |
+| Representative workload (2 Spaces, 4 panes, 2 agents, 4 files, 1 preview) app PSS p95 | `<= 450 MiB` | `416.92 MiB` (median p95) | `425.12 MiB` |
+| Stress workload (4 agents, 4 streams, 4 MiB file) peak app PSS | `<= 525 MiB` | `485.92 MiB` phase peak / `490.29 MiB` timeline max | `491.24 MiB` / `490.45 MiB` |
+| Timeline app CPU mean (representative / stress) | `<= 16%` / `<= 22%` of 1 core | `12.18%` / `16.10%` | `15.90%` / `21.36%` |
+| Startup `exec_to_boot_ms` (warm median / cold) | `<= 3,500 ms` / `<= 5,000 ms` | `3,215.50 ms` warm / `4,727.00 ms` (`startup`), `3,992.50 ms` (`resource`), `5,161.00 ms` (`stress` single cold run) | `2,293.50 ms` / `4,235.00 ms`, `4,210.00 ms`, `4,271.00 ms` |
+| Packaged `.rpm` / `.deb` artifact size | `<= 12 MiB` | `9,610,530 B` `.rpm` / `9,609,096 B` `.deb` (~`9.17 MiB` each; measured on `d50d089` package candidate, `be62762` lab runs used `--no-bundle`) | - |
+| Document ceilings | Per `src/modules/preview/lib/limits.ts` | `10 MiB` read / `50 MiB` override / `4 MiB` syntax / `64 MiB` image decode / `32 MiB` PDF page / `4` viewers (`192 MiB`) / `1` per-tab, `3` app-wide streamed media | Same |
+
+Notes and measured limitations:
+
+- **Warm startup delta (`+922.00 ms`, `2,293.50 -> 3,215.50 ms`)**: `nav_to_boot_ms` grew alongside WebKitGTK initialization and the `11,776,596 B` client bundle (`11,627,689 B` after `#40`) including the PDF reader while `dom_content_loaded_ms` (`83-104 ms`) and `load_ms` (`93-115 ms`) stayed low. Cold startup in the single `stress` run reached `5,161.00 ms` (`+890.00 ms` vs `4,271.00 ms` baseline) before warm caching.
+- **Close-cycle retention**: `close.retained_vs_baseline_mib` was `+12.82 MiB` in representative and `+52.37 MiB` in stress after `large.txt` cycles.
+- **Host & Wayland scope**: `c052524` ran on Fedora Linux 44 and `be62762` ran on Fedora Linux 45 (both shared KDE Wayland sessions with no GPU process or bubblewrap sandbox spawned); `resource` and `stress` runs logged advisory `focus is advisory on Wayland (the compositor decides): appActive=false` across phases, and `stress` is a single run. Packaged multi-distro acceptance lives in `#44`.

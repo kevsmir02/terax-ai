@@ -2,9 +2,7 @@ pub mod modules;
 
 #[cfg(target_os = "macos")]
 use modules::app_menu;
-use modules::{
-    agent, control, fs, git, history, lsp, net, pty, secrets, shell, vibrancy, workspace,
-};
+use modules::{agent, control, fs, git, history, pty, recovery, shell, vibrancy, workspace};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
@@ -220,9 +218,6 @@ pub fn run() {
         .on_page_load(|webview, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
                 if let Some(grants) = webview.try_state::<fs::assets::AssetGrants>() { grants.revoke_owner(webview.label()); }
-                if let Some(state) = webview.try_state::<net::AiStreamState>() {
-                    state.cancel_window(webview.window().label());
-                }
                 if let Some(state) = webview.try_state::<pty::PtyState>() {
                     state.reset_webview(webview.label());
                 }
@@ -258,17 +253,12 @@ pub fn run() {
             Ok(())
         })
         .manage(pty::PtyState::default())
-        .manage(net::AiStreamState::default())
-        .manage(modules::ai_sessions::SessionFilesState::default())
         .manage(modules::window_presentation::WindowPresentationState::default())
         .manage(control_state)
-        .manage(shell::ShellState::default())
-        .manage(secrets::SecretsState::default())
         .manage(fs::watch::FsWatchState::default())
         .manage(fs::assets::AssetGrants::default())
         .manage(git::watch::GitWatchState::default())
         .manage(history::HistoryState::default())
-        .manage(lsp::LspState::default())
         .manage(fs::supersede::Supersede::default())
         .manage(fs::index::FileIndexState::default())
         .manage({
@@ -291,6 +281,7 @@ pub fn run() {
             pty::pty_resize,
             pty::pty_close,
             pty::pty_close_all,
+            pty::pty_terminate,
             pty::pty_has_foreground_process,
             pty::pty_has_foreground_job,
             pty::pty_shell_name,
@@ -299,15 +290,16 @@ pub fn run() {
             fs::tree::list_subdirs,
             fs::tree::fs_read_dir,
             fs::file::fs_read_file,
-            fs::ai::ai_read_file,
-            fs::ai::ai_read_dir,
-            fs::ai::ai_grep,
-            fs::ai::ai_glob,
             fs::assets::asset_grant,
+            fs::assets::asset_read_bytes,
             fs::assets::asset_revoke,
-            fs::project_memory::fs_read_project_memory,
+            fs::assets::asset_revoke_scope,
+            fs::assets::asset_media_url,
             fs::file::fs_write_file,
             fs::file::fs_stat,
+            fs::file::fs_file_revision,
+            fs::image_probe::fs_image_probe,
+            fs::media_probe::fs_media_probe,
             fs::file::fs_canonicalize,
             fs::mutate::fs_create_file,
             fs::mutate::fs_create_dir,
@@ -319,12 +311,6 @@ pub fn run() {
             fs::clipboard::fs_clipboard_paths,
             fs::watch::fs_watch_add,
             fs::watch::fs_watch_remove,
-            lsp::lsp_detect,
-            lsp::lsp_host_pid,
-            lsp::lsp_resolve_root,
-            lsp::lsp_spawn,
-            lsp::lsp_send,
-            lsp::lsp_kill,
             fs::search::fs_search,
             fs::search::fs_warm_index,
             fs::search::fs_list_files,
@@ -355,6 +341,7 @@ pub fn run() {
             git::commands_review::git_diff_file,
             git::commands_review::git_apply_hunks,
             git::commands_review::git_worktree_list,
+            git::commands_review::git_worktree_preflight,
             git::commands_review::git_worktree_add,
             git::commands_tasks::task_project_config,
             git::commands_tasks::task_worktree_list,
@@ -364,28 +351,31 @@ pub fn run() {
             git::commands_tasks::task_worktree_restore,
             git::commands_tasks::task_worktree_disk_usage,
             git::commands_review::git_worktree_remove,
+            git::commands_review::git_worktree_remove_preflight,
             git::commands_review::git_worktree_prune,
             git::commands_review::git_checkpoint_create,
             git::commands_review::git_checkpoint_list,
             git::commands_review::git_checkpoint_restore,
             git::commands_review::git_checkpoint_prune,
+            git::commands_review::git_checkpoint_manual_create,
+            git::commands_review::git_checkpoint_groups,
+            git::commands_review::git_checkpoint_inspect,
+            git::commands_review::git_checkpoint_cleanup,
+            git::commands_review::git_checkpoint_groups_at,
+            git::commands_review::git_checkpoint_cleanup_at,
+            git::commands_review::git_checkpoint_manual_restore_preview,
+            git::commands_review::git_checkpoint_manual_restore,
             git::commands_review::git_branch_create,
             git::commands_review::git_branch_rename,
             git::commands_review::git_upstream_info,
             git::commands_review::git_watch,
             git::commands_review::git_unwatch,
             shell::shell_run_command,
-            shell::shell_session_open,
-            shell::shell_session_run,
-            shell::shell_session_close,
-            shell::shell_bg_spawn,
-            shell::shell_bg_logs,
-            shell::shell_bg_kill,
-            shell::shell_bg_list,
             workspace::wsl_list_distros,
             workspace::wsl_default_distro,
             workspace::ipc::wsl_home,
             workspace::workspace_authorize,
+            workspace::workspace_access,
             workspace::workspace_current_dir,
             control::control_frontend_ready,
             control::control_respond,
@@ -394,24 +384,9 @@ pub fn run() {
             get_launch_dir,
             get_launch_files,
             open_settings_window,
-            agent::agent_enable_hooks,
-            agent::agent_disable_hooks,
             agent::agent_hooks_plan,
             agent::agent_hooks_apply,
             agent::agent_hooks_status,
-            secrets::secrets_get,
-            secrets::secrets_set,
-            secrets::secrets_delete,
-            secrets::secrets_get_all,
-            net::lm_ping,
-            net::ai_http_stream,
-            net::ai_http_cancel,
-            net::ai_http_ack,
-            modules::ai_sessions::ai_session_load,
-            modules::ai_sessions::ai_session_save,
-            modules::ai_sessions::ai_session_delete,
-            modules::ai_sessions::ai_session_finish_migration,
-            modules::ai_sessions::ai_session_prune_backup,
             history::history_suggest,
             history::history_commands,
             history::history_record,
@@ -419,12 +394,21 @@ pub fn run() {
             vibrancy::window_backdrop_kind,
             vibrancy::window_set_backdrop,
             modules::window_presentation::window_presentation_state,
+            recovery::recovery_list,
+            recovery::recovery_put,
+            recovery::recovery_remove,
+            recovery::recovery_usage,
+            recovery::recovery_location,
             #[cfg(feature = "bench")]
             modules::bench::bench_config,
             #[cfg(feature = "bench")]
             modules::bench::bench_window,
             #[cfg(feature = "bench")]
+            modules::bench::bench_asset_log,
+            #[cfg(feature = "bench")]
             modules::bench::bench_exit,
+            #[cfg(feature = "bench")]
+            fs::assets::asset_delivery_log,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -436,21 +420,15 @@ pub fn run() {
                     ..
                 } => {
                     if let Some(grants) = app.try_state::<fs::assets::AssetGrants>() { grants.revoke_owner(&label); }
-                    if let Some(state) = app.try_state::<net::AiStreamState>() {
-                        state.cancel_window(&label);
-                    }
                     if let Some(state) = app.try_state::<pty::PtyState>() {
                         state.destroy_webview(&label);
                     }
                 }
-                // Servers exit on stdin EOF, but destructors are not guaranteed
-                // on process exit; kill explicitly.
+                // Destructors are not guaranteed to run on process exit;
+                // shut owned resources down explicitly.
                 tauri::RunEvent::Exit => {
                     #[cfg(target_os = "macos")]
                     modules::window_presentation::macos::uninstall();
-                    if let Some(state) = app.try_state::<lsp::LspState>() {
-                        state.kill_all();
-                    }
                     if let Some(state) = app.try_state::<control::ControlState>() {
                         state.shutdown();
                     }

@@ -35,28 +35,32 @@ for (const shell of ["bash", "zsh", "pwsh", "powershell"]) {
       windows ? ["-NoProfile", "-Command", "exit 0"] : ["-c", "exit 0"],
     ).status === 0;
   describe.skipIf(!available)(`literal arguments in ${shell}`, () => {
-    it.each(names)("preserves %s as exactly one argument", (name) => {
-      const escaped = escapeForShell(name, windows);
-      expect(unescapeForShell(escaped, windows)).toBe(name);
-      if (windows) {
-        const result = execFileSync(
-          shell,
-          [
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            `[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); function capture { ConvertTo-Json -Compress -InputObject @($args) }; capture ${escaped}`,
-          ],
-          { encoding: "utf8" },
-        );
-        expect(JSON.parse(result.replace(/^\uFEFF/, ""))).toEqual([name]);
-      } else {
-        const result = execFileSync(shell, ["-s"], {
-          input: `printf '%s\\0' ${escaped}\n`,
-          encoding: "utf8",
-        });
-        expect(result).toBe(`${name}\0`);
-      }
-    }, 30_000);
+    it.each(names)(
+      "preserves %s as exactly one argument",
+      (name) => {
+        const escaped = escapeForShell(name, windows);
+        expect(unescapeForShell(escaped, windows)).toBe(name);
+        if (windows) {
+          const result = execFileSync(
+            shell,
+            [
+              "-NoProfile",
+              "-NonInteractive",
+              "-Command",
+              `[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); function capture { ConvertTo-Json -Compress -InputObject @($args) }; capture ${escaped}`,
+            ],
+            { encoding: "utf8" },
+          );
+          expect(JSON.parse(result.replace(/^\uFEFF/, ""))).toEqual([name]);
+        } else {
+          const result = execFileSync(shell, ["-s"], {
+            input: `printf '%s\\0' ${escaped}\n`,
+            encoding: "utf8",
+          });
+          expect(result).toBe(`${name}\0`);
+        }
+      },
+      30_000,
+    );
   });
 }

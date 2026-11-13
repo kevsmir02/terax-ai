@@ -1,0 +1,3 @@
+# Give the fork independent identity and trust roots
+
+The public fork must coexist with upstream without silently importing or overwriting its state. Planned: separate application/storage, control-descriptor, shell-integration and hook namespaces must precede every nonisolated developer or ordinary run; isolated temporary-profile baselines may proceed while final branding and release trust remain deferred until publication. The user accepted this prerequisite and independent signing keys/endpoints over reusing upstream identity, with any future data import requiring an explicit action, to prevent development-time state collisions as well as update confusion.

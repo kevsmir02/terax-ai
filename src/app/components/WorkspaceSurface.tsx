@@ -1,22 +1,32 @@
 import type { ComponentProps } from "react";
 import { cn } from "@/lib/utils";
-import { AiDiffStack, EditorStack, GitDiffStack } from "@/modules/editor";
+import { EditorStack, GitDiffStack } from "@/modules/editor";
 import { GitHistoryStack } from "@/modules/git-history";
 import { MarkdownStack } from "@/modules/markdown";
 import { PreviewStack } from "@/modules/preview";
+import type { PresentationSubscription } from "@/modules/preview/lib/windowVisibility";
 import type { Tab } from "@/modules/tabs";
 import { TerminalStack } from "@/modules/terminal";
 
 type TerminalStackProps = ComponentProps<typeof TerminalStack>;
 type EditorStackProps = ComponentProps<typeof EditorStack>;
 type PreviewStackProps = ComponentProps<typeof PreviewStack>;
-type AiDiffStackProps = ComponentProps<typeof AiDiffStack>;
 type GitHistoryStackProps = ComponentProps<typeof GitHistoryStack>;
 
 type Props = {
   tabs: Tab[];
   activeId: number;
   activeTab: Tab | undefined;
+  /** The Space on screen; previews in every other Space unload their frames. */
+  activeSpaceId: string;
+  /**
+   * Configured Space project roots, by Space id. Markdown previews anchor
+   * automatic local assets here (or their own directory outside it) instead of
+   * a mutable terminal cwd.
+   */
+  spaceRoots: Readonly<Record<string, string | null>>;
+  /** Shared native window-presentation feed (occlusion/sleep), optional. */
+  subscribeWindowPresentation?: PresentationSubscription;
   registerTerminalHandle: TerminalStackProps["registerHandle"];
   onSearchReady: TerminalStackProps["onSearchReady"];
   onCwd: TerminalStackProps["onCwd"];
@@ -27,8 +37,6 @@ type Props = {
   onEditorCloseTab: EditorStackProps["onCloseTab"];
   registerPreviewHandle: PreviewStackProps["registerHandle"];
   onPreviewUrlChange: PreviewStackProps["onUrlChange"];
-  onAiDiffAccept: AiDiffStackProps["onAccept"];
-  onAiDiffReject: AiDiffStackProps["onReject"];
   onOpenCommitFile: GitHistoryStackProps["onOpenCommitFile"];
   onGitHistorySearchHandle: GitHistoryStackProps["onSearchHandle"];
   onSetMarkdownView: EditorStackProps["onSetMarkdownView"];
@@ -41,6 +49,10 @@ const LAYER = "absolute inset-0";
  * visibility off the active tab, so panes keep their mounted state (terminal
  * buffers, editor scroll, ...) when switching tabs.
  *
+ * The preview stack is the exception: its frames are untrusted web content that
+ * must not keep working off screen, so {@link PreviewStack} unloads a frame
+ * whenever its tab, its Space or the window is not on screen.
+ *
  * Layers sit flush inside the workspace pane; only the terminal layer is inset,
  * because the terminal draws glyphs right up to its container edge.
  */
@@ -48,6 +60,9 @@ export function WorkspaceSurface({
   tabs,
   activeId,
   activeTab,
+  activeSpaceId,
+  spaceRoots,
+  subscribeWindowPresentation,
   registerTerminalHandle,
   onSearchReady,
   onCwd,
@@ -58,8 +73,6 @@ export function WorkspaceSurface({
   onEditorCloseTab,
   registerPreviewHandle,
   onPreviewUrlChange,
-  onAiDiffAccept,
-  onAiDiffReject,
   onOpenCommitFile,
   onGitHistorySearchHandle,
   onSetMarkdownView,
@@ -69,7 +82,6 @@ export function WorkspaceSurface({
   const isEditorTab = kind === "editor";
   const isPreviewTab = kind === "preview";
   const isMarkdownTab = kind === "markdown";
-  const isAiDiffTab = kind === "ai-diff";
   const isGitDiffTab = kind === "git-diff" || kind === "git-commit-file";
   const isGitHistoryTab = kind === "git-history";
 
@@ -113,6 +125,8 @@ export function WorkspaceSurface({
         <PreviewStack
           tabs={tabs}
           activeId={activeId}
+          activeSpaceId={activeSpaceId}
+          subscribePresentation={subscribeWindowPresentation}
           registerHandle={registerPreviewHandle}
           onUrlChange={onPreviewUrlChange}
         />
@@ -124,18 +138,8 @@ export function WorkspaceSurface({
         <MarkdownStack
           tabs={tabs}
           activeId={activeId}
+          spaceRoots={spaceRoots}
           onSetMarkdownView={onSetMarkdownView}
-        />
-      </div>
-      <div
-        className={cn(LAYER, !isAiDiffTab && "invisible pointer-events-none")}
-        aria-hidden={!isAiDiffTab}
-      >
-        <AiDiffStack
-          tabs={tabs}
-          activeId={activeId}
-          onAccept={onAiDiffAccept}
-          onReject={onAiDiffReject}
         />
       </div>
       <div

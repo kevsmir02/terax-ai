@@ -3,12 +3,12 @@
 # boundaries. C comes from a PSConsoleHostReadLine wrapper (PowerShell has no
 # preexec hook).
 
-if ($global:__TERAX_HOOKS_LOADED) { return }
-$global:__TERAX_HOOKS_LOADED = $true
+if ($global:__CODR_HOOKS_LOADED) { return }
+$global:__CODR_HOOKS_LOADED = $true
 
-if ($env:TERAX_CLI -and (Test-Path -LiteralPath $env:TERAX_CLI -PathType Leaf)) {
+if ($env:CODR_CLI -and (Test-Path -LiteralPath $env:CODR_CLI -PathType Leaf)) {
     function global:terax {
-        & $env:TERAX_CLI @args
+        & $env:CODR_CLI @args
     }
 }
 
@@ -96,7 +96,7 @@ function global:prompt {
     # Block mode: the host renders its own input bar, so suppress the shell
     # prompt (markers only) and reserve the header/gap rows in the prompt
     # itself -- same layout contract as the zsh integration.
-    if ($env:TERAX_BLOCKS) {
+    if ($env:CODR_BLOCKS) {
         $global:LASTEXITCODE = $lec
         $gap = if ($global:__terax_block_seen) { "`n`n" } else { "`n" }
         return "$oscD$oscA$osc7$gap$oscB"

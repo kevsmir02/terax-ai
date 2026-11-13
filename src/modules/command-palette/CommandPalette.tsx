@@ -243,7 +243,13 @@ export function CommandPalette({
       if (side) target.side = true;
       runAfterClose(() => onOpenFile(path, target));
     },
-    [fileTarget.line, fileTarget.column, onOpenFile, runAfterClose, workspaceRoot],
+    [
+      fileTarget.line,
+      fileTarget.column,
+      onOpenFile,
+      runAfterClose,
+      workspaceRoot,
+    ],
   );
 
   const runHistory = useCallback(
@@ -309,9 +315,7 @@ export function CommandPalette({
           placeholder={placeholder}
           autoFocus
         />
-        <ScrollArea
-          className={showFiles ? "h-[372px]" : "max-h-[420px]"}
-        >
+        <ScrollArea className={showFiles ? "h-[372px]" : "max-h-[420px]"}>
           <CommandList
             className="max-h-none overflow-visible pr-3"
             onClickCapture={(e) => {
@@ -458,17 +462,17 @@ export function CommandPalette({
               <CommandGroup heading="Search modes">
                 {MODE_HINTS.filter((hint) => hint.bases.includes(base)).map(
                   (hint) => (
-                  <CommandItem
-                    key={hint.sigil}
-                    value={`hint:${hint.sigil}`}
-                    onSelect={() => setQuery(hint.sigil)}
-                    className="text-[12.5px]"
-                  >
-                    <kbd className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px]">
-                      {hint.sigil}
-                    </kbd>
-                    <span>{hint.label}</span>
-                  </CommandItem>
+                    <CommandItem
+                      key={hint.sigil}
+                      value={`hint:${hint.sigil}`}
+                      onSelect={() => setQuery(hint.sigil)}
+                      className="text-[12.5px]"
+                    >
+                      <kbd className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px]">
+                        {hint.sigil}
+                      </kbd>
+                      <span>{hint.label}</span>
+                    </CommandItem>
                   ),
                 )}
               </CommandGroup>
@@ -510,12 +514,7 @@ function FilesBody({
           <StatusItem label="Type a file name" />
         ) : (
           rows.map((hit) => (
-            <FileRow
-              key={hit.path}
-              hit={hit}
-              line={line}
-              onOpen={onOpen}
-            />
+            <FileRow key={hit.path} hit={hit} line={line} onOpen={onOpen} />
           ))
         )}
       </CommandGroup>
@@ -531,12 +530,7 @@ function FilesBody({
         onRetry={search.retry}
       >
         {rows.map((hit) => (
-          <FileRow
-            key={hit.path}
-            hit={hit}
-            line={line}
-            onOpen={onOpen}
-          />
+          <FileRow key={hit.path} hit={hit} line={line} onOpen={onOpen} />
         ))}
       </AsyncBody>
     </CommandGroup>
@@ -640,7 +634,11 @@ function rankCommands(
   }
   const scored: { item: PaletteItem; s: number }[] = [];
   for (const item of items) {
-    const s = fuzzyBest(term, [item.title, item.group, ...(item.keywords ?? [])]);
+    const s = fuzzyBest(term, [
+      item.title,
+      item.group,
+      ...(item.keywords ?? []),
+    ]);
     if (s !== null) scored.push({ item, s });
   }
   scored.sort(
@@ -738,7 +736,9 @@ function StatusItem({
         />
       ) : null}
       <span
-        className={tone === "error" ? "text-destructive" : "text-muted-foreground"}
+        className={
+          tone === "error" ? "text-destructive" : "text-muted-foreground"
+        }
       >
         {label}
       </span>

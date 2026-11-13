@@ -117,7 +117,10 @@ export function EditorStack({
               <EditorPane
                 ref={getRefCallback(t.id)}
                 path={t.path}
+                spaceId={t.spaceId}
+                tabId={t.id}
                 overrideLanguage={t.overrideLanguage}
+                visible={visible}
                 onDirtyChange={getDirtyCallback(t.id)}
                 onClose={getCloseCallback(t.id)}
                 mediaActive={visible && !windowInactive}

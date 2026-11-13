@@ -1,0 +1,809 @@
+{
+  "scope": "Node WASM core only; excludes Tauri IPC, WebKit, GPU, and application energy",
+  "recordedAt": "2026-11-12T08:35:15.093Z",
+  "node": "v22.23.1",
+  "platform": "linux",
+  "arch": "x64",
+  "reports": [
+    {
+      "artifact": "ghostty-vt.wasm",
+      "sha256": "32b630675916b3122c2c187c640191e90ae848ee9f196ec5fe091681560c1f11",
+      "blockTracking": false,
+      "renderFormat": "soa",
+      "markerCounts": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "models": 5,
+      "updates": 655360,
+      "inputBytes": 62069760,
+      "elapsedMs": 37422.886891999995,
+      "cpuMicroseconds": {
+        "user": 34020606,
+        "system": 96626
+      },
+      "finalWasmBytes": 78708736,
+      "plateauGrowthBytes": 0,
+      "resources": [
+        {
+          "cellCapacity": 5632,
+          "rowCapacity": 48,
+          "renderStateResets": 1,
+          "renderFormat": "soa",
+          "glyphCount": 0,
+          "glyphEpoch": 1
+        },
+        {
+          "cellCapacity": 0,
+          "rowCapacity": 0,
+          "renderStateResets": 64,
+          "renderFormat": "soa",
+          "glyphCount": 0,
+          "glyphEpoch": 65
+        },
+        {
+          "cellCapacity": 5632,
+          "rowCapacity": 48,
+          "renderStateResets": 1,
+          "renderFormat": "soa",
+          "glyphCount": 0,
+          "glyphEpoch": 1
+        },
+        {
+          "cellCapacity": 0,
+          "rowCapacity": 0,
+          "renderStateResets": 64,
+          "renderFormat": "soa",
+          "glyphCount": 0,
+          "glyphEpoch": 65
+        },
+        {
+          "cellCapacity": 8192,
+          "rowCapacity": 64,
+          "renderStateResets": 64,
+          "renderFormat": "soa",
+          "glyphCount": 0,
+          "glyphEpoch": 1
+        }
+      ],
+      "samples": [
+        {
+          "epoch": 0,
+          "wasmBytes": 43515904,
+          "nodeRssBytes": 123748352
+        },
+        {
+          "epoch": 1,
+          "wasmBytes": 71368704,
+          "nodeRssBytes": 147615744
+        },
+        {
+          "epoch": 2,
+          "wasmBytes": 76611584,
+          "nodeRssBytes": 153776128
+        },
+        {
+          "epoch": 3,
+          "wasmBytes": 76611584,
+          "nodeRssBytes": 154169344
+        },
+        {
+          "epoch": 4,
+          "wasmBytes": 77660160,
+          "nodeRssBytes": 157839360
+        },
+        {
+          "epoch": 5,
+          "wasmBytes": 77660160,
+          "nodeRssBytes": 159019008
+        },
+        {
+          "epoch": 6,
+          "wasmBytes": 77660160,
+          "nodeRssBytes": 159019008
+        },
+        {
+          "epoch": 7,
+          "wasmBytes": 77660160,
+          "nodeRssBytes": 159150080
+        },
+        {
+          "epoch": 8,
+          "wasmBytes": 77660160,
+          "nodeRssBytes": 160722944
+        },
+        {
+          "epoch": 9,
+          "wasmBytes": 77660160,
+          "nodeRssBytes": 163737600
+        },
+        {
+          "epoch": 10,
+          "wasmBytes": 77660160,
+          "nodeRssBytes": 163737600
+        },
+        {
+          "epoch": 11,
+          "wasmBytes": 77660160,
+          "nodeRssBytes": 163737600
+        },
+        {
+          "epoch": 12,
+          "wasmBytes": 77660160,
+          "nodeRssBytes": 163737600
+        },
+        {
+          "epoch": 13,
+          "wasmBytes": 77660160,
+          "nodeRssBytes": 163868672
+        },
+        {
+          "epoch": 14,
+          "wasmBytes": 77660160,
+          "nodeRssBytes": 163999744
+        },
+        {
+          "epoch": 15,
+          "wasmBytes": 77660160,
+          "nodeRssBytes": 163999744
+        },
+        {
+          "epoch": 16,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 164786176
+        },
+        {
+          "epoch": 17,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 164786176
+        },
+        {
+          "epoch": 18,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 164786176
+        },
+        {
+          "epoch": 19,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 164786176
+        },
+        {
+          "epoch": 20,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 164786176
+        },
+        {
+          "epoch": 21,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 164786176
+        },
+        {
+          "epoch": 22,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 164786176
+        },
+        {
+          "epoch": 23,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 164786176
+        },
+        {
+          "epoch": 24,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 164786176
+        },
+        {
+          "epoch": 25,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 164917248
+        },
+        {
+          "epoch": 26,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 164917248
+        },
+        {
+          "epoch": 27,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 164917248
+        },
+        {
+          "epoch": 28,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 164917248
+        },
+        {
+          "epoch": 29,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165048320
+        },
+        {
+          "epoch": 30,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165179392
+        },
+        {
+          "epoch": 31,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165179392
+        },
+        {
+          "epoch": 32,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165179392
+        },
+        {
+          "epoch": 33,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165179392
+        },
+        {
+          "epoch": 34,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165179392
+        },
+        {
+          "epoch": 35,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165179392
+        },
+        {
+          "epoch": 36,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165179392
+        },
+        {
+          "epoch": 37,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165179392
+        },
+        {
+          "epoch": 38,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165179392
+        },
+        {
+          "epoch": 39,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165179392
+        },
+        {
+          "epoch": 40,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165179392
+        },
+        {
+          "epoch": 41,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165179392
+        },
+        {
+          "epoch": 42,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165179392
+        },
+        {
+          "epoch": 43,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165179392
+        },
+        {
+          "epoch": 44,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165179392
+        },
+        {
+          "epoch": 45,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165179392
+        },
+        {
+          "epoch": 46,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165179392
+        },
+        {
+          "epoch": 47,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165310464
+        },
+        {
+          "epoch": 48,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165703680
+        },
+        {
+          "epoch": 49,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165703680
+        },
+        {
+          "epoch": 50,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165703680
+        },
+        {
+          "epoch": 51,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165703680
+        },
+        {
+          "epoch": 52,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165834752
+        },
+        {
+          "epoch": 53,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165834752
+        },
+        {
+          "epoch": 54,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165834752
+        },
+        {
+          "epoch": 55,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165834752
+        },
+        {
+          "epoch": 56,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165834752
+        },
+        {
+          "epoch": 57,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165834752
+        },
+        {
+          "epoch": 58,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165834752
+        },
+        {
+          "epoch": 59,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165834752
+        },
+        {
+          "epoch": 60,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165834752
+        },
+        {
+          "epoch": 61,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165834752
+        },
+        {
+          "epoch": 62,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165834752
+        },
+        {
+          "epoch": 63,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 165834752
+        }
+      ]
+    },
+    {
+      "artifact": "ghostty-vt-scalar.wasm",
+      "sha256": "3749923e6d7c9ad8f1919f0072073843d9792dcd41d6628b42f208b1f733aa13",
+      "blockTracking": false,
+      "renderFormat": "soa",
+      "markerCounts": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "models": 5,
+      "updates": 655360,
+      "inputBytes": 62069760,
+      "elapsedMs": 44914.164517000005,
+      "cpuMicroseconds": {
+        "user": 40954157,
+        "system": 113584
+      },
+      "finalWasmBytes": 78708736,
+      "plateauGrowthBytes": 0,
+      "resources": [
+        {
+          "cellCapacity": 5632,
+          "rowCapacity": 48,
+          "renderStateResets": 1,
+          "renderFormat": "soa",
+          "glyphCount": 0,
+          "glyphEpoch": 1
+        },
+        {
+          "cellCapacity": 0,
+          "rowCapacity": 0,
+          "renderStateResets": 64,
+          "renderFormat": "soa",
+          "glyphCount": 0,
+          "glyphEpoch": 65
+        },
+        {
+          "cellCapacity": 5632,
+          "rowCapacity": 48,
+          "renderStateResets": 1,
+          "renderFormat": "soa",
+          "glyphCount": 0,
+          "glyphEpoch": 1
+        },
+        {
+          "cellCapacity": 0,
+          "rowCapacity": 0,
+          "renderStateResets": 64,
+          "renderFormat": "soa",
+          "glyphCount": 0,
+          "glyphEpoch": 65
+        },
+        {
+          "cellCapacity": 8192,
+          "rowCapacity": 64,
+          "renderStateResets": 64,
+          "renderFormat": "soa",
+          "glyphCount": 0,
+          "glyphEpoch": 1
+        }
+      ],
+      "samples": [
+        {
+          "epoch": 0,
+          "wasmBytes": 43515904,
+          "nodeRssBytes": 141467648
+        },
+        {
+          "epoch": 1,
+          "wasmBytes": 71368704,
+          "nodeRssBytes": 165974016
+        },
+        {
+          "epoch": 2,
+          "wasmBytes": 76611584,
+          "nodeRssBytes": 172003328
+        },
+        {
+          "epoch": 3,
+          "wasmBytes": 76611584,
+          "nodeRssBytes": 172134400
+        },
+        {
+          "epoch": 4,
+          "wasmBytes": 77660160,
+          "nodeRssBytes": 172920832
+        },
+        {
+          "epoch": 5,
+          "wasmBytes": 77660160,
+          "nodeRssBytes": 172920832
+        },
+        {
+          "epoch": 6,
+          "wasmBytes": 77660160,
+          "nodeRssBytes": 172920832
+        },
+        {
+          "epoch": 7,
+          "wasmBytes": 77660160,
+          "nodeRssBytes": 173051904
+        },
+        {
+          "epoch": 8,
+          "wasmBytes": 77660160,
+          "nodeRssBytes": 173182976
+        },
+        {
+          "epoch": 9,
+          "wasmBytes": 77660160,
+          "nodeRssBytes": 173182976
+        },
+        {
+          "epoch": 10,
+          "wasmBytes": 77660160,
+          "nodeRssBytes": 173182976
+        },
+        {
+          "epoch": 11,
+          "wasmBytes": 77660160,
+          "nodeRssBytes": 173182976
+        },
+        {
+          "epoch": 12,
+          "wasmBytes": 77660160,
+          "nodeRssBytes": 173182976
+        },
+        {
+          "epoch": 13,
+          "wasmBytes": 77660160,
+          "nodeRssBytes": 173314048
+        },
+        {
+          "epoch": 14,
+          "wasmBytes": 77660160,
+          "nodeRssBytes": 173445120
+        },
+        {
+          "epoch": 15,
+          "wasmBytes": 77660160,
+          "nodeRssBytes": 173051904
+        },
+        {
+          "epoch": 16,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 173838336
+        },
+        {
+          "epoch": 17,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 173838336
+        },
+        {
+          "epoch": 18,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 173838336
+        },
+        {
+          "epoch": 19,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 173838336
+        },
+        {
+          "epoch": 20,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 173838336
+        },
+        {
+          "epoch": 21,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 173838336
+        },
+        {
+          "epoch": 22,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 173838336
+        },
+        {
+          "epoch": 23,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 173838336
+        },
+        {
+          "epoch": 24,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 173838336
+        },
+        {
+          "epoch": 25,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 173838336
+        },
+        {
+          "epoch": 26,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 173838336
+        },
+        {
+          "epoch": 27,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 173838336
+        },
+        {
+          "epoch": 28,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 173838336
+        },
+        {
+          "epoch": 29,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 173838336
+        },
+        {
+          "epoch": 30,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 173969408
+        },
+        {
+          "epoch": 31,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 173969408
+        },
+        {
+          "epoch": 32,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 173969408
+        },
+        {
+          "epoch": 33,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 173969408
+        },
+        {
+          "epoch": 34,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 173969408
+        },
+        {
+          "epoch": 35,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174100480
+        },
+        {
+          "epoch": 36,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174100480
+        },
+        {
+          "epoch": 37,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174100480
+        },
+        {
+          "epoch": 38,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174100480
+        },
+        {
+          "epoch": 39,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174100480
+        },
+        {
+          "epoch": 40,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174100480
+        },
+        {
+          "epoch": 41,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174100480
+        },
+        {
+          "epoch": 42,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174100480
+        },
+        {
+          "epoch": 43,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174100480
+        },
+        {
+          "epoch": 44,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174100480
+        },
+        {
+          "epoch": 45,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174100480
+        },
+        {
+          "epoch": 46,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174100480
+        },
+        {
+          "epoch": 47,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174231552
+        },
+        {
+          "epoch": 48,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174493696
+        },
+        {
+          "epoch": 49,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174493696
+        },
+        {
+          "epoch": 50,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174493696
+        },
+        {
+          "epoch": 51,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174493696
+        },
+        {
+          "epoch": 52,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174624768
+        },
+        {
+          "epoch": 53,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174624768
+        },
+        {
+          "epoch": 54,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174624768
+        },
+        {
+          "epoch": 55,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174624768
+        },
+        {
+          "epoch": 56,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174624768
+        },
+        {
+          "epoch": 57,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174624768
+        },
+        {
+          "epoch": 58,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174624768
+        },
+        {
+          "epoch": 59,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174624768
+        },
+        {
+          "epoch": 60,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174624768
+        },
+        {
+          "epoch": 61,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174624768
+        },
+        {
+          "epoch": 62,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174624768
+        },
+        {
+          "epoch": 63,
+          "wasmBytes": 78708736,
+          "nodeRssBytes": 174624768
+        }
+      ]
+    }
+  ],
+  "stackReports": [
+    {
+      "artifact": "ghostty-vt.wasm",
+      "renderFormat": "soa",
+      "stackBytes": 98304,
+      "initialMemoryBytes": 327680,
+      "peakStackBytes": 35200,
+      "peakStackFraction": 0.3580729166666667,
+      "inputs": 32,
+      "bytes": 32892785,
+      "elapsedMs": 668.118604000003,
+      "memoryBytes": 58785792
+    },
+    {
+      "artifact": "ghostty-vt-scalar.wasm",
+      "renderFormat": "soa",
+      "stackBytes": 98304,
+      "initialMemoryBytes": 327680,
+      "peakStackBytes": 35184,
+      "peakStackFraction": 0.35791015625,
+      "inputs": 32,
+      "bytes": 32892785,
+      "elapsedMs": 1030.5473769999953,
+      "memoryBytes": 58785792
+    }
+  ]
+}

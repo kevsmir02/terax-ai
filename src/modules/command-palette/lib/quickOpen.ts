@@ -107,7 +107,12 @@ export type PathParts = {
   dir: Segment[];
 };
 
-function segments(chars: string[], marks: ReadonlySet<number>, from: number, to: number) {
+function segments(
+  chars: string[],
+  marks: ReadonlySet<number>,
+  from: number,
+  to: number,
+) {
   const out: Segment[] = [];
   for (let i = from; i < to; i++) {
     const hit = marks.has(i);

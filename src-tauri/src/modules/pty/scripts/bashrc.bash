@@ -7,8 +7,8 @@
 #   skip it — a fragile DEBUG-trap alternative would clobber the user's own
 #   traps and interact badly with debuggers.
 
-if [ -z "${__TERAX_HOOKS_LOADED-}" ]; then
-  __TERAX_HOOKS_LOADED=1
+if [ -z "${__CODR_HOOKS_LOADED-}" ]; then
+  __CODR_HOOKS_LOADED=1
 
   [ -f /etc/profile ] && source /etc/profile
   [ -f /etc/bashrc ] && source /etc/bashrc
@@ -27,13 +27,13 @@ if [ -z "${__TERAX_HOOKS_LOADED-}" ]; then
   _terax_prompt_end='\[\e]133;B\e\\\]'
   if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ] \
      || { [ "${BASH_VERSINFO[0]:-0}" -eq 4 ] && [ "${BASH_VERSINFO[1]:-0}" -lt 4 ]; }; then
-    unset TERAX_BLOCKS
+    unset CODR_BLOCKS
     _terax_prompt_end='\[\e]133;B;terax_blocks=0\e\\\]'
   fi
 
-  if [ -n "${TERAX_CLI-}" ] && [ -x "${TERAX_CLI-}" ]; then
+  if [ -n "${CODR_CLI-}" ] && [ -x "${CODR_CLI-}" ]; then
     terax() {
-      command "$TERAX_CLI" "$@"
+      command "$CODR_CLI" "$@"
     }
   fi
 
@@ -76,7 +76,7 @@ if [ -z "${__TERAX_HOOKS_LOADED-}" ]; then
   # whenever a framework dropped it; forks nothing.
   _terax_finish_prompt() {
     local _terax_ret=$?
-    if [ -n "${TERAX_BLOCKS-}" ]; then
+    if [ -n "${CODR_BLOCKS-}" ]; then
       # Host renders its own input bar: suppress the shell prompt (B marker
       # only) and reserve header/gap rows, mirroring the zsh integration.
       if [ -n "${_terax_block_seen-}" ]; then
@@ -181,7 +181,7 @@ if [ -z "${__TERAX_HOOKS_LOADED-}" ]; then
   # on every command including inside PROMPT_COMMAND.
   if [ "${BASH_VERSINFO[0]:-0}" -gt 4 ] \
      || { [ "${BASH_VERSINFO[0]:-0}" -eq 4 ] && [ "${BASH_VERSINFO[1]:-0}" -ge 4 ]; }; then
-    if [ -n "${TERAX_BLOCKS-}" ]; then
+    if [ -n "${CODR_BLOCKS-}" ]; then
       # PS0 only expands, never executes: the arithmetic inside the array
       # subscript sets the seen flag while the unset array expands to nothing.
       PS0='\[\e]133;C\e\\\]${_terax_noop[$((_terax_block_seen=1))]-}'"${PS0:-}"

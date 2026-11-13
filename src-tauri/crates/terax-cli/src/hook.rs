@@ -19,8 +19,8 @@ use terax_control_protocol::{
 };
 
 use crate::{
-    io_error, parse_loopback_address, read_response, request_id, validate_endpoint, write_request,
-    CliError, Timeouts,
+    env_name, io_error, parse_loopback_address, read_response, request_id, validate_endpoint,
+    write_request, CliError, Timeouts,
 };
 
 const STDIN_DEADLINE: Duration = Duration::from_secs(2);
@@ -52,10 +52,10 @@ impl HookEnvironment {
     /// `None` when this process is not inside a Terax pane, which makes the
     /// hook inert in every other terminal.
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Option<Self> {
-        let pane_id = get("TERAX_PANE_ID")?.trim().parse::<u32>().ok()?;
-        let address = get("TERAX_CONTROL_ADDR").filter(|value| !value.is_empty())?;
-        let token = get("TERAX_CONTROL_TOKEN").filter(|value| !value.is_empty())?;
-        let decision_secs = get("TERAX_HOOK_TIMEOUT")
+        let pane_id = get(&env_name("PANE_ID"))?.trim().parse::<u32>().ok()?;
+        let address = get(&env_name("CONTROL_ADDR")).filter(|value| !value.is_empty())?;
+        let token = get(&env_name("CONTROL_TOKEN")).filter(|value| !value.is_empty())?;
+        let decision_secs = get(&env_name("HOOK_TIMEOUT"))
             .and_then(|value| value.trim().parse::<u32>().ok())
             .map_or(DEFAULT_DECISION_SECS, |secs| {
                 secs.clamp(1, MAX_DECISION_SECS)
@@ -65,8 +65,9 @@ impl HookEnvironment {
             address,
             token,
             decision_secs,
-            wait_enabled: get("TERAX_HOOK_WAIT").as_deref() != Some("0"),
-            debug: get("TERAX_HOOK_DEBUG").is_some_and(|value| !value.is_empty() && value != "0"),
+            wait_enabled: get(&env_name("HOOK_WAIT")).as_deref() != Some("0"),
+            debug: get(&env_name("HOOK_DEBUG"))
+                .is_some_and(|value| !value.is_empty() && value != "0"),
         })
     }
 }
@@ -277,9 +278,9 @@ mod tests {
     #[test]
     fn the_environment_requires_every_terax_variable() {
         let full: &[(&str, &str)] = &[
-            ("TERAX_PANE_ID", "7"),
-            ("TERAX_CONTROL_ADDR", "127.0.0.1:4000"),
-            ("TERAX_CONTROL_TOKEN", "tok"),
+            ("CODR_PANE_ID", "7"),
+            ("CODR_CONTROL_ADDR", "127.0.0.1:4000"),
+            ("CODR_CONTROL_TOKEN", "tok"),
         ];
         let environment = HookEnvironment::from_lookup(lookup(full)).unwrap();
         assert_eq!(environment.pane_id, 7);
@@ -299,9 +300,26 @@ mod tests {
         }
         assert_eq!(
             HookEnvironment::from_lookup(lookup(&[
-                ("TERAX_PANE_ID", "x"),
-                ("TERAX_CONTROL_ADDR", "a"),
-                ("TERAX_CONTROL_TOKEN", "t"),
+                ("CODR_PANE_ID", "x"),
+                ("CODR_CONTROL_ADDR", "a"),
+                ("CODR_CONTROL_TOKEN", "t"),
+            ])),
+            None
+        );
+    }
+
+    /// Coexistence: an upstream Terax shell exposes `TERAX_PANE_ID`/`TERAX_CONTROL_*` and its
+    /// own tuning variables. This hook must stay inert there instead of delivering an upstream
+    /// pane's event to *this* application.
+    #[test]
+    fn an_upstream_terax_shell_is_not_mistaken_for_ours() {
+        assert_eq!(
+            HookEnvironment::from_lookup(lookup(&[
+                ("TERAX_PANE_ID", "7"),
+                ("TERAX_CONTROL_ADDR", "127.0.0.1:4000"),
+                ("TERAX_CONTROL_TOKEN", "tok"),
+                ("TERAX_HOOK_TIMEOUT", "30"),
+                ("TERAX_HOOK_DEBUG", "1"),
             ])),
             None
         );
@@ -312,12 +330,12 @@ mod tests {
         let with = |timeout: &'static str, wait: &'static str| {
             let pairs: &'static [(&'static str, &'static str)] = Box::leak(
                 vec![
-                    ("TERAX_PANE_ID", "1"),
-                    ("TERAX_CONTROL_ADDR", "a"),
-                    ("TERAX_CONTROL_TOKEN", "t"),
-                    ("TERAX_HOOK_TIMEOUT", timeout),
-                    ("TERAX_HOOK_WAIT", wait),
-                    ("TERAX_HOOK_DEBUG", "1"),
+                    ("CODR_PANE_ID", "1"),
+                    ("CODR_CONTROL_ADDR", "a"),
+                    ("CODR_CONTROL_TOKEN", "t"),
+                    ("CODR_HOOK_TIMEOUT", timeout),
+                    ("CODR_HOOK_WAIT", wait),
+                    ("CODR_HOOK_DEBUG", "1"),
                 ]
                 .into(),
             );

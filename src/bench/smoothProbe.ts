@@ -180,7 +180,10 @@ export class SmoothProbe implements SmoothHooks {
   pending(): number {
     let count = 0;
     for (const pane of this.panes.values())
-      if (pane.wantCols > 0 && (pane.wantCols !== pane.haveCols || pane.wantRows !== pane.haveRows))
+      if (
+        pane.wantCols > 0 &&
+        (pane.wantCols !== pane.haveCols || pane.wantRows !== pane.haveRows)
+      )
         count += 1;
     return count;
   }
@@ -274,7 +277,9 @@ export class SmoothProbe implements SmoothHooks {
       frameCostMs: stat(this.frameCosts),
       rectLagMs: stat(this.rectLag),
       gridStalenessMs: stat(this.staleness),
-      staleShare: active ? Math.round((stale / duration / active) * 1000) / 1000 : 0,
+      staleShare: active
+        ? Math.round((stale / duration / active) * 1000) / 1000
+        : 0,
       settleMs,
       applies: this.appliesLog,
       gridResizes: resizes,
@@ -284,7 +289,8 @@ export class SmoothProbe implements SmoothHooks {
       ),
       cursorFrames: this.cursorFrames,
       cursorClipped: this.cursorClipped,
-      gridResizesPerS: Math.round((resizes / seconds / Math.max(1, active)) * 10) / 10,
+      gridResizesPerS:
+        Math.round((resizes / seconds / Math.max(1, active)) * 10) / 10,
       resizeCostMs: stat(this.resizeCosts),
       holds: this.holdDurations.length,
       frozenMs: Math.round(frozen),

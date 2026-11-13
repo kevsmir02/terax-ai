@@ -1,46 +1,75 @@
 # Security
 
-Terax runs shells, reads/writes files, and talks to AI providers, so security bugs matter. If you find one, please tell us before posting it publicly.
+This repository builds **Codr**, an **unofficial Linux fork** of Terax (upstream: `crynta/terax-ai`).
+It is not affiliated with Crynta, it is not the upstream product, and upstream's security process and
+contact address do not apply here. No production-readiness certification or warranty is claimed.
 
-## Reporting
+## Reporting a vulnerability
 
-Email **security@terax.app**. Include:
+Report privately through this repository's **Security -> Report a vulnerability** form
+(<https://github.com/kevsmir02/terax-ai/security/advisories/new>). That keeps the report out of
+public view until a fix exists.
 
-- What the issue is and what it lets an attacker do
-- Steps to reproduce (a small PoC is great)
-- Version, OS, arch
+If private reporting is unavailable, open an issue that contains **no vulnerability details** and
+ask the repository owner for a private channel. Do not describe the flaw in a public issue.
 
-We'll get back to you within a few days. Once it's fixed, we'll credit you in the release notes - unless you'd rather stay anonymous.
+Include:
 
-Please **don't** open a public GitHub issue for security reports.
+- what the issue is and what it lets an attacker do;
+- steps to reproduce (a small proof of concept is ideal);
+- the version or commit you built, the distribution and desktop, the WebKitGTK version, and which
+  artifact you ran (RPM, DEB, the Arch recipe built locally, or a source build).
 
 ## Supported versions
 
-Until `1.0.0`, only the latest minor gets security fixes. See the current version in `package.json` or on the [Releases page](https://github.com/crynta/terax-ai/releases). 
+The first stable release line is `v1.0.0` (Linux x86-64 only). Security fixes target the latest
+published `1.0.x` release and `main`. No broad distribution compatibility or production-readiness
+certification is claimed.
 
-## What's in scope
+## What is in scope
 
-- The Rust backend in `src-tauri/` (PTY, FS, IPC, plugins)
-- The frontend in `src/` - anywhere untrusted input lands (terminal output, file content, AI tool results, credentials)
-- Release artifacts on GitHub and `terax.app`
-- The auto-updater
+- The Rust backend in `src-tauri/` (PTY, filesystem, IPC, plugins) and the frontend in `src/`
+  wherever untrusted input lands (terminal output, file content, previews, workspace state).
+- The packaging scripts, the release gate and the app-lab harness in this repository.
+- The updater's discovery path and the package-tool handoff.
 
-## What's not
+## What is not in scope
 
-- Bugs in upstream deps (Tauri, xterm.js, CodeMirror, AI SDKs…) - report those upstream. We'll ship the fix once it's released.
-- Anything that needs an already-compromised machine or a local attacker with shell access
-- Older versions (`< 0.5`)
+- Upstream dependencies (Tauri, WebKitGTK, libghostty, CodeMirror, coding-agent CLIs). Report those
+  upstream; this fork ships the fix once it is released.
+- Anything that needs an already-compromised machine or a local attacker with shell access.
+- The macOS, Windows and WSL code paths. They are retained as inert seams so upstream imports stay
+  cheap, and they are not supported configurations of this fork.
+- Third-party agent CLIs: they keep their own permissions, credentials and trust prompts.
 
-## What we do to keep things safe
+## Trust boundaries this build actually has
 
-- **API keys** live in the OS keychain via `keyring` - not on disk, not in `localStorage`, not in logs.
-- **No telemetry.** Terax only talks to the network when you ask it to (AI requests, update checks, web preview).
-- **AI tool approval.** File writes and shell commands from the agent need your OK before they run.
-- **No Node in the renderer.** The frontend only reaches the host through the allow-listed Tauri commands.
-- **Signed releases.** Updates are verified before they're applied.
+- **No application AI credentials.** There is no built-in model, no provider key storage and no
+  keychain access. Coding agents run as external CLI processes with their own approvals.
+- **No telemetry.** The application talks to the network when you ask it to (an update check, a web
+  preview) and not otherwise.
+- **No Node in the renderer.** The frontend reaches the host only through allow-listed Tauri
+  commands, and capabilities grant no updater install command.
+- **This application never downloads, installs or restarts itself.** Updates are performed with your
+  package tool: the app can hand the package artifact to it after you approve, and a handoff is
+  never reported as a completed install or as verified downloaded bytes.
+- **Independent artifact trust root (minisign) vs package/repo trust.** The fork's independent
+  minisign public key is provisioned (`94097B75DB498B21`,
+  `sha256:a02fd6ac492d1f070919bde106c20c0a376fbcdb6db8bc4c17ca0efd68197487`; see
+  `docs/architecture/release-trust.md`), and nothing in this repository or its issues holds a
+  private signing key. At discovery time the app fails closed on malformed envelopes, version
+  mismatches, or non-matching key IDs. Download-time package installation and managed DNF/APT
+  repository trust remain separate and deferred: `dnf` and `apt` do not verify minisign signatures,
+  so inspect downloaded artifacts with the published `.minisig` files before running your package
+  manager.
 
-## What we can't promise
+## What we cannot promise
 
-- Terax runs whatever you (or the agent) tell it to run, with your permissions. That's kind of the point of a terminal.
-- AI providers see whatever you send them. Read their retention policies.
-- Local LLM endpoints (LM Studio, OpenAI-compatible) are trusted at the network level - only point Terax at servers you control.
+- The application runs whatever you (or an agent) tell it to run, with your permissions. That is the
+  point of a terminal.
+- Local model endpoints (LM Studio, OpenAI-compatible servers) are trusted at the network level;
+  only point the application at servers you control.
+- Fedora 45 KDE Wayland is the only validated packaged target (`codr-1.0.0-1.x86_64.rpm`, #44).
+  Debian 13 (`.deb` graphical WebKitGTK) and Arch (`packaging/arch/PKGBUILD` `makepkg`) were
+  waived/not built, and host `dnf upgrade` across versions remains unverified. Read the
+  supported-matrix and tested-limit statements in `README.md` before relying on a package.

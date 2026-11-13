@@ -11,7 +11,7 @@ use std::path::{Component, Path, PathBuf};
 use globset::{GlobBuilder, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 
-use crate::modules::git::checkpoint::{ChangedPath, Skipped};
+use crate::modules::git::checkpoint::{self, ChangedPath, OwnedRecoveryRefs, Skipped};
 use crate::modules::git::diff::FileStatus;
 use crate::modules::git::errors::{GitError, Result};
 use crate::modules::git::plumbing::{
@@ -199,6 +199,41 @@ pub struct WorktreeAddRequest {
     /// the new worktree even though git ignores them, e.g. `.env`.
     #[serde(default)]
     pub include: Vec<String>,
+}
+
+/// Which input a preflight problem belongs to. `add` remains the authority;
+/// these problems are what the form can say before it mutates anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorktreeProblemField {
+    Path,
+    Branch,
+    Base,
+    Include,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeProblem {
+    pub field: WorktreeProblemField,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreePreflight {
+    /// The location `add` would use, including the first free `-2`, `-3` name
+    /// for the managed location. `None` when the input names no safe path.
+    pub path: Option<String>,
+    /// Set when the managed location's preferred name was taken.
+    pub collision: Option<String>,
+    pub problems: Vec<WorktreeProblem>,
+}
+
+impl WorktreePreflight {
+    pub fn ok(&self) -> bool {
+        self.problems.is_empty()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -538,6 +573,194 @@ fn add_inner(
     })
 }
 
+/// The first free name for the managed location, without creating it. `add`
+/// still claims the directory atomically; this is only what the form shows.
+fn planned_claim(parent: &Path, name: &str) -> (PathBuf, Option<String>) {
+    for attempt in 1..=1000u32 {
+        let candidate = if attempt == 1 {
+            parent.join(name)
+        } else {
+            parent.join(format!("{name}-{attempt}"))
+        };
+        if std::fs::symlink_metadata(&candidate).is_err() {
+            let collision = (attempt > 1).then(|| {
+                format!(
+                    "{} already exists; this worktree will use {}",
+                    parent.join(name).display(),
+                    candidate.display()
+                )
+            });
+            return (candidate, collision);
+        }
+    }
+    let fallback = parent.join(format!("{name}-1001"));
+    let collision = Some(format!(
+        "every name up to {name}-1000 is taken; this worktree will use {}",
+        fallback.display()
+    ));
+    (fallback, collision)
+}
+
+fn path_of(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+/// What creating this worktree would run into, computed without creating it.
+///
+/// `add` rechecks everything and stays authoritative: a branch can be created
+/// by another process between this answer and the mutation, and only the
+/// native refusal prevents that. The distinction matters — this exists so the
+/// form can name the problem before the user submits, not to replace the guard.
+pub fn preflight(
+    registry: &WorkspaceRegistry,
+    repo_root: &str,
+    request: &WorktreeAddRequest,
+    worktrees_dir: &Path,
+    workspace: &WorkspaceEnv,
+) -> Result<WorktreePreflight> {
+    if workspace.is_wsl() {
+        return Err(GitError::Unsupported(WSL_WORKTREES_UNSUPPORTED));
+    }
+    let repo = open_worktree(registry, repo_root, workspace)?;
+    let mut problems: Vec<WorktreeProblem> = Vec::new();
+    let mut problem = |field: WorktreeProblemField, message: String| {
+        problems.push(WorktreeProblem { field, message });
+    };
+
+    if request.include.len() > MAX_INCLUDE_PATTERNS {
+        problem(
+            WorktreeProblemField::Include,
+            format!(
+                "at most {MAX_INCLUDE_PATTERNS} ignored-file patterns are copied"
+            ),
+        );
+    } else {
+        for pattern in &request.include {
+            if let Err(why) = validate_include_pattern(pattern) {
+                problem(
+                    WorktreeProblemField::Include,
+                    format!("{pattern}: {why}"),
+                );
+            }
+        }
+    }
+
+    if head_commit_opt(&repo)?.is_none() {
+        problem(
+            WorktreeProblemField::Base,
+            "the repository has no commits yet".into(),
+        );
+    } else if let Some(base) = request.base.as_deref().filter(|b| !b.is_empty()) {
+        if resolve_commit(&repo, base).is_err() {
+            problem(
+                WorktreeProblemField::Base,
+                format!("{base} does not name a commit"),
+            );
+        }
+    }
+
+    let entries = list_entries(&repo)?;
+    match &request.branch {
+        WorktreeBranch::NewBranch { name } => {
+            if let Err(err) = check_branch_name(&repo, name) {
+                problem(
+                    WorktreeProblemField::Branch,
+                    format!("{name} is not a valid branch name ({err})"),
+                );
+            } else if branch_exists(&repo, name)? {
+                problem(
+                    WorktreeProblemField::Branch,
+                    format!("branch {name} already exists"),
+                );
+            }
+        }
+        WorktreeBranch::ExistingBranch { name } => {
+            if let Err(err) = check_branch_name(&repo, name) {
+                problem(
+                    WorktreeProblemField::Branch,
+                    format!("{name} is not a valid branch name ({err})"),
+                );
+            } else if !branch_exists(&repo, name)? {
+                problem(
+                    WorktreeProblemField::Branch,
+                    format!("branch {name} does not exist"),
+                );
+            } else if let Some(holder) = entries
+                .iter()
+                .find(|e| e.branch.as_deref() == Some(name.as_str()))
+            {
+                problem(
+                    WorktreeProblemField::Branch,
+                    format!("branch {name} is already checked out at {}", holder.path),
+                );
+            }
+        }
+        WorktreeBranch::Detach => {}
+    }
+
+    let main_path = entries
+        .first()
+        .map(|e| PathBuf::from(&e.path))
+        .unwrap_or_else(|| repo.local_path.clone());
+    let mut planned_path = None;
+    let mut collision = None;
+    match request.path.as_deref().filter(|p| !p.is_empty()) {
+        Some(raw) => {
+            let path = PathBuf::from(raw);
+            if !path.is_absolute() || path.components().any(|c| c == Component::ParentDir) {
+                problem(
+                    WorktreeProblemField::Path,
+                    format!("{raw} must be an absolute path without .."),
+                );
+            } else {
+                let ancestor = existing_ancestor(&path)?;
+                let resolved = ancestor.join(
+                    path.strip_prefix(existing_prefix(&path))
+                        .unwrap_or(Path::new("")),
+                );
+                if !registry.is_authorized(&ancestor) {
+                    problem(
+                        WorktreeProblemField::Path,
+                        format!("{raw} is outside the folders this app can access"),
+                    );
+                } else if resolved.starts_with(&repo.local_path)
+                    || repo.local_path.starts_with(&resolved)
+                {
+                    problem(
+                        WorktreeProblemField::Path,
+                        format!("{raw} overlaps the repository"),
+                    );
+                } else if path.exists() && !path.is_dir() {
+                    problem(
+                        WorktreeProblemField::Path,
+                        format!("{raw} exists and is not a directory"),
+                    );
+                } else if path.exists() && std::fs::read_dir(&path)?.next().is_some() {
+                    problem(
+                        WorktreeProblemField::Path,
+                        format!("{raw} is not empty; existing files are left untouched"),
+                    );
+                } else {
+                    planned_path = Some(path_of(&path));
+                }
+            }
+        }
+        None => {
+            let task = refs::slugify(request.task_slug.as_deref().unwrap_or("task"), 48);
+            let parent = worktrees_dir.join(default_location_slug(&main_path));
+            let (path, note) = planned_claim(&parent, &task);
+            planned_path = Some(path_of(&path));
+            collision = note;
+        }
+    }
+
+    Ok(WorktreePreflight {
+        path: planned_path,
+        collision,
+        problems,
+    })
+}
+
 fn open_new(
     registry: &WorkspaceRegistry,
     path: &Path,
@@ -825,6 +1048,9 @@ pub enum RemoveBlocker {
     /// Ignored files that are not regenerable (`.env`, local databases...):
     /// git itself would delete them without a word.
     Ignored,
+    /// Checkpoints or pre-restore safety refs this worktree still owns.
+    /// `force` never overrides this: only explicit cleanup of those refs does.
+    RecoveryRefs,
     /// A safety check could not finish (failed, timed out or was cut short), so
     /// nothing is known about what removal would lose. `inconclusive` names
     /// the checks.
@@ -1023,6 +1249,9 @@ pub struct WorktreeRemoveReport {
     /// Checks that could not finish (`ignored-files`, `unmerged-commits`);
     /// each also raises the `inconclusive` blocker.
     pub inconclusive: Vec<String>,
+    /// Recovery points this worktree still owns. Non-empty means removal is
+    /// refused until the caller cleans them up explicitly.
+    pub recovery: OwnedRecoveryRefs,
     pub lock_reason: Option<String>,
 }
 
@@ -1098,7 +1327,41 @@ pub fn remove_with_limits(
     workspace: &WorkspaceEnv,
     limits: RemoveLimits,
 ) -> Result<WorktreeRemoveReport> {
-    remove_inner(registry, repo_root, path, force, workspace, limits, None)
+    remove_inner(
+        registry,
+        repo_root,
+        path,
+        workspace,
+        limits,
+        RemovalPolicy {
+            force,
+            enforce_recovery_refs: true,
+            inspect: false,
+        },
+        None,
+    )
+}
+
+/// What removal would refuse or lose, without mutating anything.
+pub fn preflight_removal(
+    registry: &WorkspaceRegistry,
+    repo_root: &str,
+    path: &str,
+    workspace: &WorkspaceEnv,
+) -> Result<WorktreeRemoveReport> {
+    remove_inner(
+        registry,
+        repo_root,
+        path,
+        workspace,
+        RemoveLimits::default(),
+        RemovalPolicy {
+            force: false,
+            enforce_recovery_refs: true,
+            inspect: true,
+        },
+        None,
+    )
 }
 
 pub(crate) fn inspect_removal(
@@ -1112,11 +1375,53 @@ pub(crate) fn inspect_removal(
         registry,
         repo_root,
         path,
-        false,
         workspace,
         RemoveLimits::default(),
+        RemovalPolicy {
+            force: false,
+            enforce_recovery_refs: false,
+            inspect: true,
+        },
         Some(excluded),
     )
+}
+
+/// Removal on behalf of the retained task archive, which captures a snapshot
+/// and then removes the worktree it came from. That snapshot is a task archive
+/// ref, not one of the owned recovery refs, so it never blocks; a checkpoint or
+/// pre-restore safety ref the user still has is refused here exactly like the
+/// product command, so archiving cannot be the thing that strands it.
+pub(crate) fn remove_for_archive(
+    registry: &WorkspaceRegistry,
+    repo_root: &str,
+    path: &str,
+    force: bool,
+    workspace: &WorkspaceEnv,
+) -> Result<WorktreeRemoveReport> {
+    remove_inner(
+        registry,
+        repo_root,
+        path,
+        workspace,
+        RemoveLimits::default(),
+        RemovalPolicy {
+            force,
+            enforce_recovery_refs: true,
+            inspect: false,
+        },
+        None,
+    )
+}
+
+/// How one removal call is allowed to behave.
+#[derive(Debug, Clone, Copy)]
+struct RemovalPolicy {
+    force: bool,
+    /// Refuse while this worktree owns a checkpoint or pre-restore safety ref.
+    /// `force` is deliberately not part of this decision.
+    enforce_recovery_refs: bool,
+    /// Report only; never mutate.
+    inspect: bool,
 }
 
 fn exclude_pathspecs(
@@ -1138,9 +1443,9 @@ fn remove_inner(
     registry: &WorkspaceRegistry,
     repo_root: &str,
     path: &str,
-    force: bool,
     workspace: &WorkspaceEnv,
     limits: RemoveLimits,
+    policy: RemovalPolicy,
     inspect: Option<&[String]>,
 ) -> Result<WorktreeRemoveReport> {
     if workspace.is_wsl() {
@@ -1185,8 +1490,12 @@ fn remove_inner(
         ignored_regenerable: 0,
         ignored_identical: 0,
         inconclusive: Vec::new(),
+        recovery: OwnedRecoveryRefs::default(),
         lock_reason: entry.lock_reason.clone(),
     };
+    // Ownership lives in the repository's administrative directory, so this is
+    // answered the same way for a worktree whose working directory is gone.
+    report.recovery = checkpoint::owned_recovery_refs(&repo, &entry.path)?;
     if entry.locked {
         report.blockers.push(RemoveBlocker::Locked);
         return Ok(report);
@@ -1273,14 +1582,21 @@ fn remove_inner(
     if !report.inconclusive.is_empty() {
         report.blockers.push(RemoveBlocker::Inconclusive);
     }
+    // A retained recovery point is refused for every caller of the product
+    // removal, whatever `force` says: deleting the registration would leave a
+    // ref with no owner to list, restore or clean it.
+    if report.recovery.total > 0 {
+        report.blockers.push(RemoveBlocker::RecoveryRefs);
+    }
 
-    if inspect.is_some() || (!force && !report.blockers.is_empty()) {
+    let recovery_refused = policy.enforce_recovery_refs && report.recovery.total > 0;
+    if policy.inspect || recovery_refused || (!policy.force && !report.blockers.is_empty()) {
         return Ok(report);
     }
 
     if entry.exists {
         let mut args = os_args(["worktree", "remove"]);
-        if force {
+        if policy.force {
             args.push("--force".into());
         }
         args.push(entry.path.clone().into());
@@ -1341,6 +1657,7 @@ pub fn prune(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::git::testutil::{scratch, TestRepo};
 
     const PORCELAIN: &str = "worktree /repo\nHEAD aaaaaaaa\nbranch refs/heads/main\n\nworktree /wt/feature\nHEAD bbbbbbbb\nbranch refs/heads/feature/x\nlocked in use by task\n\nworktree /wt/detached\nHEAD cccccccc\ndetached\nlocked\n\nworktree /wt/gone\nHEAD dddddddd\ndetached\nprunable gitdir file points to non-existent location\n\nworktree /bare\nbare\n";
 
@@ -1656,5 +1973,232 @@ mod tests {
             "SECRET=1\n"
         );
         assert!(!dst_root.join("node_modules").exists());
+    }
+
+    // ------------------------------------------------ creation preflight (UI seam)
+
+    fn preflight_request(path: Option<&Path>, branch: WorktreeBranch) -> WorktreeAddRequest {
+        WorktreeAddRequest {
+            path: path.map(|p| p.to_string_lossy().into_owned()),
+            task_slug: Some("feature".into()),
+            branch,
+            base: None,
+            include: Vec::new(),
+        }
+    }
+
+    fn problem_fields(plan: &WorktreePreflight) -> Vec<WorktreeProblemField> {
+        plan.problems.iter().map(|p| p.field).collect()
+    }
+
+    #[test]
+    fn preflight_plans_a_valid_custom_location_without_creating_it() {
+        let repo = TestRepo::new();
+        let (_dir, base) = scratch();
+        repo.registry.authorize(&base).unwrap();
+        let target = base.join("feature");
+        let plan = preflight(
+            &repo.registry,
+            &repo.path(),
+            &preflight_request(
+                Some(&target),
+                WorktreeBranch::NewBranch {
+                    name: "feature/lab".into(),
+                },
+            ),
+            &base.join("managed"),
+            &repo.ws,
+        )
+        .unwrap();
+        assert!(plan.problems.is_empty(), "{plan:?}");
+        assert_eq!(
+            plan.path.as_deref(),
+            Some(target.to_string_lossy().as_ref()),
+            "the plan names the location it would use"
+        );
+        assert_eq!(plan.collision, None);
+        assert!(!target.exists(), "preflight must not create anything");
+    }
+
+    #[test]
+    fn preflight_reports_base_path_and_branch_problems_without_mutating() {
+        let repo = TestRepo::new();
+        let (_dir, base) = scratch();
+        repo.registry.authorize(&base).unwrap();
+
+        // A revision that does not resolve to a commit.
+        let mut unknown_base = preflight_request(
+            Some(&base.join("unknown-base")),
+            WorktreeBranch::NewBranch {
+                name: "feature/base".into(),
+            },
+        );
+        unknown_base.base = Some("does-not-exist".into());
+        let plan = preflight(
+            &repo.registry,
+            &repo.path(),
+            &unknown_base,
+            &base.join("managed"),
+            &repo.ws,
+        )
+        .unwrap();
+        assert_eq!(problem_fields(&plan), vec![WorktreeProblemField::Base]);
+
+        // A target that already holds files: refusal, and the file stays as it was.
+        let dirty = base.join("dirty-target");
+        std::fs::create_dir_all(&dirty).unwrap();
+        std::fs::write(dirty.join("keep.txt"), "mine\n").unwrap();
+        let plan = preflight(
+            &repo.registry,
+            &repo.path(),
+            &preflight_request(
+                Some(&dirty),
+                WorktreeBranch::NewBranch {
+                    name: "feature/dirty".into(),
+                },
+            ),
+            &base.join("managed"),
+            &repo.ws,
+        )
+        .unwrap();
+        assert_eq!(problem_fields(&plan), vec![WorktreeProblemField::Path]);
+        assert!(plan.problems[0].message.contains("not empty"));
+        assert_eq!(
+            std::fs::read_to_string(dirty.join("keep.txt")).unwrap(),
+            "mine\n"
+        );
+
+        // A file where a directory has to go.
+        let file = base.join("already-a-file");
+        std::fs::write(&file, "not a directory\n").unwrap();
+        let plan = preflight(
+            &repo.registry,
+            &repo.path(),
+            &preflight_request(
+                Some(&file),
+                WorktreeBranch::NewBranch {
+                    name: "feature/file".into(),
+                },
+            ),
+            &base.join("managed"),
+            &repo.ws,
+        )
+        .unwrap();
+        assert_eq!(problem_fields(&plan), vec![WorktreeProblemField::Path]);
+
+        // A branch another worktree already has checked out.
+        let plan = preflight(
+            &repo.registry,
+            &repo.path(),
+            &preflight_request(
+                Some(&base.join("main-checked-out")),
+                WorktreeBranch::ExistingBranch {
+                    name: "main".into(),
+                },
+            ),
+            &base.join("managed"),
+            &repo.ws,
+        )
+        .unwrap();
+        assert_eq!(problem_fields(&plan), vec![WorktreeProblemField::Branch]);
+        assert!(plan.problems[0].message.contains("already checked out"));
+
+        // A syntactically invalid branch name.
+        let plan = preflight(
+            &repo.registry,
+            &repo.path(),
+            &preflight_request(
+                Some(&base.join("bad-branch")),
+                WorktreeBranch::NewBranch {
+                    name: "bad branch".into(),
+                },
+            ),
+            &base.join("managed"),
+            &repo.ws,
+        )
+        .unwrap();
+        assert_eq!(
+            problem_fields(&plan),
+            vec![WorktreeProblemField::Branch]
+        );
+
+        // A location whose deepest existing ancestor is not authorized.
+        let (outside_dir, outside) = scratch();
+        let plan = preflight(
+            &repo.registry,
+            &repo.path(),
+            &preflight_request(
+                Some(&outside.join("worktree")),
+                WorktreeBranch::NewBranch {
+                    name: "feature/outside".into(),
+                },
+            ),
+            &base.join("managed"),
+            &repo.ws,
+        )
+        .unwrap();
+        assert_eq!(problem_fields(&plan), vec![WorktreeProblemField::Path]);
+        assert!(!outside.join("worktree").exists());
+        drop(outside_dir);
+    }
+
+    #[test]
+    fn preflight_reports_include_limits_and_managed_collisions() {
+        let repo = TestRepo::new();
+        let (_dir, base) = scratch();
+        repo.registry.authorize(&base).unwrap();
+
+        let mut request = preflight_request(
+            None,
+            WorktreeBranch::NewBranch {
+                name: "feature/managed".into(),
+            },
+        );
+        request.include = vec!["../secret".into()];
+        let plan = preflight(
+            &repo.registry,
+            &repo.path(),
+            &request,
+            &base.join("managed"),
+            &repo.ws,
+        )
+        .unwrap();
+        assert_eq!(problem_fields(&plan), vec![WorktreeProblemField::Include]);
+        assert!(plan.path.is_some(), "the managed location is still planned");
+
+        let mut too_many = preflight_request(
+            None,
+            WorktreeBranch::NewBranch {
+                name: "feature/managed".into(),
+            },
+        );
+        too_many.include = vec![".env".into(); MAX_INCLUDE_PATTERNS + 1];
+        let plan = preflight(
+            &repo.registry,
+            &repo.path(),
+            &too_many,
+            &base.join("managed"),
+            &repo.ws,
+        )
+        .unwrap();
+        assert_eq!(problem_fields(&plan), vec![WorktreeProblemField::Include]);
+
+        // The managed location: the first free name, never a collision.
+        let request = preflight_request(
+            None,
+            WorktreeBranch::NewBranch {
+                name: "feature/managed".into(),
+            },
+        );
+        let managed = base.join("managed");
+        let plan = preflight(&repo.registry, &repo.path(), &request, &managed, &repo.ws).unwrap();
+        let first = plan.path.clone().expect("planned path");
+        assert_eq!(plan.collision, None);
+        assert!(!Path::new(&first).exists());
+        std::fs::create_dir_all(&first).unwrap();
+        let plan = preflight(&repo.registry, &repo.path(), &request, &managed, &repo.ws).unwrap();
+        assert_ne!(plan.path.as_deref(), Some(first.as_str()));
+        assert!(plan.path.as_deref().unwrap().ends_with("-2"));
+        assert!(plan.collision.is_some());
     }
 }

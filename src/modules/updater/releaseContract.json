@@ -1,0 +1,37 @@
+{
+  "provisional": false,
+  "note": "Fork-owned release contract for Codr (`kevsmir02/terax-ai`). The stable endpoint and minisign trust root (key ID 94097B75DB498B21) were settled in breakdown ticket #39 (GitHub issue #40). The inherited upstream endpoint is kept only so tests and code can refuse it. src-tauri/tauri.conf.json is compared against this file by tests instead of duplicating logic.",
+  "finalTrustTicket": 39,
+  "channel": "stable",
+  "endpoints": [
+    "https://github.com/kevsmir02/terax-ai/releases/latest/download/latest.json"
+  ],
+  "check": {
+    "timeoutMs": 8000,
+    "attempts": 3,
+    "baseDelayMs": 500,
+    "maxDelayMs": 8000,
+    "maxRetryAfterMs": 30000,
+    "intervalMs": 21600000
+  },
+  "trust": {
+    "provisioned": true,
+    "keyId": "94097B75DB498B21",
+    "fingerprint": "sha256:a02fd6ac492d1f070919bde106c20c0a376fbcdb6db8bc4c17ca0efd68197487",
+    "publicKey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk0MDk3Qjc1REI0OThCMjEKUldRaGkwbmJkWHNKbEZ1OWI0OHNtallkdFpLelozQW42cmpoS1J6K2tkTDB0RzhmN0RCSmo4bEwK",
+    "note": "Minisign public key provisioned offline for Codr releases (key ID 94097B75DB498B21). Discovery verifies the signature envelope and key ID while failing closed on mismatches or unverified metadata; full artifact bytes are verified before publishing and on package verification."
+  },
+  "fixtures": {
+    "directory": "src/modules/updater/fixtures",
+    "endpointEnv": "VITE_CODR_UPDATE_ENDPOINT",
+    "devServerCommand": "pnpm dev:update-fixtures",
+    "note": "Development and tests point the contract at the isolated fixture directory (served over 127.0.0.1 by scripts/update-fixtures.mjs). A loopback endpoint is the only override accepted in development, and a development build marks those releases as fixture-unverified rather than verified."
+  },
+  "upstream": {
+    "repository": "crynta/terax-ai",
+    "baseCommit": "cb48a3449a566d66725e2daecc4a21276e75b0ff",
+    "endpoints": [
+      "https://github.com/crynta/terax-ai/releases/latest/download/latest.json"
+    ]
+  }
+}

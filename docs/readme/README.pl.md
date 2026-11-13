@@ -1,3 +1,8 @@
+<!-- fork-copy: upstream translation; the authoritative description of this build is ../../README.md -->
+
+> [!IMPORTANT]
+> To tłumaczenie pochodzi z upstreamowego Teraxa. Ten fork usunął opisane tutaj wbudowane funkcje AI (czat, autouzupełnianie, przegląd zmian przez AI oraz ustawienia dostawcy i kluczy API). [`README.md`](../../README.md) opisuje kompilację dostarczaną przez to repozytorium.
+
 <div align="center">
   <img src="../../public/logo.png" width="144" height="144" alt="Terax" />
   <h1>Terax</h1>
@@ -7,7 +12,7 @@
   <p>
     <img src="https://img.shields.io/github/v/release/crynta/terax-ai?label=version&color=blue" alt="wersja" />
     <img src="https://img.shields.io/github/downloads/crynta/terax-ai/total?label=downloads&color=blue" alt="pobrania" />
-    <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="platforma" />
+    <img src="https://img.shields.io/badge/platform-Linux%20x86_64-lightgrey" alt="platforma" />
     <a href="https://discord.gg/tyveTUyEp7"><img src="https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
     <a href="https://www.youtube.com/@crynta"><img src="https://img.shields.io/badge/Youtube-FF0000?logo=youtube&logoColor=white" alt="YouTube" /></a>
   </p>
@@ -90,18 +95,20 @@ Terax to lekkie, otwartoźródłowe, terminalowe środowisko programistyczne (AD
 
 ## Instalacja
 
-Najnowsze instalatory znajdują się na stronie [Releases](https://github.com/crynta/terax-ai/releases/latest). Terax aktualizuje się stamtąd automatycznie.
+> **Platform support (authoritative, English):** this fork builds and distributes Linux x86-64
+> only, as an RPM and a DEB. macOS, Windows/WSL and Nix build and distribution support was
+> removed, and no other architecture is produced. See the
+> [English README](../../README.md#platform-support).
 
-### Uwagi dla Windows
+Install the RPM (`sudo dnf install ./codr-*.x86_64.rpm`) or the DEB (`sudo apt
+install ./codr_*_amd64.deb`) from the
+[Releases](https://github.com/kevsmir02/terax-ai/releases/latest) page with your package manager.
+Fedora 45 KDE Plasma on Wayland is the validated target (#44); Debian 13 graphical WebKitGTK
+validation was waived for personal-tool scope and `packaging/arch/PKGBUILD` is authored and signed
+but **not built** (`makepkg` has not been run). The application never downloads, installs or
+restarts itself.
 
-- Domyślne wykrywanie powłoki: `pwsh.exe` (PowerShell 7+) -> `powershell.exe` (Windows PowerShell 5.1) -> `cmd.exe`.
-- WSL jest pełnoprawnym środowiskiem obszaru roboczego, a nie opakowanym podprocesem.
-
-### Uwagi dla Linux
-
-- **Arch / AUR:** `yay -S terax-bin` lub `paru`. Pakiet śledzi najnowsze wydanie.
-- **NixOS / Nix:** użyj oficjalnego flake. Poza NixOS uruchom `nix profile install github:crynta/terax-ai`. W NixOS zaimportuj flake i dodaj `inputs.terax.packages.${pkgs.system}.terax` do `environment.systemPackages`. Dostępny jest też prostszy moduł `nixosModules.terax`.
-- **AppImage:** wymaga FUSE. Bez niego uruchom `./Terax_*.AppImage --appimage-extract-and-run`. Przy błędach renderowania w Wayland spróbuj `WEBKIT_DISABLE_DMABUF_RENDERER=1`. Pakiety `.deb` / `.rpm` korzystają z systemowego GTK i zwykle działają płynniej.
+On Wayland with rendering glitches, try `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
 
 ## Konfiguracja AI
 
@@ -142,14 +149,6 @@ Tauri 2, Rust, `portable-pty`, React 19, TypeScript, Vite, xterm.js, CodeMirror 
 ## Współtworzenie
 
 Zgłoszenia i PR są mile widziane. Zgłaszaj problemy, proponuj funkcje lub wysyłaj pull requesty. Więcej informacji zawierają [CONTRIBUTING.md](../../CONTRIBUTING.md) i [dokumentacja architektury](../README.md).
-
-## Podpisywanie kodu
-
-<a href="https://signpath.org"><img src="https://avatars.githubusercontent.com/u/34448643?s=200&v=4" width="80" alt="SignPath" align="left" /></a>
-
-Wersje dla Windows są podpisane bezpłatnym certyfikatem od [SignPath.io](https://signpath.io), wydanym przez [SignPath Foundation](https://signpath.org).
-
-<br clear="left" />
 
 ## Licencja
 

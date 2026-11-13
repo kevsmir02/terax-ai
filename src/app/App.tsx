@@ -9,7 +9,6 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { consumeLaunchFiles, getLaunchDir } from "@/lib/launchDir";
 import { IS_MAC } from "@/lib/platform";
 import { quoteShellArg } from "@/lib/shellQuote";
-import { usePresence } from "@/lib/usePresence";
 import { useZoom } from "@/lib/useZoom";
 import { isMarkdownPath } from "@/lib/utils";
 import {
@@ -17,20 +16,9 @@ import {
   AgentNotificationsBridge,
   findAgentLauncher,
   nextAttentionTarget,
-  validateAgentLaunchCommand,
+  resolveAgentLaunchCommand,
 } from "@/modules/agents";
-import {
-  AgentRunBridge,
-  AiMiniWindow,
-  LocalAgentNotificationsBridge,
-  SelectionAskAi,
-  useAiBootstrap,
-  useAiLiveBridge,
-  useChatStore,
-  useSelectionAskAi,
-} from "@/modules/ai";
-import { AiComposerProvider } from "@/modules/ai/lib/composer";
-import { native } from "@/modules/ai/lib/native";
+import { native } from "@/modules/workspace/native";
 import {
   CommandPalette,
   createCommandItems,
@@ -41,6 +29,8 @@ import { useControlBridge } from "@/modules/control";
 import {
   type EditorPaneHandle,
   NewEditorDialog,
+  type RecoveryCloseIntent,
+  setFileNavigator,
   useApplyEditorFontSize,
   useEditorFileSync,
 } from "@/modules/editor";
@@ -51,15 +41,15 @@ import {
   type SearchInlineHandle,
   type SearchTarget,
 } from "@/modules/header";
-import { setLspNavigator } from "@/modules/lsp";
+import { setCodeBlockRunner } from "@/modules/markdown/lib/codeBlockRunner";
 import type { PreviewPaneHandle } from "@/modules/preview";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { usePreferencesBootstrap } from "@/modules/settings/usePreferencesBootstrap";
 import { setShowHidden } from "@/modules/settings/store";
 import {
   type ShortcutHandlers,
   type ShortcutId,
-  shouldDisableAskSelection,
   shouldDisablePaneSwapShortcut,
   tabDigit,
   useGlobalShortcuts,
@@ -70,7 +60,10 @@ import {
   SidebarRail,
   useSidebarPanel,
 } from "@/modules/sidebar";
+import { checkpointBridge } from "@/modules/source-control/checkpointBridge";
+import { destructiveGitBridge } from "@/modules/source-control/destructiveGitBridge";
 import {
+  type DestructiveGitSupport,
   SourceControlPanel,
   useRepositoryTargeting,
   useSourceControlContext,
@@ -81,6 +74,11 @@ import {
   useSpaces,
   useSpacesBoot,
 } from "@/modules/spaces";
+import { normalizeSpaceRoot } from "@/modules/spaces/lib/sharedRoots";
+import { worktreeSpaceName } from "@/modules/worktrees/lib/createWorktree";
+import { worktreeBridge } from "@/modules/worktrees/worktreeBridge";
+import type { WorktreeRemovalTarget } from "@/modules/worktrees/WorktreeRemoveDialog";
+import { worktreeRemovalBridge } from "@/modules/worktrees/worktreeRemovalBridge";
 import { StatusBar } from "@/modules/statusbar";
 import {
   TabSwitcherHud,
@@ -97,6 +95,7 @@ import {
   findLeafCwd,
   hasLeaf,
   isTerminalSurfaceTarget,
+  leafHasForegroundProcess,
   leafIds,
   navigateFocusedBlocks,
   type PaneBounds,
@@ -117,13 +116,16 @@ import {
   WindowActivityBridge,
   WindowVibrancyBridge,
 } from "@/modules/theme";
-import { UpdaterDialog } from "@/modules/updater";
+import {
+  collectHandoffWork,
+  type HandoffHazard,
+  UpdaterDialog,
+} from "@/modules/updater";
 import {
   useWorkspaceEnvStore,
   type WorkspaceEnv,
   workspaceScopeKey,
 } from "@/modules/workspace";
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -137,18 +139,17 @@ import {
   useState,
 } from "react";
 import { CloseDialogs } from "./components/CloseDialogs";
-import {
-  TOGGLE_BLOCK_INPUT_EVENT,
-  WorkspaceInputBar,
-} from "./components/WorkspaceInputBar";
+import { QuitDialog } from "./components/QuitDialog";
+import { WorkspaceInputBar } from "./components/WorkspaceInputBar";
 import { WorkspaceSurface } from "./components/WorkspaceSurface";
-import { useAppCloseGuard } from "./hooks/useAppCloseGuard";
+import { useQuitGuard } from "./hooks/useQuitGuard";
 import {
   hasOpenPathTab,
   renamedPath,
   spacesEmptiedByTabs,
 } from "./hooks/tabCloseGuards";
 import { useTabCloseGuards } from "./hooks/useTabCloseGuards";
+import { useSpaceDeleteGuard } from "./hooks/useSpaceDeleteGuard";
 import { useWorkspaceSwitcher } from "./hooks/useWorkspaceSwitcher";
 
 // Real-application benchmark driver (scripts/app-lab). `__TERAX_BENCH__` is the literal `false`
@@ -174,17 +175,13 @@ export default function App() {
     setActiveSpaceForNewTabs,
     newTab,
     newBlockTab,
-    newAgentTab,
     newAgentGroupTab,
-    newPrivateTab,
     openFileTab,
     pinTab,
     newPreviewTab,
     newMarkdownTab,
     setMarkdownView,
     setOverrideLanguage,
-    openAiDiffTab,
-    closeAiDiffTab,
     openGitDiffTab,
     openCommitHistoryTab,
     openCommitFileDiffTab,
@@ -261,6 +258,19 @@ export default function App() {
 
   const activeSpaceId = useSpaces((s) => s.activeId);
   const spacesHydrated = useSpaces((s) => s.hydrated);
+  // Space identity by name only: agent notifications carry the Space's own
+  // name, never a path, cwd or open file.
+  const spaceList = useSpaces((s) => s.spaces);
+  const spaceNames = useMemo(
+    () => Object.fromEntries(spaceList.map((space) => [space.id, space.name])),
+    [spaceList],
+  );
+  // Markdown previews anchor automatic local assets to the Space's configured
+  // project root, not to a terminal's current directory.
+  const spaceRoots = useMemo(
+    () => Object.fromEntries(spaceList.map((space) => [space.id, space.root])),
+    [spaceList],
+  );
   const activeSpaceIdRef = useRef(activeSpaceId);
   useLayoutEffect(() => {
     tabsRef.current = tabs;
@@ -347,6 +357,11 @@ export default function App() {
 
   const [newEditorOpen, setNewEditorOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [worktreeDialogOpen, setWorktreeDialogOpen] = useState(false);
+  /** The worktree whose removal dialog is open, if any. Removal is a deliberate
+   * menu action: deleting a Space never sets this. */
+  const [worktreeRemoveTarget, setWorktreeRemoveTarget] =
+    useState<WorktreeRemovalTarget | null>(null);
   const [paletteInitialMode, setPaletteInitialMode] =
     useState<PaletteInitialMode>("commands");
   const openCommandPalette = useCallback(
@@ -356,17 +371,7 @@ export default function App() {
     },
     [],
   );
-  const miniOpen = useChatStore((s) => s.mini.open);
-  const miniPresence = usePresence(miniOpen, 200);
-  const openMini = useChatStore((s) => s.openMini);
-  const toggleMini = useChatStore((s) => s.toggleMini);
-  const focusInput = useChatStore((s) => s.focusInput);
-  const openPanel = useChatStore((s) => s.openPanel);
-  const panelOpen = useChatStore((s) => s.panelOpen);
-  const setLive = useChatStore((s) => s.setLive);
-  const respondToApproval = useChatStore((s) => s.respondToApproval);
-
-  const { hasComposer, keysLoaded } = useAiBootstrap();
+  usePreferencesBootstrap();
 
   const activeTab = tabs.find((t) => t.id === activeId);
   const isTerminalTab = activeTab?.kind === "terminal";
@@ -402,27 +407,49 @@ export default function App() {
     [activeLeafId],
   );
 
+  /**
+   * The one choke point for a tab's recovery state. Every tab-removal path
+   * (single close, bulk close, file deletion, Space deletion) goes through
+   * here *before* the handle is dropped, so an armed persistence timer can no
+   * longer write text the person explicitly discarded.
+   */
+  const releaseTabRecovery = useCallback(
+    (id: number, intent: RecoveryCloseIntent) => {
+      editorRefs.current.get(id)?.releaseRecovery(intent);
+      editorRefs.current.delete(id);
+      previewRefs.current.delete(id);
+    },
+    [],
+  );
+
   const disposeTab = useCallback(
-    (id: number) => {
+    (id: number, intent: RecoveryCloseIntent) => {
       // Terminal-leaf-keyed maps (terminalRefs/searchAddons) are pruned by
       // the effect below as the pane tree changes; only the tab-id-keyed
       // handles need explicit cleanup here.
-      editorRefs.current.delete(id);
-      previewRefs.current.delete(id);
+      releaseTabRecovery(id, intent);
       closeTab(id);
     },
-    [closeTab],
+    [closeTab, releaseTabRecovery],
   );
 
   const disposeTabs = useCallback(
-    (anchorId: number, plan: CloseTabsPlan) => {
+    (
+      anchorId: number,
+      plan: CloseTabsPlan,
+      /**
+       * Ids the confirmation resolved by discarding; every other id keeps its
+       * draft. Required so a bulk path cannot silently skip the decision.
+       */
+      discardIds: readonly number[],
+    ) => {
+      const discard = new Set(discardIds);
       const closedIds = closeTabs(anchorId, plan);
       for (const id of closedIds) {
-        editorRefs.current.delete(id);
-        previewRefs.current.delete(id);
+        releaseTabRecovery(id, discard.has(id) ? "discard" : "keep-draft");
       }
     },
-    [closeTabs],
+    [closeTabs, releaseTabRecovery],
   );
 
   const disposeDeletedTabs = useCallback(
@@ -434,10 +461,81 @@ export default function App() {
           .spaces.find((s) => s.id === spaceId)?.root;
         newTabInSpace(spaceId, root ?? undefined);
       }
-      for (const id of ids) disposeTab(id);
+      // The file is gone, not the person's unsaved text: the draft stays for
+      // the next session, exactly like closing the tab by hand.
+      for (const id of ids) disposeTab(id, "keep-draft");
     },
     [disposeTab, newTabInSpace],
   );
+
+  /** The editor's own close (`:q`): a plain close, not an explicit discard. */
+  const handleEditorClose = useCallback(
+    (id: number) => disposeTab(id, "keep-draft"),
+    [disposeTab],
+  );
+
+  const isTabDirty = useCallback((id: number): boolean => {
+    const tab = tabsRef.current.find((t) => t.id === id);
+    if (tab?.kind !== "editor") return false;
+    return editorRefs.current.get(id)?.isDirty() ?? tab.dirty;
+  }, []);
+
+  /**
+   * Every buffer and terminal the destructive-Git guard may need to see, read
+   * at request time. Space names and roots come from the live Spaces store so a
+   * rename does not need to re-register this provider.
+   */
+  const destructiveSupport = useMemo<DestructiveGitSupport>(
+    () => ({
+      usage: () => {
+        const spaces = useSpaces.getState().spaces;
+        const nameOf = (id: string) =>
+          spaces.find((space) => space.id === id)?.name ?? "Space";
+        const rootOf = (id: string) =>
+          spaces.find((space) => space.id === id)?.root ?? null;
+        const current = tabsRef.current;
+        return {
+          buffers: current
+            .filter((tab) => tab.kind === "editor")
+            .map((tab) => ({
+              tabId: tab.id,
+              spaceId: tab.spaceId,
+              spaceName: nameOf(tab.spaceId),
+              spaceRoot: rootOf(tab.spaceId),
+              path: tab.path,
+              dirty: isTabDirty(tab.id),
+            })),
+          terminals: current
+            .filter((tab) => tab.kind === "terminal")
+            .flatMap((tab) =>
+              leafIds(tab.paneTree).map((leafId) => ({
+                tabId: tab.id,
+                leafId,
+                spaceId: tab.spaceId,
+                spaceName: nameOf(tab.spaceId),
+                cwd: findLeafCwd(tab.paneTree, leafId) ?? tab.cwd ?? "",
+              })),
+            ),
+          isBusy: (leafId: number) => leafHasForegroundProcess(leafId),
+        };
+      },
+      canonicalize: (path: string) =>
+        native.canonicalize(path).catch(() => null),
+    }),
+    [isTabDirty],
+  );
+
+  const saveTab = useCallback(async (id: number): Promise<boolean> => {
+    const handle = editorRefs.current.get(id);
+    if (!handle) return false;
+    try {
+      const complete = await handle.save();
+      return complete && !handle.isDirty();
+    } catch (error) {
+      console.error("[terax] save before close failed:", error);
+      return false;
+    }
+  }, []);
 
   const {
     pendingCloseTab,
@@ -445,16 +543,20 @@ export default function App() {
     pendingDeleteTabs,
     pendingCloseMany,
     closeManyConfirming,
+    closeManyIncomplete,
+    closeSaveState,
     handleClose,
     handleCloseTabsToRight,
     handleCloseOtherTabs,
     confirmClose,
     cancelClose,
+    saveAndClose,
     confirmTerminalClose,
     cancelTerminalClose,
     confirmDeleteClose,
     cancelDeleteClose,
     confirmCloseMany,
+    saveAndCloseMany,
     cancelCloseMany,
     handlePathsDeleted,
   } = useTabCloseGuards({
@@ -463,10 +565,34 @@ export default function App() {
     disposeTab,
     disposeDeletedTabs,
     disposeTabs,
+    saveTab,
+    isTabDirty,
   });
 
-  const { pendingAppClose, confirmAppClose, cancelAppClose } =
-    useAppCloseGuard(tabsRef);
+  // The app lab records the confirmed close instead of ending the process, so
+  // a scenario can report what quitting resolved to before the app exits.
+  const benchQuitClosed = useRef(false);
+  const benchCloseWindow = __TERAX_BENCH__
+    ? async () => {
+        benchQuitClosed.current = true;
+      }
+    : undefined;
+
+  const {
+    quit,
+    requestQuit,
+    cancel: cancelQuit,
+    confirm: confirmQuit,
+    saveAll: saveAllAndQuit,
+    retryFlush: retryQuitFlush,
+    loseDrafts: loseDraftsAndQuit,
+    force: forceQuit,
+  } = useQuitGuard({
+    tabsRef,
+    isTabDirty,
+    saveTab,
+    ...(benchCloseWindow ? { closeWindow: benchCloseWindow } : {}),
+  });
 
   useEffect(() => {
     const live = new Set<number>();
@@ -535,85 +661,9 @@ export default function App() {
     setActive(spaces[next].id);
   }, []);
 
-  const captureActiveSelection = useCallback((): string | null => {
-    const t = tabs.find((x) => x.id === activeId);
-    if (!t) return null;
-    if (t.kind === "terminal") {
-      const lid = t.activeLeafId;
-      return terminalRefs.current.get(lid)?.getSelection() ?? null;
-    }
-    if (t.kind === "editor") {
-      return editorRefs.current.get(activeId)?.getSelection() ?? null;
-    }
-    return null;
-  }, [tabs, activeId]);
-
-  const togglePanelAndFocus = useCallback(() => {
-    if (!hasComposer) {
-      void openSettingsWindow("models");
-      return;
-    }
-    if (panelOpen) {
-      useChatStore.getState().closePanel();
-    } else {
-      openPanel();
-      focusInput(null);
-    }
-  }, [hasComposer, panelOpen, openPanel, focusInput]);
-
-  const attachSelection = useChatStore((s) => s.attachSelection);
-
-  const handleAttachFileToAgent = useCallback(
-    (path: string) => {
-      if (!hasComposer) {
-        void openSettingsWindow("models");
-        return;
-      }
-      // Dispatch a window event the composer listens for. Same pattern as
-      // selections — keeps file-explorer decoupled from the AI module.
-      window.dispatchEvent(
-        new CustomEvent<string>("terax:ai-attach-file", { detail: path }),
-      );
-      openPanel();
-      focusInput(null);
-    },
-    [hasComposer, openPanel, focusInput],
-  );
-
-  const askFromSelection = useCallback(() => {
-    if (!hasComposer) {
-      void openSettingsWindow("models");
-      return;
-    }
-    const selection = captureActiveSelection();
-    if (!selection || !selection.trim()) {
-      focusInput(null);
-      return;
-    }
-    const source: "terminal" | "editor" =
-      activeTab?.kind === "editor" ? "editor" : "terminal";
-    attachSelection(selection, source);
-  }, [
-    hasComposer,
-    captureActiveSelection,
-    focusInput,
-    attachSelection,
-    activeTab,
-  ]);
-
-  const { askPopup, setAskPopup, onAskFromSelection } = useSelectionAskAi({
-    captureActiveSelection,
-    askFromSelection,
-  });
-  const askPresence = usePresence(Boolean(askPopup), 120);
-
   const openNewTab = useCallback(() => {
     newTab(inheritedCwdForNewTab());
   }, [newTab, inheritedCwdForNewTab]);
-
-  const openNewPrivateTab = useCallback(() => {
-    newPrivateTab(inheritedCwdForNewTab());
-  }, [newPrivateTab, inheritedCwdForNewTab]);
 
   const openNewBlockTab = useCallback(() => {
     newBlockTab(inheritedCwdForNewTab());
@@ -621,7 +671,7 @@ export default function App() {
 
   const launchAgentGroup = useCallback(
     (request: AgentLaunchRequest) => {
-      const command = validateAgentLaunchCommand(request.command);
+      const command = resolveAgentLaunchCommand(request.agent, request.command);
       if (!command.ok) return;
       const launcher = findAgentLauncher(request.agent);
       const title =
@@ -633,20 +683,13 @@ export default function App() {
         title,
         request.instances,
       );
-      const hooksReady = launcher.supportsHooks
-        ? invoke("agent_enable_hooks", {
-            agent: request.agent,
-          }).catch((error) => {
-            console.warn(
-              `[terax] could not enable ${request.agent} notifications:`,
-              error,
-            );
-          })
-        : Promise.resolve();
 
+      // Ordinary launching is hook-free: hook installation is an explicit
+      // opt-in from the notifications UI, never a launch side effect. Each pane
+      // only runs the configured command.
       for (const leafId of agentLeafIds) {
         void (async () => {
-          await Promise.all([whenSessionReady(leafId), hooksReady]);
+          await whenSessionReady(leafId);
           if (!writeToSession(leafId, `${command.command}\r`)) {
             console.error(
               `[terax] agent terminal ${leafId} closed before launch`,
@@ -669,7 +712,8 @@ export default function App() {
           return;
         }
         toast("Terminal is busy", {
-          description: "Open a new tab to go there, or exit the running program.",
+          description:
+            "Open a new tab to go there, or exit the running program.",
         });
       });
     },
@@ -681,7 +725,7 @@ export default function App() {
       const tabId = newTab(path);
       setTimeout(() => {
         const tab = tabsRef.current.find((x) => x.id === tabId);
-        if (!tab || tab.kind !== "terminal") return;
+        if (tab?.kind !== "terminal") return;
         const t = terminalRefs.current.get(tab.activeLeafId);
         if (!t) return;
         t.write(`cd ${quoteShellArg(path)}\r`);
@@ -912,7 +956,6 @@ export default function App() {
       "commandPalette.content": () => openCommandPalette("content"),
       "tab.new": openNewTab,
       "tab.newBlock": openNewBlockTab,
-      "tab.newPrivate": openNewPrivateTab,
       "tab.newPreview": () => openPreviewTab(""),
       "tab.newEditor": () => setNewEditorOpen(true),
       "tab.close": handleCloseTabOrPane,
@@ -938,8 +981,6 @@ export default function App() {
       "terminal.clear": () => {
         clearFocusedTerminal();
       },
-      "terminal.toggleInput": () =>
-        window.dispatchEvent(new CustomEvent(TOGGLE_BLOCK_INPUT_EVENT)),
       "blocks.prev": () => navigateFocusedBlocks(-1),
       "blocks.next": () => navigateFocusedBlocks(1),
       "search.focus": () => {
@@ -947,15 +988,6 @@ export default function App() {
         if (editor) editor.openSearch();
         else searchInlineRef.current?.focus();
       },
-      "ai.toggle": togglePanelAndFocus,
-      "ai.toggleMini": () => {
-        if (!hasComposer) {
-          void openSettingsWindow("models");
-          return;
-        }
-        toggleMini();
-      },
-      "ai.askSelection": onAskFromSelection,
       "agent.focusAttention": () => {
         const t = nextAttentionTarget();
         if (t) activateAgentTarget(t.tabId, t.leafId);
@@ -973,8 +1005,6 @@ export default function App() {
       "editor.save": () => {
         void editorRefs.current.get(activeId)?.save();
       },
-      "editor.aiComplete": () =>
-        editorRefs.current.get(activeId)?.triggerAiComplete(),
       "editor.codeComplete": () =>
         editorRefs.current.get(activeId)?.triggerCodeComplete(),
     }),
@@ -986,7 +1016,6 @@ export default function App() {
       handleCloseTabOrPane,
       openNewTab,
       openNewBlockTab,
-      openNewPrivateTab,
       openPreviewTab,
       activeSpaceId,
       selectByIndex,
@@ -994,10 +1023,6 @@ export default function App() {
       focusNextPaneInTab,
       swapActivePane,
       toggleSourceControl,
-      hasComposer,
-      togglePanelAndFocus,
-      toggleMini,
-      onAskFromSelection,
       toggleSidebar,
       toggleExplorerFocus,
       toggleHiddenFiles,
@@ -1019,19 +1044,9 @@ export default function App() {
         id === "editor.undo" ||
         id === "editor.redo" ||
         id === "editor.save" ||
-        id === "editor.aiComplete" ||
         id === "editor.codeComplete"
       ) {
         return activeTab?.kind !== "editor";
-      }
-      if (id === "ai.askSelection") {
-        const target =
-          (e.target as HTMLElement | null) ?? document.activeElement;
-        return shouldDisableAskSelection(
-          e,
-          () => isTerminalSurfaceTarget(target),
-          () => !!captureActiveSelection()?.trim(),
-        );
       }
       if (id === "terminal.clear") {
         // Only intercept ⌘K while a terminal is focused; elsewhere let the key
@@ -1040,11 +1055,7 @@ export default function App() {
           (e.target as HTMLElement | null) ?? document.activeElement;
         return !isTerminalSurfaceTarget(target);
       }
-      if (
-        id === "terminal.toggleInput" ||
-        id === "blocks.prev" ||
-        id === "blocks.next"
-      ) {
+      if (id === "blocks.prev" || id === "blocks.next") {
         return !(activeTab?.kind === "terminal" && activeTab.blocks === true);
       }
       if (id === "sidebar.toggle") {
@@ -1060,7 +1071,7 @@ export default function App() {
       }
       return false;
     },
-    [activeTab, captureActiveSelection],
+    [activeTab],
   );
 
   useGlobalShortcuts(shortcutHandlers, { isDisabled: shortcutsDisabled });
@@ -1125,10 +1136,57 @@ export default function App() {
 
   const onActivateAgent = activateAgentTarget;
 
-  const onActivateLocalAgent = useCallback(() => {
-    openPanel();
-    focusInput(null);
-  }, [openPanel, focusInput]);
+  /**
+   * The handoff's readiness evidence, read live at the moment the person approves
+   * an update: the editor handles' own dirty answers, a probe per terminal leaf and
+   * the agent phases the terminals reported. Nothing is cached between reads, so a
+   * buffer that goes dirty (or an agent that starts) after the approval is seen by
+   * the re-read that happens right before the handoff.
+   */
+  const readHandoffWork = useCallback(
+    () =>
+      collectHandoffWork({
+        tabs: tabsRef.current,
+        isTabDirty,
+        probeProcess: (leafId: number) => leafHasForegroundProcess(leafId),
+        ptyIdForLeaf,
+        agentPhase: (ptyId: number) =>
+          useAgentActivityStore.getState().phases[ptyId],
+        agentName: (ptyId: number) =>
+          useAgentActivityStore.getState().agents[ptyId],
+      }),
+    [isTabDirty],
+  );
+
+  /**
+   * "Review the work" only focuses what the check named. It never saves, closes or
+   * interrupts anything: finishing or closing the work is the person's decision.
+   */
+  const reviewHandoffWork = useCallback(
+    (hazards: readonly HandoffHazard[]) => {
+      const first = hazards[0];
+      if (!first) return;
+      if (first.kind === "buffer") {
+        const space = tabsRef.current.find(
+          (t) => t.id === first.tabId,
+        )?.spaceId;
+        if (space && space !== useSpaces.getState().activeId) {
+          useSpaces.getState().setActive(space);
+        }
+        setActiveId(first.tabId);
+        return;
+      }
+      if (first.kind === "agent") {
+        activateAgentTarget(first.tabId, first.leafId);
+        return;
+      }
+      const tab = tabsRef.current.find(
+        (t) => t.kind === "terminal" && hasLeaf(t.paneTree, first.leafId),
+      );
+      if (tab) activateAgentTarget(tab.id, first.leafId);
+    },
+    [activateAgentTarget, setActiveId],
+  );
 
   const handleLeafExit = useCallback(
     (leafId: number, _code: number) => {
@@ -1202,7 +1260,36 @@ export default function App() {
     return meta.id;
   }, [activeCwd, home, workspaceEnv, newTab, setActiveSpaceForNewTabs]);
 
-  const handleDeleteSpace = useCallback(
+  /**
+   * A worktree gets a Space of its own. Existing Spaces keep their tabs and
+   * every terminal keeps its working directory: only a new Space and (when it
+   * has none yet) a new terminal are added.
+   */
+  const openWorktreeAsSpace = useCallback(
+    (path: string, branch: string | null) => {
+      const { spaces, create, setActive } = useSpaces.getState();
+      const normalized = normalizeSpaceRoot(path);
+      const existing = spaces.find(
+        (space) =>
+          space.root !== null && normalizeSpaceRoot(space.root) === normalized,
+      );
+      const meta =
+        existing ??
+        create({
+          name: worktreeSpaceName({ path, branch }),
+          root: path,
+          env: workspaceEnv,
+        });
+      setActive(meta.id);
+      const hasTerminal = tabsRef.current.some(
+        (tab) => tab.spaceId === meta.id && tab.kind === "terminal",
+      );
+      if (!hasTerminal) newTabInSpace(meta.id, path);
+    },
+    [newTabInSpace, workspaceEnv],
+  );
+
+  const commitDeleteSpace = useCallback(
     (id: string) => {
       const nextSpaceId = useSpaces.getState().remove(id);
       if (!nextSpaceId) return;
@@ -1213,6 +1300,27 @@ export default function App() {
     },
     [removeTabsForSpace],
   );
+
+  const prepareDiscard = useCallback((id: number): (() => void) | null => {
+    const handle = editorRefs.current.get(id);
+    return handle ? () => handle.releaseRecovery("discard") : null;
+  }, []);
+
+  const {
+    pendingSpaceDelete,
+    spaceDeleteSaving,
+    spaceDeleteIncomplete,
+    requestSpaceDelete,
+    confirmSpaceDelete,
+    saveAndDeleteSpace,
+    cancelSpaceDelete,
+  } = useSpaceDeleteGuard({
+    tabs,
+    deleteSpace: commitDeleteSpace,
+    saveTab,
+    isTabDirty,
+    prepareDiscard,
+  });
 
   const handleMoveTab = useCallback(
     (tabId: number, targetSpaceId: string) => {
@@ -1260,7 +1368,7 @@ export default function App() {
       onOpenChange={setSwitcherOpen}
       tabs={tabs}
       onNewSpace={() => void handleNewSpace()}
-      onDeleteSpace={handleDeleteSpace}
+      onDeleteSpace={requestSpaceDelete}
       onNewTabInSpace={handleNewTabInSpace}
       onJumpTab={jumpToTab}
       onCloseTab={handleClose}
@@ -1281,7 +1389,6 @@ export default function App() {
             home,
             openNewTab,
             openNewBlock: openNewBlockTab,
-            openNewPrivate: openNewPrivateTab,
             openNewEditor: () => setNewEditorOpen(true),
             openNewPreview: () => openPreviewTab(""),
             openGitGraph: openGitGraphFromContext,
@@ -1293,8 +1400,6 @@ export default function App() {
             focusExplorerSearch: () => explorerRef.current?.focusSearch(),
             toggleSidebar,
             toggleHiddenFiles,
-            toggleAi: togglePanelAndFocus,
-            askAiSelection: askFromSelection,
             openSettings: () => void openSettingsWindow(),
             openKeyboardShortcuts: () => void openSettingsWindow("shortcuts"),
             spaces: useSpaces.getState().spaces,
@@ -1313,7 +1418,6 @@ export default function App() {
       home,
       openNewTab,
       openNewBlockTab,
-      openNewPrivateTab,
       openPreviewTab,
       openGitGraphFromContext,
       toggleSourceControl,
@@ -1321,8 +1425,6 @@ export default function App() {
       splitActivePaneInActiveTab,
       toggleSidebar,
       toggleHiddenFiles,
-      togglePanelAndFocus,
-      askFromSelection,
       activeSpaceId,
       handleNewSpace,
     ],
@@ -1383,6 +1485,11 @@ export default function App() {
     [openFileTab],
   );
 
+  useEffect(() => {
+    setFileNavigator({ openFile: openContentHit });
+    return () => setFileNavigator(null);
+  }, [openContentHit]);
+
   useControlBridge({
     ready: spacesHydrated && launchCwdResolved,
     tabsRef,
@@ -1391,33 +1498,25 @@ export default function App() {
     onOpen: openControlFile,
   });
 
-  useEffect(() => {
-    setLspNavigator({ openFile: openContentHit });
-    return () => setLspNavigator(null);
-  }, [openContentHit]);
-
   const insertHistoryCommand = useMemo(
     () =>
       isTerminalTab && activeLeafId !== null
         ? (cmd: string) => {
-            writeToSession(activeLeafId, cmd);
+            const wrote = writeToSession(activeLeafId, cmd);
             terminalRefs.current.get(activeLeafId)?.focus();
+            return wrote;
           }
         : null,
     [isTerminalTab, activeLeafId],
   );
 
-  useAiLiveBridge({
-    setLive,
-    activeId,
-    tabs,
-    explorerRoot,
-    launchCwd,
-    home,
-    openPreviewTab,
-    newAgentTab,
-    terminalRefs,
-  });
+  // Rendered Markdown owns its code-block UI; only this shell knows the active
+  // terminal, so the "Run in active terminal" action is published here. The
+  // returned boolean lets the button refuse instead of claiming "Sent".
+  useEffect(() => {
+    setCodeBlockRunner(insertHistoryCommand);
+    return () => setCodeBlockRunner(null);
+  }, [insertHistoryCommand]);
 
   const shell = (
     <ThemeProvider>
@@ -1434,9 +1533,146 @@ export default function App() {
               newAgentGroupTab={newAgentGroupTab}
               splitActivePane={splitActivePane}
               closeTab={closeTab}
+              openFileTab={(path, pin = true, spaceId) =>
+                openFileTab(path, pin, spaceId ? { spaceId } : undefined)
+              }
+              openMarkdownTab={newMarkdownTab}
+              setLeafCwd={setLeafCwd}
               readBuffer={(leafId, maxLines) =>
                 terminalRefs.current.get(leafId)?.getBuffer(maxLines) ?? null
               }
+              spaces={useSpaces
+                .getState()
+                .spaces.map(({ id, name, root }) => ({ id, name, root }))}
+              activeSpaceId={activeSpaceId}
+              createSpace={(name, root) =>
+                useSpaces.getState().create({ name, root }).id
+              }
+              setActiveSpace={(id) => useSpaces.getState().setActive(id)}
+              newTabInSpace={(spaceId, cwd) => newTabInSpace(spaceId, cwd)}
+              openPreview={(url) => openPreviewTab(url)}
+              requestCloseTab={(id) => void handleClose(id)}
+              cancelPendingClose={() => {
+                cancelClose();
+                cancelTerminalClose();
+              }}
+              confirmDiscardTab={() => {
+                confirmClose();
+                confirmTerminalClose();
+              }}
+              saveAndCloseTab={() => void saveAndClose()}
+              requestDeleteSpace={(id) => void requestSpaceDelete(id)}
+              cancelDeleteSpace={cancelSpaceDelete}
+              confirmDeleteSpace={() => void confirmSpaceDelete()}
+              saveAndDeleteSpace={() => void saveAndDeleteSpace()}
+              pendingGuards={() => ({
+                closeTabId: pendingCloseTab,
+                terminalTabId: pendingTerminalCloseTab,
+                spaceDeleteId: pendingSpaceDelete?.spaceId ?? null,
+                closeSaveState,
+                spaceDeleteIncomplete,
+              })}
+              editEditor={(tabId, text) =>
+                editorRefs.current.get(tabId)?.insertText(text)
+              }
+              saveEditor={(tabId) =>
+                editorRefs.current.get(tabId)?.save() ?? Promise.resolve(false)
+              }
+              readEditor={(tabId) =>
+                editorRefs.current.get(tabId)?.readText() ?? null
+              }
+              requestQuit={requestQuit}
+              cancelQuit={cancelQuit}
+              confirmQuit={confirmQuit}
+              saveAllAndQuit={saveAllAndQuit}
+              retryQuitFlush={retryQuitFlush}
+              loseDraftsAndQuit={loseDraftsAndQuit}
+              forceQuit={forceQuit}
+              quitState={() => ({
+                phase: quit.phase,
+                closed: benchQuitClosed.current,
+                note: quit.note,
+                totals: quit.survey?.totals ?? {
+                  buffers: 0,
+                  processes: 0,
+                  uncertainProcesses: 0,
+                  drafts: 0,
+                },
+                spaces: (quit.survey?.spaces ?? []).map((space) => ({
+                  id: space.id,
+                  name: space.name,
+                  buffers: space.buffers.map((buffer) => ({
+                    tabId: buffer.tabId,
+                    title: buffer.title,
+                  })),
+                  processes: space.processes.map((process) => ({
+                    leafId: process.leafId,
+                    state: process.state,
+                  })),
+                  drafts: space.drafts.map((draft) => ({
+                    bufferId: draft.bufferId,
+                    title: draft.title,
+                    state: draft.state,
+                  })),
+                })),
+                survivors: quit.survivors,
+                flush: quit.flush
+                  ? {
+                      outcome: quit.flush.outcome,
+                      drafts: quit.flush.drafts.map((draft) => ({
+                        bufferId: draft.bufferId,
+                        title: draft.title,
+                        state: draft.state,
+                      })),
+                    }
+                  : null,
+              })}
+              openSourceControl={openSourceControl}
+              openWorktreeDialog={() => {
+                openSourceControl();
+                setWorktreeDialogOpen(true);
+              }}
+              worktree={() => worktreeBridge()}
+              openWorktreeRemove={(repoRoot, path) => {
+                openSourceControl();
+                setWorktreeRemoveTarget({ repoRoot, path });
+              }}
+              worktreeRemove={() => worktreeRemovalBridge()}
+              destructiveGit={() => {
+                const bridge = destructiveGitBridge();
+                return {
+                  mounted: bridge !== null,
+                  ready: bridge?.ready() ?? false,
+                  busy: bridge?.busy() ?? false,
+                  pending: bridge?.pending() ?? null,
+                  requestDiscard: (paths) =>
+                    bridge?.requestDiscard(paths) ?? Promise.resolve(),
+                  confirm: (confirmation) =>
+                    bridge?.confirm(confirmation) ?? Promise.resolve(),
+                  cancel: () => bridge?.cancel(),
+                };
+              }}
+              checkpoints={() => {
+                const bridge = checkpointBridge();
+                return {
+                  mounted: bridge?.mounted() ?? false,
+                  ready: bridge?.ready() ?? false,
+                  busy: bridge?.busy() ?? false,
+                  groups: bridge?.groups() ?? null,
+                  pending: bridge?.pending() ?? null,
+                  error: bridge?.error() ?? null,
+                  message: bridge?.message() ?? null,
+                  open: () => bridge?.open(),
+                  close: () => bridge?.close(),
+                  create: (name) => bridge?.create(name) ?? Promise.resolve(),
+                  requestRestore: (ref) =>
+                    bridge?.requestRestore(ref) ?? Promise.resolve(),
+                  cleanup: (ref) => bridge?.cleanup(ref) ?? Promise.resolve(),
+                  confirm: (confirmation) =>
+                    bridge?.confirm(confirmation) ?? Promise.resolve(),
+                  cancel: () => bridge?.cancel(),
+                };
+              }}
             />
           </Suspense>
         )}
@@ -1448,7 +1684,6 @@ export default function App() {
               onSelect={setActiveId}
               onNew={openNewTab}
               onNewBlock={openNewBlockTab}
-              onNewPrivate={openNewPrivateTab}
               onNewPreview={() => openPreviewTab("")}
               onNewEditor={() => setNewEditorOpen(true)}
               onNewGitGraph={openGitGraphFromContext}
@@ -1462,7 +1697,6 @@ export default function App() {
               onToggleSidebar={toggleSidebar}
               onOpenCommandPalette={() => openCommandPalette("commands")}
               onActivateAgent={onActivateAgent}
-              onActivateLocalAgent={onActivateLocalAgent}
               onOpenSettings={() => void openSettingsWindow()}
               spaceSwitcher={spaceSwitcher}
               searchTarget={searchTarget}
@@ -1519,7 +1753,6 @@ export default function App() {
                             handleOpenRepositoryInSourceControl
                           }
                           onOpenGitHistory={handleOpenGitHistoryForPath}
-                          onAttachToAgent={handleAttachFileToAgent}
                           pathDropTarget={terminalPathDropTarget}
                           visible={!sidebarCollapsed}
                         />
@@ -1535,6 +1768,12 @@ export default function App() {
                           onFollowRepositoryContext={
                             handleFollowRepositoryContext
                           }
+                          destructive={destructiveSupport}
+                          worktreeDialogOpen={worktreeDialogOpen}
+                          onWorktreeDialogOpenChange={setWorktreeDialogOpen}
+                          onOpenWorktreeAsSpace={openWorktreeAsSpace}
+                          worktreeRemoveTarget={worktreeRemoveTarget}
+                          onWorktreeRemoveOpenChange={setWorktreeRemoveTarget}
                         />
                       )}
                     </div>
@@ -1555,6 +1794,11 @@ export default function App() {
                         tabs={tabs}
                         activeId={activeId}
                         activeTab={activeTab}
+                        activeSpaceId={activeSpaceId ?? DEFAULT_SPACE_ID}
+                        spaceRoots={spaceRoots}
+                        subscribeWindowPresentation={
+                          subscribeWindowPresentation
+                        }
                         registerTerminalHandle={registerTerminalHandle}
                         onSearchReady={handleSearchReady}
                         onCwd={handleTerminalCwd}
@@ -1562,11 +1806,9 @@ export default function App() {
                         onFocusLeaf={handleFocusLeaf}
                         registerEditorHandle={registerEditorHandle}
                         onEditorDirtyChange={handleEditorDirty}
-                        onEditorCloseTab={disposeTab}
+                        onEditorCloseTab={handleEditorClose}
                         registerPreviewHandle={registerPreviewHandle}
                         onPreviewUrlChange={handlePreviewUrl}
-                        onAiDiffAccept={(id) => respondToApproval(id, true)}
-                        onAiDiffReject={(id) => respondToApproval(id, false)}
                         onOpenCommitFile={openCommitFileDiffTab}
                         onGitHistorySearchHandle={setGitHistoryHandle}
                         onSetMarkdownView={setMarkdownView}
@@ -1575,14 +1817,7 @@ export default function App() {
 
                     <WorkspaceInputBar
                       isBlockTab={isBlockTab}
-                      isTerminalTab={isTerminalTab}
                       activeLeafId={activeLeafId}
-                      cwd={activeCwd}
-                      home={home}
-                      hasComposer={hasComposer}
-                      panelOpen={panelOpen}
-                      keysLoaded={keysLoaded}
-                      onConnect={() => void openSettingsWindow("models")}
                     />
                   </div>
                 </div>
@@ -1597,12 +1832,6 @@ export default function App() {
               home={home}
               onCd={sendCd}
               onWorkspaceChange={handleWorkspaceChange}
-              onOpenMini={openMini}
-              onOpenAi={togglePanelAndFocus}
-              hasComposer={hasComposer}
-              privateActive={
-                activeTab?.kind === "terminal" && activeTab.private === true
-              }
             />
           )}
 
@@ -1617,31 +1846,9 @@ export default function App() {
             tabs={tabs}
             activeId={activeId}
             onActivate={onActivateAgent}
+            spaceNames={spaceNames}
           />
           <Toaster position="bottom-right" />
-
-          {hasComposer ? (
-            <>
-              <AgentRunBridge
-                openAiDiffTab={openAiDiffTab}
-                closeAiDiffTab={closeAiDiffTab}
-              />
-              <LocalAgentNotificationsBridge />
-            </>
-          ) : null}
-
-          {hasComposer && miniPresence.mounted ? (
-            <AiMiniWindow state={miniPresence.state} />
-          ) : null}
-          {askPresence.mounted ? (
-            <SelectionAskAi
-              state={askPresence.state}
-              x={askPopup?.x ?? 0}
-              y={askPopup?.y ?? 0}
-              onAsk={onAskFromSelection}
-              onDismiss={() => setAskPopup(null)}
-            />
-          ) : null}
 
           {switcherState && (
             <TabSwitcherHud tabs={spaceTabs} state={switcherState} />
@@ -1665,13 +1872,18 @@ export default function App() {
             onCreated={(path) => openFileTab(path)}
           />
 
-          <UpdaterDialog />
+          <UpdaterDialog
+            readHandoffWork={readHandoffWork}
+            reviewHandoffWork={reviewHandoffWork}
+          />
 
           <CloseDialogs
             tabs={tabs}
             pendingCloseTab={pendingCloseTab}
+            closeSaveState={closeSaveState}
             onCancelClose={cancelClose}
             onConfirmClose={confirmClose}
+            onSaveAndClose={saveAndClose}
             pendingTerminalCloseTab={pendingTerminalCloseTab}
             onCancelTerminalClose={cancelTerminalClose}
             onConfirmTerminalClose={confirmTerminalClose}
@@ -1680,16 +1892,36 @@ export default function App() {
             onConfirmDeleteClose={confirmDeleteClose}
             pendingCloseMany={pendingCloseMany}
             closeManyConfirming={closeManyConfirming}
+            closeManyIncomplete={closeManyIncomplete}
             onCancelCloseMany={cancelCloseMany}
             onConfirmCloseMany={confirmCloseMany}
-            pendingAppClose={pendingAppClose}
-            onCancelAppClose={cancelAppClose}
-            onConfirmAppClose={confirmAppClose}
+            onSaveAndCloseMany={saveAndCloseMany}
+            pendingSpaceDelete={pendingSpaceDelete}
+            spaceName={
+              spaceList.find((s) => s.id === pendingSpaceDelete?.spaceId)
+                ?.name ?? "this Space"
+            }
+            spaceDeleteSaving={spaceDeleteSaving}
+            spaceDeleteIncomplete={spaceDeleteIncomplete}
+            onCancelSpaceDelete={cancelSpaceDelete}
+            onConfirmSpaceDelete={() => void confirmSpaceDelete()}
+            onSaveAndDeleteSpace={() => void saveAndDeleteSpace()}
+          />
+
+          <QuitDialog
+            quit={quit}
+            tabs={tabs}
+            onCancel={cancelQuit}
+            onConfirm={confirmQuit}
+            onSaveAll={saveAllAndQuit}
+            onRetryFlush={retryQuitFlush}
+            onLoseDrafts={loseDraftsAndQuit}
+            onForce={forceQuit}
           />
         </div>
       </TooltipProvider>
     </ThemeProvider>
   );
 
-  return <AiComposerProvider>{shell}</AiComposerProvider>;
+  return shell;
 }

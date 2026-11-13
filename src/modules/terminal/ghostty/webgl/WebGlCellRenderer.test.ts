@@ -147,7 +147,9 @@ describe("WebGL shaders", () => {
   });
 
   it("passes the text colour through unquantised and blends it by glyph coverage", () => {
-    expect(GLYPH_FRAGMENT_SHADER).toMatch(/outColor = vec4\(rgb, alpha \* coverage\);/);
+    expect(GLYPH_FRAGMENT_SHADER).toMatch(
+      /outColor = vec4\(rgb, alpha \* coverage\);/,
+    );
     expect(GLYPH_FRAGMENT_SHADER).toMatch(/vec3 rgb = v_color\.rgb;/);
   });
 

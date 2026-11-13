@@ -1,15 +1,19 @@
-pub mod ai;
+mod access;
+mod access_policy;
 pub mod assets;
+#[cfg(feature = "bench")]
+pub mod bench_probe;
 pub mod clipboard;
 pub mod copy;
 pub mod file;
 pub mod grep;
+pub mod image_probe;
+pub mod media_probe;
 pub mod index;
 #[cfg(windows)]
 mod local_file;
 pub mod mutate;
-pub mod project_memory;
-mod read_policy;
+pub mod save;
 pub mod search;
 pub mod supersede;
 pub mod tree;

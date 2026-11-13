@@ -7,11 +7,7 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import {
-  git,
-  type GitCommitFileChange,
-  type GitLogEntry,
-} from "@/modules/git";
+import { git, type GitCommitFileChange, type GitLogEntry } from "@/modules/git";
 import { FileIcon } from "@/modules/explorer/FileIcon";
 import {
   Copy01Icon,

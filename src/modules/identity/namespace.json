@@ -1,0 +1,30 @@
+{
+  "provisional": false,
+  "note": "Finalized publication identity for Codr (`kevsmir02/terax-ai`), settled in breakdown ticket #39 (GitHub issue #40). The Rust application, Python scripts, and frontend checks read this file instead of duplicating identity strings.",
+  "finalIdentityTicket": 39,
+  "appIdentifier": "io.github.kevsmir02.codr",
+  "namespace": "codr",
+  "envPrefix": "CODR",
+  "packaging": {
+    "productName": "Codr",
+    "vendor": "kevsmir02",
+    "packageName": "codr",
+    "cliBinaryName": "codr-cli",
+    "shortDescription": "Codr - open-source Linux terminal workspace with editor, Git and previews",
+    "longDescription": "Codr is an unofficial fork of Terax for Linux x86-64: multi-tab terminal, file explorer, code editor, source control, and rendered previews, built by kevsmir02 and not affiliated with Crynta."
+  },
+  "sharedChildEnv": [
+    "TERAX_TASK",
+    "TERAX_PORT",
+    "TERAX_PORT_*",
+    "TERAX_WORKSPACE_PATH",
+    "TERAX_ROOT_PATH"
+  ],
+  "upstream": {
+    "appIdentifier": "app.crynta.terax",
+    "namespace": "terax",
+    "envPrefix": "TERAX",
+    "productName": "Terax",
+    "publisher": "Crynta"
+  }
+}

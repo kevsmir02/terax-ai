@@ -1,3 +1,8 @@
+<!-- fork-copy: upstream translation; the authoritative description of this build is ../../README.md -->
+
+> [!IMPORTANT]
+> Cette traduction provient de Terax amont. Ce fork a supprimé les surfaces d'IA intégrées qu'elle décrit (chat, autocomplétion, revue des modifications par IA et réglages de fournisseur et de clés d'API). [`README.md`](../../README.md) décrit la version publiée par ce dépôt.
+
 <div align="center">
   <img src="../../public/logo.png" width="144" height="144" alt="Terax" />
   <h1>Terax</h1>
@@ -7,7 +12,7 @@
   <p>
     <img src="https://img.shields.io/github/v/release/crynta/terax-ai?label=version&color=blue" alt="version" />
     <img src="https://img.shields.io/github/downloads/crynta/terax-ai/total?label=downloads&color=blue" alt="téléchargements" />
-    <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="plateforme" />
+    <img src="https://img.shields.io/badge/platform-Linux%20x86_64-lightgrey" alt="plateforme" />
     <a href="https://discord.gg/tyveTUyEp7"><img src="https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
     <a href="https://www.youtube.com/@crynta"><img src="https://img.shields.io/badge/Youtube-FF0000?logo=youtube&logoColor=white" alt="YouTube" /></a>
   </p>
@@ -90,18 +95,20 @@ Terax est un environnement de développement (ADE) léger, open source, axé sur
 
 ## Installation
 
-Les installateurs récents sont disponibles sur la page [Releases](https://github.com/crynta/terax-ai/releases/latest). Terax s'y met à jour automatiquement.
+> **Platform support (authoritative, English):** this fork builds and distributes Linux x86-64
+> only, as an RPM and a DEB. macOS, Windows/WSL and Nix build and distribution support was
+> removed, and no other architecture is produced. See the
+> [English README](../../README.md#platform-support).
 
-### Notes Windows
+Install the RPM (`sudo dnf install ./codr-*.x86_64.rpm`) or the DEB (`sudo apt
+install ./codr_*_amd64.deb`) from the
+[Releases](https://github.com/kevsmir02/terax-ai/releases/latest) page with your package manager.
+Fedora 45 KDE Plasma on Wayland is the validated target (#44); Debian 13 graphical WebKitGTK
+validation was waived for personal-tool scope and `packaging/arch/PKGBUILD` is authored and signed
+but **not built** (`makepkg` has not been run). The application never downloads, installs or
+restarts itself.
 
-- Détection du shell : `pwsh.exe` (PowerShell 7+) -> `powershell.exe` (Windows PowerShell 5.1) -> `cmd.exe`.
-- WSL est un environnement de travail à part entière, pas un sous-processus encapsulé.
-
-### Notes Linux
-
-- **Arch / AUR :** `yay -S terax-bin` ou `paru`. Suit la dernière version.
-- **NixOS / Nix :** utilisez le flake officiel avec `nix profile install github:crynta/terax-ai` hors NixOS. Sous NixOS, importez le flake et ajoutez `inputs.terax.packages.${pkgs.system}.terax` à `environment.systemPackages`. `nixosModules.terax` offre aussi une configuration simplifiée.
-- **AppImage :** nécessite FUSE. Sans FUSE : `./Terax_*.AppImage --appimage-extract-and-run`. En cas de défauts sous Wayland, essayez `WEBKIT_DISABLE_DMABUF_RENDERER=1`. Les paquets `.deb` / `.rpm` utilisent la pile GTK du système et sont souvent plus fluides.
+On Wayland with rendering glitches, try `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
 
 ## Configurer l'IA
 
@@ -142,14 +149,6 @@ Tauri 2, Rust, `portable-pty`, React 19, TypeScript, Vite, xterm.js, CodeMirror 
 ## Contribuer
 
 Les issues et PR sont les bienvenues. Signalez des problèmes, proposez des fonctionnalités ou envoyez une pull request. Consultez [CONTRIBUTING.md](../../CONTRIBUTING.md) et la [documentation d'architecture](../README.md).
-
-## Signature du code
-
-<a href="https://signpath.org"><img src="https://avatars.githubusercontent.com/u/34448643?s=200&v=4" width="80" alt="SignPath" align="left" /></a>
-
-Les builds Windows sont signés avec un certificat gratuit fourni par [SignPath.io](https://signpath.io) et émis par la [SignPath Foundation](https://signpath.org).
-
-<br clear="left" />
 
 ## Licence
 

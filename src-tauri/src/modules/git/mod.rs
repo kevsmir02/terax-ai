@@ -1,8 +1,14 @@
 pub mod branch;
 pub mod checkpoint;
+#[cfg(test)]
+mod manual_checkpoint_tests;
+#[cfg(test)]
+mod manual_restore_tests;
 pub mod commands;
 pub mod commands_review;
 pub mod diff;
+#[cfg(test)]
+mod destructive_guard_tests;
 #[cfg(test)]
 mod edge_tests;
 pub mod errors;
@@ -29,6 +35,8 @@ pub mod types;
 mod untracked;
 pub mod utils;
 pub mod watch;
+#[cfg(test)]
+mod worktree_removal_tests;
 pub mod worktree;
 
 pub mod commands_tasks;

@@ -1,0 +1,11 @@
+# The one Rust toolchain this project builds and tests with. Local `cargo`, `rustc` and
+# `rustup show` resolve it from here, and every workflow passes the same channel to
+# `dtolnay/rust-toolchain`. `scripts/tests/test_ci_workflows.py` fails if the workflows and this
+# file disagree, so a toolchain bump is one reviewed change instead of a silent drift.
+#
+# This is deliberately an exact version, not `stable`: a new stable release must not change what
+# CI or a release build compiles without a commit (spec: "Maintenance and completeness").
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

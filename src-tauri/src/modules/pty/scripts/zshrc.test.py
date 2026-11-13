@@ -85,8 +85,8 @@ class Session:
         # question swallows the first typed character of every shell, with or
         # without Terax, so the tests keep it out of the way.
         user_dirs = [self.home]
-        if env and "TERAX_USER_ZDOTDIR" in env:
-            user_dirs.append(env["TERAX_USER_ZDOTDIR"].replace("@HOME@", self.home))
+        if env and "CODR_USER_ZDOTDIR" in env:
+            user_dirs.append(env["CODR_USER_ZDOTDIR"].replace("@HOME@", self.home))
         for directory in user_dirs:
             os.makedirs(directory, exist_ok=True)
             path = os.path.join(directory, ".zshenv")
@@ -98,12 +98,12 @@ class Session:
             "HOME": self.home,
             "TERM": "xterm-256color",
             "LANG": "C.UTF-8",
-            "TERAX_TERMINAL": "1",
+            "CODR_TERMINAL": "1",
             "SHELL": ZSH,
             "ZDOTDIR": self.zdotdir,
         }
         if blocks:
-            child_env["TERAX_BLOCKS"] = "1"
+            child_env["CODR_BLOCKS"] = "1"
         for key, value in (env or {}).items():
             child_env[key] = value.replace("@HOME@", self.home)
         self.out = b""
@@ -276,7 +276,7 @@ s.close()
 hook = "_probe() { PROBE_ZD=${ZDOTDIR-unset} }\nprecmd_functions+=(_probe)\n"
 probe = (
     'print -r -- "RESULT:ZD=${PROBE_ZD-none}:"; print -r -- "RESULT:LOADED=${A_LOADED-no}:"; '
-    'print -r -- "RESULT:HIST=${HISTFILE-none}:"; print -r -- "RESULT:USERVAR=${TERAX_USER_ZDOTDIR-unset}:"; '
+    'print -r -- "RESULT:HIST=${HISTFILE-none}:"; print -r -- "RESULT:USERVAR=${CODR_USER_ZDOTDIR-unset}:"; '
     'print -r -- "RESULT:CMDZD=${ZDOTDIR-unset}:"; '
     "print -r -- \"RESULT:ENVZD=$(command env | sed -n 's/^ZDOTDIR=//p'):\""
 )
@@ -293,7 +293,7 @@ s = Session(
         ".config/zsh/conf.d/a.zsh": "A_LOADED=yes\n",
         ".config/zsh/.zshrc": "PS1='PROMPT> '\n" + hook,
     },
-    env={"TERAX_USER_ZDOTDIR": "@HOME@/.config/zsh"},
+    env={"CODR_USER_ZDOTDIR": "@HOME@/.config/zsh"},
 )
 s.run(probe)
 text = s.out.decode("utf-8", "replace")
@@ -333,7 +333,7 @@ for profile, initial in ((".zprofile", None), (".config/first/.zprofile", "@HOME
         profile: 'export ZDOTDIR="@HOME@/.config/second"\n',
         ".config/second/.zshrc": "PS1='PROMPT> '\nA_LOADED=profile-rc\n" + hook,
         ".config/second/.zlogin": "LOGIN_LOADED=yes\n",
-    }, env={"TERAX_USER_ZDOTDIR": initial} if initial else None)
+    }, env={"CODR_USER_ZDOTDIR": initial} if initial else None)
     s.run(probe + '; print -r -- "RESULT:LOGIN=$LOGIN_LOADED:"')
     check("a profile-selected ZDOTDIR loads its rc", s.result("LOADED") == "profile-rc", s.result("LOADED"))
     check("a profile-selected ZDOTDIR loads its login", s.result("LOGIN") == "yes", s.result("LOGIN"))
@@ -357,7 +357,7 @@ for label, user_zdotdir in (("with a user ZDOTDIR", True), ("without a user ZDOT
     env = None
     if user_zdotdir:
         files = {".config/zsh/.zshrc": rc, ".config/zsh/.zshenv": files[".zshenv"]}
-        env = {"TERAX_USER_ZDOTDIR": "@HOME@/.config/zsh"}
+        env = {"CODR_USER_ZDOTDIR": "@HOME@/.config/zsh"}
     else:
         files[".zshrc"] = rc
     s = Session(files, env=env)
@@ -384,7 +384,7 @@ READ = "$(command env | sed -n 's/^ZDOTDIR=//p')"
 for label, user_zdotdir in (("with a user ZDOTDIR", True), ("without a user ZDOTDIR", False)):
     rc = "PS1='PROMPT> '\nalias zz=zsh\n" + hook
     if user_zdotdir:
-        s = Session({".config/zsh/.zshrc": rc}, env={"TERAX_USER_ZDOTDIR": "@HOME@/.config/zsh"})
+        s = Session({".config/zsh/.zshrc": rc}, env={"CODR_USER_ZDOTDIR": "@HOME@/.config/zsh"})
         ordinary = os.path.join(s.home, ".config/zsh")
     else:
         s = Session({".zshrc": rc})

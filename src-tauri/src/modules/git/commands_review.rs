@@ -4,13 +4,17 @@
 use tauri::{AppHandle, Manager};
 
 use crate::modules::git::branch::{self, BranchCreated, UpstreamInfo};
-use crate::modules::git::checkpoint::{self, CheckpointCreated, CheckpointInfo, RestoreReport};
+use crate::modules::git::checkpoint::{
+    self, CheckpointCreated, CheckpointInfo, CheckpointInspection, CheckpointList, CleanupReport,
+    ManualCheckpointCreated, ManualRestorePreview, ManualRestoreReport, RestoreReport,
+};
 use crate::modules::git::review::{
     self, ApplyHunksRequest, ApplyOutcome, GitDiffScope, GitDiffSummary, GitFileDiff,
 };
 use crate::modules::git::watch::{GitWatchInfo, GitWatchState};
 use crate::modules::git::worktree::{
-    self, PruneReport, WorktreeAddRequest, WorktreeAdded, WorktreeEntry, WorktreeRemoveReport,
+    self, PruneReport, WorktreeAddRequest, WorktreeAdded, WorktreeEntry, WorktreePreflight,
+    WorktreeRemoveReport,
 };
 use crate::modules::workspace::{WorkspaceEnv, WorkspaceRegistry};
 
@@ -110,6 +114,23 @@ pub async fn git_worktree_list(
 }
 
 #[tauri::command]
+pub async fn git_worktree_preflight(
+    repo_root: String,
+    request: WorktreeAddRequest,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<WorktreePreflight, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    let base = dirs::home_dir()
+        .map(|home| crate::modules::identity::home_state_dir(&home).join("worktrees"))
+        .ok_or_else(|| "could not resolve the home directory".to_string())?;
+    blocking(app, move |r| {
+        worktree::preflight(r, &repo_root, &request, &base, &workspace).map_err(Into::into)
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn git_worktree_add(
     repo_root: String,
     request: WorktreeAddRequest,
@@ -118,7 +139,7 @@ pub async fn git_worktree_add(
 ) -> Result<WorktreeAdded, String> {
     let workspace = WorkspaceEnv::from_option(workspace);
     let base = dirs::home_dir()
-        .map(|home| home.join(".terax").join("worktrees"))
+        .map(|home| crate::modules::identity::home_state_dir(&home).join("worktrees"))
         .ok_or_else(|| "could not resolve the home directory".to_string())?;
     blocking(app, move |r| {
         worktree::add(r, &repo_root, &request, &base, &workspace).map_err(Into::into)
@@ -138,6 +159,21 @@ pub async fn git_worktree_remove(
     blocking(app, move |r| {
         worktree::remove(r, &repo_root, &path, force.unwrap_or(false), &workspace)
             .map_err(Into::into)
+    })
+    .await
+}
+
+/// What `git_worktree_remove` would refuse or lose, without mutating anything.
+#[tauri::command]
+pub async fn git_worktree_remove_preflight(
+    repo_root: String,
+    path: String,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<WorktreeRemoveReport, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    blocking(app, move |r| {
+        worktree::preflight_removal(r, &repo_root, &path, &workspace).map_err(Into::into)
     })
     .await
 }
@@ -210,6 +246,132 @@ pub async fn git_checkpoint_prune(
     let workspace = WorkspaceEnv::from_option(workspace);
     blocking(app, move |r| {
         checkpoint::prune(r, &worktree, &task_id, &workspace).map_err(Into::into)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_checkpoint_manual_create(
+    worktree: String,
+    name: Option<String>,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<ManualCheckpointCreated, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    blocking(app, move |r| {
+        checkpoint::create_manual(r, &worktree, name.as_deref(), &workspace).map_err(Into::into)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_checkpoint_groups(
+    worktree: String,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<CheckpointList, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    blocking(app, move |r| {
+        checkpoint::list_groups(r, &worktree, &workspace).map_err(Into::into)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_checkpoint_inspect(
+    worktree: String,
+    reference: String,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<CheckpointInspection, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    blocking(app, move |r| {
+        checkpoint::inspect(r, &worktree, &reference, &workspace).map_err(Into::into)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_checkpoint_cleanup(
+    worktree: String,
+    refs: Vec<String>,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<CleanupReport, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    blocking(app, move |r| {
+        checkpoint::cleanup(r, &worktree, &refs, &workspace).map_err(Into::into)
+    })
+    .await
+}
+
+/// Recovery points of a worktree registration, by path: the same groups as
+/// `git_checkpoint_groups`, still answered when the directory is already gone.
+#[tauri::command]
+pub async fn git_checkpoint_groups_at(
+    repo_root: String,
+    worktree: String,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<CheckpointList, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    blocking(app, move |r| {
+        checkpoint::list_at(r, &repo_root, &worktree, &workspace).map_err(Into::into)
+    })
+    .await
+}
+
+/// Explicit cleanup of a worktree registration's recovery refs, resolved by
+/// path so it still works after the worktree directory is gone.
+#[tauri::command]
+pub async fn git_checkpoint_cleanup_at(
+    repo_root: String,
+    worktree: String,
+    refs: Vec<String>,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<CleanupReport, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    blocking(app, move |r| {
+        checkpoint::cleanup_at(r, &repo_root, &worktree, &refs, &workspace).map_err(Into::into)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_checkpoint_manual_restore_preview(
+    worktree: String,
+    reference: String,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<ManualRestorePreview, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    blocking(app, move |r| {
+        checkpoint::restore_preview(r, &worktree, &reference, &workspace).map_err(Into::into)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_checkpoint_manual_restore(
+    worktree: String,
+    reference: String,
+    fingerprint: String,
+    force: Option<bool>,
+    workspace: Option<WorkspaceEnv>,
+    app: AppHandle,
+) -> Result<ManualRestoreReport, String> {
+    let workspace = WorkspaceEnv::from_option(workspace);
+    blocking(app, move |r| {
+        checkpoint::restore_manual(
+            r,
+            &worktree,
+            &reference,
+            Some(&fingerprint),
+            force.unwrap_or(false),
+            &workspace,
+        )
+        .map_err(Into::into)
     })
     .await
 }

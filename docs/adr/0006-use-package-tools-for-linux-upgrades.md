@@ -1,0 +1,3 @@
+# Preserve package-manager semantics for Linux upgrades
+
+The locked updater has privileged RPM/DEB installation paths, but direct rpm/dpkg invocation alone does not establish dependency resolution or acceptable package-management behavior. The user chose validated dependency-resolving tooling, with an explicit package-tool handoff if in-app integration cannot be validated, over silently enabling raw installation; Arch remains package-tool managed and managed repositories are deferred. Automatic checks never authorize downloads, installation, agent interruption or relaunch, and failed authenticity checks cannot be bypassed.

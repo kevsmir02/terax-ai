@@ -1,10 +1,7 @@
 import {
   AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
   AlertDialogContent,
   AlertDialogDescription,
-  AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
@@ -24,10 +21,12 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
-import { toast } from "sonner";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Tooltip,
@@ -49,7 +48,6 @@ import {
 } from "@/modules/explorer/lib/menuItemClass";
 import { joinPath } from "@/modules/explorer/lib/useFileTree";
 import {
-  AiContentGenerator02Icon,
   Alert02Icon,
   ArrowDown01Icon,
   ArrowRight01Icon,
@@ -57,8 +55,10 @@ import {
   CheckmarkCircle01Icon,
   Download01Icon,
   Folder01Icon,
+  FolderAddIcon,
   FolderCloudIcon,
   FolderGitTwoIcon,
+  FolderRemoveIcon,
   GitBranchIcon,
   Refresh01Icon,
   RemoveSquareIcon,
@@ -80,10 +80,22 @@ import {
   repositoryTargetIsPending,
   type SourceControlRepositoryTarget,
 } from "./repositoryTarget";
+import {
+  DestructiveGitPrompt,
+  type DestructivePromptState,
+} from "./DestructiveGitPrompt";
+import { CheckpointPanel } from "./CheckpointPanel";
+import { registerDestructiveGitBridge } from "./destructiveGitBridge";
+import { WorktreeCreateDialog } from "@/modules/worktrees/WorktreeCreateDialog";
+import {
+  WorktreeRemoveDialog,
+  type WorktreeRemovalTarget,
+} from "@/modules/worktrees/WorktreeRemoveDialog";
 import type { SourceControlSummary } from "./useSourceControl";
 import {
   useSourceControlPanel,
   type CheckState,
+  type DestructiveGitSupport,
   type SourceControlFileEntry,
 } from "./useSourceControlPanel";
 
@@ -102,6 +114,13 @@ type Props = {
   onNavigateToPath?: (path: string) => void;
   repositoryTarget: SourceControlRepositoryTarget;
   onFollowRepositoryContext: () => void;
+  destructive: DestructiveGitSupport;
+  worktreeDialogOpen: boolean;
+  onWorktreeDialogOpenChange: (open: boolean) => void;
+  onOpenWorktreeAsSpace: (path: string, branch: string | null) => void;
+  /** The worktree whose removal dialog is open, with the repository that listed it. */
+  worktreeRemoveTarget: WorktreeRemovalTarget | null;
+  onWorktreeRemoveOpenChange: (target: WorktreeRemovalTarget | null) => void;
 };
 
 const SOURCE_CONTROL_TOOLTIP_CLASS =
@@ -171,6 +190,10 @@ function BranchDropdown({
   onFollowRepositoryContext,
   onNavigateToPath,
   onRefresh,
+  onRequestCheckout,
+  onNewWorktree,
+  onOpenWorktreeAsSpace,
+  onRemoveWorktree,
 }: {
   repoRoot: string | null;
   repoLabel: string;
@@ -179,14 +202,16 @@ function BranchDropdown({
   onFollowRepositoryContext: () => void;
   onNavigateToPath?: (path: string) => void;
   onRefresh: () => void;
+  onRequestCheckout: (branch: string, onDone: () => void) => void;
+  onNewWorktree: () => void;
+  onOpenWorktreeAsSpace: (path: string, branch: string | null) => void;
+  onRemoveWorktree: (repoRoot: string, path: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [branches, setBranches] = useState<GitBranchEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [checkingOut, setCheckingOut] = useState(false);
   const requestRef = useRef(0);
-  const checkoutInFlight = useRef(false);
 
   const loadBranches = useCallback(async () => {
     const id = ++requestRef.current;
@@ -220,23 +245,15 @@ function BranchDropdown({
   }, [open, loadBranches]);
 
   const handleCheckout = useCallback(
-    async (branch: string) => {
-      if (!repoRoot || checkoutInFlight.current) return;
-      checkoutInFlight.current = true;
-      setCheckingOut(true);
-      try {
-        await git.checkoutBranch(repoRoot, branch);
+    (branch: string) => {
+      if (!repoRoot) return;
+      onRequestCheckout(branch, () => {
         setBranches([]);
         setOpen(false);
         onRefresh();
-      } catch (e) {
-        toast.error(String(e));
-      } finally {
-        checkoutInFlight.current = false;
-        setCheckingOut(false);
-      }
+      });
     },
-    [repoRoot, onRefresh],
+    [repoRoot, onRefresh, onRequestCheckout],
   );
 
   const localBranches = useMemo(
@@ -253,7 +270,6 @@ function BranchDropdown({
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          disabled={checkingOut}
           title={displayRepoRoot ?? repoLabel}
           className="inline-flex min-w-0 cursor-pointer items-center gap-1.5 rounded-md bg-foreground/5 px-2 py-1 text-[11.5px] font-medium leading-none text-foreground transition-colors hover:bg-foreground/10 disabled:cursor-default disabled:opacity-70"
         >
@@ -347,34 +363,83 @@ function BranchDropdown({
                 </DropdownMenuLabel>
                 <DropdownMenuGroup>
                   {worktrees.map((b) => (
-                    <DropdownMenuItem
-                      key={b.worktreePath ?? b.name}
-                      onSelect={() => {
-                        if (b.worktreePath && onNavigateToPath) {
-                          onNavigateToPath(b.worktreePath);
-                        }
-                      }}
-                      className="flex cursor-pointer items-center gap-2 text-[12px]"
-                    >
-                      <HugeiconsIcon
-                        icon={Folder01Icon}
-                        size={14}
-                        strokeWidth={1.5}
-                        className="shrink-0 text-muted-foreground"
-                      />
-                      <div className="flex min-w-0 flex-col">
-                        <span className="truncate">{b.name}</span>
-                        {b.worktreePath && (
-                          <span className="truncate text-[10px] text-muted-foreground">
-                            {b.worktreePath}
-                          </span>
-                        )}
-                      </div>
-                    </DropdownMenuItem>
+                    <DropdownMenuSub key={b.worktreePath ?? b.name}>
+                      <DropdownMenuSubTrigger className="flex cursor-pointer items-center gap-2 text-[12px]">
+                        <HugeiconsIcon
+                          icon={Folder01Icon}
+                          size={14}
+                          strokeWidth={1.5}
+                          className="shrink-0 text-muted-foreground"
+                        />
+                        <div className="flex min-w-0 flex-col">
+                          <span className="truncate">{b.name}</span>
+                          {b.worktreePath && (
+                            <span className="truncate text-[10px] text-muted-foreground">
+                              {b.worktreePath}
+                            </span>
+                          )}
+                        </div>
+                      </DropdownMenuSubTrigger>
+                      <DropdownMenuSubContent className="w-56">
+                        <DropdownMenuItem
+                          onSelect={() => {
+                            if (b.worktreePath && onNavigateToPath) {
+                              onNavigateToPath(b.worktreePath);
+                            }
+                          }}
+                          className="cursor-pointer text-[12px]"
+                        >
+                          Open terminal here
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onSelect={() => {
+                            if (b.worktreePath) {
+                              onOpenWorktreeAsSpace(b.worktreePath, b.name);
+                            }
+                          }}
+                          className="cursor-pointer text-[12px]"
+                        >
+                          Open as Space
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onSelect={() => {
+                            if (b.worktreePath && repoRoot)
+                              onRemoveWorktree(repoRoot, b.worktreePath);
+                          }}
+                          className="cursor-pointer text-[12px] text-destructive"
+                        >
+                          <HugeiconsIcon
+                            icon={FolderRemoveIcon}
+                            size={14}
+                            strokeWidth={1.5}
+                            className="shrink-0"
+                          />
+                          Remove worktree…
+                        </DropdownMenuItem>
+                      </DropdownMenuSubContent>
+                    </DropdownMenuSub>
                   ))}
                 </DropdownMenuGroup>
               </>
             )}
+            {repoRoot ? (
+              <>
+                {branches.length > 0 && <DropdownMenuSeparator />}
+                <DropdownMenuItem
+                  onSelect={onNewWorktree}
+                  className="flex cursor-pointer items-center gap-2 text-[12px]"
+                >
+                  <HugeiconsIcon
+                    icon={FolderAddIcon}
+                    size={14}
+                    strokeWidth={1.5}
+                    className="shrink-0 text-muted-foreground"
+                  />
+                  New worktree…
+                </DropdownMenuItem>
+              </>
+            ) : null}
             {branches.length === 0 && (
               <div className="px-3 py-3 text-[11px] text-muted-foreground">
                 No branches found.
@@ -396,8 +461,69 @@ export const SourceControlPanel = memo(function SourceControlPanel({
   onNavigateToPath,
   repositoryTarget,
   onFollowRepositoryContext,
+  destructive,
+  worktreeDialogOpen,
+  onWorktreeDialogOpenChange,
+  onOpenWorktreeAsSpace,
+  worktreeRemoveTarget,
+  onWorktreeRemoveOpenChange,
 }: Props) {
-  const scm = useSourceControlPanel(open, sourceControl, onOpenDiff);
+  const scm = useSourceControlPanel(
+    open,
+    sourceControl,
+    onOpenDiff,
+    destructive,
+  );
+  const [destructiveAck, setDestructiveAck] = useState<DestructivePromptState>({
+    unsavedBuffers: [],
+    activeWork: [],
+    force: false,
+  });
+  const pendingFingerprint = scm.pendingDestructive?.plan.fingerprint ?? null;
+  useEffect(() => {
+    // A refreshed plan is a new decision: no acknowledgement carries over.
+    if (pendingFingerprint === null) return;
+    setDestructiveAck({ unsavedBuffers: [], activeWork: [], force: false });
+  }, [pendingFingerprint]);
+  useEffect(
+    () =>
+      registerDestructiveGitBridge({
+        ready: () => scm.panelState === "ready",
+        requestDiscard: (paths) => scm.requestDiscardPaths(paths),
+        requestCheckout: (branch) => scm.requestCheckout(branch),
+        pending: () => {
+          const pending = scm.pendingDestructive;
+          if (!pending) return null;
+          return {
+            kind: pending.kind,
+            fingerprint: pending.plan.fingerprint,
+            stale: pending.stale,
+            affected: pending.plan.affected.map((path) => path.path),
+            blockers: pending.plan.blockers.map((blocker) =>
+              blocker.kind === "unsavedBuffer"
+                ? {
+                    kind: "unsavedBuffer" as const,
+                    tabId: blocker.tabId,
+                    spaceName: blocker.spaceName,
+                    path: blocker.path,
+                    outsideSpaceRoot: blocker.outsideSpaceRoot,
+                  }
+                : {
+                    kind: "activeTerminal" as const,
+                    leafId: blocker.leafId,
+                    spaceName: blocker.spaceName,
+                    busy: blocker.busy,
+                  },
+            ),
+            force: pending.plan.force,
+          };
+        },
+        confirm: (confirmation) => scm.confirmDestructive(confirmation),
+        cancel: () => scm.cancelDestructive(),
+        busy: () => scm.destructiveBusy,
+      }),
+    [scm],
+  );
   const refreshAnimationRef = useRef<number | null>(null);
   const [refreshAnimating, setRefreshAnimating] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -427,7 +553,6 @@ export const SourceControlPanel = memo(function SourceControlPanel({
   }, [fixedTargetPending, scm.status]);
 
   const commitShortcut = IS_MAC ? "⌘↩" : "Ctrl+Enter";
-  const generateShortcut = IS_MAC ? "⌘G" : "Ctrl+G";
   const canCommit =
     scm.stagedEntries.length > 0 &&
     scm.commitMessage.trim().length > 0 &&
@@ -489,14 +614,6 @@ export const SourceControlPanel = memo(function SourceControlPanel({
       event.preventDefault();
       void scm.commit();
       return;
-    }
-    if (
-      event.key.toLowerCase() === "g" &&
-      (event.metaKey || event.ctrlKey) &&
-      scm.canGenerateCommitMessage
-    ) {
-      event.preventDefault();
-      void scm.generateCommitMessage();
     }
   };
 
@@ -696,6 +813,12 @@ export const SourceControlPanel = memo(function SourceControlPanel({
               onFollowRepositoryContext={onFollowRepositoryContext}
               onNavigateToPath={onNavigateToPath}
               onRefresh={handleRefresh}
+              onRequestCheckout={scm.requestCheckout}
+              onNewWorktree={() => onWorktreeDialogOpenChange(true)}
+              onOpenWorktreeAsSpace={onOpenWorktreeAsSpace}
+              onRemoveWorktree={(repoRoot, path) =>
+                onWorktreeRemoveOpenChange({ repoRoot, path })
+              }
             />
             {scm.status && (scm.status.ahead > 0 || scm.status.behind > 0) ? (
               <div className="flex shrink-0 items-center gap-0.5 text-[10px] font-semibold tabular-nums leading-none text-muted-foreground">
@@ -728,6 +851,11 @@ export const SourceControlPanel = memo(function SourceControlPanel({
             ) : null}
           </div>
           <div className="flex shrink-0 items-center gap-0.5">
+            <CheckpointPanel
+              worktree={scm.repo?.repoRoot ?? null}
+              destructive={destructive}
+              onMutated={() => void scm.refresh()}
+            />
             <IconActionButton
               label={fetchBusy ? "Fetching…" : "Fetch from remote"}
               disabled={!canFetch}
@@ -865,42 +993,6 @@ export const SourceControlPanel = memo(function SourceControlPanel({
                       {commitShortcut} <p>to commit</p>
                     </span>
                   )}
-                </div>
-                <div className="absolute right-1 top-1">
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        aria-label={`${scm.generateCommitMessageHint} (${generateShortcut})`}
-                        disabled={!scm.canGenerateCommitMessage}
-                        onClick={() => void scm.generateCommitMessage()}
-                        className={cn(
-                          "inline-flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground/65 transition-colors",
-                          "hover:bg-foreground/[0.06] hover:text-foreground",
-                          "disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent disabled:hover:text-muted-foreground/65",
-                        )}
-                      >
-                        {scm.actionBusy === "generate-message" ? (
-                          <Spinner className="size-3" />
-                        ) : (
-                          <HugeiconsIcon
-                            icon={AiContentGenerator02Icon}
-                            size={14}
-                            strokeWidth={1.75}
-                          />
-                        )}
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent
-                      side="left"
-                      className={cn(
-                        SOURCE_CONTROL_TOOLTIP_CLASS,
-                        "text-[10.5px]",
-                      )}
-                    >
-                      {`${scm.generateCommitMessageHint} (${generateShortcut})`}
-                    </TooltipContent>
-                  </Tooltip>
                 </div>
               </div>
 
@@ -1042,32 +1134,63 @@ export const SourceControlPanel = memo(function SourceControlPanel({
       </aside>
 
       <AlertDialog
-        open={scm.pendingDiscard !== null}
+        open={scm.pendingDestructive !== null}
         onOpenChange={(o) => {
-          if (!o) scm.cancelPendingDiscard();
+          if (!o) scm.cancelDestructive();
         }}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Discard changes?</AlertDialogTitle>
+            <AlertDialogTitle>
+              {scm.pendingDestructive?.kind === "checkout"
+                ? "Switch branches?"
+                : "Discard changes?"}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              {scm.pendingDiscard?.scope === "all"
-                ? `This will discard ${scm.pendingDiscard.label} and cannot be undone.`
-                : scm.pendingDiscard
-                  ? `Discard changes in "${scm.pendingDiscard.label}"? This cannot be undone.`
-                  : null}
+              Nothing is changed until every affected buffer and process is
+              reviewed and this confirmation is rechecked.
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => scm.cancelPendingDiscard()}>
-              Cancel
-            </AlertDialogCancel>
-            <AlertDialogAction onClick={() => void scm.confirmPendingDiscard()}>
-              Discard
-            </AlertDialogAction>
-          </AlertDialogFooter>
+          {scm.pendingDestructive ? (
+            <DestructiveGitPrompt
+              plan={scm.pendingDestructive.plan}
+              acknowledged={destructiveAck}
+              onChange={setDestructiveAck}
+              stale={scm.pendingDestructive.stale}
+              busy={scm.destructiveBusy}
+              error={null}
+              onCancel={scm.cancelDestructive}
+              onConfirm={() => void scm.confirmDestructive(destructiveAck)}
+              actionLabel={
+                scm.pendingDestructive.kind === "checkout"
+                  ? "switch branch"
+                  : "discard"
+              }
+            />
+          ) : null}
         </AlertDialogContent>
       </AlertDialog>
+
+      <WorktreeCreateDialog
+        open={worktreeDialogOpen}
+        onOpenChange={onWorktreeDialogOpenChange}
+        repoRoot={scm.repo?.repoRoot ?? null}
+        onOpenAsSpace={onOpenWorktreeAsSpace}
+      />
+
+      <WorktreeRemoveDialog
+        open={worktreeRemoveTarget !== null}
+        path={worktreeRemoveTarget?.path ?? null}
+        repoRoot={worktreeRemoveTarget?.repoRoot ?? null}
+        support={destructive}
+        onOpenChange={(next) => {
+          if (!next) onWorktreeRemoveOpenChange(null);
+        }}
+        onRemoved={() => {
+          // The repository's worktree list and branch list both changed.
+          void scm.refresh();
+        }}
+      />
     </TooltipProvider>
   );
 });

@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { defineConfig, type PluginOption, type UserConfig } from "vite";
 import Inspect from "vite-plugin-inspect";
+import { pdfjsAssets } from "./scripts/vite-pdfjs-assets.mjs";
 
 const host = process.env.TAURI_DEV_HOST;
 const rootDir = import.meta.dirname;
@@ -39,7 +40,7 @@ const inspectGraph = process.env.INSPECT === "true";
  * npm package a module id belongs to (`@scope/name` or `name`), resolved from
  * the *last* `node_modules/` segment so pnpm's `.pnpm/<pkg>@<ver>/node_modules/`
  * indirection yields the real package. Substring tests such as `/react/` are
- * wrong here: `@ai-sdk/react/dist` and `@hugeicons/react/dist` both contain it.
+ * wrong here: `@xterm/react` and `@hugeicons/react` both contain it.
  */
 function packageOf(id: string): string | null {
   const m = id.match(/.*node_modules\/((?:@[^/]+\/)?[^/]+)/);
@@ -82,26 +83,10 @@ function eagerChunk(id: string): string | null {
   return null;
 }
 
-const AI_PROVIDER_CHUNKS: Record<string, string> = {
-  "@ai-sdk/anthropic": "ai-anthropic",
-  "@ai-sdk/google": "ai-google",
-  "@ai-sdk/openai-compatible": "ai-openai-compat",
-  "@ai-sdk/openai": "ai-openai",
-  "@ai-sdk/cerebras": "ai-cerebras",
-  "@ai-sdk/groq": "ai-groq",
-  "@ai-sdk/xai": "ai-xai",
-};
-
 /** Heavy features loaded on demand; each lands in its own named chunk. */
 function lazyChunk(id: string): string | null {
   const pkg = packageOf(id);
   if (!pkg) return null;
-
-  // Each AI provider SDK in its own chunk so unused providers
-  // don't bloat the initial load (lazy-imported in agent.ts).
-  const provider = AI_PROVIDER_CHUNKS[pkg];
-  if (provider) return provider;
-  if (pkg.startsWith("@ai-sdk/")) return "ai-sdk-shared";
 
   // Lang packs and legacy modes are dynamically imported by
   // languageResolver; give each its own named chunk so they load on
@@ -136,6 +121,10 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => ({
     }),
     react(),
     tailwindcss(),
+    // PDF.js runtime data (standard fonts, CMaps, wasm decoders, worker) is
+    // emitted from the installed package so the reader never fetches a remote
+    // resource. Lazy reader chunk; no PDF code reaches startup.
+    pdfjsAssets() as PluginOption,
     // Module-graph inspector at /__inspect (who-imports-what, per-plugin
     // transforms). Opt-in via `pnpm dev:inspect`, never in a production build.
     ...(mode === "development" && inspectGraph
@@ -154,23 +143,7 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => ({
       : []),
   ],
   resolve: {
-    alias: [
-      { find: "@", replacement: path.resolve(rootDir, "./src") },
-      // Shim keeps the ~117 kB CJS protocol package out of the bundle.
-      {
-        find: "vscode-languageserver-protocol",
-        replacement: path.resolve(
-          rootDir,
-          "./src/modules/lsp/lib/protocolShim.ts",
-        ),
-      },
-      // The AI SDK reads one enum from zod 3; the shim keeps the rest of it
-      // (~14 kB gzipped) out. Exact match only: nothing else may import zod/v3.
-      {
-        find: /^zod\/v3$/,
-        replacement: path.resolve(rootDir, "./src/modules/ai/lib/zodV3Shim.ts"),
-      },
-    ],
+    alias: [{ find: "@", replacement: path.resolve(rootDir, "./src") }],
   },
   build: {
     target:
@@ -194,13 +167,10 @@ export default defineConfig(async ({ mode }): Promise<UserConfig> => ({
         // Two prioritised groups instead of one `manualChunks` function. With a
         // single group Rolldown resolves overlapping claims in first-seen order
         // and `includeDependenciesRecursively` (default on) lets a feature
-        // chunk swallow the *dependencies* of its modules. Observed: the lazy
-        // `ai-sdk-shared` chunk (`@ai-sdk/react` -> `react`) captured the CJS
-        // `react/index.js` before the `react` chunk did, so the always-eager
-        // `react` chunk statically imported `ai-sdk-shared`, which imports every
-        // provider chunk: ~560 kB of AI SDK + zod preloaded in both windows.
-        // The eager group outranks the lazy one, so shared runtime modules are
-        // always claimed by an eager chunk first. The built-output budget
+        // chunk swallow the *dependencies* of its modules (observed with the
+        // CJS React interop and lazy editor/markdown chunks). The eager group
+        // outranks the lazy one, so shared runtime modules are always claimed
+        // by an eager chunk first. The built-output budget
         // (src/app/dist-budget.test.ts) locks this.
         codeSplitting: {
           groups: [

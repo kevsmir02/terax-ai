@@ -1,0 +1,80 @@
+# Maintainer: kevsmir02 (Codr unofficial fork packaging)
+#
+# Codr Arch recipe: it builds the same source revision and version as the RPM/DEB
+# packages, but it is AUTHORED HERE, NOT BUILT. No `makepkg` run exists: this host has no
+# makepkg, and the spec requires a dated clean Arch environment that records package versions.
+# Do not describe this recipe as validated Arch support.
+#
+# The packaging runner (`scripts/package-candidate/run.py`) writes an aligned copy with the
+# recorded build revision and the source-archive hash into
+# `dist-packages/<package>-<version>-<rev>/arch/PKGBUILD`. Release builds can point
+# `source` at the signed release source archive and its published hash.
+
+pkgname=codr
+pkgver=1.0.0
+pkgrel=1
+# The source revision this recipe is aligned with; refreshed by the packaging runner.
+_commit=1742389cbf5ae4026b9a99ae9e5278ec7b33f721
+pkgdesc="Codr - Linux terminal workspace (unofficial fork of Terax)"
+arch=('x86_64')
+url="https://github.com/kevsmir02/terax-ai"
+license=('Apache-2.0')
+depends=('webkit2gtk-4.1' 'gtk3' 'librsvg')
+makedepends=('rust' 'cargo' 'nodejs' 'pnpm' 'pkgconf' 'clang')
+# Local source archive produced by `scripts/package-candidate/run.py` from the recorded
+# revision (`git archive --prefix=$pkgname-$pkgver/`). The runner renders the real hash.
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "$pkgname-$pkgver"
+
+  export CARGO_TARGET_DIR="$srcdir/cargo-target"
+  export TERAX_CLI_TARGET="x86_64-unknown-linux-gnu"
+
+  pnpm install --frozen-lockfile
+  # `tauri build --no-bundle` runs the project's build:cli + vite build commands, so the
+  # sidecar and the frontend bundle are produced from the same source as the other formats.
+  pnpm tauri build --no-bundle --target "$TERAX_CLI_TARGET"
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  local triple="x86_64-unknown-linux-gnu"
+
+  install -Dm755 "$srcdir/cargo-target/$triple/release/terax" \
+    "$pkgdir/usr/bin/codr"
+  install -Dm755 "src-tauri/binaries/codr-cli-$triple" \
+    "$pkgdir/usr/bin/codr-cli"
+
+  install -Dm644 packages/ghostty-core/LICENSE \
+    "$pkgdir/usr/lib/Codr/licenses/terminal/ghostty-web.txt"
+  install -Dm644 packages/ghostty-core/adapted/LICENSE.ghostty \
+    "$pkgdir/usr/lib/Codr/licenses/terminal/ghostty.txt"
+  install -Dm644 packages/ghostty-core/adapted/LICENSE.restty \
+    "$pkgdir/usr/lib/Codr/licenses/terminal/restty.txt"
+  install -Dm644 src/modules/terminal/ghostty/webgl/LICENSE.xterm-js \
+    "$pkgdir/usr/lib/Codr/licenses/terminal/xterm-js.txt"
+
+  install -Dm644 src-tauri/icons/32x32.png \
+    "$pkgdir/usr/share/icons/hicolor/32x32/apps/codr.png"
+  install -Dm644 src-tauri/icons/128x128.png \
+    "$pkgdir/usr/share/icons/hicolor/128x128/apps/codr.png"
+  install -Dm644 src-tauri/icons/128x128@2x.png \
+    "$pkgdir/usr/share/icons/hicolor/256x256@2/apps/codr.png"
+
+  # Same desktop-entry path the RPM/DEB bundler generates (it names the file after the
+  # product); the recipe writes equivalent content by hand.
+  install -d "$pkgdir/usr/share/applications"
+  cat >"$pkgdir/usr/share/applications/Codr.desktop" <<'DESKTOP'
+[Desktop Entry]
+Categories=Development;
+Comment=Codr - Linux terminal workspace (unofficial fork of Terax)
+Exec=codr
+Icon=codr
+Name=Codr
+Terminal=false
+Type=Application
+DESKTOP
+  chmod 644 "$pkgdir/usr/share/applications/Codr.desktop"
+}

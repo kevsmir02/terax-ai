@@ -270,7 +270,7 @@ type WorktreeBranch =
   | { mode: "detach" };
 
 export type WorktreeAddRequest = {
-  /** Absolute location; omitted: `~/.terax/worktrees/<project>/<task>`. */
+  /** Absolute location; omitted: `~/.codr/worktrees/<project>/<task>`. */
   path?: string | null;
   taskSlug?: string | null;
   branch: WorktreeBranch;
@@ -291,18 +291,48 @@ export type WorktreeAdded = {
   includeTruncated: boolean;
 };
 
+/**
+ * What creating the worktree would run into, computed without creating it.
+ * `add` rechecks everything and stays authoritative.
+ */
+export type WorktreeProblemField = "path" | "branch" | "base" | "include";
+
+export type WorktreeProblem = {
+  field: WorktreeProblemField;
+  message: string;
+};
+
+export type WorktreePreflight = {
+  /** The location `add` would use; null when no safe path could be planned. */
+  path: string | null;
+  /** Set when the managed name was taken and got a `-2` suffix. */
+  collision: string | null;
+  problems: WorktreeProblem[];
+};
+
 type ChangedPath = { path: string; status: GitFileStatus };
 
 /**
  * `ignored`: files git ignores but that are not regenerable (`.env`, local
  * databases), which removal would delete without a word.
  */
-type WorktreeRemoveBlocker =
+export type WorktreeRemoveBlocker =
   | "locked"
   | "dirty"
   | "unmerged"
   | "ignored"
+  | "recoveryRefs"
   | "inconclusive";
+
+/** Recovery points a worktree registration still owns (native `OwnedRecoveryRefs`). */
+export type OwnedRecoveryRefs = {
+  total: number;
+  manual: number;
+  turns: number;
+  safety: number;
+  /** Ref names, capped; the refusal names what has to be cleaned up. */
+  sample: string[];
+};
 
 export type WorktreeRemoveReport = {
   removed: boolean;
@@ -322,6 +352,8 @@ export type WorktreeRemoveReport = {
   ignoredIdentical: number;
   /** Safety probes that could not finish (`ignored-files`, `unmerged-commits`); removal is refused until they can, unless forced. */
   inconclusive: string[];
+  /** Checkpoints and restore-safety refs this worktree owns: removal is refused until they are deleted explicitly. */
+  recovery: OwnedRecoveryRefs;
   lockReason: string | null;
 };
 
@@ -387,6 +419,210 @@ export type RestoreReport = {
 };
 
 type SafetySnapshot = { ref: string; commit: string; tree: string };
+
+// ------------------------------------------------- manual checkpoints
+//
+// A manual checkpoint is independent of agent tasks and turns: its identity is
+// its own random id, and `name` is an optional label that may repeat. Capture
+// limits and the stored capture record are part of every result; nothing here
+// is a claim of an atomic or complete backup.
+
+export type RecoveryKind = "manual" | "turn" | "safety";
+
+export type CheckpointCapture = {
+  /** Two consecutive snapshot passes produced the same tree. */
+  consistent: boolean;
+  passes: number;
+  /** Files that kept changing under the snapshot and were left out. */
+  unstableCount: number;
+  /** Files Git could not read, e.g. `unreadable-files`, `concurrent-writes`. */
+  warnings: string[];
+  /** Ignored files and directories; never captured. */
+  ignoredFiles: number;
+  /** The ignored listing hit its read cap: `ignoredFiles` is a lower bound. */
+  ignoredTruncated: boolean;
+  /** Paths staged in the real index at capture time; staging is not recorded. */
+  stagedFiles: number;
+  stagedTruncated: boolean;
+  /** Submodules recorded as pointers only. */
+  submodules: number;
+  submodulesTruncated: boolean;
+  /** The capture is not a complete, stable snapshot of the working tree. */
+  incomplete: boolean;
+};
+
+export type ManualCheckpoint = {
+  ref: string;
+  /** Opaque random identity, never a reused task/turn slot. */
+  id: string;
+  /** The user's optional label; not part of the identity. */
+  name: string | null;
+  commit: string;
+  tree: string;
+  parent: string | null;
+  createdAtSecs: number;
+  /** `null` only when the stored record is missing or unreadable. */
+  capture: CheckpointCapture | null;
+};
+
+export type ManualCheckpointCreated = ManualCheckpoint & {
+  limits: CheckpointLimits;
+  durationMs: number;
+};
+
+export type SafetyRef = {
+  ref: string;
+  /** The turn checkpoint whose restore saved this snapshot. */
+  taskId: string;
+  commit: string;
+  tree: string;
+  parent: string | null;
+  createdAtSecs: number;
+};
+
+/**
+ * Repository-wide object context. Not a reclaimable-byte estimate: objects are
+ * content-addressed and shared, and the app never runs Git garbage collection.
+ */
+export type CheckpointStorage = {
+  looseObjects: number;
+  looseKib: number;
+  packedObjects: number;
+  packedKib: number;
+  /** Recovery refs this worktree owns: manual + turn + safety. */
+  ownedRefs: number;
+  /** Always true; deleting a ref removes reachability, not bytes. */
+  sharedObjects: boolean;
+};
+
+export type CheckpointGroups = {
+  manual: ManualCheckpoint[];
+  turns: CheckpointInfo[];
+  safety: SafetyRef[];
+  storage: CheckpointStorage;
+};
+
+export type CheckpointInspection = {
+  ref: string;
+  kind: RecoveryKind;
+  name: string | null;
+  taskId: string | null;
+  turn: number | null;
+  commit: string;
+  tree: string;
+  parent: string | null;
+  createdAtSecs: number;
+  capture: CheckpointCapture | null;
+  limits: CheckpointLimits;
+  /** Paths that differ between the checkpoint and its recorded parent, capped. */
+  changedPaths: ChangedPath[];
+  changedTotal: number;
+  changedTruncated: boolean;
+  /** HEAD moved since capture; commits are left alone. */
+  headMoved: boolean;
+};
+
+export type CleanupRemovedRef = { ref: string; kind: RecoveryKind };
+
+export type CleanupRefusedRef = {
+  ref: string;
+  /** `not-a-recovery-ref`, `missing`, `unknown-owner`, `another-worktree`, `changed`. */
+  reason: string;
+};
+
+export type CheckpointCleanupReport = {
+  removed: CleanupRemovedRef[];
+  refused: CleanupRefusedRef[];
+  /** The groups after deletion, so the caller never has to guess. */
+  remaining: CheckpointGroups;
+  /** Each deletion is its own `update-ref`; a midway failure keeps earlier ones. */
+  atomic: boolean;
+};
+
+// --------------------------------------------- manual restore preflight
+//
+// Restoring captured content is never a Git-state undo. The preview is
+// read-only; the restore publishes a required safety capture before touching a
+// file or an index entry, refuses a stale preview, and reports partial effects
+// with the safety ref still in place.
+
+export type RestoreEffect = "written" | "removed";
+
+export type RestorePath = {
+  path: string;
+  status: GitFileStatus;
+  effect: RestoreEffect;
+  /** The real index has a staged entry for this path; staging is not captured. */
+  staged: boolean;
+  /** Present on disk but excluded from the snapshot: left alone. */
+  ignoredInTheWay: boolean;
+};
+
+export type ManualRestoreRefusal =
+  | "stagedAffectedPaths"
+  | "stalePreview"
+  | "unsupportedCheckpointKind";
+
+export type ManualRestorePreview = {
+  ref: string;
+  kind: RecoveryKind;
+  name: string | null;
+  commit: string;
+  tree: string;
+  parent: string | null;
+  headMoved: boolean;
+  /** Restoring never moves HEAD; index entries of touched paths are reset. */
+  headEffect: "unchanged";
+  affected: RestorePath[];
+  affectedTotal: number;
+  affectedTruncated: boolean;
+  skipped: SkippedPath[];
+  /** Affected paths staged in the real index. */
+  stagedTotal: number;
+  /** The staged-path probe hit its read cap: staging is unknown. */
+  stagedTruncated: boolean;
+  ignoredInTheWay: number;
+  /** The safety capture is a precondition, not a best effort. */
+  requiresSafetyCapture: boolean;
+  capturesIndexState: boolean;
+  capturesIgnoredFiles: boolean;
+  atomic: boolean;
+  fingerprint: string;
+  refusal: ManualRestoreRefusal | null;
+  refusalDetail: string | null;
+};
+
+export type RestoreFailureStage = "writes" | "indexSync";
+
+export type ManualRestoreReport = {
+  restored: boolean;
+  refusal: ManualRestoreRefusal | null;
+  refusalDetail: string | null;
+  kind: RecoveryKind;
+  /** The target was a safety ref: content recovery, never Git-state restore. */
+  contentOnly: boolean;
+  affected: RestorePath[];
+  affectedTotal: number;
+  skipped: SkippedPath[];
+  stagedTotal: number;
+  written: number;
+  removed: number;
+  safety: SafetySnapshot | null;
+  safetyRetained: boolean;
+  capturesIndexState: boolean;
+  indexSynced: boolean;
+  headEffect: "unchanged";
+  headMoved: boolean;
+  atomic: boolean;
+  captureConsistent: boolean;
+  captureWarnings: string[];
+  /** A failure happened after mutation started. */
+  partial: boolean;
+  failure: string | null;
+  failureStage: RestoreFailureStage | null;
+  /** The previous plan no longer describes the working tree: preview again. */
+  retryRequiresFreshPreview: boolean;
+};
 
 // ------------------------------------------------------------- branches
 

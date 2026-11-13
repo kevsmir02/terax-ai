@@ -5,16 +5,19 @@
 //! helper process ids that belong to this webview, window state, and native window actions
 //! (stepped live resizes, order out/front, miniaturize). Nothing here exists in a normal build.
 //!
-//! Safety: a bench binary refuses to start under the product identifier, so it can never run
-//! against the profile of an installed Terax. The orchestrator (`scripts/app-lab/run.py`)
-//! gives every run its own identifier and `HOME`.
+//! Safety: a bench binary refuses to start under this fork's product identifier *or* under an
+//! upstream Terax identifier, so it can never run against the profile of an installed
+//! application. The orchestrator (`scripts/app-lab/run.py`) gives every run its own identifier
+//! and `HOME`.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, WebviewWindow};
 
-/// Identifier of the shipped application; a bench build must not run under it.
-const PRODUCT_IDENTIFIER: &str = "app.crynta.terax";
+/// Identifier of this fork's application (`modules::identity`).
+fn product_identifier() -> &'static str {
+    crate::modules::identity::app_identifier()
+}
 
 /// Called from `setup` and by every bench command. A bench build must not run under the
 /// product identifier (it would share the installed app's profile), and only starts when the
@@ -28,10 +31,17 @@ pub fn guard(app: &AppHandle) -> Result<(), String> {
 }
 
 fn guard_environment(identifier: &str, isolated: Option<&str>) -> Result<(), String> {
-    if identifier == PRODUCT_IDENTIFIER {
+    let product = product_identifier();
+    if identifier == product {
         return Err(format!(
-            "bench build refuses to run under the product identifier {PRODUCT_IDENTIFIER}; \
+            "bench build refuses to run under the product identifier {product}; \
              launch it through scripts/app-lab/run.py (isolated identifier and HOME)"
+        ));
+    }
+    if crate::modules::identity::is_upstream_identifier(identifier) {
+        return Err(format!(
+            "bench build refuses to run under the upstream Terax identifier {identifier}; \
+             it would share the installed application's profile"
         ));
     }
     if isolated != Some("1") {
@@ -111,6 +121,9 @@ pub enum WindowAction {
     },
     /// WebKit's own full-GC request for the web processes of this pool.
     Gc,
+    /// Whole-application process memory: the host and its WebKit helpers, their roles, and
+    /// `/proc/<pid>/smaps_rollup` figures (Pss as the non-double-counting total).
+    Memory,
     /// The web view's Core Animation layer tree in this (UI) process. WebKit mirrors the web
     /// process's composited layers one to one as `CALayer`s here, so counting them (and their
     /// sizes, contents, masks and clips) shows what the page's CSS made composited.
@@ -161,6 +174,21 @@ pub async fn bench_window(app: AppHandle, action: WindowAction) -> Result<Value,
 #[tauri::command]
 pub fn bench_exit(app: AppHandle) {
     app.exit(0);
+}
+
+/// What the app's asset server actually served (bench-only; see `fs::bench_probe`).
+///
+/// The PDF acceptance scenario needs the native side of the request: whether the webview asked
+/// for the whole file or a byte range, the content type and size it received, and how many grants
+/// are live after a tab closes. The page itself cannot read that: the PDF document is a separate
+/// cross-origin document and the app's CSP keeps `asset:` out of `connect-src`.
+#[tauri::command]
+pub fn bench_asset_log(
+    app: AppHandle,
+    grants: tauri::State<'_, crate::modules::fs::assets::AssetGrants>,
+) -> Result<Value, String> {
+    guard(&app)?;
+    Ok(crate::modules::fs::bench_probe::snapshot(grants.active()))
 }
 
 #[cfg(target_os = "macos")]
@@ -322,6 +350,11 @@ mod platform {
             }
             WindowAction::Gc => gc(&window).await,
             WindowAction::Layers => layers(&window).await,
+            WindowAction::Memory => Err(
+                "whole-application /proc memory sampling is Linux-only; on macOS the orchestrator \
+                 samples `footprint -j` and `vmmap` instead"
+                    .to_string(),
+            ),
             WindowAction::Key {
                 chars,
                 chars_ignoring_modifiers,
@@ -710,7 +743,668 @@ mod platform {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+mod platform {
+    //! WebKitGTK has no public API for the web/network/GPU process ids and no occlusion state,
+    //! so the ids come from a `/proc` scan of this process's descendants and visibility is the
+    //! window's own state. Focus cannot be forced on Wayland: activation is advisory there.
+    //! Input, live resize, layers and GC need hooks WebKitGTK does not expose, so they stay
+    //! macOS-only.
+
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    pub async fn run(
+        _app: AppHandle,
+        window: WebviewWindow,
+        action: WindowAction,
+    ) -> Result<Value, String> {
+        match action {
+            WindowAction::Snapshot => Ok(snapshot(&window)),
+            WindowAction::SetSize { width, height } => {
+                window
+                    .set_size(tauri::LogicalSize::new(width, height))
+                    .map_err(|error| format!("set_size: {error}"))?;
+                tokio::time::sleep(Duration::from_millis(120)).await;
+                Ok(snapshot(&window))
+            }
+            WindowAction::Activate => {
+                let started = Instant::now();
+                window.show().map_err(|error| format!("show: {error}"))?;
+                // A Wayland compositor decides where focus goes; this is only a request.
+                let _ = window.set_focus();
+                tokio::time::sleep(Duration::from_millis(120)).await;
+                let state = snapshot(&window);
+                Ok(json!({
+                    "ok": state["windowVisible"],
+                    "ms": started.elapsed().as_secs_f64() * 1000.0,
+                    "focused": state["key"],
+                    "focus": "advisory",
+                }))
+            }
+            WindowAction::Sleep { ms } => {
+                tokio::time::sleep(Duration::from_secs_f64(ms.max(0.0) / 1000.0)).await;
+                Ok(json!({"ok": true}))
+            }
+            WindowAction::Hide { mode } => {
+                if !matches!(mode.as_str(), "orderout" | "miniaturize") {
+                    return Ok(json!({"ok": false, "error": format!("unknown mode {mode}")}));
+                }
+                if mode == "miniaturize" {
+                    window
+                        .minimize()
+                        .map_err(|error| format!("minimize: {error}"))?;
+                } else {
+                    window.hide().map_err(|error| format!("hide: {error}"))?;
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let state = snapshot(&window);
+                // Hiding unmaps the window, which the application can always see. Wayland
+                // compositors do not report iconification back to the client, so a requested
+                // minimize may stay unreported: say what was observed instead of assuming it.
+                let visible = state["windowVisible"].as_bool().unwrap_or(true);
+                let miniaturized = state["miniaturized"].as_bool().unwrap_or(false);
+                let ok = if mode == "miniaturize" {
+                    miniaturized || !visible
+                } else {
+                    !visible
+                };
+                Ok(json!({"ok": ok, "mode": mode, "state": state}))
+            }
+            WindowAction::Show { mode } => {
+                if !matches!(mode.as_str(), "orderout" | "miniaturize") {
+                    return Ok(json!({"ok": false, "error": format!("unknown mode {mode}")}));
+                }
+                if mode == "miniaturize" {
+                    window
+                        .unminimize()
+                        .map_err(|error| format!("unminimize: {error}"))?;
+                }
+                window.show().map_err(|error| format!("show: {error}"))?;
+                let _ = window.set_focus();
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let state = snapshot(&window);
+                Ok(json!({"ok": state["windowVisible"], "mode": mode, "state": state}))
+            }
+            WindowAction::ResizeSteps { .. } => Err(
+                "stepped/live resize needs a geometry hook WebKitGTK does not expose; window sizing is setSize"
+                    .to_string(),
+            ),
+            WindowAction::Gc => {
+                Err("a forced full GC is not available on WebKitGTK".to_string())
+            }
+            WindowAction::Layers => {
+                Err("the composited layer tree is not available on WebKitGTK".to_string())
+            }
+            WindowAction::Memory => Ok(memory_report(std::process::id())),
+            WindowAction::Key { .. } | WindowAction::Text { .. } => Err(
+                "native key/input-method events are not available on WebKitGTK".to_string(),
+            ),
+        }
+    }
+
+    fn snapshot(window: &WebviewWindow) -> Value {
+        let visible = window.is_visible().unwrap_or(false);
+        let focused = window.is_focused().unwrap_or(false);
+        let scale = window.scale_factor().unwrap_or(1.0);
+        let inner = window.inner_size().map(|size| (size.width, size.height)).unwrap_or((0, 0));
+        let position = window
+            .outer_position()
+            .map(|position| (position.x, position.y))
+            .unwrap_or((0, 0));
+        let host = std::process::id();
+        let processes = scan_processes();
+        let pids = resolve_webkit_pids(&processes, host);
+        let roles: Vec<Value> = role_table(&processes, host)
+            .into_iter()
+            .map(|(pid, role)| json!({"pid": pid, "role": role}))
+            .collect();
+        json!({
+            "hostPid": host,
+            // Wall-clock process start (btime + starttime): lets the orchestrator split startup
+            // into process-exec -> navigation and navigation -> boot without trusting its own
+            // spawn timestamp.
+            "startedUnixMs": process_started_unix_ms(host),
+            "processRoles": roles,
+            "webContentPid": pids.web_content,
+            "gpuPid": pids.gpu,
+            "networkingPid": pids.networking,
+            "webContentPrewarmedPids": pids.prewarmed,
+            "windowVisible": visible,
+            // WebKitGTK hands the application no occlusion signal; visibility is what exists.
+            "occlusionVisible": visible,
+            "key": focused,
+            // Wayland does not tell an application that it is the active one either.
+            "appActive": focused,
+            "miniaturized": window.is_minimized().unwrap_or(false),
+            "scale": scale,
+            "frame": [position.0, position.1, inner.0, inner.1],
+            "platform": "linux",
+        })
+    }
+
+    #[derive(Debug, Default, Clone, PartialEq, Eq)]
+    pub(super) struct WebKitPids {
+        pub(super) web_content: u32,
+        pub(super) gpu: u32,
+        pub(super) networking: u32,
+        /// Extra web processes the pool started ahead of time (WebKitGTK prewarms one).
+        pub(super) prewarmed: Vec<u32>,
+    }
+
+    struct ProcInfo {
+        pid: u32,
+        ppid: u32,
+        command: String,
+    }
+
+    /// `/proc/<pid>/stat`: `pid (comm) state ppid ...`; `comm` may itself contain spaces and
+    /// parentheses, so the field after the *last* `)` is the state and the next one the ppid.
+    fn parse_ppid(stat: &str) -> Option<u32> {
+        let rest = &stat[stat.rfind(')')? + 1..];
+        rest.split_whitespace().nth(1)?.parse().ok()
+    }
+
+    /// Basename of the first `argv[0]`-shaped entry of a NUL-separated cmdline.
+    fn command_of(cmdline: &[u8]) -> String {
+        cmdline
+            .split(|byte| *byte == 0)
+            .find(|part| !part.is_empty())
+            .map(|part| {
+                let text = String::from_utf8_lossy(part);
+                let name = text.rsplit('/').next().unwrap_or(&text);
+                name.to_string()
+            })
+            .unwrap_or_default()
+    }
+
+    /// WebKitGTK's helper names. `/proc/<pid>/comm` truncates to 15 bytes
+    /// ("WebKitWebProces", "WebKitNetworkPr"), so this compares a prefix that both the full
+    /// cmdline name and the truncated comm satisfy.
+    fn role_name(command: &str) -> Option<&'static str> {
+        if command.starts_with("WebKitWebProces") {
+            Some("web_content")
+        } else if command.starts_with("WebKitNetworkPr") {
+            Some("networking")
+        } else if command.starts_with("WebKitGPUProces") {
+            Some("gpu")
+        } else {
+            None
+        }
+    }
+
+    /// Attribute the helpers to this app by ancestry: a sandbox wrapper (bwrap) may sit between
+    /// the host and the web process, so the walk follows every descendant, not direct children.
+    fn resolve_webkit_pids(processes: &[ProcInfo], host: u32) -> WebKitPids {
+        let mut children: std::collections::HashMap<u32, Vec<u32>> = Default::default();
+        for process in processes {
+            children.entry(process.ppid).or_default().push(process.pid);
+        }
+        let mut found = WebKitPids::default();
+        let mut stack = vec![host];
+        while let Some(pid) = stack.pop() {
+            if let Some(kids) = children.get(&pid) {
+                stack.extend(kids);
+            }
+            let Some(process) = processes.iter().find(|process| process.pid == pid) else {
+                continue;
+            };
+            match role_name(&process.command) {
+                Some("web_content") if found.web_content == 0 => found.web_content = pid,
+                Some("web_content") => found.prewarmed.push(pid),
+                Some("gpu") if found.gpu == 0 => found.gpu = pid,
+                Some("networking") if found.networking == 0 => found.networking = pid,
+                _ => {}
+            }
+        }
+        found.prewarmed.sort_unstable();
+        found
+    }
+
+    /// One pass over `/proc`: pid, parent and the helper's name (cmdline, `comm` as fallback).
+    fn scan_processes() -> Vec<ProcInfo> {
+        let mut processes = Vec::new();
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            return processes;
+        };
+        for entry in entries.flatten() {
+            let Some(pid) = entry.file_name().to_str().and_then(|name| name.parse().ok()) else {
+                continue;
+            };
+            let base = entry.path();
+            let Ok(stat) = std::fs::read_to_string(base.join("stat")) else {
+                continue;
+            };
+            let Some(ppid) = parse_ppid(&stat) else {
+                continue;
+            };
+            let cmdline = std::fs::read(base.join("cmdline")).unwrap_or_default();
+            let mut command = command_of(&cmdline);
+            if command.is_empty() {
+                command = std::fs::read_to_string(base.join("comm"))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+            }
+            processes.push(ProcInfo { pid, ppid, command });
+        }
+        processes
+    }
+
+    /// CPU clock ticks per second (usually 100): `utime`/`stime` are in these units.
+    fn clock_ticks() -> u64 {
+        let value = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+        if value > 0 {
+            value as u64
+        } else {
+            100
+        }
+    }
+
+    /// One `/proc/<pid>/smaps_rollup` in bytes.
+    ///
+    /// `Pss` is the proportional set size: a shared page is divided among its sharers, so summing
+    /// Pss over the app's processes counts every shared page exactly once. `rss` is kept because
+    /// it is what the user sees, but a sum of Rss double counts shared pages; `rss_overcount` is
+    /// the difference and is reported instead of silently choosing one.
+    #[derive(Debug, Default, Clone, PartialEq, Eq)]
+    struct ProcMemory {
+        pss: u64,
+        rss: u64,
+        private: u64,
+        shared: u64,
+        swap: u64,
+        anon: u64,
+    }
+
+    /// The `kB` value of one exact `smaps_rollup` key. `Pss` must not match `Pss_Anon`, so the
+    /// key is compared up to the colon rather than by prefix.
+    fn smaps_kb(text: &str, key: &str) -> Option<u64> {
+        text.lines().find_map(|line| {
+            let (name, rest) = line.trim().split_once(':')?;
+            if name != key {
+                return None;
+            }
+            let value = rest.trim().strip_suffix("kB")?.trim();
+            value.parse().ok()
+        })
+    }
+
+    fn parse_smaps_rollup(text: &str) -> ProcMemory {
+        let private = smaps_kb(text, "Private_Clean").unwrap_or(0)
+            + smaps_kb(text, "Private_Dirty").unwrap_or(0)
+            + smaps_kb(text, "Private_Hugetlb").unwrap_or(0);
+        let shared = smaps_kb(text, "Shared_Clean").unwrap_or(0)
+            + smaps_kb(text, "Shared_Dirty").unwrap_or(0)
+            + smaps_kb(text, "Shared_Hugetlb").unwrap_or(0);
+        ProcMemory {
+            pss: smaps_kb(text, "Pss").unwrap_or(0).saturating_mul(1024),
+            rss: smaps_kb(text, "Rss").unwrap_or(0).saturating_mul(1024),
+            private: private.saturating_mul(1024),
+            shared: shared.saturating_mul(1024),
+            swap: smaps_kb(text, "Swap").unwrap_or(0).saturating_mul(1024),
+            anon: smaps_kb(text, "Anonymous").unwrap_or(0).saturating_mul(1024),
+        }
+    }
+
+    #[derive(Debug, Default, Clone, PartialEq, Eq)]
+    struct StatFields {
+        ppid: u32,
+        utime: u64,
+        stime: u64,
+        threads: u32,
+        starttime: u64,
+    }
+
+    /// `pid (comm) state ppid ... utime stime ... num_threads ... starttime ...`
+    fn parse_stat_fields(stat: &str) -> Option<StatFields> {
+        let rest: Vec<&str> = stat[stat.rfind(')')? + 1..].split_whitespace().collect();
+        if rest.len() < 22 {
+            return None;
+        }
+        Some(StatFields {
+            ppid: rest[1].parse().ok()?,
+            utime: rest[11].parse().ok()?,
+            stime: rest[12].parse().ok()?,
+            threads: rest[17].parse().ok()?,
+            starttime: rest[19].parse().ok()?,
+        })
+    }
+
+    /// Reads `/proc/<pid>/smaps_rollup` (memory) and `/proc/<pid>/stat` (CPU, threads).
+    fn read_memory(pid: u32) -> Option<(ProcMemory, StatFields)> {
+        let base = format!("/proc/{pid}");
+        let memory = parse_smaps_rollup(&std::fs::read_to_string(format!("{base}/smaps_rollup")).ok()?);
+        let stat = parse_stat_fields(&std::fs::read_to_string(format!("{base}/stat")).ok()?)?;
+        Some((memory, stat))
+    }
+
+    /// Role of one process in the whole-application table, independent of pid discovery.
+    fn role_for(command: &str, pid: u32, host: u32, web_content_seen: bool) -> &'static str {
+        if pid == host {
+            return "host";
+        }
+        match role_name(command) {
+            Some("web_content") if web_content_seen => "web_content_prewarmed",
+            Some(role) => role,
+            None if command == "bwrap" => "sandbox",
+            None => "workload",
+        }
+    }
+
+    /// The app's own subtree as `(pid, role)` pairs: host, WebKit helpers, sandbox wrappers and
+    /// every other descendant (PTY shells, synthetic agents) as workload.
+    fn role_table(processes: &[ProcInfo], host: u32) -> Vec<(u32, &'static str)> {
+        let mut children: std::collections::HashMap<u32, Vec<u32>> = Default::default();
+        for process in processes {
+            children.entry(process.ppid).or_default().push(process.pid);
+        }
+        let mut table = Vec::new();
+        let mut web_content_seen = false;
+        let mut stack = vec![host];
+        while let Some(pid) = stack.pop() {
+            if let Some(kids) = children.get(&pid) {
+                stack.extend(kids);
+            }
+            let Some(process) = processes.iter().find(|process| process.pid == pid) else {
+                continue;
+            };
+            let role = role_for(&process.command, pid, host, web_content_seen);
+            if role == "web_content" {
+                web_content_seen = true;
+            }
+            table.push((pid, role));
+        }
+        table.sort_unstable();
+        table
+    }
+
+    fn add_role(totals: &mut serde_json::Map<String, Value>, role: &str, key: &str, value: u64) {
+        let entry = totals
+            .entry(role.to_string())
+            .or_insert_with(|| json!({"pss": 0, "rss": 0, "private": 0, "shared": 0, "swap": 0, "rssOvercount": 0, "cpuSeconds": 0.0, "threads": 0, "processes": 0}));
+        let current = entry[key].as_u64().unwrap_or(0);
+        entry[key] = json!(current + value);
+    }
+
+    /// Whole-application memory and counters as one JSON document (the `memory` action).
+    ///
+    /// Every process is a descendant of this host process, so nothing external can enter the
+    /// total. `workload` is reported separately: PTY shells and the synthetic agent are external
+    /// programs the benchmark runs, not the application's own memory.
+    fn memory_report(host: u32) -> Value {
+        let processes = scan_processes();
+        let table = role_table(&processes, host);
+        let ticks = clock_ticks();
+        let mut rows = Vec::new();
+        let mut by_role: serde_json::Map<String, Value> = Default::default();
+        let mut totals = [0u64; 7]; // pss, rss, private, shared, swap, threads, fds
+        let mut workload = [0u64; 7];
+        let mut app = [0u64; 7];        for (pid, role) in &table {
+            let Some((memory, stat)) = read_memory(*pid) else {
+                continue;
+            };
+            let command = processes
+                .iter()
+                .find(|process| process.pid == *pid)
+                .map(|process| process.command.clone())
+                .unwrap_or_default();
+            let fds = std::fs::read_dir(format!("/proc/{pid}/fd"))
+                .map(|entries| entries.count() as u64)
+                .unwrap_or(0);
+            let cpu_seconds = (stat.utime + stat.stime) as f64 / ticks as f64;
+            rows.push(json!({
+                "pid": pid,
+                "role": role,
+                "command": command,
+                "pssBytes": memory.pss,
+                "rssBytes": memory.rss,
+                "privateBytes": memory.private,
+                "sharedBytes": memory.shared,
+                "swapBytes": memory.swap,
+                "rssOvercountBytes": memory.rss.saturating_sub(memory.pss),
+                "cpuSeconds": (cpu_seconds * 1000.0).round() / 1000.0,
+                "threads": stat.threads,
+                "fds": fds,
+            }));
+            let values = [memory.pss, memory.rss, memory.private, memory.shared, memory.swap, u64::from(stat.threads), fds];
+            for (index, value) in values.iter().enumerate() {
+                totals[index] += value;
+                if matches!(*role, "workload") {
+                    workload[index] += value;
+                } else {
+                    app[index] += value;
+                }
+            }
+            add_role(&mut by_role, role, "pss", memory.pss);
+            add_role(&mut by_role, role, "rss", memory.rss);
+            add_role(&mut by_role, role, "private", memory.private);
+            add_role(&mut by_role, role, "shared", memory.shared);
+            add_role(&mut by_role, role, "swap", memory.swap);
+            add_role(&mut by_role, role, "rssOvercount", memory.rss.saturating_sub(memory.pss));
+            add_role(&mut by_role, role, "threads", u64::from(stat.threads));
+            add_role(&mut by_role, role, "processes", 1);
+            let entry = by_role.get_mut(*role).expect("role was just inserted");
+            let cpu = entry["cpuSeconds"].as_f64().unwrap_or(0.0) + cpu_seconds;
+            entry["cpuSeconds"] = json!((cpu * 1000.0).round() / 1000.0);
+        }
+        let process_count = rows.len();
+        let summary = |values: &[u64; 7]| {
+            json!({
+                "pss": values[0], "rss": values[1], "private": values[2], "shared": values[3],
+                "swap": values[4], "threads": values[5], "fds": values[6],
+                "rssOvercount": values[1].saturating_sub(values[0]),
+                "processes": process_count,
+            })
+        };
+        json!({
+            "hostPid": host,
+            "platform": "linux",
+            "source": "/proc/<pid>/smaps_rollup",
+            "processes": rows,
+            "byRole": by_role,
+            "total": summary(&totals),
+            "app": summary(&app),
+            "workload": summary(&workload),
+        })
+    }
+
+    /// Wall-clock start of one process, from `btime` plus its start ticks (0 when unavailable).
+    fn process_started_unix_ms(pid: u32) -> u64 {
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            return 0;
+        };
+        let Some(fields) = parse_stat_fields(&stat) else {
+            return 0;
+        };
+        let Ok(sysinfo) = std::fs::read_to_string("/proc/stat") else {
+            return 0;
+        };
+        let btime = sysinfo
+            .lines()
+            .find_map(|line| line.strip_prefix("btime ")?.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        if btime == 0 {
+            return 0;
+        }
+        btime * 1000 + fields.starttime * 1000 / clock_ticks()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn proc(pid: u32, ppid: u32, command: &str) -> ProcInfo {
+            ProcInfo {
+                pid,
+                ppid,
+                command: command.to_string(),
+            }
+        }
+
+        #[test]
+        fn ppid_survives_spaces_and_parentheses_in_comm() {
+            assert_eq!(
+                parse_ppid("42 (WebKitWebProc (x)) S 7 42 42 0 -1"),
+                Some(7)
+            );
+            assert_eq!(parse_ppid("42 (bash) R 1 42 42 0 -1"), Some(1));
+            assert_eq!(parse_ppid("garbage"), None);
+        }
+
+        #[test]
+        fn helper_roles_match_truncated_comm_and_full_cmdline_names() {
+            assert_eq!(role_name("WebKitWebProcess"), Some("web_content"));
+            assert_eq!(role_name("WebKitWebProces"), Some("web_content"));
+            assert_eq!(role_name("WebKitNetworkProcess"), Some("networking"));
+            assert_eq!(role_name("WebKitNetworkPr"), Some("networking"));
+            assert_eq!(role_name("WebKitGPUProcess"), Some("gpu"));
+            assert_eq!(role_name("WebKitGPUProces"), Some("gpu"));
+            assert_eq!(role_name("terax"), None);
+            assert_eq!(role_name("WebKitWebProcessWrapper"), Some("web_content"));
+            assert_eq!(command_of(b"/usr/libexec/webkit2gtk-4.1/WebKitWebProcess\0-x\0"), "WebKitWebProcess");
+            assert_eq!(command_of(b""), "");
+        }
+
+        #[test]
+        fn helpers_are_attributed_through_sandbox_wrappers() {
+            let table = [
+                proc(100, 1, "terax"),
+                // bwrap -> web process: the helper is a grandchild of the host.
+                proc(101, 100, "bwrap"),
+                proc(102, 101, "WebKitWebProcess"),
+                proc(103, 102, "WebKitWebProcess"), // prewarmed
+                proc(104, 100, "WebKitNetworkProcess"),
+                proc(105, 100, "WebKitGPUProcess"),
+                // Another app's helpers must not be attributed.
+                proc(200, 1, "other-app"),
+                proc(201, 200, "WebKitWebProcess"),
+            ];
+            let pids = resolve_webkit_pids(&table, 100);
+            assert_eq!(
+                pids,
+                WebKitPids {
+                    web_content: 102,
+                    gpu: 105,
+                    networking: 104,
+                    prewarmed: vec![103],
+                }
+            );
+        }
+
+        #[test]
+        fn no_helpers_is_not_an_error() {
+            let table = [proc(100, 1, "terax")];
+            assert_eq!(resolve_webkit_pids(&table, 100), WebKitPids::default());
+        }
+
+        #[test]
+        fn smaps_rollup_parses_kb_and_keeps_pss_breakdown_apart() {
+            let text = "\
+Rss:               1200 kB
+Pss:                900 kB
+Pss_Anon:           400 kB
+Pss_File:           500 kB
+Shared_Clean:       600 kB
+Shared_Dirty:       100 kB
+Private_Clean:      300 kB
+Private_Dirty:      200 kB
+Anonymous:          400 kB
+Swap:                50 kB
+THPeligible:          0
+ProtectionKey:        0
+VmFlags: rd ex mr mw me
+";
+            let memory = parse_smaps_rollup(text);
+            assert_eq!(memory.pss, 900 * 1024);
+            assert_eq!(memory.rss, 1200 * 1024);
+            assert_eq!(memory.private, 500 * 1024);
+            assert_eq!(memory.shared, 700 * 1024);
+            assert_eq!(memory.swap, 50 * 1024);
+            assert_eq!(memory.anon, 400 * 1024);
+            assert_eq!(memory.rss.saturating_sub(memory.pss), 300 * 1024);
+        }
+
+        #[test]
+        fn a_torn_smaps_read_is_all_zeros() {
+            assert_eq!(parse_smaps_rollup(""), ProcMemory::default());
+            assert_eq!(parse_smaps_rollup("not a smaps file"), ProcMemory::default());
+        }
+
+        #[test]
+        fn stat_fields_survive_spaces_and_parentheses() {
+            // pid (comm) state ppid ... utime stime ... num_threads ... starttime ...
+            let stat = "42 (WebKitWebProc (x)) S 7 42 42 0 -1 4194560 12 0 0 0 3 4 0 0 20 0 9 0 98765 100 200";
+            let fields = parse_stat_fields(stat).expect("parsed");
+            assert_eq!(fields.ppid, 7);
+            assert_eq!(fields.utime, 3);
+            assert_eq!(fields.stime, 4);
+            assert_eq!(fields.threads, 9);
+            assert_eq!(fields.starttime, 98765);
+            assert_eq!(parse_stat_fields("garbage"), None);
+            assert_eq!(parse_stat_fields("1 (x) S 2"), None);
+        }
+
+        #[test]
+        fn role_table_separates_the_app_from_external_workload() {
+            let table = [
+                proc(100, 1, "terax"),
+                proc(101, 100, "bwrap"),
+                proc(102, 101, "WebKitWebProcess"),
+                proc(103, 102, "WebKitWebProcess"),
+                proc(104, 100, "WebKitNetworkProcess"),
+                proc(105, 100, "WebKitGPUProcess"),
+                proc(106, 100, "bash"),
+                proc(107, 106, "node"),
+                // Another app's helper is not a descendant of the host and cannot appear.
+                proc(200, 1, "other-app"),
+            ];
+            let roles = role_table(&table, 100);
+            assert_eq!(
+                roles,
+                vec![
+                    (100, "host"),
+                    (101, "sandbox"),
+                    (102, "web_content"),
+                    (103, "web_content_prewarmed"),
+                    (104, "networking"),
+                    (105, "gpu"),
+                    (106, "workload"),
+                    (107, "workload"),
+                ]
+            );
+        }
+
+        #[test]
+        fn role_for_names_a_single_role_per_process() {
+            assert_eq!(role_for("terax", 100, 100, false), "host");
+            assert_eq!(role_for("WebKitWebProces", 102, 100, false), "web_content");
+            assert_eq!(role_for("WebKitWebProces", 103, 100, true), "web_content_prewarmed");
+            assert_eq!(role_for("bwrap", 101, 100, false), "sandbox");
+            assert_eq!(role_for("bash", 106, 100, false), "workload");
+        }
+
+        #[test]
+        fn the_live_memory_report_is_internally_consistent() {
+            let report = memory_report(std::process::id());
+            assert_eq!(report["platform"], "linux");
+            assert_eq!(report["hostPid"], std::process::id());
+            let total = &report["total"];
+            let app = &report["app"];
+            let workload = &report["workload"];
+            assert_eq!(
+                total["pss"].as_u64().unwrap(),
+                app["pss"].as_u64().unwrap() + workload["pss"].as_u64().unwrap()
+            );
+            // The test process itself is the host; it must be present with its own Pss.
+            let host = report["byRole"]["host"]["pss"].as_u64().unwrap_or(0);
+            assert!(host > 0, "host Pss is zero: {report}");
+            assert!(total["rss"].as_u64().unwrap() >= total["pss"].as_u64().unwrap());
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 mod platform {
     use super::*;
 
@@ -729,14 +1423,20 @@ mod tests {
 
     #[test]
     fn product_identifier_is_refused() {
+        assert!(guard_environment(product_identifier(), Some("1")).is_err());
+        assert!(guard_environment("dev.terax-lab-abc123", Some("1")).is_ok());
+    }
+
+    #[test]
+    fn an_upstream_identifier_is_refused_too() {
         assert!(guard_environment("app.crynta.terax", Some("1")).is_err());
-        assert!(guard_environment("app.crynta.terax.app-lab", Some("1")).is_ok());
+        assert!(guard_environment("app.crynta.terax.app-lab", Some("1")).is_err());
     }
 
     #[test]
     fn isolation_must_be_declared() {
-        assert!(guard_environment("app.crynta.terax.app-lab", None).is_err());
-        assert!(guard_environment("app.crynta.terax.app-lab", Some("0")).is_err());
+        assert!(guard_environment("dev.terax-lab-abc123", None).is_err());
+        assert!(guard_environment("dev.terax-lab-abc123", Some("0")).is_err());
     }
 
     #[test]

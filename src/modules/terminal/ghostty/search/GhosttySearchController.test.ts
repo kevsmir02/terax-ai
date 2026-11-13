@@ -118,9 +118,16 @@ describe("GhosttySearchController (loads its engine on first use)", () => {
       for (let frame = 0; frame < 3; frame++) search.refreshOverlay();
       expect(search.snapshot().query).toBe("agent");
       await vi.dynamicImportSettled();
-      expect(stub.setSearchQuery).toHaveBeenCalledTimes(request === "find" ? 1 : 0);
-      expect(stub.selectSearchMatch).toHaveBeenCalledExactlyOnceWith("previous");
-      expect(search.snapshot()).toEqual({ query: "agent", pendingDirection: null });
+      expect(stub.setSearchQuery).toHaveBeenCalledTimes(
+        request === "find" ? 1 : 0,
+      );
+      expect(stub.selectSearchMatch).toHaveBeenCalledExactlyOnceWith(
+        "previous",
+      );
+      expect(search.snapshot()).toEqual({
+        query: "agent",
+        pendingDirection: null,
+      });
       search.dispose();
     },
   );

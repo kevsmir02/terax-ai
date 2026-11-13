@@ -1,10 +1,13 @@
 import { leafIds } from "@/modules/terminal";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   AGENT_LAUNCHERS,
   createAgentPanePlan,
   DEFAULT_AGENT_LAUNCH_COMMANDS,
+  findAgentLauncher,
   normalizeAgentLaunchCommands,
+  resolveAgentLaunchCommand,
   validateAgentLaunchCommand,
   type AgentInstanceCount,
 } from "./launcher";
@@ -56,6 +59,60 @@ describe("agent launch commands", () => {
       pi: "pi --provider local",
       opencode: "opencode",
       grok: "grok",
+      antigravity: "antigravity",
+    });
+  });
+});
+
+describe("Antigravity CLI versus its desktop app", () => {
+  it("offers the terminal CLI, not the GUI, as the launcher", () => {
+    const launcher = findAgentLauncher("antigravity");
+
+    expect(launcher).toMatchObject({
+      id: "antigravity",
+      label: "Antigravity CLI",
+      defaultCommand: "antigravity",
+      supportsHooks: false,
+    });
+  });
+
+  it("launches the terminal CLI, with aliases and flags", () => {
+    expect(resolveAgentLaunchCommand("antigravity", " ag --model x ")).toEqual({
+      ok: true,
+      command: "ag --model x",
+    });
+  });
+
+  it("refuses desktop-app commands instead of pretending to control the GUI", () => {
+    for (const gui of [
+      "antigravity-desktop",
+      "antigravity-gui --new-window",
+      "open -a Antigravity",
+      "open -n -a Antigravity /workspace",
+      "xdg-open /usr/share/applications/antigravity.desktop",
+      "/Applications/Antigravity.app/Contents/MacOS/Antigravity",
+      "gio open antigravity.desktop",
+    ]) {
+      const result = resolveAgentLaunchCommand("antigravity", gui);
+
+      expect(result).toMatchObject({ ok: false });
+      if (!result.ok) expect(result.error).toMatch(/terminal CLI/);
+    }
+  });
+
+  it("keeps every other agent's command untouched", () => {
+    expect(resolveAgentLaunchCommand("claude", "open -a Claude")).toEqual({
+      ok: true,
+      command: "open -a Claude",
+    });
+  });
+
+  it("keeps blank and multiline commands refused", () => {
+    expect(resolveAgentLaunchCommand("antigravity", "  ")).toMatchObject({
+      ok: false,
+    });
+    expect(resolveAgentLaunchCommand("antigravity", "a\nb")).toMatchObject({
+      ok: false,
     });
   });
 });
@@ -103,5 +160,23 @@ describe("createAgentPanePlan", () => {
     expect(() =>
       createAgentPanePlan(5 as AgentInstanceCount, allocator()),
     ).toThrow(RangeError);
+  });
+});
+
+// Launching is a composition inside `App.tsx` and this suite renders no React
+// tree, so the invariant the ticket needs is an absence: an ordinary launch must
+// not install agent hooks. Hook installation stays an explicit command
+// (`control/lib/hooksConfig.ts`, covered by `hooksConfig.test.ts`).
+describe("hook-free launching", () => {
+  it("does not enable hooks from the launch path", () => {
+    const app = readFileSync(
+      new URL("../../../app/App.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(app.match(/agent_enable_hooks/g) ?? []).toEqual([]);
+    // Hook capability must not shape launching either: every launcher writes the
+    // configured command and nothing else.
+    expect(app.match(/supportsHooks/g) ?? []).toEqual([]);
   });
 });

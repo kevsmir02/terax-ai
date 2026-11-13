@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Terax",
-  "version": "0.9.0",
-  "identifier": "app.crynta.terax",
+  "productName": "Codr",
+  "version": "1.0.0",
+  "identifier": "io.github.kevsmir02.codr",
   "build": {
     "beforeDevCommand": "pnpm build:cli:dev && pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -11,10 +11,9 @@
     "removeUnusedCommands": true
   },
   "app": {
-    "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "Terax",
+        "title": "Codr",
         "width": 800,
         "height": 600,
         "minWidth": 420,
@@ -26,7 +25,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost https://asset.localhost blob:; media-src 'self' asset: http://asset.localhost https://asset.localhost blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost terax-pty: http://terax-pty.localhost https: http://localhost:* http://127.0.0.1:*; frame-src 'self' http: https: asset: http://asset.localhost https://asset.localhost; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost https://asset.localhost blob: https: http://localhost:* http://127.0.0.1:*; media-src 'self' asset: http://asset.localhost https://asset.localhost blob: http://127.0.0.1:* http://localhost:*; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost terax-pty: http://terax-pty.localhost https: http://localhost:* http://127.0.0.1:*; frame-src 'self' http: https: asset: http://asset.localhost https://asset.localhost; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
       "assetProtocol": {
         "enable": true,
         "scope": []
@@ -36,7 +35,7 @@
   "bundle": {
     "active": true,
     "externalBin": [
-      "binaries/terax-cli"
+      "binaries/codr-cli"
     ],
     "resources": {
       "../packages/ghostty-core/LICENSE": "licenses/terminal/ghostty-web.txt",
@@ -44,11 +43,14 @@
       "../packages/ghostty-core/adapted/LICENSE.restty": "licenses/terminal/restty.txt",
       "../src/modules/terminal/ghostty/webgl/LICENSE.xterm-js": "licenses/terminal/xterm-js.txt"
     },
-    "targets": "all",
-    "createUpdaterArtifacts": true,
-    "copyright": "Copyright 2026 Crynta",
+    "targets": [
+      "rpm",
+      "deb"
+    ],
+    "createUpdaterArtifacts": false,
+    "copyright": "Copyright 2026 Crynta and Codr contributors",
     "license": "Apache-2.0",
-    "publisher": "Crynta",
+    "publisher": "kevsmir02",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -56,48 +58,23 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "macOS": {
-      "minimumSystemVersion": "13.0",
-      "entitlements": "./entitlements.plist"
-    },
     "linux": {
       "deb": {
-        "section": "utils",
-        "depends": [
-          "libwebkit2gtk-4.1-0",
-          "libgtk-3-0"
-        ]
+        "section": "utils"
       },
       "rpm": {
         "depends": [
           "webkit2gtk4.1",
           "gtk3"
         ]
-      },
-      "appimage": {
-        "bundleMediaFramework": true
-      }
-    },
-    "windows": {
-      "webviewInstallMode": {
-        "type": "downloadBootstrapper"
-      },
-      "nsis": {
-        "installMode": "currentUser",
-        "languages": [
-          "English"
-        ],
-        "displayLanguageSelector": false,
-        "installerIcon": "icons/icon.ico",
-        "installerHooks": "./installer-hooks.nsh"
       }
     },
     "category": "DeveloperTool",
-    "shortDescription": "AI-native terminal emulator",
-    "longDescription": "Terax — an open-source AI-native terminal emulator with multi-tab, file explorer, code editor, web preview, voice input, and AI agents.",
+    "shortDescription": "Codr - Linux terminal workspace with editor, Git and previews",
+    "longDescription": "Codr is an unofficial fork of Terax for Linux x86-64: multi-tab terminal, file explorer, code editor, source control and rendered previews, built by kevsmir02 and not affiliated with Crynta.",
     "fileAssociations": [
       {
-        "name": "Terax Document",
+        "name": "Codr Document",
         "role": "Editor",
         "mimeType": "text/plain",
         "ext": [
@@ -116,9 +93,9 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNCQUJGRDhBQjYwRTM0NjkKUldScE5BNjJpdjJyT3dIN0dqbUpHaDA4QW1GaDVmTTllRXdZVk96dFNTRUZ3Y2hiVGszYjFqRloK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk0MDk3Qjc1REI0OThCMjEKUldRaGkwbmJkWHNKbEZ1OWI0OHNtallkdFpLelozQW42cmpoS1J6K2tkTDB0RzhmN0RCSmo4bEwK",
       "endpoints": [
-        "https://github.com/crynta/terax-ai/releases/latest/download/latest.json"
+        "https://github.com/kevsmir02/terax-ai/releases/latest/download/latest.json"
       ]
     }
   }

@@ -51,7 +51,10 @@ export function createCoalescer(
       const now = timers.now();
       if (handle === null) firstAt = now;
       else timers.clear(handle);
-      handle = timers.set(run, Math.max(0, Math.min(delayMs, firstAt + maxWaitMs - now)));
+      handle = timers.set(
+        run,
+        Math.max(0, Math.min(delayMs, firstAt + maxWaitMs - now)),
+      );
     },
     cancel() {
       if (handle !== null) timers.clear(handle);

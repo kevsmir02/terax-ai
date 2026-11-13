@@ -3,7 +3,45 @@
 //! git argument list; `git check-ref-format` stays the authority for branch
 //! names (see `plumbing::check_branch_name`).
 
-pub const CHECKPOINT_PREFIX: &str = "refs/terax/checkpoints/";
+/// Root of every ref this fork writes: `refs/<namespace>`, never upstream's `refs/terax`.
+pub fn ref_root() -> String {
+    format!("refs/{}", crate::modules::identity::namespace())
+}
+
+/// Checkpoint refs of this fork. A ref namespace shared with another installation would
+/// let one application list, restore or prune the other's checkpoints.
+pub fn checkpoint_prefix() -> String {
+    format!("{}/checkpoints/", ref_root())
+}
+
+/// Task archive refs of this fork.
+pub fn task_archive_prefix(task_id: &str) -> String {
+    format!("{}/tasks/{task_id}/archive/", ref_root())
+}
+
+/// Manual checkpoint refs of this fork, deliberately a separate root instead of
+/// a `<task>` directory under `checkpoints/`: a task literally named `manual`
+/// can then never collide with a manual checkpoint id.
+pub fn manual_checkpoint_prefix() -> String {
+    format!("{}/manual-checkpoints/", ref_root())
+}
+
+/// A manual checkpoint id is 16 random bytes in lowercase hex: opaque, stable
+/// and independent of task ids, turn numbers or the user's optional name.
+pub fn is_valid_manual_checkpoint_id(id: &str) -> bool {
+    id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+pub fn manual_checkpoint_ref(id: &str) -> String {
+    format!("{}{id}", manual_checkpoint_prefix())
+}
+
+/// The id of a manual checkpoint ref, or `None` for anything else.
+pub fn parse_manual_checkpoint_ref(name: &str) -> Option<&str> {
+    let id = name.strip_prefix(&manual_checkpoint_prefix())?;
+    is_valid_manual_checkpoint_id(id).then_some(id)
+}
+
 const MAX_REF_BYTES: usize = 255;
 
 /// Characters git forbids anywhere in a ref name, plus whitespace and control
@@ -58,16 +96,16 @@ pub fn is_valid_task_id(id: &str) -> bool {
 }
 
 pub fn checkpoint_ref(task_id: &str, turn: u32) -> String {
-    format!("{CHECKPOINT_PREFIX}{task_id}/{turn}")
+    format!("{}{task_id}/{turn}", checkpoint_prefix())
 }
 
 pub fn checkpoint_task_prefix(task_id: &str) -> String {
-    format!("{CHECKPOINT_PREFIX}{task_id}/")
+    format!("{}{task_id}/", checkpoint_prefix())
 }
 
 /// `(task id, turn)` of a checkpoint ref, or `None` for anything else.
 pub fn parse_checkpoint_ref(name: &str) -> Option<(&str, u32)> {
-    let rest = name.strip_prefix(CHECKPOINT_PREFIX)?;
+    let rest = name.strip_prefix(&checkpoint_prefix())?;
     let (task, turn) = rest.split_once('/')?;
     if !is_valid_task_id(task) || turn.is_empty() || turn.len() > 10 {
         return None;
@@ -80,12 +118,12 @@ pub fn parse_checkpoint_ref(name: &str) -> Option<(&str, u32)> {
 
 /// The ref a restore saves the pre-restore working tree under.
 pub fn prerestore_ref(task_id: &str, millis: u64) -> String {
-    format!("{CHECKPOINT_PREFIX}{task_id}/prerestore-{millis}")
+    format!("{}{task_id}/prerestore-{millis}", checkpoint_prefix())
 }
 
 /// `(task id, millis)` of a pre-restore safety ref.
 pub fn parse_prerestore_ref(name: &str) -> Option<(&str, u64)> {
-    let rest = name.strip_prefix(CHECKPOINT_PREFIX)?;
+    let rest = name.strip_prefix(&checkpoint_prefix())?;
     let (task, tail) = rest.split_once('/')?;
     let millis = tail.strip_prefix("prerestore-")?;
     if !is_valid_task_id(task) || millis.is_empty() || millis.len() > 20 {
@@ -230,28 +268,76 @@ mod tests {
     #[test]
     fn checkpoint_refs_round_trip() {
         let name = checkpoint_ref("task-1", 7);
-        assert_eq!(name, "refs/terax/checkpoints/task-1/7");
+        assert_eq!(name, format!("{}task-1/7", checkpoint_prefix()));
         assert_eq!(parse_checkpoint_ref(&name), Some(("task-1", 7)));
         assert_eq!(
             checkpoint_task_prefix("task-1"),
-            "refs/terax/checkpoints/task-1/"
+            format!("{}task-1/", checkpoint_prefix())
         );
     }
 
     #[test]
-    fn foreign_or_malformed_checkpoint_refs_do_not_parse() {
+    fn refs_live_in_the_fork_namespace_so_upstream_refs_stay_foreign() {
+        let prefix = checkpoint_prefix();
+        assert!(prefix.starts_with(&format!("{}/checkpoints/", ref_root())));
+        assert!(!prefix.starts_with("refs/terax/"), "{prefix}");
+        // An upstream checkpoint/archive ref is not ours: it never parses, so this
+        // application cannot list, restore or prune it.
+        assert_eq!(parse_checkpoint_ref("refs/terax/checkpoints/task-1/7"), None);
+        assert_eq!(
+            parse_prerestore_ref("refs/terax/checkpoints/task-1/prerestore-1"),
+            None
+        );
+        assert!(!task_archive_prefix("task-1").starts_with("refs/terax/"));
+        assert_eq!(
+            parse_manual_checkpoint_ref("refs/terax/manual-checkpoints/0123456789abcdef0123456789abcdef"),
+            None
+        );
+    }
+
+    #[test]
+    fn manual_checkpoint_refs_round_trip_and_never_collide_with_tasks() {
+        let id = "0123456789abcdef0123456789abcdef";
+        let name = manual_checkpoint_ref(id);
+        assert_eq!(
+            name,
+            format!("{}/manual-checkpoints/{id}", ref_root())
+        );
+        assert_eq!(parse_manual_checkpoint_ref(&name), Some(id));
+        // A task named `manual` cannot shadow a manual checkpoint, and a turn
+        // ref is not a manual checkpoint.
+        assert_eq!(
+            parse_manual_checkpoint_ref(&checkpoint_ref("manual", 1)),
+            None
+        );
+        assert_eq!(parse_checkpoint_ref(&name), None);
         for bad in [
-            "refs/heads/main",
-            "refs/terax/checkpoints/",
-            "refs/terax/checkpoints/task",
-            "refs/terax/checkpoints/task/",
-            "refs/terax/checkpoints/task/x",
-            "refs/terax/checkpoints/task/-1",
-            "refs/terax/checkpoints/../7",
-            "refs/terax/checkpoints/a/b/7",
-            "refs/terax/checkpoints/task/99999999999",
+            "".to_string(),
+            manual_checkpoint_prefix(),
+            format!("{}{id}/extra", manual_checkpoint_prefix()),
+            format!("{}{}", manual_checkpoint_prefix(), "a".repeat(31)),
+            format!("{}{}", manual_checkpoint_prefix(), "g".repeat(32)),
         ] {
-            assert_eq!(parse_checkpoint_ref(bad), None, "{bad}");
+            assert_eq!(parse_manual_checkpoint_ref(&bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn foreign_or_malformed_checkpoint_refs_do_not_parse() {
+        let prefix = checkpoint_prefix();
+        let bad = [
+            "refs/heads/main".to_string(),
+            prefix.clone(),
+            format!("{prefix}task"),
+            format!("{prefix}task/"),
+            format!("{prefix}task/x"),
+            format!("{prefix}task/-1"),
+            format!("{prefix}../7"),
+            format!("{prefix}a/b/7"),
+            format!("{prefix}task/99999999999"),
+        ];
+        for bad in bad {
+            assert_eq!(parse_checkpoint_ref(&bad), None, "{bad}");
         }
     }
 

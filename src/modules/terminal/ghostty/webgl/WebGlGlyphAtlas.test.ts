@@ -160,9 +160,10 @@ describe("WebGlGlyphAtlas neighbour-aware glyphs", () => {
     const gl = createWebGlHarness(vi.fn(), vi.fn());
     const atlas = new WebGlGlyphAtlas(gl, METRICS, 1);
     for (const codepoint of [65, 0xe0a0, 0xe0d6, 0x4e2d]) {
-      expect(atlas.glyph(codepoint, null, 0, false), codepoint.toString(16)).toBe(
-        atlas.glyph(codepoint, null, 0, true),
-      );
+      expect(
+        atlas.glyph(codepoint, null, 0, false),
+        codepoint.toString(16),
+      ).toBe(atlas.glyph(codepoint, null, 0, true));
     }
     atlas.dispose();
   });

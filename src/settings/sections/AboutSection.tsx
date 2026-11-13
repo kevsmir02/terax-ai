@@ -1,15 +1,16 @@
 import { Button } from "@/components/ui/button";
 import { useUpdater } from "@/modules/updater";
-import { GithubIcon, Globe02Icon } from "@hugeicons/core-free-icons";
+import { canRequestHandoff } from "@/modules/updater/updateState";
+import { GithubIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { getName, getVersion } from "@tauri-apps/api/app";
+import { getIdentifier, getName, getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { arch, platform } from "@tauri-apps/plugin-os";
 import { useEffect, useState } from "react";
 import { SectionHeader } from "../components/SectionHeader";
 
-const REPO_URL = "https://github.com/crynta/terax-ai";
-const WEBSITE = "https://terax.app";
+const REPO_URL = "https://github.com/kevsmir02/terax-ai";
+const UPSTREAM_URL = "https://github.com/crynta/terax-ai";
 
 const PLATFORM_LABEL: Record<string, string> = {
   macos: "macOS",
@@ -22,38 +23,36 @@ const PLATFORM_LABEL: Record<string, string> = {
 
 export function AboutSection() {
   const [version, setVersion] = useState("");
-  const [name, setName] = useState("Terax");
+  const [name, setName] = useState("Codr");
+  const [identifier, setIdentifier] = useState("");
   const [build, setBuild] = useState("");
-  const { status, check, install } = useUpdater({ autoCheck: false });
-  const checking = status.kind === "checking";
-  const downloading = status.kind === "downloading";
-  const available = status.kind === "available";
-  const manualAvailable = status.kind === "manual-available";
-  const ready = status.kind === "ready";
-  const checkLabel =
-    status.kind === "uptodate"
-      ? "You're up to date"
-      : status.kind === "error"
-        ? "Check failed — retry"
-        : checking
-          ? "Checking…"
-          : downloading
-            ? "Downloading…"
-            : ready
-              ? "Restart to install"
-              : available
-                ? `Install v${status.update.version}`
-                : manualAvailable
-                  ? `Update to v${status.info.version}`
-                  : "Check for updates";
+  const { state, check, requestHandoff } = useUpdater({ autoCheck: false });
+  const checking = state.kind === "checking";
+  const available = canRequestHandoff(state);
+  const handedOff =
+    state.kind === "handoff-unavailable" || state.kind === "handed-off";
+  const checkLabel = checking
+    ? "Checking…"
+    : available
+      ? `Update to v${state.release.version}`
+      : handedOff
+        ? "Update with your package tool"
+        : state.kind === "up-to-date"
+          ? "You're up to date"
+          : state.kind === "check-failed"
+            ? "Check failed - retry"
+            : "Check for updates";
   const onUpdateClick = () => {
-    if (available) void install();
+    if (available) void requestHandoff();
     else void check({ manual: true });
   };
 
   useEffect(() => {
     void getVersion().then(setVersion);
     void getName().then(setName);
+    // The bundle id is the running application's identity, never a literal: a build
+    // under another identifier must not claim this one in its About pane.
+    void getIdentifier().then(setIdentifier);
     try {
       const p = platform();
       const a = arch();
@@ -75,10 +74,10 @@ export function AboutSection() {
             {name}
           </span>
           <span className="text-[11px] text-muted-foreground">
-            Open-source AI-native terminal emulator
+            Open-source Linux terminal workspace (unofficial fork of Terax)
           </span>
           <span className="mt-1 font-mono text-[11px] text-muted-foreground">
-            v{version || "—"}
+            v{version || "-"}
           </span>
         </div>
       </div>
@@ -90,7 +89,7 @@ export function AboutSection() {
         </dd>
 
         <dt className="text-muted-foreground">Bundle ID</dt>
-        <dd className="font-mono text-[11.5px]">app.crynta.terax</dd>
+        <dd className="font-mono text-[11.5px]">{identifier || "-"}</dd>
 
         <dt className="text-muted-foreground">License</dt>
         <dd>Apache 2.0</dd>
@@ -103,18 +102,18 @@ export function AboutSection() {
             className="inline-flex items-center gap-1.5 rounded-md text-[12px] underline-offset-2 hover:text-foreground hover:underline"
           >
             <HugeiconsIcon icon={GithubIcon} size={12} strokeWidth={1.75} />
-            crynta/terax-ai
+            kevsmir02/terax-ai
           </button>
         </dd>
-        <dt className="text-muted-foreground">Website</dt>
+        <dt className="text-muted-foreground">Upstream</dt>
         <dd>
           <button
             type="button"
-            onClick={() => void openUrl(WEBSITE)}
+            onClick={() => void openUrl(UPSTREAM_URL)}
             className="inline-flex items-center gap-1.5 rounded-md text-[12px] underline-offset-2 hover:text-foreground hover:underline"
           >
-            <HugeiconsIcon icon={Globe02Icon} size={12} strokeWidth={1.75} />
-            terax.app
+            <HugeiconsIcon icon={GithubIcon} size={12} strokeWidth={1.75} />
+            crynta/terax-ai
           </button>
         </dd>
       </dl>
@@ -124,7 +123,7 @@ export function AboutSection() {
           <Button
             size="sm"
             onClick={onUpdateClick}
-            disabled={checking || downloading || ready}
+            disabled={checking || handedOff}
           >
             {checkLabel}
           </Button>
@@ -145,20 +144,27 @@ export function AboutSection() {
             Report an issue
           </Button>
         </div>
-        {status.kind === "error" && (
-          <p className="font-mono text-[10.5px] break-all text-destructive/80">
-            {status.message}
+        {state.kind === "update-available" && (
+          <p className="text-[11px] text-muted-foreground">
+            A newer stable release was found. Codr does not download or install
+            it; update with your package tool after closing the app.
           </p>
         )}
-        {downloading && status.contentLength ? (
-          <p className="text-[11px] text-muted-foreground">
-            {Math.min(
-              100,
-              Math.round((status.downloaded / status.contentLength) * 100),
-            )}
-            %
+        {state.kind === "check-failed" && (
+          <p className="font-mono text-[10.5px] break-all text-destructive/80">
+            {state.failure.reason}: {state.failure.detail}
           </p>
-        ) : null}
+        )}
+        {state.kind === "handoff-unavailable" && (
+          <p className="text-[11px] text-muted-foreground">{state.detail}</p>
+        )}
+        {state.kind === "handed-off" && (
+          <p className="text-[11px] text-muted-foreground">
+            Handed off: Codr did not download, install or verify anything, and
+            it cannot confirm the result. Run the package tool from your
+            terminal.
+          </p>
+        )}
       </div>
     </div>
   );

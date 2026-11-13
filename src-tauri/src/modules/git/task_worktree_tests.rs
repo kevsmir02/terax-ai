@@ -65,6 +65,10 @@ fn location_repo() -> TestRepo {
     repo
 }
 
+fn state_dir_name() -> String {
+    crate::modules::identity::home_dir_name()
+}
+
 fn set_task_dir(repo: &TestRepo, template: &str) {
     repo.write(
         ".terax/project.toml",
@@ -85,8 +89,8 @@ fn task_locations_reject_absolute_and_home_paths_outside_trusted_roots() {
         ),
         ("~/.ssh/{task}".into(), home.join(".ssh/task")),
         (
-            "~/.terax/worktrees-other/{task}".into(),
-            home.join(".terax/worktrees-other/task"),
+            format!("~/{}/worktrees-other/{{task}}", state_dir_name()),
+            home.join(state_dir_name()).join("worktrees-other/task"),
         ),
     ] {
         set_task_dir(&repo, &template);
@@ -128,7 +132,8 @@ fn task_locations_allow_default_and_sibling_worktrees() {
     let repo = location_repo();
     let (_home, home) = scratch();
     let default = create(&repo, &home, "default");
-    assert!(Path::new(&default.task.path).starts_with(home.join(".terax/worktrees")));
+    assert!(Path::new(&default.task.path)
+        .starts_with(home.join(state_dir_name()).join("worktrees")));
     let sibling = repo.root.parent().unwrap().join("repo-worktrees");
     set_task_dir(&repo, &format!("{}/{{task}}", sibling.display()));
     let task = create(&repo, &home, "sibling");
@@ -225,9 +230,12 @@ fn task_locations_resolve_symlinks_before_trusting_destinations() {
         error.contains(&outside.to_string_lossy().to_string()),
         "{error}"
     );
-    std::fs::create_dir_all(home.join(".terax")).unwrap();
-    std::os::unix::fs::symlink(&outside, home.join(".terax/worktrees")).unwrap();
-    set_task_dir(&repo, "~/.terax/worktrees/{project}/{task}");
+    std::fs::create_dir_all(home.join(state_dir_name())).unwrap();
+    std::os::unix::fs::symlink(&outside, home.join(state_dir_name()).join("worktrees")).unwrap();
+    set_task_dir(
+        &repo,
+        &format!("~/{}/worktrees/{{project}}/{{task}}", state_dir_name()),
+    );
     assert!(tasks::create(
         &repo.registry,
         &repo.path(),
@@ -391,7 +399,10 @@ fn config_defaults_unknown_keys_types_and_lines() {
         project_config::parse("version = 999\nunknown = true\n[ports]\nbase = 4000\n").unwrap();
     assert_eq!(config.ports.base, 4000);
     assert_eq!(config.ports.per_task, 10);
-    assert_eq!(config.worktree.branch_prefix, "terax/");
+    assert_eq!(
+        config.worktree.branch_prefix,
+        format!("{}/", crate::modules::identity::namespace())
+    );
     assert_eq!(config.layout.default.cards, ["agent", "review | preview"]);
     assert_eq!(config.scripts.setup, "pnpm install");
     let json = serde_json::to_value(&config).unwrap();
@@ -456,7 +467,10 @@ fn lifecycle_preserves_dirty_work_and_reallocates_ports() {
     repo.write("node_modules/.cache/item", "shared cache\n");
     let first = create(&repo, &home, "Fix Login!");
     let path = Path::new(&first.task.path);
-    assert_eq!(first.task.branch, "terax/fix-login");
+    assert_eq!(
+        first.task.branch,
+        format!("{}/fix-login", crate::modules::identity::namespace())
+    );
     assert_eq!(first.setup_script, "echo setup");
     assert_eq!(first.copied, [".env", "local.json"]);
     assert!(!path.join("scratch.txt").exists());
@@ -838,8 +852,12 @@ fn invalid_config_and_corrupt_state_fail_before_worktree_creation() {
     ] {
         assert!(project_config::parse(config).is_err());
     }
-    std::fs::create_dir(home.join(".terax")).unwrap();
-    std::fs::write(home.join(".terax/task-worktrees.json"), "not json").unwrap();
+    std::fs::create_dir(home.join(state_dir_name())).unwrap();
+    std::fs::write(
+        home.join(state_dir_name()).join("task-worktrees.json"),
+        "not json",
+    )
+    .unwrap();
     assert!(tasks::create(
         &repo.registry,
         &repo.path(),
@@ -851,8 +869,10 @@ fn invalid_config_and_corrupt_state_fail_before_worktree_creation() {
         &home
     )
     .is_err());
-    assert!(!home.join(".terax/worktrees").exists());
-    assert!(!repo.git(&["branch", "--list", "terax/*"]).contains("bad"));
+    assert!(!home.join(state_dir_name()).join("worktrees").exists());
+    assert!(!repo
+        .git(&["branch", "--list", &format!("{}/*", crate::modules::identity::namespace())])
+        .contains("bad"));
 }
 
 #[test]
@@ -1044,11 +1064,14 @@ fn branch_slugs_accept_file_names_and_dot_runs() {
     let (_home, home) = scratch();
     assert_eq!(
         create(&repo, &home, "Update Cargo.lock").task.branch,
-        "terax/update-cargo-lock"
+        format!(
+            "{}/update-cargo-lock",
+            crate::modules::identity::namespace()
+        )
     );
     assert_eq!(
         create(&repo, &home, "Fix foo..bar").task.branch,
-        "terax/fix-foo-bar"
+        format!("{}/fix-foo-bar", crate::modules::identity::namespace())
     );
 }
 

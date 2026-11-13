@@ -1,3 +1,4 @@
+import { assetScopes } from "@/lib/assetScopes";
 import { isMarkdownPath } from "@/lib/utils";
 import {
   type AgentInstanceCount,
@@ -44,8 +45,6 @@ export type TerminalTab = TabBase & {
   paneTree: PaneNode;
   activeLeafId: number;
   blocks?: boolean;
-  /** AI agent cannot read buffer / context of this terminal. */
-  private?: boolean;
   /** User-set label that overrides the cwd-derived name. Survives cd. */
   customTitle?: string;
 };
@@ -77,22 +76,6 @@ export type MarkdownTab = TabBase & {
   kind: "markdown";
   title: string;
   path: string;
-};
-
-export type AiDiffStatus = "pending" | "approved" | "rejected";
-
-export type AiDiffTab = TabBase & {
-  id: number;
-  kind: "ai-diff";
-  title: string;
-  path: string;
-  /** "" for newly created files. */
-  originalContent: string;
-  proposedContent: string;
-  /** Tool-call approval id used to resolve the AI SDK approval. */
-  approvalId: string;
-  status: AiDiffStatus;
-  isNewFile: boolean;
 };
 
 export type GitDiffTab = TabBase & {
@@ -130,7 +113,6 @@ export type Tab =
   | EditorTab
   | PreviewTab
   | MarkdownTab
-  | AiDiffTab
   | GitDiffTab
   | GitHistoryTab
   | GitCommitFileDiffTab;
@@ -734,7 +716,11 @@ export function useTabs(initial?: Partial<TerminalTab>) {
   const removeTabsForSpace = useCallback(
     (spaceId: string, fallbackSpaceId: string, fallbackCwd?: string) => {
       let toDispose: number[] = [];
+      let toClose: number[] = [];
       setTabs((curr) => {
+        const leaving = curr
+          .filter((tab) => tab.spaceId === spaceId)
+          .map((tab) => tab.id);
         const plan = planSpaceRemoval(
           curr,
           activeIdRef.current,
@@ -745,10 +731,12 @@ export function useTabs(initial?: Partial<TerminalTab>) {
         );
         if (!plan) return curr;
         toDispose = plan.disposeLeafIds;
+        toClose = leaving;
         setActiveId(plan.activeId);
         return plan.tabs;
       });
       for (const lid of toDispose) disposeSession(lid);
+      for (const id of toClose) assetScopes.closeTab(id);
     },
     [setActiveId, setTabs],
   );
@@ -832,43 +820,12 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     [setActiveId, setTabs],
   );
 
-  const newAgentTab = useCallback(
-    (cwd: string | undefined, title: string) => {
-      const { tabId, leafIds: agentLeafIds } = newAgentGroupTab(cwd, title, 1);
-      return { tabId, leafId: agentLeafIds[0] };
-    },
-    [newAgentGroupTab],
-  );
-
-  const newPrivateTab = useCallback(
-    (cwd?: string) => {
-      const tabId = nextIdRef.current++;
-      const leafId = nextIdRef.current++;
-      setTabs((t) => [
-        ...t,
-        {
-          id: tabId,
-          kind: "terminal",
-          spaceId: activeSpaceIdRef.current,
-          title: "private",
-          cwd,
-          paneTree: { kind: "leaf", id: leafId, cwd },
-          activeLeafId: leafId,
-          private: true,
-        },
-      ]);
-      setActiveId(tabId);
-      return tabId;
-    },
-    [setTabs, setActiveId],
-  );
-
   /**
    * Opens a file in an editor tab.
    *
    * - `pin = true` (default) — opens or activates a **persistent** tab.
    *   If the path is currently in the preview slot it is promoted in-place.
-   *   Use this for programmatic opens (AI diff, New File dialog, etc.).
+   *   Use this for programmatic opens (a diff, the New File dialog, etc.).
    * - `pin = false` — VSCode-style **preview** tab. A single shared slot is
    *   reused: if a persistent tab for the path already exists it is activated;
    *   otherwise the current preview slot is replaced with the new path.
@@ -909,84 +866,6 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       );
     },
     [setTabs],
-  );
-
-  const openAiDiffTab = useCallback(
-    (input: {
-      path: string;
-      originalContent: string;
-      proposedContent: string;
-      approvalId: string;
-      isNewFile: boolean;
-    }) => {
-      let targetId: number | null = null;
-      setTabs((curr) => {
-        const existing = curr.find(
-          (t) => t.kind === "ai-diff" && t.approvalId === input.approvalId,
-        );
-        if (existing) {
-          targetId = existing.id;
-          return curr;
-        }
-        const id = nextIdRef.current++;
-        targetId = id;
-        const title = `${basename(input.path)} (AI diff)`;
-        return [
-          ...curr,
-          {
-            id,
-            kind: "ai-diff",
-            spaceId: activeSpaceIdRef.current,
-            title,
-            path: input.path,
-            originalContent: input.originalContent,
-            proposedContent: input.proposedContent,
-            approvalId: input.approvalId,
-            status: "pending",
-            isNewFile: input.isNewFile,
-          },
-        ];
-      });
-      if (targetId !== null) setActiveId(targetId);
-      return targetId as number | null;
-    },
-    [setTabs, setActiveId],
-  );
-
-  const setAiDiffStatus = useCallback(
-    (approvalId: string, status: AiDiffStatus) => {
-      setTabs((curr) =>
-        curr.map((t) =>
-          t.kind === "ai-diff" && t.approvalId === approvalId
-            ? { ...t, status }
-            : t,
-        ),
-      );
-    },
-    [setTabs],
-  );
-
-  const closeAiDiffTab = useCallback(
-    (approvalId: string) => {
-      setTabs((curr) => {
-        const target = curr.find(
-          (t) => t.kind === "ai-diff" && t.approvalId === approvalId,
-        );
-        if (!target) return curr;
-        const fallback = nextActiveInSpace(curr, target.id);
-        if (fallback === null) {
-          return curr.map((t) =>
-            t.kind === "ai-diff" && t.approvalId === approvalId
-              ? { ...t, status: "approved" as AiDiffStatus }
-              : t,
-          );
-        }
-        const next = curr.filter((t) => t.id !== target.id);
-        setActiveId((active) => (target.id === active ? fallback : active));
-        return next;
-      });
-    },
-    [setTabs, setActiveId],
   );
 
   const newPreviewTab = useCallback(
@@ -1195,6 +1074,9 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       setTabs(result.tabs);
       setActiveId(result.nextActiveId);
       for (const lid of result.disposeLeafIds) disposeSession(lid);
+      // A closed tab owns no asset grant: revoke every scope it opened now,
+      // not whenever its panes happen to unmount.
+      assetScopes.closeTab(id);
     },
     [setTabs, setActiveId],
   );
@@ -1208,6 +1090,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
       setTabs(result.tabs);
       setActiveId(result.nextActiveId);
       for (const leafId of result.disposeLeafIds) disposeSession(leafId);
+      for (const id of result.closeIds) assetScopes.closeTab(id);
       return result.closeIds;
     },
     [setTabs, setActiveId],
@@ -1502,20 +1385,15 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     setOverrideLanguage,
     newTab,
     newBlockTab,
-    newAgentTab,
     newAgentGroupTab,
-    newPrivateTab,
     openFileTab,
     pinTab,
     newPreviewTab,
     newMarkdownTab,
     setMarkdownView,
-    openAiDiffTab,
     openGitDiffTab,
     openCommitHistoryTab,
     openCommitFileDiffTab,
-    setAiDiffStatus,
-    closeAiDiffTab,
     closeTab,
     closeTabs,
     updateTab,

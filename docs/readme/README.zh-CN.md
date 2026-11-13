@@ -1,3 +1,8 @@
+<!-- fork-copy: upstream translation; the authoritative description of this build is ../../README.md -->
+
+> [!IMPORTANT]
+> 此译文来自上游 Terax。本分支已移除其中描述的内置 AI 功能（聊天、自动补全、AI 修改审查，以及提供商与 API 密钥设置）。本仓库发布的构建请参见 [`README.md`](../../README.md)。
+
 <div align="center">
   <img src="../../public/logo.png" width="144" height="144" alt="Terax" />
   <h1>Terax</h1>
@@ -15,7 +20,7 @@
   <p>
     <img src="https://img.shields.io/github/v/release/crynta/terax-ai?label=version&color=blue" alt="版本" />
     <img src="https://img.shields.io/github/downloads/crynta/terax-ai/total?label=downloads&color=blue" alt="下载量" />
-    <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="平台" />
+    <img src="https://img.shields.io/badge/platform-Linux%20x86_64-lightgrey" alt="平台" />
     <a href="https://discord.gg/tyveTUyEp7"><img src="https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
     <a href="https://www.youtube.com/@crynta"><img src="https://img.shields.io/badge/Youtube-FF0000?logo=youtube&logoColor=white" alt="YouTube" /></a>
   </p>
@@ -116,18 +121,20 @@ Terax 是一个轻量、开源、终端优先的 AI 原生开发环境（ADE）�
 
 ## 安装
 
-最新安装程序位于 [Releases](https://github.com/crynta/terax-ai/releases/latest) 页面。Terax 会从该页面自动更新。
+> **Platform support (authoritative, English):** this fork builds and distributes Linux x86-64
+> only, as an RPM and a DEB. macOS, Windows/WSL and Nix build and distribution support was
+> removed, and no other architecture is produced. See the
+> [English README](../../README.md#platform-support).
 
-### Windows 说明
+Install the RPM (`sudo dnf install ./codr-*.x86_64.rpm`) or the DEB (`sudo apt
+install ./codr_*_amd64.deb`) from the
+[Releases](https://github.com/kevsmir02/terax-ai/releases/latest) page with your package manager.
+Fedora 45 KDE Plasma on Wayland is the validated target (#44); Debian 13 graphical WebKitGTK
+validation was waived for personal-tool scope and `packaging/arch/PKGBUILD` is authored and signed
+but **not built** (`makepkg` has not been run). The application never downloads, installs or
+restarts itself.
 
-- 默认 Shell 检测：`pwsh.exe`（PowerShell 7+）-> `powershell.exe`（Windows PowerShell 5.1）-> `cmd.exe`。
-- WSL 是一等工作区环境，而不是封装的子进程。
-
-### Linux 说明
-
-- **Arch / AUR：** `yay -S terax-bin`（也可使用 `paru` 等）。它会跟随最新版本。
-- **NixOS / Nix：** 使用官方 flake。非 NixOS 运行 `nix profile install github:crynta/terax-ai`；NixOS 可导入 flake，并将 `inputs.terax.packages.${pkgs.system}.terax` 添加到 `environment.systemPackages`。也可以使用 `nixosModules.terax` 输出进行更简单的配置。
-- **AppImage：** 需要 FUSE。没有 FUSE 时运行 `./Terax_*.AppImage --appimage-extract-and-run`。如果在 Wayland 上出现渲染问题，请尝试 `WEBKIT_DISABLE_DMABUF_RENDERER=1`。否则，`.deb` / `.rpm` 包会链接系统 GTK 栈，通常更流畅。
+On Wayland with rendering glitches, try `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
 
 ## 配置 AI
 
@@ -168,14 +175,6 @@ Tauri 2、Rust、`portable-pty`、React 19、TypeScript、Vite、xterm.js、Code
 ## 贡献
 
 欢迎提交 Issue 和 PR！你可以提出问题、建议功能或提交拉取请求。更多信息请参阅 [CONTRIBUTING.md](../../CONTRIBUTING.md) 和[架构文档](../README.md)。
-
-## 代码签名
-
-<a href="https://signpath.org"><img src="https://avatars.githubusercontent.com/u/34448643?s=200&v=4" width="80" alt="SignPath" align="left" /></a>
-
-Windows 构建使用 [SignPath.io](https://signpath.io) 提供的免费代码签名证书，证书由 [SignPath Foundation](https://signpath.org) 颁发。
-
-<br clear="left" />
 
 ## 许可证
 

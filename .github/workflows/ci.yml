@@ -22,7 +22,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
@@ -47,6 +47,9 @@ jobs:
       - name: Build frontend
         run: pnpm build
 
+      - name: Startup graph and duplicate packages
+        run: pnpm check:dist
+
       - name: Size budget
         run: pnpm size
 
@@ -54,41 +57,79 @@ jobs:
         run: pnpm knip
         continue-on-error: true
 
-  terminal-platforms:
-    name: terminal-test (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+  terminal-linux:
+    # The whole terminal strategy: this fork builds and distributes Linux x86-64 only (ticket
+    # #34), so the Windows/macOS `terminal-platforms` matrix is gone and every terminal check
+    # runs here (ticket #33 ported the list). What is only provable on Linux: the sustained-output
+    # soak (both artifacts, both render formats), the adapted-core benchmark the Ghostty update
+    # procedure compares against, and the compositor parity gate against the WebGL fallback the
+    # application uses on WebKitGTK.
+    name: terminal-linux
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+
       - uses: pnpm/action-setup@v6
+
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: pnpm
+
       - run: pnpm install --frozen-lockfile
-      - name: Terminal models, input, blocks, transport, and renderer lifecycle
+
+      - name: Adapted core, input, search, selection and renderer fallback
         run: pnpm exec vitest run src/modules/terminal
 
+      - name: Sustained-output soak (adversarial input, stack, plateau)
+        env:
+          TERAX_SOAK_REPORT: ${{ runner.temp }}/soak.json
+        run: pnpm soak:ghostty
+
+      - name: Adapted-core benchmark (the Ghostty update procedure's baseline source)
+        run: >-
+          pnpm exec vitest bench src/modules/terminal/ghostty/AdaptedGhostty.bench.ts --run
+          --outputJson "${{ runner.temp }}/bench.json"
+
       - uses: actions/cache@v5
-        if: matrix.os == 'macos-latest'
         with:
-          path: ~/Library/Caches/ms-playwright
+          path: ~/.cache/ms-playwright
           key: chromium-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml') }}
 
-      - name: Terminal compositor pixel parity (DPR 1, 1.25, 1.5, 2)
-        if: matrix.os == 'macos-latest'
+      - name: Terminal compositor pixel parity, WebGL fallback (DPR 1, 1.25, 1.5, 2)
         env:
           TERAX_VISUAL_SOFTWARE: '1'
+          TERAX_VISUAL_RENDERERS: webgl
+          # Software WebGPU on a display-less runner destroys its device before the harness can
+          # read the surface back, so only the fallback is compared here. The gate still requires
+          # both renderers by default; this sentence is recorded in scaling.json so the gap is
+          # evidence, not a quiet omission. It is also the one terminal check that did not move
+          # when the macOS matrix was removed (ticket #34).
+          TERAX_VISUAL_RENDERERS_GAP: >-
+            headless Chromium on a Linux runner has no GPU and its software WebGPU device is
+            destroyed before the harness can read the surface back
         run: |
-          pnpm exec playwright install chromium --no-shell
+          pnpm exec playwright install --with-deps chromium --no-shell
           pnpm test:terminal-scaling
 
+      - name: Upload the soak and benchmark evidence
+        # The soak report and the benchmark output are what a later Ghostty revision is compared
+        # against, so a passing run still has to ship them.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: terminal-linux
+          path: |
+            ${{ runner.temp }}/soak.json
+            ${{ runner.temp }}/bench.json
+          if-no-files-found: warn
+
   rust:
+    # One platform: Linux x86-64. The Windows/macOS/arm `rust-platforms` matrix was removed with
+    # the platform narrowing (ticket #34); this job already runs the same check/nextest pair on
+    # the only supported architecture.
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
@@ -106,9 +147,11 @@ jobs:
             librsvg2-dev \
             libssl-dev
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust 1.99.1 (rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@master
         with:
-          components: clippy
+          toolchain: "1.99.1"
+          components: clippy,rustfmt
 
       - uses: swatinem/rust-cache@v2
         with:
@@ -122,9 +165,22 @@ jobs:
         working-directory: src-tauri
         run: cargo check --all-targets --locked
 
+      - name: Locked dependency graph
+        working-directory: src-tauri
+        run: |
+          cargo metadata --locked --format-version 1 > /dev/null
+          git diff --exit-code -- Cargo.lock
+
       - name: cargo clippy
         working-directory: src-tauri
         run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: cargo fmt (advisory)
+        # The tree is not rustfmt-clean yet (905 diff lines at the time of writing), so this
+        # reports drift without blocking. Reformatting the tree is its own change.
+        working-directory: src-tauri
+        run: cargo fmt --all --check
+        continue-on-error: true
 
       - name: Unused crates (advisory)
         working-directory: src-tauri
@@ -144,42 +200,6 @@ jobs:
       - name: zsh shell integration
         run: python3 src-tauri/src/modules/pty/scripts/zshrc.test.py
 
-  rust-platforms:
-    name: rust-test (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest, ubuntu-24.04-arm]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libssl-dev
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: ./src-tauri -> target
-
-      - uses: taiki-e/install-action@v2.87.30
-        with:
-          tool: cargo-nextest
-
-      - name: cargo check
-        working-directory: src-tauri
-        run: cargo check --all-targets --locked
-
-      - name: cargo nextest
-        working-directory: src-tauri
-        run: cargo nextest run --locked --retries 2
-
   coverage:
     runs-on: ubuntu-22.04
     needs: rust
@@ -197,8 +217,10 @@ jobs:
             librsvg2-dev \
             libssl-dev
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust 1.99.1 (rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.99.1"
           components: llvm-tools-preview
 
       - uses: swatinem/rust-cache@v2
@@ -220,3 +242,25 @@ jobs:
           name: lcov-report
           path: src-tauri/lcov.info
           if-no-files-found: error
+
+  repo-guards:
+    # Proves the repository's own contracts that no compiler checks: exact toolchain pins,
+    # --frozen-lockfile/--locked on every install and build, no auto-merge or release publishing
+    # from ordinary CI, valid workflow YAML, and the disposable-profile refusals of the real-app
+    # runners.
+    name: repo-guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install the guard tests' dependency (PyYAML)
+        run: python3 -m pip install --disable-pip-version-check -r scripts/tests/requirements.txt
+
+      - name: Toolchain, lockfile, workflow and Linux runner invariants
+        run: python3 -m unittest discover -s scripts/tests -v

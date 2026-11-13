@@ -1,22 +1,18 @@
 <div align="center">
-  <img src="public/logo.png" width="144" height="144" alt="Terax" />
-  <h1>Terax</h1>
+  <img src="public/logo.png" width="144" height="144" alt="Codr" />
+  <h1>Codr</h1>
 
-  <p><strong>Lightweight Terminal-first AI-native dev workspace.</strong></p>
+  <p><strong>Unofficial Linux fork of Terax: a lightweight terminal-first workspace for external coding agents.</strong></p>
   <p>
-    <a href="https://terax.app">Website</a>
+    This repository is not affiliated with Crynta.
+    <a href="https://github.com/crynta/terax-ai">Upstream project</a>
     ·
-    <a href="https://terax.app/docs">Docs</a>
-    ·
-    <a href="https://github.com/crynta/Terax-website">Website's source code</a>
+    <a href="SECURITY.md">Security</a>
   </p>
 
   <p>
-    <img src="https://img.shields.io/github/v/release/crynta/terax-ai?label=version&color=blue" alt="version" />
-    <img src="https://img.shields.io/github/downloads/crynta/terax-ai/total?label=downloads&color=blue" alt="downloads" />
-    <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="platform" />
-    <a href="https://discord.gg/tyveTUyEp7"><img src="https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
-    <a href="https://www.youtube.com/@crynta"><img src="https://img.shields.io/badge/Youtube-FF0000?logo=youtube&logoColor=white" alt="YouTube" /></a>
+    <img src="https://img.shields.io/badge/platform-Linux%20x86_64-lightgrey" alt="platform" />
+    <a href="https://github.com/kevsmir02/terax-ai/releases/tag/v1.0.0"><img src="https://img.shields.io/badge/release-v1.0.0-blue" alt="release v1.0.0" /></a>
   </p>
 </div>
 
@@ -36,7 +32,7 @@
 
 ---
 
-Terax is a lightweight open-source terminal-first AI-native development environment (ADE) built on Tauri 2 + Rust and React 19. A native PTY backend with a WebGL renderer, an agentic AI side-panel that runs against your own keys or fully local models, plus a code editor, file explorer, source control with a git graph, and a web preview pane built in. About 7-8 MB on disk. No telemetry. No account.
+Codr (an unofficial Linux fork of Terax) is a lightweight open-source terminal-first development workspace built on Tauri 2 + Rust and React 19. A native PTY backend with a WebGL renderer, tabs, splits and a block terminal for launching independently installed coding agents (Claude Code, Codex, Gemini CLI, OpenCode, Grok), plus a code editor, file explorer, source control with a git graph, rendered Markdown and a web preview pane. About 7-8 MB on disk. No telemetry. No account.
 
 > [!NOTE]
 > Over the past few months, most of my development time went into building [Zephium](https://zephium.app), a new browser-native work environment rebuilt for humans and agents.
@@ -50,7 +46,7 @@ Terax is a lightweight open-source terminal-first AI-native development environm
 <table>
   <tr>
     <td align="center"><img src="docs/web-preview.png" alt="Web preview" /><br/><sub>Web preview of local dev servers</sub></td>
-    <td align="center"><img src="docs/ai-workflow.png" alt="AI window" /><br/><sub>Agentic AI workflow with edit diffs in the code editor</sub></td>
+    <td align="center"><img src="docs/editor.png" alt="Code editor" /><br/><sub>CodeMirror editing with syntax highlighting, find and replace</sub></td>
   </tr>
   <tr>
     <td align="center"><img src="docs/themes.png" alt="Themes and background image" style="margin-top: 12px;"/><br/><sub>Custom themes, presets, and background images</sub></td>
@@ -65,21 +61,18 @@ Terax is a lightweight open-source terminal-first AI-native development environm
 
 ### Terminal
 
-- xterm.js with WebGL renderer, multi-tab with background streaming
+- libghostty terminal model with a WebGPU/WebGL renderer, multi-tab with background streaming
 - GPU-accelerated block-based terminal with editor-like command input
-- Native PTY backend via `portable-pty` (zsh, bash, pwsh, fish, cmd)
+- Native PTY backend via `portable-pty` (zsh, bash, fish)
 - Split panels (horizontal and vertical)
 - Inline search, link detection, true-color
 - Drag files from the explorer or desktop into a terminal as shell-safe quoted paths
-- Per-tab workspace environments on Windows (Local, or any installed WSL distro)
 - Spaces restore tabs, working directories, and split layouts across launches
 
 ### Code editor
 
 - CodeMirror 6 (supports all popular languages - TS/JS, Rust, Python, Go, C/C++, Java, HTML/CSS, JSON, Markdown, etc.)
-- Inline AI autocomplete with local model support
-- AI edit diffs, accept or reject hunk by hunk
-- Opt-in language server support with diagnostics, navigation, completion, formatting, and custom servers
+- Syntax highlighting for the bundled languages, find and replace, and vim mode — no language servers or diagnostics
 - Rendered Markdown plus image, video, audio, and PDF viewing
 - Vim mode
 - Built-in editor themes including Kanagawa, Catppuccin, Rosé Pine, Everforest, Dracula, Solarized, Nord, Tokyo Night, GitHub, and Xcode
@@ -96,7 +89,6 @@ Terax is a lightweight open-source terminal-first AI-native development environm
 - Catppuccin icon theme
 - Fuzzy search, keyboard navigation, inline rename, context actions
 - Live updates when files change on disk
-- Attach files and selections directly to the AI side-panel
 
 ### Web preview
 
@@ -110,43 +102,91 @@ Terax is a lightweight open-source terminal-first AI-native development environm
 - Background images with adjustable opacity and blur
 - Editor theme is independent from the app theme
 
-### AI
+### External coding agents
 
-- **BYOK providers:** OpenAI, Anthropic, Google (Gemini), Groq, xAI (Grok), Cerebras, OpenRouter, DeepSeek, Mistral, plus any OpenAI-compatible endpoint
-- **Local / offline:** LM Studio, MLX, Ollama
-- **Agentic workflow:** plans, sub-agents, project memory via `TERAX.md`, file read / write / edit / multi-edit / grep / glob, bash with approval gating, background processes
-- **Coding-agent orchestration:** spawn Claude Code in a terminal, inspect its output, and send follow-up work through approval-gated tools
-- **Composer:** prompt snippets via `#handle`, files via `@path`, voice input, attach-to-agent from explorer or selection
-- **Custom agents** with their own system prompt and tool subset
-- **Plan mode** for multi-step work, generates and confirms before doing
+- **Any terminal agent:** launch Claude Code, Codex, Gemini CLI, OpenCode, Grok or your own command in a tab, pane or balanced 1-4 pane group
+- **Attention and completion notifications:** native when unfocused, in-app otherwise; no prompt or transcript excerpts, no focus stealing, sound off by default
+- **Hooks are opt-in:** review the exact configuration change before it is written, and only this fork's entries are added or removed
+- **Agent-aware tabs:** process status from the PTY; hook-backed agents report structured events
+- **No built-in chat:** there is no provider, API-key, conversation or built-in agent UI to maintain
 
 ## Install
 
-Latest installers are on the [Releases](https://github.com/crynta/terax-ai/releases/latest) page. Terax auto-updates from there.
+This fork builds and distributes **Linux x86-64 only**: one RPM and one DEB per release, plus an
+authored (not built) Arch recipe (`packaging/arch/PKGBUILD`), published on this repository's
+[Releases](https://github.com/kevsmir02/terax-ai/releases) page (`v1.0.0` stable channel).
+Update discovery fetches `latest.json` from the fork's stable feed, verifies the minisign Ed25519
+global signature and key ID (`94097B75DB498B21`), and never downloads, installs or restarts
+itself: upgrades are handed to your package tool (`dnf`, `apt`, or `pacman`) after safe closure.
 
-### Windows notes
+### Linux routes and validation status
 
-- Default shell detection: `pwsh.exe` (PowerShell 7+) -> `powershell.exe` (Windows PowerShell 5.1) -> `cmd.exe`.
-- WSL is a first-class workspace environment, not a wrapped subprocess.
+- **Fedora 45 KDE Wayland (primary validated target, #44):** `sudo dnf install ./codr-1.0.0-1.x86_64.rpm`.
+  The RPM candidate passed dependency resolution, isolated Wayland smoke, container `rpm` lifecycle
+  checks, and maintainer host install (`codr-1.0.0-1.x86_64`). Host-root `dnf upgrade` across
+  versions and package-lock/cancellation paths remain unverified.
+- **Debian / Ubuntu (waived, unverified):** `sudo apt install ./codr_*.deb`. Debian 13 graphical
+  WebKitGTK runtime validation was waived for personal-tool scope (#44), so no `.deb` install or
+  upgrade run is claimed.
+- **Arch Linux (authored, not built):** `packaging/arch/PKGBUILD` is signed and attached to releases,
+  but no `makepkg` or `pacman` run has been executed (`pacman -Syu` / `makepkg -si` remains an
+  unbuilt user-managed route, #44).
+- On Wayland with rendering glitches, try `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
 
-### Linux notes
+### Signature verification and recovery
 
-- **Arch / AUR:** `yay -S terax-bin` (or `paru`, etc.). Tracks the latest release.
-- **NixOS / Nix**: use the official flake - `nix profile install github:crynta/terax-ai` (non-NixOS), or import the flake and add `inputs.terax.packages.${pkgs.system}.terax` to `environment.systemPackages` (NixOS). The `nixosModules.terax` output is also available for a simpler setup.
-- **AppImage:** needs FUSE. Without it: `./Terax_*.AppImage --appimage-extract-and-run`. On Wayland with rendering glitches, try `WEBKIT_DISABLE_DMABUF_RENDERER=1`. Otherwise the `.deb` / `.rpm` packages link against the system GTK stack and tend to be smoother.
+Download the artifact, its `.minisig` signature, and `SHA256SUMS` from the release, then verify
+before running `dnf` or `apt` (native DNF/APT repository GPG signing is deferred):
 
-## Configure AI
+```sh
+sha256sum -c SHA256SUMS
+minisign -Vm ./codr_1.0.0_amd64.deb -x ./codr_1.0.0_amd64.deb.minisig \
+  -P RWQhi0nbdXsJlFu9b48smjYdtZKzZ3An6rjhKRz+kdL0tG8f7DBJj8lL
+```
 
-1. Open **Settings -> AI**.
-2. Pick a provider and paste your API key. For local inference, point Terax at your LM Studio / MLX / Ollama endpoint.
-3. Keys are written to the OS keychain via `keyring`. They never touch disk or localStorage.
+- **Failed or cancelled package transaction:** Codr makes no rollback and cannot tell whether an
+  external `dnf`/`apt` run succeeded. Close Codr completely, re-run the package-manager command, and
+  confirm installed files with `rpm -q codr` or `dpkg -s codr`.
+- **Signing key custody and replacement:** see [release trust](docs/architecture/release-trust.md)
+  and [update handoff](docs/architecture/update-handoff.md) for offline key recovery and rotation.
+
+### Tested limits, capabilities, and exclusions
+
+This personal-use release claims no broad compatibility or production-readiness certification:
+
+- **Terminal and renderer:** WebKitGTK uses the Terax WebGL fallback (`scripts/terminal-visual`
+  scaling checked at DPR 1, 1.25, 1.5, and 2); Kitty graphics is incomplete and not advertised;
+  physical IME and OS clipboard round-trips remain manual checks.
+- **File, preview, and codec bounds:** text syntax highlighting turns off above 4 MiB (10 MiB soft
+  override, 50 MiB hard cap), images enforce a 64 MiB decoded cap and 192 MiB / 4-viewer budget,
+  PDF pages enforce a 32 MiB cap, and tested media containers (`WebM`, `Ogg`, `WAV`, `MP3`,
+  `FLAC`, `M4A`, `AAC`, `MP4`, `MOV`) reflect host WebKitGTK 2.54.2 GStreamer codecs only
+  ([resource limits](docs/architecture/resource-limits.md)).
+- **External agents:** launching, OSC 133 process status, opt-in hooks, and `terax open` control
+  are verified on synthetic fixtures only; no vendor CLI (`claude`, `codex`, `gemini`, `pi`,
+  `opencode`, `grok`, `antigravity`) has live turn or hook-trust certification
+  ([agent capabilities](docs/architecture/agent-capabilities.md)).
+- **Retained exclusions:** no built-in AI chat, API-key storage, telemetry, LSP, or in-app
+  updater; macOS, Windows, and WSL code paths remain inert upstream seams only.
+
+### Platform support
+
+Upstream Terax also ships macOS, Windows/WSL and Nix builds. **This fork does not**: those build and
+distribution workflows were removed (ticket #34), and no non-x86-64 artifact is produced. The
+Windows, macOS and WSL code paths that upstream shares with Linux are retained in the source as inert
+seams, because deleting them would make every upstream import a merge conflict — they are not
+supported configurations here. See
+[docs/architecture/linux-packages.md](docs/architecture/linux-packages.md) for what a package
+candidate does and does not prove.
 
 ## Build from source
 
 **Prerequisites**
+- Linux x86-64 (the only supported build host)
 - Rust (stable), https://rustup.rs
 - Node 22+ and [pnpm](https://pnpm.io)
-- Tauri prerequisites for your platform, https://tauri.app/start/prerequisites/
+- The Tauri Linux prerequisites: WebKitGTK 4.1, GTK3, librsvg and libssl development packages,
+  https://tauri.app/start/prerequisites/
 
 **Run**
 ```bash
@@ -166,20 +206,12 @@ cd src-tauri && cargo nextest run --locked                           # or: cargo
 
 ## Tech stack
 
-Tauri 2, Rust, `portable-pty`, React 19, TypeScript, Vite, xterm.js, CodeMirror 6, Vercel AI SDK v6, Tailwind v4, shadcn/ui, Zustand.
+Tauri 2, Rust, `portable-pty`, React 19, TypeScript, Vite, libghostty (WebGPU/WebGL), CodeMirror 6, Tailwind v4, shadcn/ui, Zustand.
 
 ## Contributing
 
 Issues and PRs are welcome! Feel free to open issues, suggest features, or submit pull requests. See [CONTRIBUTING.md](CONTRIBUTING.md) and the [architecture docs](docs/README.md) for more details.
 
-## Code signing
-
-<a href="https://signpath.org"><img src="https://avatars.githubusercontent.com/u/34448643?s=200&v=4" width="80" alt="SignPath" align="left" /></a>
-
-Windows builds are signed with a free code signing certificate provided by [SignPath.io](https://signpath.io), certificate by the [SignPath Foundation](https://signpath.org).
-
-<br clear="left" />
-
 ## License
 
-Terax is licensed under the Apache-2.0 License. For more information on our dependencies, see [Apache License 2.0](LICENSE).
+Codr is licensed under the Apache-2.0 License (derived from upstream Terax). For more information on our dependencies, see [Apache License 2.0](LICENSE).

@@ -1,3 +1,8 @@
+<!-- fork-copy: upstream translation; the authoritative description of this build is ../../README.md -->
+
+> [!IMPORTANT]
+> Esta tradução vem do Terax upstream. Este fork removeu as superfícies de IA integradas aqui descritas (chat, preenchimento automático, revisão de alterações por IA e configurações de provedor e chaves de API). [`README.md`](../../README.md) descreve a compilação publicada por este repositório.
+
 <div align="center">
   <img src="../../public/logo.png" width="144" height="144" alt="Terax" />
   <h1>Terax</h1>
@@ -7,7 +12,7 @@
   <p>
     <img src="https://img.shields.io/github/v/release/crynta/terax-ai?label=version&color=blue" alt="versão" />
     <img src="https://img.shields.io/github/downloads/crynta/terax-ai/total?label=downloads&color=blue" alt="downloads" />
-    <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="plataforma" />
+    <img src="https://img.shields.io/badge/platform-Linux%20x86_64-lightgrey" alt="plataforma" />
     <a href="https://discord.gg/tyveTUyEp7"><img src="https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
     <a href="https://www.youtube.com/@crynta"><img src="https://img.shields.io/badge/Youtube-FF0000?logo=youtube&logoColor=white" alt="YouTube" /></a>
   </p>
@@ -90,18 +95,20 @@ Terax é um ambiente de desenvolvimento (ADE) leve, de código aberto, focado no
 
 ## Instalação
 
-Os instaladores mais recentes estão na página de [Releases](https://github.com/crynta/terax-ai/releases/latest). O Terax se atualiza automaticamente por ela.
+> **Platform support (authoritative, English):** this fork builds and distributes Linux x86-64
+> only, as an RPM and a DEB. macOS, Windows/WSL and Nix build and distribution support was
+> removed, and no other architecture is produced. See the
+> [English README](../../README.md#platform-support).
 
-### Notas para Windows
+Install the RPM (`sudo dnf install ./codr-*.x86_64.rpm`) or the DEB (`sudo apt
+install ./codr_*_amd64.deb`) from the
+[Releases](https://github.com/kevsmir02/terax-ai/releases/latest) page with your package manager.
+Fedora 45 KDE Plasma on Wayland is the validated target (#44); Debian 13 graphical WebKitGTK
+validation was waived for personal-tool scope and `packaging/arch/PKGBUILD` is authored and signed
+but **not built** (`makepkg` has not been run). The application never downloads, installs or
+restarts itself.
 
-- Detecção de shell: `pwsh.exe` (PowerShell 7+) -> `powershell.exe` (Windows PowerShell 5.1) -> `cmd.exe`.
-- WSL é um ambiente de workspace de primeira classe, não um subprocesso encapsulado.
-
-### Notas para Linux
-
-- **Arch / AUR:** `yay -S terax-bin` ou `paru`. Acompanha a versão mais recente.
-- **NixOS / Nix:** use o flake oficial com `nix profile install github:crynta/terax-ai` fora do NixOS. No NixOS, importe o flake e adicione `inputs.terax.packages.${pkgs.system}.terax` a `environment.systemPackages`. `nixosModules.terax` também oferece uma configuração simplificada.
-- **AppImage:** requer FUSE. Sem ele: `./Terax_*.AppImage --appimage-extract-and-run`. Em caso de falhas no Wayland, tente `WEBKIT_DISABLE_DMABUF_RENDERER=1`. Os pacotes `.deb` / `.rpm` usam a pilha GTK do sistema e costumam ser mais suaves.
+On Wayland with rendering glitches, try `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
 
 ## Configurar a IA
 
@@ -142,14 +149,6 @@ Tauri 2, Rust, `portable-pty`, React 19, TypeScript, Vite, xterm.js, CodeMirror 
 ## Como contribuir
 
 Issues e PRs são bem-vindos. Relate problemas, sugira recursos ou envie pull requests. Consulte [CONTRIBUTING.md](../../CONTRIBUTING.md) e a [documentação de arquitetura](../README.md).
-
-## Assinatura de código
-
-<a href="https://signpath.org"><img src="https://avatars.githubusercontent.com/u/34448643?s=200&v=4" width="80" alt="SignPath" align="left" /></a>
-
-As builds para Windows são assinadas com um certificado gratuito fornecido pela [SignPath.io](https://signpath.io) e emitido pela [SignPath Foundation](https://signpath.org).
-
-<br clear="left" />
 
 ## Licença
 

@@ -12,6 +12,9 @@ import {
   FORMATTERS,
 } from "@/modules/editor/lib/externalFormat";
 import { EXPOSED_LANGUAGES } from "@/modules/editor/lib/languageDefinitions";
+import { formatDraftLimit } from "@/modules/editor/lib/recovery/draftList";
+import { RECOVERY_LIMITS } from "@/modules/editor/lib/recovery/model";
+import { recoveryLocation } from "@/modules/editor/lib/recovery/nativeStorage";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useShortcutHint } from "@/modules/shortcuts";
 import {
@@ -30,6 +33,7 @@ import {
   setEditorFormatOnSave,
   setEditorFormatter,
   setEditorFormatterByLang,
+  setEditorRecoveryDrafts,
   setEditorWordWrap,
   setEditorWordWrapColumn,
   setVimMode,
@@ -37,9 +41,9 @@ import {
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
-import { LspServersGroup } from "../components/LspServersGroup";
 import { SectionHeader } from "../components/SectionHeader";
 import { SettingRow } from "../components/SettingRow";
+import { RecoveryDraftList } from "./RecoveryDraftList";
 
 const AUTO_SAVE_STEP = 100;
 
@@ -55,6 +59,9 @@ export function EditorSection() {
   const editorAutoSaveDelay = usePreferencesStore((s) => s.editorAutoSaveDelay);
   const editorFormatOnSave = usePreferencesStore((s) => s.editorFormatOnSave);
   const editorFormatter = usePreferencesStore((s) => s.editorFormatter);
+  const editorRecoveryDrafts = usePreferencesStore(
+    (s) => s.editorRecoveryDrafts,
+  );
   const editorFormatterByLang = usePreferencesStore(
     (s) => s.editorFormatterByLang,
   );
@@ -66,7 +73,7 @@ export function EditorSection() {
     <div className="flex flex-col gap-6">
       <SectionHeader
         title="Editor"
-        description="Editing behavior, saving, and language servers."
+        description="Editing behavior, saving, and formatting."
       />
 
       <div className="flex flex-col gap-2">
@@ -140,6 +147,16 @@ export function EditorSection() {
           />
         )}
         <SettingRow
+          title="Recover unsaved drafts"
+          description="Off by default. When enabled, unsaved editor text is written about every 1.5 seconds to a private folder, so a crash can offer it back. It is separate from auto save: your project files are never written by recovery."
+        >
+          <Switch
+            checked={editorRecoveryDrafts}
+            onCheckedChange={(v) => void setEditorRecoveryDrafts(v)}
+          />
+        </SettingRow>
+        {editorRecoveryDrafts && <RecoveryStorageDisclosure />}
+        <SettingRow
           title="Format on save"
           description={`Format the file on explicit save (${saveHint} / :w) with the formatter below.`}
         >
@@ -152,7 +169,7 @@ export function EditorSection() {
           <>
             <SettingRow
               title="Formatter"
-              description="Language server formats the buffer before writing; external tools run on the saved file from your PATH."
+              description="External tools run on the saved file from your PATH."
             >
               <FormatterSelect
                 value={editorFormatter}
@@ -164,14 +181,11 @@ export function EditorSection() {
           </>
         )}
       </div>
-
-      <LspServersGroup />
     </div>
   );
 }
 
 const FORMATTER_OPTIONS: EditorFormatter[] = [
-  "lsp",
   ...(Object.keys(FORMATTERS) as EditorFormatter[]),
   "custom",
 ];
@@ -248,7 +262,7 @@ function FormatterOverrides() {
           className="h-8 rounded-md border border-border px-3 text-[12px] text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
           onClick={() => {
             const first = unused[0];
-            if (first) update({ ...byLang, [first.ext]: "lsp" });
+            if (first) update({ ...byLang, [first.ext]: "custom" });
           }}
         >
           Add override
@@ -409,5 +423,70 @@ function WordWrapColumnInput({
         <span className="text-[11px] text-muted-foreground">columns</span>
       </div>
     </SettingRow>
+  );
+}
+
+/**
+ * The storage disclosure that has to accompany enabling recovery drafts: where
+ * the text goes, how much space it may use, what is excluded, the fact that a
+ * filename policy is not complete secret detection, and the stored drafts
+ * themselves so the quota's "discard a draft" instruction is actionable.
+ */
+function RecoveryStorageDisclosure() {
+  const [location, setLocation] = useState<string | null>(null);
+  const [available, setAvailable] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void recoveryLocation()
+      .then((info) => {
+        if (!alive) return;
+        setLocation(info.root);
+        setAvailable(info.available);
+      })
+      .catch(() => {
+        if (!alive) return;
+        setAvailable(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  return (
+    <div className="flex flex-col gap-1 rounded-md border border-border bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground">
+      <p>
+        Drafts are stored in a private folder, separate from layout/preferences
+        and from your project files:
+      </p>
+      <p className="font-mono break-all text-foreground">
+        {location ?? "Loading…"}
+      </p>
+      <p>
+        Limits: {formatDraftLimit(RECOVERY_LIMITS.perFileBytes)} per file and{" "}
+        {formatDraftLimit(RECOVERY_LIMITS.totalBytes)} in total. At the limit
+        recovery pauses and keeps the drafts it already has; nothing is evicted.
+        Stored drafts are listed here so you can free room by discarding one.
+      </p>
+      {available !== false && (
+        <div className="flex flex-col gap-1 border-t border-border pt-2">
+          <p className="text-foreground">Stored drafts</p>
+          <RecoveryDraftList quotaBytes={RECOVERY_LIMITS.totalBytes} />
+        </div>
+      )}
+      <p>
+        Known-sensitive paths from the shared file policy (for example{" "}
+        <code>.env</code>, <code>*.pem</code>, <code>~/.ssh</code>) are not
+        recorded. Filename filtering is not complete secret detection: text from
+        an innocuously named file is recorded, so keep that in mind for secrets
+        pasted into ordinary files.
+      </p>
+      {available === false && (
+        <p className="text-destructive">
+          Recovery storage is unavailable; drafts are not being protected right
+          now.
+        </p>
+      )}
+    </div>
   );
 }

@@ -1,22 +1,25 @@
 import {
+  assertNoDestructiveMutation,
+  assessDestructiveAction,
+  createDestructiveGitGuard,
+  type CanonicalizePath,
+  type DestructiveAction,
+  type DestructiveConfirmResult,
+  type DestructiveGitGuard,
+  type DestructivePlan,
+  type DestructiveUsageSource,
   git,
   type GitChangedFile,
   type GitDiscardEntry,
   type GitRepoInfo,
   type GitStatusSnapshot,
+  resolveDestructiveUsage,
 } from "@/modules/git";
-import { useChatStore } from "@/modules/ai/store/chatStore";
-import {
-  modelSupportsTemperature,
-  providerNeedsKey,
-  resolveModel,
-} from "@/modules/ai/config";
 import {
   invalidateDiff,
   invalidateRepoDiffs,
   workingDiffKey,
 } from "@/modules/editor/lib/diffCache";
-import { usePreferencesStore } from "@/modules/settings/preferences";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SourceControlSummary } from "./useSourceControl";
 
@@ -24,13 +27,7 @@ type PanelState = "closed" | "loading" | "no-repo" | "ready" | "error";
 type DiffMode = "+" | "-";
 type SelectionTransition = "none" | "moved-group" | "reset";
 
-const COMMIT_DIFF_CHAR_LIMIT = 60_000;
-const COMMIT_MESSAGE_MAX_OUTPUT_TOKENS = 1024;
 const RECONCILE_DEBOUNCE_MS = 180;
-const CONVENTIONAL_PREFIX =
-  /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]+\))?: .+/;
-const COMMIT_MESSAGE_SYSTEM_PROMPT =
-  "You write concise Conventional Commit subject lines in English. Return exactly one complete line, with no markdown, no quotes, no body, and no explanation.";
 
 type DiffSelection = {
   path: string;
@@ -64,10 +61,21 @@ export type SourceControlFileEntry = {
   untracked: boolean;
 };
 
-type PendingDiscard = {
-  scope: "single" | "all";
-  count: number;
-  label: string;
+/** Everything the destructive-action dialog renders and confirms against. */
+export type PendingDestructive = {
+  kind: "discard" | "checkout";
+  plan: DestructivePlan;
+  /** A refreshed plan after a stale or incomplete confirmation. */
+  stale: string | null;
+};
+
+/**
+ * What the panel needs to know about the rest of the application before it may
+ * mutate a checkout: every editor buffer and terminal in every Space.
+ */
+export type DestructiveGitSupport = {
+  usage: () => DestructiveUsageSource;
+  canonicalize: CanonicalizePath;
 };
 
 type SourceControlPanelState = {
@@ -88,12 +96,18 @@ type SourceControlPanelState = {
   allClean: boolean;
   canPush: boolean;
   pushHint: string | null;
-  canGenerateCommitMessage: boolean;
-  generateCommitMessageHint: string;
   selectionTransition: SelectionTransition;
   stagedEmptyText: string;
   unstagedEmptyText: string;
-  pendingDiscard: PendingDiscard | null;
+  pendingDestructive: PendingDestructive | null;
+  destructiveBusy: boolean;
+  requestCheckout: (branch: string, onDone?: () => void) => Promise<void>;
+  confirmDestructive: (confirmation: {
+    unsavedBuffers: number[];
+    activeWork: number[];
+    force: boolean;
+  }) => Promise<void>;
+  cancelDestructive: () => void;
   setCommitMessage: (value: string) => void;
   refresh: () => Promise<void>;
   selectEntry: (entry: SourceControlEntry) => Promise<void>;
@@ -104,12 +118,10 @@ type SourceControlPanelState = {
   toggleAll: () => Promise<void>;
   requestDiscardEntry: (entry: SourceControlEntry) => void;
   requestDiscardFile: (entry: SourceControlFileEntry) => void;
+  requestDiscardPaths: (paths: readonly string[]) => Promise<void>;
   requestDiscardAll: () => void;
-  confirmPendingDiscard: () => Promise<void>;
-  cancelPendingDiscard: () => void;
   stageAllEntries: () => Promise<void>;
   unstageAllEntries: () => Promise<void>;
-  generateCommitMessage: () => Promise<void>;
   commit: () => Promise<void>;
   push: () => Promise<void>;
 };
@@ -176,83 +188,6 @@ function sameSelection(
   return !!a && !!b && a.path === b.path && a.mode === b.mode;
 }
 
-function stagedFilesSummary(entries: SourceControlEntry[]): string {
-  return entries
-    .map((entry) => {
-      const status = entry.originalPath
-        ? `R ${entry.originalPath} -> ${entry.path}`
-        : `${entry.statusCode} ${entry.path}`;
-      return `- ${status}`;
-    })
-    .join("\n");
-}
-
-function truncateDiff(diff: string): { text: string; truncated: boolean } {
-  if (diff.length <= COMMIT_DIFF_CHAR_LIMIT) {
-    return { text: diff, truncated: false };
-  }
-  return { text: diff.slice(0, COMMIT_DIFF_CHAR_LIMIT), truncated: true };
-}
-
-function cleanCommitMessage(raw: string): string {
-  let text = raw.trim();
-  const fence = text.match(/^```[a-zA-Z0-9_-]*\n([\s\S]*?)\n```\s*$/);
-  if (fence) text = fence[1].trim();
-  const firstLine = text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find(Boolean);
-  if (!firstLine) return "";
-  return firstLine.replace(/^["'`]+|["'`]+$/g, "").trim();
-}
-
-function isValidCommitMessage(message: string): boolean {
-  return CONVENTIONAL_PREFIX.test(message);
-}
-
-function buildCommitMessagePrompt(
-  entries: SourceControlEntry[],
-  diffText: string,
-  truncated: boolean,
-): string {
-  return [
-    "Generate one complete commit message for the staged changes only.",
-    "Format: type(scope): subject",
-    "Allowed types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert.",
-    "Examples:",
-    "- feat(source-control): generate commit messages",
-    "- fix(git): handle staged diff errors",
-    "- chore: update project metadata",
-    "Use a short lowercase subject in imperative mood. Omit the scope if it would be vague.",
-    "Do not stop after the type or an opening parenthesis; the line must include a subject after ': '.",
-    truncated
-      ? "The diff below was truncated; infer from the visible staged changes only."
-      : "The full staged diff is included below.",
-    "",
-    "Staged files:",
-    stagedFilesSummary(entries),
-    "",
-    "Staged diff:",
-    diffText || "(No textual diff available.)",
-  ].join("\n");
-}
-
-function buildRepairCommitMessagePrompt(
-  invalidMessage: string,
-  entries: SourceControlEntry[],
-): string {
-  return [
-    "Repair this invalid Conventional Commit subject line.",
-    `Invalid line: ${invalidMessage || "(empty)"}`,
-    "Return exactly one complete valid line in this format: type(scope): subject",
-    "Allowed types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert.",
-    "If the scope is unclear, omit it and use: type: subject",
-    "",
-    "Staged files:",
-    stagedFilesSummary(entries),
-  ].join("\n");
-}
-
 function optimisticStage(
   status: GitStatusSnapshot,
   paths: Set<string>,
@@ -262,7 +197,8 @@ function optimisticStage(
     if (!paths.has(file.path)) return file;
     if (file.staged && !file.unstaged) return file;
     changed = true;
-    const wt = file.worktreeStatus !== " " ? file.worktreeStatus : file.indexStatus;
+    const wt =
+      file.worktreeStatus !== " " ? file.worktreeStatus : file.indexStatus;
     return {
       ...file,
       indexStatus: wt,
@@ -292,7 +228,8 @@ function optimisticUnstage(
       continue;
     }
     changed = true;
-    const idx = file.indexStatus !== " " ? file.indexStatus : file.worktreeStatus;
+    const idx =
+      file.indexStatus !== " " ? file.indexStatus : file.worktreeStatus;
     if (idx === "R" && file.originalPath) {
       next.push({
         path: file.originalPath,
@@ -369,25 +306,8 @@ export function useSourceControlPanel(
         title?: string;
       }) => void)
     | null,
+  destructive: DestructiveGitSupport,
 ): SourceControlPanelState {
-  const selectedModelId = useChatStore((state) => state.selectedModelId);
-  const agentStatus = useChatStore((state) => state.agentMeta.status);
-  const hasApiKeyForSelected = useChatStore((state) => {
-    const model = resolveModel(state.selectedModelId);
-    return !providerNeedsKey(model.provider) || !!state.apiKeys[model.provider];
-  });
-  const lmstudioModelId = usePreferencesStore((state) => state.lmstudioModelId);
-  const mlxModelId = usePreferencesStore((state) => state.mlxModelId);
-  const ollamaModelId = usePreferencesStore((state) => state.ollamaModelId);
-  const openaiCompatibleBaseURL = usePreferencesStore(
-    (state) => state.openaiCompatibleBaseURL,
-  );
-  const openaiCompatibleModelId = usePreferencesStore(
-    (state) => state.openaiCompatibleModelId,
-  );
-  const openrouterModelId = usePreferencesStore(
-    (state) => state.openrouterModelId,
-  );
   const [panelState, setPanelState] = useState<PanelState>("closed");
   const [repo, setRepo] = useState<GitRepoInfo | null>(null);
   const [status, setStatus] = useState<GitStatusSnapshot | null>(null);
@@ -398,13 +318,30 @@ export function useSourceControlPanel(
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [selectionTransition, setSelectionTransition] =
     useState<SelectionTransition>("none");
-  const [pendingDiscard, setPendingDiscard] = useState<
-    | { scope: "single"; entry: SourceControlEntry }
-    | { scope: "all"; entries: SourceControlEntry[] }
-    | null
-  >(null);
+  const [pendingDestructive, setPendingDestructive] =
+    useState<PendingDestructive | null>(null);
+  const [destructiveBusy, setDestructiveBusy] = useState(false);
   const selectedRef = useRef<DiffSelection | null>(null);
   const reconcileTimerRef = useRef(0);
+  const repoRef = useRef<GitRepoInfo | null>(null);
+  const destructiveRef = useRef(destructive);
+  const checkoutDoneRef = useRef<(() => void) | null>(null);
+  const executeRef = useRef<
+    | ((
+        busyKey: string,
+        optimistic: ((status: GitStatusSnapshot) => GitStatusSnapshot) | null,
+        ipc: () => Promise<void>,
+        affected: string[],
+      ) => Promise<void>)
+    | null
+  >(null);
+
+  useEffect(() => {
+    repoRef.current = repo;
+  }, [repo]);
+  useEffect(() => {
+    destructiveRef.current = destructive;
+  }, [destructive]);
 
   useEffect(() => {
     selectedRef.current = selected;
@@ -466,57 +403,6 @@ export function useSourceControlPanel(
 
   const allClean = stagedEntries.length === 0 && unstagedEntries.length === 0;
   const canPush = !!status?.upstream && status.behind === 0;
-  const selectedModel = resolveModel(selectedModelId);
-  const selectedModelSupportsTemperature = modelSupportsTemperature(
-    selectedModel.provider,
-    selectedModel.id,
-  );
-  const aiBusy = agentStatus !== "idle" && agentStatus !== "error";
-  const anyActionBusy = localActionBusy !== null || summary.busyAction !== null;
-  const aiUnavailableReason = useMemo(() => {
-    if (stagedEntries.length === 0) {
-      return "Stage changes to generate a commit message";
-    }
-    if (!hasApiKeyForSelected) {
-      return "Connect an AI provider to generate commit messages";
-    }
-    if (selectedModel.id === "lmstudio-local" && !lmstudioModelId.trim()) {
-      return "Connect an AI provider to generate commit messages";
-    }
-    if (selectedModel.id === "mlx-local" && !mlxModelId.trim()) {
-      return "Connect an AI provider to generate commit messages";
-    }
-    if (selectedModel.id === "ollama-local" && !ollamaModelId.trim()) {
-      return "Connect an AI provider to generate commit messages";
-    }
-    if (
-      selectedModel.id === "openai-compatible-custom" &&
-      (!openaiCompatibleBaseURL.trim() || !openaiCompatibleModelId.trim())
-    ) {
-      return "Connect an AI provider to generate commit messages";
-    }
-    if (selectedModel.id === "openrouter-custom" && !openrouterModelId.trim()) {
-      return "Connect an AI provider to generate commit messages";
-    }
-    return null;
-  }, [
-    hasApiKeyForSelected,
-    lmstudioModelId,
-    mlxModelId,
-    ollamaModelId,
-    openaiCompatibleBaseURL,
-    openaiCompatibleModelId,
-    openrouterModelId,
-    selectedModel,
-    stagedEntries.length,
-  ]);
-  const canGenerateCommitMessage =
-    stagedEntries.length > 0 && !anyActionBusy && !aiBusy && !!repo;
-  const generateCommitMessageHint = aiUnavailableReason
-    ? aiUnavailableReason
-    : aiBusy
-      ? "Wait for the current AI action to finish"
-      : "Generate commit message";
   const pushHint = useMemo(() => {
     if (!status) return null;
     if (!status.upstream) {
@@ -551,7 +437,11 @@ export function useSourceControlPanel(
   useEffect(() => () => cancelReconcile(), [cancelReconcile]);
 
   const openSelection = useCallback(
-    (sel: DiffSelection, repoRoot: string, file: GitChangedFile | undefined) => {
+    (
+      sel: DiffSelection,
+      repoRoot: string,
+      file: GitChangedFile | undefined,
+    ) => {
       onOpenDiff?.({
         path: sel.path,
         repoRoot,
@@ -649,7 +539,10 @@ export function useSourceControlPanel(
   const selectEntry = useCallback(
     async (entry: SourceControlEntry) => {
       if (!repo) return;
-      const nextSelection: DiffSelection = { path: entry.path, mode: entry.mode };
+      const nextSelection: DiffSelection = {
+        path: entry.path,
+        mode: entry.mode,
+      };
       if (sameSelection(selected, nextSelection)) {
         setActionError(null);
         setActionMessage(null);
@@ -666,7 +559,7 @@ export function useSourceControlPanel(
     [openSelection, repo, selected, status],
   );
 
-  const runMutation = useCallback(
+  const executeMutation = useCallback(
     async (
       busyKey: string,
       optimistic: ((status: GitStatusSnapshot) => GitStatusSnapshot) | null,
@@ -694,6 +587,115 @@ export function useSourceControlPanel(
       }
     },
     [cancelReconcile, repo, scheduleReconcile, summary],
+  );
+  useEffect(() => {
+    executeRef.current = executeMutation;
+  }, [executeMutation]);
+
+  const destructiveGuardRef = useRef<DestructiveGitGuard | null>(null);
+  const destructiveGuard =
+    destructiveGuardRef.current ??
+    createDestructiveGitGuard({
+      inspect: async (action: DestructiveAction) => {
+        const support = destructiveRef.current;
+        // Recheck immediately before the decision: the render-cached status can
+        // lag a save, a stage or another Space's mutation by a full refresh.
+        const fresh = await git.status(action.repoRoot);
+        return assessDestructiveAction({
+          action,
+          status: fresh,
+          usage: await resolveDestructiveUsage(
+            support.usage(),
+            support.canonicalize,
+          ),
+          canonicalize: support.canonicalize,
+        });
+      },
+      mutate: async (action: DestructiveAction) => {
+        const execute = executeRef.current;
+        if (!execute) return;
+        if (action.kind === "discard") {
+          const entries: GitDiscardEntry[] = action.entries.map((entry) => ({
+            path: entry.path,
+            untracked: entry.untracked,
+          }));
+          const paths = new Set(action.entries.map((entry) => entry.path));
+          await execute(
+            action.entries.length === 1
+              ? `discard:${entries[0]?.path ?? "file"}`
+              : "discard:all",
+            (snapshot) => optimisticDiscard(snapshot, paths),
+            () => git.discard(action.repoRoot, entries),
+            [...paths],
+          );
+          setActionMessage(
+            entries.length === 1
+              ? "Discarded working changes"
+              : `Discarded working changes in ${entries.length} files`,
+          );
+          return;
+        }
+        if (action.kind === "checkout") {
+          await execute(
+            "checkout",
+            null,
+            () => git.checkoutBranch(action.repoRoot, action.branch),
+            [],
+          );
+          setActionMessage(`Switched to branch ${action.branch}`);
+          checkoutDoneRef.current?.();
+        }
+      },
+    });
+  destructiveGuardRef.current = destructiveGuard;
+
+  const requestDestructive = useCallback(
+    async (
+      kind: PendingDestructive["kind"],
+      action: DestructiveAction,
+      onDone?: () => void,
+    ): Promise<void> => {
+      if (!repo || summary.busyAction || destructiveBusy) return;
+      setActionError(null);
+      setActionMessage(null);
+      checkoutDoneRef.current = null;
+      setDestructiveBusy(true);
+      try {
+        const plan = await destructiveGuard.request(action);
+        if (plan === null) {
+          setActionError(
+            "Another destructive Git action is starting or running; wait for it to finish.",
+          );
+          return;
+        }
+        checkoutDoneRef.current = onDone ?? null;
+        setPendingDestructive({ kind, plan, stale: null });
+      } catch (error) {
+        setActionError(normalizeError(error));
+      } finally {
+        setDestructiveBusy(false);
+      }
+    },
+    [destructiveBusy, destructiveGuard, repo, summary.busyAction],
+  );
+
+  const runMutation = useCallback(
+    async (
+      busyKey: string,
+      optimistic: ((status: GitStatusSnapshot) => GitStatusSnapshot) | null,
+      ipc: () => Promise<void>,
+      affected: string[],
+    ) => {
+      if (!repo) return;
+      try {
+        await assertNoDestructiveMutation(repo.repoRoot);
+      } catch (error) {
+        setActionError(normalizeError(error));
+        return;
+      }
+      await executeMutation(busyKey, optimistic, ipc, affected);
+    },
+    [executeMutation, repo],
   );
 
   const stageEntry = useCallback(
@@ -724,44 +726,132 @@ export function useSourceControlPanel(
     [repo, runMutation],
   );
 
-  const requestDiscardEntry = useCallback(
-    (entry: SourceControlEntry) => {
-      if (!repo || summary.busyAction) return;
-      setPendingDiscard({ scope: "single", entry });
+  const requestDiscard = useCallback(
+    (entries: readonly SourceControlEntry[]) => {
+      if (!repo || summary.busyAction || entries.length === 0) return;
+      void requestDestructive("discard", {
+        kind: "discard",
+        repoRoot: repo.repoRoot,
+        worktreeRoot: repo.repoRoot,
+        entries: entries.map((entry) => ({
+          path: entry.path,
+          untracked: entry.untracked,
+        })),
+      });
     },
-    [repo, summary.busyAction],
+    [repo, requestDestructive, summary.busyAction],
   );
 
-  const requestDiscardAll = useCallback(() => {
-    if (!repo || summary.busyAction || unstagedEntries.length === 0) return;
-    setPendingDiscard({ scope: "all", entries: unstagedEntries });
-  }, [repo, summary.busyAction, unstagedEntries]);
+  const requestDiscardEntry = useCallback(
+    (entry: SourceControlEntry) => requestDiscard([entry]),
+    [requestDiscard],
+  );
 
-  const cancelPendingDiscard = useCallback(() => {
-    setPendingDiscard(null);
-  }, []);
+  const requestDiscardPaths = useCallback(
+    async (paths: readonly string[]) => {
+      const repoRoot = repoRef.current?.repoRoot ?? "";
+      if (!repoRoot) return;
+      const fresh = await git.status(repoRoot).catch(() => null);
+      const entries = paths.flatMap((path) => {
+        const file = fresh?.changedFiles.find(
+          (candidate) => candidate.path === path,
+        );
+        if (!file?.unstaged) return [];
+        return [makeEntry(path, "-", file)];
+      });
+      await requestDestructive("discard", {
+        kind: "discard",
+        repoRoot,
+        worktreeRoot: repoRoot,
+        entries: entries.map((entry) => ({
+          path: entry.path,
+          untracked: entry.untracked,
+        })),
+      });
+    },
+    [requestDestructive],
+  );
 
-  const confirmPendingDiscard = useCallback(async () => {
-    if (!repo || !pendingDiscard) return;
-    const list =
-      pendingDiscard.scope === "single"
-        ? [pendingDiscard.entry]
-        : pendingDiscard.entries;
-    setPendingDiscard(null);
-    const entries: GitDiscardEntry[] = list.map((entry) => ({
-      path: entry.path,
-      untracked: entry.untracked,
-    }));
-    const paths = new Set(list.map((entry) => entry.path));
-    await runMutation(
-      pendingDiscard.scope === "single"
-        ? `discard:${list[0].path}`
-        : "discard:all",
-      (s) => optimisticDiscard(s, paths),
-      () => git.discard(repo.repoRoot, entries),
-      [...paths],
-    );
-  }, [pendingDiscard, repo, runMutation]);
+  const requestDiscardAll = useCallback(
+    () => requestDiscard(unstagedEntries),
+    [requestDiscard, unstagedEntries],
+  );
+
+  const requestCheckout = useCallback(
+    (branch: string, onDone?: () => void) => {
+      if (!repo || summary.busyAction) return Promise.resolve();
+      return requestDestructive(
+        "checkout",
+        {
+          kind: "checkout",
+          repoRoot: repo.repoRoot,
+          worktreeRoot: repo.repoRoot,
+          branch,
+        },
+        onDone,
+      );
+    },
+    [repo, requestDestructive, summary.busyAction],
+  );
+
+  const cancelDestructive = useCallback(() => {
+    if (destructiveBusy) return;
+    destructiveGuard.cancel();
+    checkoutDoneRef.current = null;
+    setPendingDestructive(null);
+  }, [destructiveBusy, destructiveGuard]);
+
+  const confirmDestructive = useCallback(
+    async (confirmation: {
+      unsavedBuffers: number[];
+      activeWork: number[];
+      force: boolean;
+    }) => {
+      if (!pendingDestructive || destructiveBusy) return;
+      setDestructiveBusy(true);
+      try {
+        const result: DestructiveConfirmResult = await destructiveGuard.confirm(
+          {
+            fingerprint: pendingDestructive.plan.fingerprint,
+            unsavedBuffers: confirmation.unsavedBuffers,
+            activeWork: confirmation.activeWork,
+            force: confirmation.force,
+          },
+        );
+        switch (result.status) {
+          case "done":
+            setPendingDestructive(null);
+            checkoutDoneRef.current = null;
+            break;
+          case "stale":
+          case "unacknowledged":
+            setPendingDestructive({
+              kind: pendingDestructive.kind,
+              plan: result.plan,
+              stale: result.message,
+            });
+            setActionError(result.message);
+            break;
+          case "failed":
+            setPendingDestructive(null);
+            checkoutDoneRef.current = null;
+            setActionError(result.error);
+            break;
+          case "busy":
+            setActionError(result.message);
+            break;
+          case "idle":
+            setPendingDestructive(null);
+            break;
+        }
+      } catch (error) {
+        setActionError(normalizeError(error));
+      } finally {
+        setDestructiveBusy(false);
+      }
+    },
+    [destructiveBusy, destructiveGuard, pendingDestructive],
+  );
 
   const stageAllEntries = useCallback(async () => {
     if (!repo || unstagedEntries.length === 0) return;
@@ -836,10 +926,8 @@ export function useSourceControlPanel(
 
   const requestDiscardFile = useCallback(
     (entry: SourceControlFileEntry) => {
-      if (!repo || summary.busyAction) return;
-      setPendingDiscard({
-        scope: "single",
-        entry: {
+      requestDiscard([
+        {
           key: `-:${entry.path}`,
           path: entry.path,
           mode: "-",
@@ -850,96 +938,19 @@ export function useSourceControlPanel(
           originalPath: entry.originalPath,
           untracked: entry.untracked,
         },
-      });
+      ]);
     },
-    [repo, summary.busyAction],
+    [requestDiscard],
   );
-
-  const generateCommitMessage = useCallback(async () => {
-    if (!repo || stagedEntries.length === 0) return;
-    if (aiBusy) {
-      setActionError("Wait for the current AI action to finish");
-      return;
-    }
-    if (aiUnavailableReason) {
-      setActionError(aiUnavailableReason);
-      return;
-    }
-    setLocalActionBusy("generate-message");
-    setActionMessage(null);
-    setActionError(null);
-    try {
-      const [{ buildConfiguredLanguageModel }, { generateText }, diff] =
-        await Promise.all([
-          import("@/modules/ai/lib/agent"),
-          import("ai"),
-          git.diff(repo.repoRoot, null, true),
-        ]);
-      const { text: diffText, truncated } = truncateDiff(diff.diffText);
-      const chatState = useChatStore.getState();
-      const prefs = usePreferencesStore.getState();
-      const model = await buildConfiguredLanguageModel(
-        selectedModelId,
-        chatState.apiKeys,
-        {
-          lmstudioBaseURL: prefs.lmstudioBaseURL,
-          lmstudioModelId,
-          mlxBaseURL: prefs.mlxBaseURL,
-          mlxModelId,
-          ollamaBaseURL: prefs.ollamaBaseURL,
-          ollamaModelId,
-          openaiCompatibleBaseURL,
-          openaiCompatibleModelId,
-          openrouterModelId,
-        },
-      );
-      const result = await generateText({
-        model,
-        system: COMMIT_MESSAGE_SYSTEM_PROMPT,
-        prompt: buildCommitMessagePrompt(stagedEntries, diffText, truncated),
-        maxOutputTokens: COMMIT_MESSAGE_MAX_OUTPUT_TOKENS,
-        ...(selectedModelSupportsTemperature ? { temperature: 0.2 } : {}),
-      });
-      let message = cleanCommitMessage(result.text);
-      if (!isValidCommitMessage(message)) {
-        const repair = await generateText({
-          model,
-          system: COMMIT_MESSAGE_SYSTEM_PROMPT,
-          prompt: buildRepairCommitMessagePrompt(message, stagedEntries),
-          maxOutputTokens: COMMIT_MESSAGE_MAX_OUTPUT_TOKENS,
-          ...(selectedModelSupportsTemperature ? { temperature: 0 } : {}),
-        });
-        message = cleanCommitMessage(repair.text);
-      }
-      if (!isValidCommitMessage(message)) {
-        throw new Error(
-          "AI returned an invalid commit message. Try again or switch models.",
-        );
-      }
-      setCommitMessage(message);
-      setActionMessage(null);
-    } catch (error) {
-      setActionError(normalizeError(error));
-    } finally {
-      setLocalActionBusy(null);
-    }
-  }, [
-    aiUnavailableReason,
-    aiBusy,
-    lmstudioModelId,
-    mlxModelId,
-    ollamaModelId,
-    openaiCompatibleBaseURL,
-    openaiCompatibleModelId,
-    openrouterModelId,
-    repo,
-    selectedModelId,
-    selectedModelSupportsTemperature,
-    stagedEntries,
-  ]);
 
   const commit = useCallback(async () => {
     if (!repo || summary.busyAction) return;
+    try {
+      await assertNoDestructiveMutation(repo.repoRoot);
+    } catch (error) {
+      setActionError(normalizeError(error));
+      return;
+    }
     setLocalActionBusy("commit");
     setActionMessage(null);
     setActionError(null);
@@ -974,24 +985,6 @@ export function useSourceControlPanel(
     }
   }, [repo, status?.upstream, summary]);
 
-  const pendingDiscardView = useMemo<PendingDiscard | null>(() => {
-    if (!pendingDiscard) return null;
-    if (pendingDiscard.scope === "single") {
-      return {
-        scope: "single",
-        count: 1,
-        label: pendingDiscard.entry.path,
-      };
-    }
-    return {
-      scope: "all",
-      count: pendingDiscard.entries.length,
-      label: `${pendingDiscard.entries.length} unstaged ${
-        pendingDiscard.entries.length === 1 ? "file" : "files"
-      }`,
-    };
-  }, [pendingDiscard]);
-
   return {
     panelState,
     repo,
@@ -1010,12 +1003,14 @@ export function useSourceControlPanel(
     allClean,
     canPush,
     pushHint,
-    canGenerateCommitMessage,
-    generateCommitMessageHint,
     selectionTransition,
     stagedEmptyText,
     unstagedEmptyText,
-    pendingDiscard: pendingDiscardView,
+    pendingDestructive,
+    destructiveBusy,
+    requestCheckout,
+    confirmDestructive,
+    cancelDestructive,
     setCommitMessage,
     refresh,
     selectEntry,
@@ -1026,12 +1021,10 @@ export function useSourceControlPanel(
     toggleAll,
     requestDiscardEntry,
     requestDiscardFile,
+    requestDiscardPaths,
     requestDiscardAll,
-    confirmPendingDiscard,
-    cancelPendingDiscard,
     stageAllEntries,
     unstageAllEntries,
-    generateCommitMessage,
     commit,
     push,
   };

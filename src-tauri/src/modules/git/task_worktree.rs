@@ -605,7 +605,7 @@ pub fn archive(
     task.status = TaskStatus::Archiving;
     Store::open(home)?.put(task.clone())?;
     let attempt = remove_with_shared(&task, &links, || {
-        worktree::remove(registry, &task.root, &task.path, force, workspace)
+        worktree::remove_for_archive(registry, &task.root, &task.path, force, workspace)
     });
     complete_archive(registry, &repo, task, snapshot, attempt, home)
 }
@@ -677,11 +677,20 @@ fn recover_removed(
         .iter()
         .any(|e| !e.is_main && key(&e.path) == key(&task.path))
     {
-        let removal = worktree::remove(registry, &task.root, &task.path, true, &repo.workspace)?;
+        let removal = worktree::remove_for_archive(
+            registry,
+            &task.root,
+            &task.path,
+            true,
+            &repo.workspace,
+        )?;
         if !removal.removed {
+            // With `force` set, the only refusal left is an owned checkpoint or
+            // pre-restore safety ref: dropping this registration would leave
+            // that ref with no owner to list, restore or clean it.
             return Err(GitError::command(
                 "task recovery",
-                "missing worktree registration could not be removed",
+                "this worktree registration still owns checkpoints or pre-restore safety refs",
             ));
         }
     }
@@ -715,7 +724,7 @@ pub fn restore(
         ));
     }
     if let Some(reference) = reference {
-        let prefix = format!("refs/terax/tasks/{id}/archive/");
+        let prefix = super::refs::task_archive_prefix(id);
         let suffix = reference
             .strip_prefix(&prefix)
             .ok_or_else(|| GitError::InvalidRef(reference.into()))?;

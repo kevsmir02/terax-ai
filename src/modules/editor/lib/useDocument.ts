@@ -1,20 +1,43 @@
-import { notifyDocumentSaved } from "@/modules/lsp";
+import { assertNoDestructiveSave } from "@/modules/git";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { currentWorkspaceEnv } from "@/modules/workspace";
+import { native } from "@/modules/workspace/native";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import {
+  checkFormatBaseline,
+  commitBuffer,
+  createSaveQueue,
+  type DiskIo,
+  type DiskTextRead,
+  overwriteReviewed,
+  planReload,
+  reloadDiscard,
+  reviewConflict,
+  type SaveConflict,
+  saveCopy,
+  type SaveQueue,
+  type SaveResult,
+} from "./diskSync";
 import { detectEol, type Eol, normalizeToLf, restoreEol } from "./eol";
+import type { DiskTarget } from "./recovery/cleanup";
+import type { RecoveryRecord } from "./recovery/model";
+import { type RecoveryCloseIntent, useRecovery } from "./recovery/useRecovery";
 
 type ReadResult =
-  | { kind: "text"; content: string; size: number; mtime: number }
+  | {
+      kind: "text";
+      content: string;
+      size: number;
+      mtime: number;
+      revision: string;
+    }
   | { kind: "binary"; size: number }
   | { kind: "toolarge"; size: number; limit: number };
 
 type FileStat = { size: number; mtime: number; kind: string };
-
-/// Mirrors FORCE_MAX_READ_BYTES in src-tauri fs/file.rs.
-export const FORCE_READ_LIMIT = 50 * 1024 * 1024;
+type FileRevision = { revision: string; mtime: number; size: number };
 
 export type DocumentState =
   | { status: "loading" }
@@ -25,15 +48,32 @@ export type DocumentState =
 
 type Options = {
   path: string;
+  /** Only a visible buffer rereads the disk on an external-change signal. */
+  visible: boolean;
   onDirtyChange?: (dirty: boolean) => void;
+  /**
+   * Identity of the editor buffer. Recovery owns drafts by buffer, not by path:
+   * two Spaces editing one pathname are two independent records, and a buffer
+   * that is not identified (e.g. a non-tab editor) is not recovered.
+   */
+  buffer?: { spaceId: string; tabId: number };
 };
 
-export function useDocument({ path, onDirtyChange }: Options) {
+export function useDocument({ path, visible, onDirtyChange, buffer }: Options) {
   const [doc, setDoc] = useState<DocumentState>({ status: "loading" });
   const [dirty, setDirty] = useState(false);
+  const [conflict, setConflict] = useState<SaveConflict | null>(null);
+  const conflictRef = useRef<SaveConflict | null>(null);
+  // Keep the ref in step synchronously: a queued save must see the conflict the
+  // moment it is opened, not one render later.
+  const setConflictNow = useCallback((next: SaveConflict | null) => {
+    conflictRef.current = next;
+    setConflict(next);
+  }, []);
 
   const autoSave = usePreferencesStore((s) => s.editorAutoSave);
   const autoSaveDelay = usePreferencesStore((s) => s.editorAutoSaveDelay);
+  const recoveryEnabled = usePreferencesStore((s) => s.editorRecoveryDrafts);
 
   // Track the saved buffer so we can detect changes cheaply.
   const savedRef = useRef<string>("");
@@ -43,6 +83,11 @@ export function useDocument({ path, onDirtyChange }: Options) {
   useEffect(() => {
     dirtyRef.current = dirty;
   }, [dirty]);
+
+  const visibleRef = useRef(visible);
+  useEffect(() => {
+    visibleRef.current = visible;
+  }, [visible]);
 
   const autoSaveRef = useRef({ autoSave, autoSaveDelay });
   autoSaveRef.current = { autoSave, autoSaveDelay };
@@ -56,45 +101,135 @@ export function useDocument({ path, onDirtyChange }: Options) {
     }
   }, []);
 
-  const diskMtimeRef = useRef<number | null>(null);
+  // Revision of the disk content this buffer is based on. Sent on every save so
+  // native coordination can refuse a write that would drop someone else's.
+  const diskRevisionRef = useRef<string | null>(null);
 
-  const writeToDisk = useCallback(async () => {
-    const content = bufferRef.current;
-    const mtime = await invoke<number>("fs_write_file", {
-      path,
-      content: restoreEol(content, eolRef.current),
-      workspace: currentWorkspaceEnv(),
-      source: "editor",
-    });
-    diskMtimeRef.current = mtime;
-    savedRef.current = content;
-    // Edits typed while the write was in flight must stay dirty.
-    setDirty(bufferRef.current !== content);
-    notifyDocumentSaved(path);
-  }, [path]);
+  // "Open anyway" is a per-file decision; every read of this document (including
+  // the compare/reload reads of a conflict) honours it.
+  const forceRef = useRef(false);
 
-  // False when the write was withheld because the file changed on disk
-  // since load; overwriting is an explicit user action from the toast.
-  const saveNow = useCallback(async (): Promise<boolean> => {
-    const known = diskMtimeRef.current;
-    if (known !== null) {
-      const stat = await invoke<FileStat>("fs_stat", {
-        path,
+  // Explicit-user file access (tier A): no path policy, no workspace registry.
+  const ioRef = useRef<DiskIo>({
+    write: async (target, content, expectedRevision) => {
+      // A destructive Git action that is already mutating this file must win:
+      // writing under it would race the restore and could be discarded silently.
+      await assertNoDestructiveSave(target, (path) =>
+        native.canonicalize(path).catch(() => null),
+      );
+      return invoke<{ mtime: number; revision: string }>("fs_write_file", {
+        path: target,
+        content: restoreEol(content, eolRef.current),
         workspace: currentWorkspaceEnv(),
-      }).catch(() => null);
-      if (stat && stat.mtime !== known) {
-        const name = path.split(/[\\/]/).pop() ?? path;
-        toast.warning("File changed on disk", {
-          id: `save-conflict:${path}`,
-          description: `${name} was modified by another program while you had unsaved changes. Overwrite to keep your version.`,
-          action: { label: "Overwrite", onClick: () => void writeToDisk() },
-        });
+        source: "editor",
+        expectedRevision,
+      });
+    },
+    read: async (target) => {
+      const res = await invoke<ReadResult>("fs_read_file", {
+        path: target,
+        workspace: currentWorkspaceEnv(),
+        force: forceRef.current,
+      });
+      if (res.kind !== "text") throw new Error("not a text file");
+      return {
+        content: res.content,
+        revision: res.revision,
+        mtime: res.mtime,
+        size: res.size,
+      };
+    },
+    exists: (target) =>
+      invoke<FileStat>("fs_stat", {
+        path: target,
+        workspace: currentWorkspaceEnv(),
+      }).then(
+        () => true,
+        () => false,
+      ),
+    revision: async (target) => {
+      const res = await invoke<FileRevision>("fs_file_revision", {
+        path: target,
+        workspace: currentWorkspaceEnv(),
+      });
+      return res.revision;
+    },
+  });
+  const io = ioRef.current;
+
+  /**
+   * Durable unsaved-text recovery for this buffer. Identity comes from the
+   * Space and tab, never from the path, so two Spaces on one file keep separate
+   * drafts. The view is mirrored into a ref for the stable callbacks below.
+   */
+  const recovery = useRecovery({
+    spaceId: buffer?.spaceId ?? "",
+    tabId: buffer?.tabId ?? -1,
+    path,
+    enabled: recoveryEnabled && buffer !== undefined,
+  });
+  const recoveryRef = useRef(recovery);
+  recoveryRef.current = recovery;
+
+  /** Adopts what a successful write left on disk. */
+  const adoptSaved = useCallback(
+    (result: Extract<SaveResult, { status: "saved" }>): boolean => {
+      diskRevisionRef.current = result.revision;
+      // The baseline is exactly what reached the disk; newer typing keeps the
+      // buffer dirty and `save()` answers false for close guards.
+      savedRef.current = result.writtenText;
+      setDirty(bufferRef.current !== result.writtenText);
+      // Resolves only the revision that was written. Text typed while the save
+      // was in flight keeps its own recovery record.
+      recoveryRef.current.saved(result.writtenText);
+      return result.complete;
+    },
+    [],
+  );
+
+  const applySaveResult = useCallback(
+    async (result: SaveResult): Promise<boolean> => {
+      if (result.status === "saved") {
+        setConflictNow(null);
+        return adoptSaved(result);
+      }
+      if (result.status === "conflict") {
+        setConflictNow(await reviewConflict(io, result.conflict));
         return false;
       }
-    }
-    await writeToDisk();
-    return true;
-  }, [path, writeToDisk]);
+      toast.error("Could not save file", { description: result.message });
+      return false;
+    },
+    [adoptSaved, io, setConflictNow],
+  );
+
+  // One app-owned save at a time per document: the next save reads its text and
+  // its expected revision only when it runs, after the previous save adopted the
+  // revision it left behind. Otherwise newer typing during a slow save could
+  // start a second write against the stale baseline and conflict with our own
+  // commit.
+  const saveQueueRef = useRef<SaveQueue | null>(null);
+  if (saveQueueRef.current === null) saveQueueRef.current = createSaveQueue();
+  const saveQueue = saveQueueRef.current;
+
+  // False when the buffer was not fully persisted: a conflicting save, an I/O
+  // failure, or edits typed while the write was in flight.
+  const saveNow = useCallback(
+    (): Promise<boolean> =>
+      saveQueue.run(async () => {
+        // While a conflict round is open the dialog owns the outcome; retrying
+        // the write behind it would just re-detect the same conflict (autosave
+        // would otherwise loop on every tick).
+        if (conflictRef.current !== null) return false;
+        const result = await commitBuffer(io, {
+          path,
+          expectedRevision: diskRevisionRef.current,
+          buffer: () => bufferRef.current,
+        });
+        return applySaveResult(result);
+      }),
+    [applySaveResult, io, path, saveQueue],
+  );
 
   // Notify parent of dirty transitions.
   const onDirtyChangeRef = useRef(onDirtyChange);
@@ -105,15 +240,13 @@ export function useDocument({ path, onDirtyChange }: Options) {
     onDirtyChangeRef.current?.(dirty);
   }, [dirty]);
 
-  const forceRef = useRef(false);
-
   // Adopts a read result as the new saved baseline. `skipIfUnchanged` avoids
   // the re-render when disk already matches the buffer (self-save / duplicate
   // watcher event); initial loads must always publish a state.
   const adoptRead = useCallback((res: ReadResult, skipIfUnchanged = false) => {
     if (res.kind === "text") {
       eolRef.current = detectEol(res.content);
-      diskMtimeRef.current = res.mtime;
+      diskRevisionRef.current = res.revision;
       const content = normalizeToLf(res.content);
       if (skipIfUnchanged && content === savedRef.current) return;
       savedRef.current = content;
@@ -144,6 +277,8 @@ export function useDocument({ path, onDirtyChange }: Options) {
     forceRef.current = false;
     setDoc({ status: "loading" });
     setDirty(false);
+    setConflictNow(null);
+    diskRevisionRef.current = null;
 
     readFromDisk(forceRef.current)
       .then((res) => {
@@ -156,7 +291,7 @@ export function useDocument({ path, onDirtyChange }: Options) {
     return () => {
       cancelled = true;
     };
-  }, [readFromDisk, adoptRead]);
+  }, [readFromDisk, adoptRead, setConflictNow]);
 
   const openAnyway = useCallback(() => {
     forceRef.current = true;
@@ -166,10 +301,23 @@ export function useDocument({ path, onDirtyChange }: Options) {
       .catch((e) => setDoc({ status: "error", message: String(e) }));
   }, [readFromDisk, adoptRead]);
 
-  // Skipped while dirty: never clobber unsaved edits. Re-checked when the
-  // read resolves, since typing can start while it is in flight.
+  const pendingRereadRef = useRef(false);
+
+  // Skipped while dirty: never clobber unsaved edits — that is what the conflict
+  // dialog is for. A clean buffer that is not visible defers the reread instead
+  // of widening it, so background tabs do not churn through reads.
   const reload = useCallback((): boolean => {
-    if (dirtyRef.current) return false;
+    const plan = planReload({
+      dirty: dirtyRef.current,
+      visible: visibleRef.current,
+      pendingReread: pendingRereadRef.current,
+    });
+    if (plan === "withhold") return false;
+    if (plan === "defer") {
+      pendingRereadRef.current = true;
+      return true;
+    }
+    pendingRereadRef.current = false;
     void readFromDisk(forceRef.current)
       .then((res) => {
         if (!dirtyRef.current) adoptRead(res, true);
@@ -180,26 +328,171 @@ export function useDocument({ path, onDirtyChange }: Options) {
     return true;
   }, [readFromDisk, adoptRead, path]);
 
+  // A deferred reread runs the moment the buffer becomes visible again.
+  useEffect(() => {
+    if (!visible || !pendingRereadRef.current) return;
+    reload();
+  }, [visible, reload]);
+
   const save = useCallback(async (): Promise<boolean> => {
     clearAutoSaveTimer();
     if (bufferRef.current === savedRef.current) return true;
     return saveNow();
   }, [clearAutoSaveTimer, saveNow]);
 
+  /** The buffer's own text against its last persisted baseline, synchronously. */
+  const isDirty = useCallback(() => bufferRef.current !== savedRef.current, []);
+
+  /**
+   * Coordinates an app-owned format step: the file the formatter is about to
+   * rewrite must still be the revision this buffer last saved. When it is not,
+   * formatting would be a blind rewrite of someone else's text, so it turns into
+   * the same conflict round as a save. The formatter process itself is an
+   * independent writer — nothing here locks it out.
+   */
+  const canFormatOnDisk = useCallback(async (): Promise<boolean> => {
+    const expected = diskRevisionRef.current;
+    if (expected === null) return false;
+    const state = await checkFormatBaseline(io, {
+      path,
+      expectedRevision: expected,
+      bufferText: bufferRef.current,
+    });
+    if (state.ok) return true;
+    setConflictNow(await reviewConflict(io, state.conflict));
+    return false;
+  }, [io, path, setConflictNow]);
+
+  /**
+   * Runs an app-owned format sequence (baseline check, external formatter,
+   * read-back) exclusively with respect to saves. An autosave requested while
+   * the formatter runs waits for the read-back and then writes against the
+   * revision it adopted, instead of racing the formatter with a stale baseline
+   * and conflicting with our own app-owned sequence.
+   */
+  const runFormatStep = useCallback(
+    <T>(step: () => Promise<T>): Promise<T> => saveQueue.run(step),
+    [saveQueue],
+  );
+
   // Adopt externally formatted disk content as the saved baseline before the
   // matching editor dispatch lands, so the buffer never flashes dirty. The
-  // formatter's own write must also become the known mtime, or the next save
-  // would report it as an external conflict.
+  // formatter's own revision must become the known one, or the next save would
+  // report its write as an external conflict.
   // Returns the LF-normalized text the caller should dispatch.
-  const adoptDiskText = useCallback(
-    (diskText: string, mtime: number): string => {
-      eolRef.current = detectEol(diskText);
-      diskMtimeRef.current = mtime;
-      const content = normalizeToLf(diskText);
-      savedRef.current = content;
-      setDirty(bufferRef.current !== content);
-      return content;
+  const adoptDiskText = useCallback((disk: DiskTextRead): string => {
+    eolRef.current = detectEol(disk.content);
+    diskRevisionRef.current = disk.revision;
+    const content = normalizeToLf(disk.content);
+    savedRef.current = content;
+    setDirty(bufferRef.current !== content);
+    return content;
+  }, []);
+
+  /** Explicit overwrite of the reviewed revision. */
+  const overwriteConflict = useCallback(async (): Promise<boolean> => {
+    if (conflict === null) return false;
+    return applySaveResult(
+      await overwriteReviewed(io, conflict, () => bufferRef.current),
+    );
+  }, [applySaveResult, conflict, io]);
+
+  /** Explicit reload/discard: the buffer text is thrown away by choice. */
+  const reloadConflict = useCallback(async (): Promise<boolean> => {
+    // Read-only: discarding never writes the abandoned buffer, and a file that
+    // disappeared stays missing instead of being recreated.
+    const result = await reloadDiscard(io, path);
+    if (result.status === "failed") {
+      toast.error("Could not reload file", { description: result.message });
+      return false;
+    }
+    // An explicit discard resolves this buffer's draft; a late recovery write
+    // for the abandoned text is dropped rather than resurrected.
+    recoveryRef.current.discard();
+    adoptRead({ kind: "text", ...result.disk });
+    setConflictNow(null);
+    return true;
+  }, [adoptRead, io, path, setConflictNow]);
+
+  /** Explicit Save As: the conflict is left on disk untouched. */
+  const saveConflictCopy = useCallback(
+    async (targetPath: string): Promise<boolean> => {
+      const result = await saveCopy(io, {
+        sourcePath: path,
+        targetPath,
+        text: bufferRef.current,
+      });
+      if (result.status === "saved") {
+        // The buffer stays dirty against its own file: nothing was resolved
+        // about the original, only a copy was made. The recovery record is
+        // retargeted to the new file only now that the write succeeded, so a
+        // failed Save As leaves the draft owned by the original.
+        recoveryRef.current.retarget(targetPath, result.revision);
+        setConflictNow(null);
+        toast.success("Saved a copy", { description: targetPath });
+        return true;
+      }
+      toast.error("Could not save a copy", {
+        description: result.status === "failed" ? result.message : undefined,
+      });
+      return false;
     },
+    [io, path, setConflictNow],
+  );
+
+  const dismissConflict = useCallback(
+    () => setConflictNow(null),
+    [setConflictNow],
+  );
+
+  /**
+   * What a recovered draft may become, given the current file. Read from the
+   * revision this buffer loaded, so "changed/replaced/missing/unreadable" is
+   * decided on the same identity a save would use.
+   */
+  const recoveryTarget = useCallback((): DiskTarget => {
+    if (doc.status === "error") return { status: "unreadable" };
+    const revision = diskRevisionRef.current;
+    if (revision === null) return { status: "missing" };
+    return { status: "present", revision };
+  }, [doc.status]);
+
+  /**
+   * Puts recovered draft text back into the *buffer* only: it becomes ordinary
+   * unsaved text, and nothing is written to the original file. Refused while
+   * the buffer has its own unsaved edits, which must not be clobbered.
+   */
+  const applyRecoveredText = useCallback((text: string): boolean => {
+    if (bufferRef.current !== savedRef.current) return false;
+    bufferRef.current = text;
+    setDirty(text !== savedRef.current);
+    setDoc({ status: "ready", content: text, size: text.length });
+    recoveryRef.current.edit(text, diskRevisionRef.current);
+    return true;
+  }, []);
+
+  /** Saves recovered draft text to a path the user chose (never the original). */
+  const saveDraftCopy = useCallback(
+    async (targetPath: string, text: string): Promise<boolean> => {
+      const result = await saveCopy(io, {
+        sourcePath: path,
+        targetPath,
+        text,
+      });
+      if (result.status === "saved") {
+        toast.success("Saved the recovered draft", { description: targetPath });
+        return true;
+      }
+      toast.error("Could not save the recovered draft", {
+        description: result.status === "failed" ? result.message : undefined,
+      });
+      return false;
+    },
+    [io, path],
+  );
+
+  const dismissDraft = useCallback(
+    (record: RecoveryRecord) => recoveryRef.current.dismissDraft(record),
     [],
   );
 
@@ -208,6 +501,15 @@ export function useDocument({ path, onDirtyChange }: Options) {
       bufferRef.current = next;
       const isDirty = next !== savedRef.current;
       setDirty(isDirty);
+      if (isDirty) {
+        // Coalesced by the recovery scheduler: continuous typing persists
+        // within two seconds instead of waiting for idle.
+        recoveryRef.current.edit(next, diskRevisionRef.current);
+      } else {
+        // Typed back to the saved text: there is no unsaved text left to
+        // recover, so the draft this buffer produced is resolved by choice.
+        recoveryRef.current.discard();
+      }
 
       clearAutoSaveTimer();
 
@@ -223,5 +525,32 @@ export function useDocument({ path, onDirtyChange }: Options) {
 
   useEffect(() => clearAutoSaveTimer, [path, clearAutoSaveTimer]);
 
-  return { doc, dirty, onChange, save, reload, adoptDiskText, openAnyway };
+  return {
+    doc,
+    dirty,
+    onChange,
+    save,
+    isDirty,
+    reload,
+    adoptDiskText,
+    openAnyway,
+    canFormatOnDisk,
+    runFormatStep,
+    conflict,
+    overwriteConflict,
+    reloadConflict,
+    saveConflictCopy,
+    dismissConflict,
+    recoveryEnabled,
+    recoveryStatus: recovery.status,
+    recoveryDrafts: recovery.drafts,
+    recoveryRetry: recovery.retry,
+    recoveryRestore: recovery.restore,
+    recoveryTarget,
+    applyRecoveredText,
+    saveDraftCopy,
+    dismissDraft,
+    releaseRecovery: (intent: RecoveryCloseIntent) =>
+      recoveryRef.current.release(intent),
+  };
 }

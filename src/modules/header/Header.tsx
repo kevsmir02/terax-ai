@@ -30,7 +30,6 @@ type Props = {
   onSelect: (id: number) => void;
   onNew: () => void;
   onNewBlock: () => void;
-  onNewPrivate: () => void;
   onNewPreview: () => void;
   onNewEditor: () => void;
   onNewGitGraph: () => void;
@@ -50,7 +49,6 @@ type Props = {
   onToggleSidebar: () => void;
   onOpenCommandPalette: () => void;
   onActivateAgent: (tabId: number, leafId: number) => void;
-  onActivateLocalAgent: () => void;
   onOpenSettings: () => void;
   spaceSwitcher: ReactNode;
   searchTarget: SearchTarget;
@@ -65,7 +63,6 @@ export function Header({
   onSelect,
   onNew,
   onNewBlock,
-  onNewPrivate,
   onNewPreview,
   onNewEditor,
   onNewGitGraph,
@@ -80,7 +77,6 @@ export function Header({
   onToggleSidebar,
   onOpenCommandPalette,
   onActivateAgent,
-  onActivateLocalAgent,
   onOpenSettings,
   spaceSwitcher,
   searchTarget,
@@ -141,12 +137,7 @@ export function Header({
           <HugeiconsIcon icon={CommandIcon} size={14} strokeWidth={1.75} />
         </Button>
 
-        {!IS_MAC && (
-          <NotificationBell
-            onActivate={onActivateAgent}
-            onActivateLocal={onActivateLocalAgent}
-          />
-        )}
+        {!IS_MAC && <NotificationBell onActivate={onActivateAgent} />}
       </div>
 
       {!IS_MAC && (
@@ -174,7 +165,6 @@ export function Header({
           onSelect={onSelect}
           onNew={onNew}
           onNewBlock={onNewBlock}
-          onNewPrivate={onNewPrivate}
           onNewPreview={onNewPreview}
           onNewEditor={onNewEditor}
           onNewGitGraph={onNewGitGraph}
@@ -195,10 +185,7 @@ export function Header({
 
       {IS_MAC && (
         <>
-          <NotificationBell
-            onActivate={onActivateAgent}
-            onActivateLocal={onActivateLocalAgent}
-          />
+          <NotificationBell onActivate={onActivateAgent} />
           {settingsButton}
         </>
       )}

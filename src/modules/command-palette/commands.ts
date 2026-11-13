@@ -7,7 +7,6 @@ import {
   FileEditIcon,
   FileSearchIcon,
   Globe02Icon,
-  IncognitoIcon,
   KeyboardIcon,
   LayoutTwoColumnIcon,
   LayoutTwoRowIcon,
@@ -16,7 +15,6 @@ import {
   Settings01Icon,
   SidebarLeftIcon,
   SourceCodeIcon,
-  SparklesIcon,
   TerminalIcon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
@@ -30,7 +28,6 @@ export const COMMAND_GROUPS = [
   "Git",
   "Search",
   "View",
-  "AI",
 ] as const;
 
 export type CommandPaletteActionContext = {
@@ -41,7 +38,6 @@ export type CommandPaletteActionContext = {
   home: string | null;
   openNewTab: () => void;
   openNewBlock: () => void;
-  openNewPrivate: () => void;
   openNewEditor: () => void;
   openNewPreview: () => void;
   openGitGraph: () => void;
@@ -53,8 +49,6 @@ export type CommandPaletteActionContext = {
   focusExplorerSearch: () => void;
   toggleSidebar: () => void;
   toggleHiddenFiles: () => void;
-  toggleAi: () => void;
-  askAiSelection: () => void;
   openSettings: () => void;
   openKeyboardShortcuts: () => void;
   spaces: { id: string; name: string }[];
@@ -114,7 +108,14 @@ export function createCommandItems(
       id: "spaces.overview",
       title: "Spaces: Overview",
       group: "Spaces",
-      keywords: ["spaces", "sessions", "overview", "organize", "manage", "move"],
+      keywords: [
+        "spaces",
+        "sessions",
+        "overview",
+        "organize",
+        "manage",
+        "move",
+      ],
       icon: DashboardSquare01Icon,
       run: ctx.openSpacesOverview,
     },
@@ -132,8 +133,7 @@ export function createCommandItems(
       group: "Spaces" as const,
       keywords: ["space", "switch", "session", sp.name],
       icon: DashboardSquare01Icon,
-      disabledReason:
-        sp.id === ctx.activeSpaceId ? "Current space" : undefined,
+      disabledReason: sp.id === ctx.activeSpaceId ? "Current space" : undefined,
       run: () => ctx.switchSpace(sp.id),
     })),
     {
@@ -152,15 +152,6 @@ export function createCommandItems(
       keywords: ["blocks", "warp", "command blocks", "terminal"],
       icon: DashboardSquare01Icon,
       run: ctx.openNewBlock,
-    },
-    {
-      id: "tab.newPrivate",
-      title: "New private terminal",
-      group: "Tabs",
-      keywords: ["privacy", "private", "incognito", "hidden from ai"],
-      icon: IncognitoIcon,
-      shortcutId: "tab.newPrivate",
-      run: ctx.openNewPrivate,
     },
     {
       id: "tab.newEditor",
@@ -283,24 +274,6 @@ export function createCommandItems(
       icon: ViewIcon,
       shortcutId: "explorer.toggleHidden",
       run: ctx.toggleHiddenFiles,
-    },
-    {
-      id: "ai.toggle",
-      title: "Toggle AI agent",
-      group: "AI",
-      keywords: ["assistant", "chat", "agent"],
-      icon: SparklesIcon,
-      shortcutId: "ai.toggle",
-      run: ctx.toggleAi,
-    },
-    {
-      id: "ai.askSelection",
-      title: "Ask AI about selection",
-      group: "AI",
-      keywords: ["selection", "explain", "assistant", "chat"],
-      icon: SparklesIcon,
-      shortcutId: "ai.askSelection",
-      run: ctx.askAiSelection,
     },
   ];
 }

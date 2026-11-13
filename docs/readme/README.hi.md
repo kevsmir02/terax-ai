@@ -1,3 +1,8 @@
+<!-- fork-copy: upstream translation; the authoritative description of this build is ../../README.md -->
+
+> [!IMPORTANT]
+> यह अनुवाद अपस्ट्रीम Terax से लिया गया है। इस फ़ोर्क ने इसमें वर्णित अंतर्निहित AI सुविधाएँ हटा दी हैं (चैट, ऑटो-पूर्णता, AI द्वारा बदलाव समीक्षा, और प्रोवाइडर/API कुंजी सेटिंग्स)। [`README.md`](../../README.md) उस बिल्ड का वर्णन करता है जो यह रिपॉज़िटरी प्रकाशित करता है।
+
 <div align="center">
   <img src="../../public/logo.png" width="144" height="144" alt="Terax" />
   <h1>Terax</h1>
@@ -7,7 +12,7 @@
   <p>
     <img src="https://img.shields.io/github/v/release/crynta/terax-ai?label=version&color=blue" alt="संस्करण" />
     <img src="https://img.shields.io/github/downloads/crynta/terax-ai/total?label=downloads&color=blue" alt="डाउनलोड" />
-    <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="प्लेटफ़ॉर्म" />
+    <img src="https://img.shields.io/badge/platform-Linux%20x86_64-lightgrey" alt="प्लेटफ़ॉर्म" />
     <a href="https://discord.gg/tyveTUyEp7"><img src="https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
     <a href="https://www.youtube.com/@crynta"><img src="https://img.shields.io/badge/Youtube-FF0000?logo=youtube&logoColor=white" alt="YouTube" /></a>
   </p>
@@ -90,18 +95,20 @@ Terax एक हल्का, ओपन-सोर्स, टर्मिनल-�
 
 ## इंस्टॉल करें
 
-नवीनतम इंस्टॉलर [Releases](https://github.com/crynta/terax-ai/releases/latest) पेज पर हैं। Terax वहीं से अपने आप अपडेट होता है।
+> **Platform support (authoritative, English):** this fork builds and distributes Linux x86-64
+> only, as an RPM and a DEB. macOS, Windows/WSL and Nix build and distribution support was
+> removed, and no other architecture is produced. See the
+> [English README](../../README.md#platform-support).
 
-### Windows नोट्स
+Install the RPM (`sudo dnf install ./codr-*.x86_64.rpm`) or the DEB (`sudo apt
+install ./codr_*_amd64.deb`) from the
+[Releases](https://github.com/kevsmir02/terax-ai/releases/latest) page with your package manager.
+Fedora 45 KDE Plasma on Wayland is the validated target (#44); Debian 13 graphical WebKitGTK
+validation was waived for personal-tool scope and `packaging/arch/PKGBUILD` is authored and signed
+but **not built** (`makepkg` has not been run). The application never downloads, installs or
+restarts itself.
 
-- डिफ़ॉल्ट शेल पहचान: `pwsh.exe` (PowerShell 7+) -> `powershell.exe` (Windows PowerShell 5.1) -> `cmd.exe`।
-- WSL एक पूर्ण वर्कस्पेस एनवायरनमेंट है, केवल लिपटा हुआ सबप्रोसेस नहीं।
-
-### Linux नोट्स
-
-- **Arch / AUR:** `yay -S terax-bin` या `paru`। यह नवीनतम रिलीज़ का अनुसरण करता है।
-- **NixOS / Nix:** आधिकारिक flake का उपयोग करें। NixOS के बाहर `nix profile install github:crynta/terax-ai` चलाएँ। NixOS में flake आयात करें और `inputs.terax.packages.${pkgs.system}.terax` को `environment.systemPackages` में जोड़ें। आसान सेटअप के लिए `nixosModules.terax` भी उपलब्ध है।
-- **AppImage:** FUSE आवश्यक है। इसके बिना `./Terax_*.AppImage --appimage-extract-and-run` चलाएँ। Wayland पर रेंडरिंग समस्या हो तो `WEBKIT_DISABLE_DMABUF_RENDERER=1` आज़माएँ। `.deb` / `.rpm` पैकेज सिस्टम GTK स्टैक से जुड़ते हैं और आम तौर पर अधिक सुचारु चलते हैं।
+On Wayland with rendering glitches, try `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
 
 ## AI कॉन्फ़िगर करें
 
@@ -142,14 +149,6 @@ Tauri 2, Rust, `portable-pty`, React 19, TypeScript, Vite, xterm.js, CodeMirror 
 ## योगदान
 
 Issues और PR का स्वागत है। समस्याएँ रिपोर्ट करें, सुविधाएँ सुझाएँ या pull request भेजें। अधिक जानकारी के लिए [CONTRIBUTING.md](../../CONTRIBUTING.md) और [आर्किटेक्चर दस्तावेज़](../README.md) देखें।
-
-## कोड साइनिंग
-
-<a href="https://signpath.org"><img src="https://avatars.githubusercontent.com/u/34448643?s=200&v=4" width="80" alt="SignPath" align="left" /></a>
-
-Windows बिल्ड [SignPath.io](https://signpath.io) द्वारा दिए गए और [SignPath Foundation](https://signpath.org) द्वारा जारी मुफ़्त कोड-साइनिंग प्रमाणपत्र से साइन किए जाते हैं।
-
-<br clear="left" />
 
 ## लाइसेंस
 

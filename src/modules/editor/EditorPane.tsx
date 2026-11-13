@@ -1,8 +1,4 @@
-import { endpointIdFromCompatModel } from "@/modules/ai/config";
-import { getCustomEndpointKey, getKey } from "@/modules/ai/lib/keyring";
-import { lspFormatDocument, useLspExtension } from "@/modules/lsp";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { onKeysChanged } from "@/modules/settings/store";
 import { acceptCompletion, startCompletion } from "@codemirror/autocomplete";
 import { redo, undo } from "@codemirror/commands";
 import {
@@ -17,6 +13,11 @@ import { Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { vim } from "@replit/codemirror-vim";
 import { useAssetGrant } from "@/lib/useAssetGrant";
+import {
+  TEXT_OVERRIDE_LIMIT_BYTES,
+  TEXT_SYNTAX_LIMIT_BYTES,
+} from "@/modules/preview/lib/limits";
+import { AssetPreview } from "@/modules/preview/AssetPreview";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import {
   forwardRef,
@@ -30,10 +31,6 @@ import {
   useState,
 } from "react";
 import { toast } from "sonner";
-import {
-  inlineCompletion,
-  triggerInlineCompletion,
-} from "./lib/autocomplete/inlineExtension";
 import { diagnosticsReporter } from "./lib/diagnosticsReporter";
 import { useDiagnosticsStore } from "./lib/diagnosticsStore";
 import {
@@ -42,7 +39,6 @@ import {
   indentCompartment,
   indentExtension,
   languageCompartment,
-  lspCompartment,
   vimCompartment,
   wordWrapExtension,
   wrapCompartment,
@@ -55,11 +51,16 @@ import {
 } from "./lib/externalFormat";
 import { detectIndentUnit } from "./lib/indent";
 import { type LanguageResult, resolveLanguage } from "./lib/languageResolver";
-import { FORCE_READ_LIMIT, useDocument } from "./lib/useDocument";
+import { warmLanguage } from "./lib/languageWarm";
+import { useDocument } from "./lib/useDocument";
 import { useEditorThemeExt } from "./lib/useEditorThemeExt";
 import { initVimGlobals, vimHandlersExtension } from "./lib/vim";
 import { mediaPreviewKind } from "./lib/mediaPreview";
-import { MediaPreview } from "./MediaPreview";
+import { planRestore } from "./lib/recovery/cleanup";
+import type { RecoveryCloseIntent } from "./lib/recovery/useRecovery";
+import { RecoveryDraftBanner } from "./RecoveryDraftBanner";
+import { RecoveryStatusBar } from "./RecoveryStatusBar";
+import { SaveConflictDialog } from "./SaveConflictDialog";
 
 initVimGlobals();
 
@@ -80,26 +81,40 @@ export type EditorPaneHandle = {
   /** Apply CodeMirror's undo/redo commands. */
   undo: () => void;
   redo: () => void;
-  /** Persist the buffer (format-on-save + write), same as Mod+S / :w. */
-  save: () => Promise<void>;
-  /** Request an AI ghost suggestion at the cursor. */
-  triggerAiComplete: () => void;
+  /** Insert text at the current selection (the app-lab uses the real editing path). */
+  insertText: (text: string) => void;
+  /** The buffer's text, independent of render/aria-hidden state (no modal can hide it). */
+  readText: () => string;
+  /** Persist the buffer (format-on-save + write). True only when complete: no newer edits, conflict or failure. */
+  save: () => Promise<boolean>;
+  /** True while the buffer has text newer than its last persisted baseline. */
+  isDirty: () => boolean;
+  /**
+   * The tab is closing: dispose this buffer's recovery state, resolving its
+   * draft first when the close was an explicit discard.
+   */
+  releaseRecovery: (intent: RecoveryCloseIntent) => void;
   /** Open CodeMirror's completion popup. */
   triggerCodeComplete: () => void;
 };
 
 type Props = {
   path: string;
+  /** Space that owns this buffer; part of its recovery identity, not the path. */
+  spaceId: string;
+  /**
+   * Tab id inside the Space: with `spaceId` it keeps buffers independent, and
+   * it owns this pane's asset grants.
+   */
+  tabId: number;
   overrideLanguage?: string | null;
   onDirtyChange?: (dirty: boolean) => void;
   onSaved?: () => void;
   onClose?: () => void;
+  /** Active tab in its stack: only a visible buffer rereads the disk. */
+  visible?: boolean;
   mediaActive?: boolean;
 };
-
-// Above this, syntax highlighting and LSP are disabled: a multi-MB lezer
-// parse tree and a didOpen of that size cost far more than they give.
-const SYNTAX_MAX_BYTES = 4 * 1024 * 1024;
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -113,23 +128,68 @@ export const EditorPane = memo(
   forwardRef<EditorPaneHandle, Props>(function EditorPane(props, ref) {
     const {
       path,
+      spaceId,
+      tabId,
       overrideLanguage,
       onDirtyChange,
       onSaved,
       onClose,
+      visible = true,
       mediaActive = true,
     } = props;
 
-    const { doc, onChange, save, reload, adoptDiskText, openAnyway } =
-      useDocument({
-        path,
-        onDirtyChange,
-      });
-    const assetGrant = useAssetGrant((doc.status === "binary" || doc.status === "toolarge") && mediaPreviewKind(path) ? path : null);
+    const {
+      doc,
+      dirty,
+      onChange,
+      save,
+      isDirty,
+      reload,
+      adoptDiskText,
+      openAnyway,
+      canFormatOnDisk,
+      runFormatStep,
+      conflict,
+      overwriteConflict,
+      reloadConflict,
+      saveConflictCopy,
+      dismissConflict,
+      recoveryEnabled,
+      recoveryStatus,
+      recoveryDrafts,
+      recoveryRetry,
+      recoveryRestore,
+      recoveryTarget,
+      applyRecoveredText,
+      saveDraftCopy,
+      dismissDraft,
+      releaseRecovery,
+    } = useDocument({
+      path,
+      visible,
+      onDirtyChange,
+      buffer: { spaceId, tabId },
+    });
+    const [hiddenDrafts, setHiddenDrafts] = useState<number[]>([]);
+    const draft =
+      recoveryEnabled && recoveryDrafts.length > 0
+        ? recoveryDrafts.find((r) => !hiddenDrafts.includes(r.bufferRevision))
+        : undefined;
+    const assetGrant = useAssetGrant(
+      (doc.status === "binary" || doc.status === "toolarge") &&
+        mediaPreviewKind(path)
+        ? path
+        : null,
+      tabId,
+    );
     const reloadRef = useRef(reload);
     reloadRef.current = reload;
     const adoptDiskTextRef = useRef(adoptDiskText);
     adoptDiskTextRef.current = adoptDiskText;
+    const canFormatOnDiskRef = useRef(canFormatOnDisk);
+    canFormatOnDiskRef.current = canFormatOnDisk;
+    const runFormatStepRef = useRef(runFormatStep);
+    runFormatStepRef.current = runFormatStep;
     const cmRef = useRef<ReactCodeMirrorRef>(null);
     const themeExt = useEditorThemeExt();
     const vimMode = usePreferencesStore((s) => s.vimMode);
@@ -137,118 +197,71 @@ export const EditorPane = memo(
       s.editorWordWrap ? s.editorWordWrapColumn : null,
     );
     const languageRef = useRef<string | null>(null);
-    const [langId, setLangId] = useState<string | null>(null);
-    const apiKeyRef = useRef<string | null>(null);
 
-    useEffect(() => {
-      let cancelled = false;
-      const refresh = async () => {
-        const s = usePreferencesStore.getState();
-        const provider = s.autocompleteProvider;
-        if (
-          provider === "lmstudio" ||
-          provider === "mlx" ||
-          provider === "ollama"
-        ) {
-          apiKeyRef.current = null;
-          return;
-        }
-        // OpenAI-compatible keys live in a per-endpoint keyring slot.
-        if (provider === "openai-compatible") {
-          const eid = endpointIdFromCompatModel(s.autocompleteModelId);
-          const k = eid ? await getCustomEndpointKey(eid) : null;
-          if (!cancelled) apiKeyRef.current = k;
-          return;
-        }
-        const k = await getKey(provider);
-        if (!cancelled) apiKeyRef.current = k;
-      };
-      void refresh();
-      let unlistenKeys: (() => void) | undefined;
-      void onKeysChanged(() => void refresh()).then((un) => {
-        if (cancelled) un();
-        else unlistenKeys = un;
-      });
-      const unsubPrefs = usePreferencesStore.subscribe((state, prev) => {
-        if (
-          state.autocompleteProvider !== prev.autocompleteProvider ||
-          state.autocompleteModelId !== prev.autocompleteModelId
-        ) {
-          void refresh();
-        }
-      });
-      return () => {
-        cancelled = true;
-        unlistenKeys?.();
-        unsubPrefs();
-      };
-    }, []);
     // Stabilize save + onSaved via refs so the extensions array never changes
     // identity — a new identity makes @uiw/react-codemirror reconfigure the
     // whole state, wiping the language compartment.
     const saveRef = useRef(save);
     saveRef.current = save;
+    const isDirtyRef = useRef(isDirty);
+    isDirtyRef.current = isDirty;
     const onSavedRef = useRef(onSaved);
     onSavedRef.current = onSaved;
     const onCloseRef = useRef(onClose);
     onCloseRef.current = onClose;
-    const lspActiveRef = useRef(false);
-    const warnedNoLspRef = useRef(false);
-    const warnedNoFormatRef = useRef(false);
-
     const performSave = useCallback(async () => {
       const view = cmRef.current?.view;
       const prefs = usePreferencesStore.getState();
+      // Null when no configured formatter applies to this language.
       const formatter = resolveFormatter(languageRef.current, prefs);
-      if (prefs.editorFormatOnSave && formatter === "lsp" && view) {
-        if (lspActiveRef.current) {
-          let res: "done" | "unsupported" = "done";
-          try {
-            res = await lspFormatDocument(view);
-          } catch (e) {
-            toast.error("Language server format failed", {
-              description: String(e),
-            });
-          }
-          if (res === "unsupported" && !warnedNoFormatRef.current) {
-            warnedNoFormatRef.current = true;
-            toast.warning("Format on save skipped", {
-              description:
-                "The active language server has no formatter. Pick an external one in Settings (Ruff for Python, Prettier, rustfmt, ...).",
-            });
-          }
-        } else if (!warnedNoLspRef.current) {
-          warnedNoLspRef.current = true;
-          toast.warning("Format on save skipped", {
-            description:
-              "No active language server for this file. Enable one in the statusbar, or pick an external formatter in Settings.",
-          });
-        }
-      }
       // Snapshot before save: edits typed during the formatter round-trip
       // must not be clobbered by the disk read-back.
       const docAtSave = view?.state.doc;
       const saved = await saveRef.current();
-      if (!saved) return;
-      if (prefs.editorFormatOnSave && formatter !== "lsp") {
-        const error = await runExternalFormatter(
-          formatter,
-          pathRef.current,
-          prefs.editorCustomFormatCommand,
-        );
-        if (error) {
-          toast.error(`${formatter} format failed`, { description: error });
-        } else {
+      if (!saved) return false;
+      // A null formatter means no formatter is configured: save unformatted.
+      if (prefs.editorFormatOnSave && formatter) {
+        // The formatter rewrites the file itself, so it must start from the
+        // revision this buffer just saved: a change in between becomes the same
+        // conflict round as a save instead of a blind rewrite. Holding the save
+        // queue for the check, the formatter and the read-back also keeps an
+        // autosave from interleaving its own app-owned write with the
+        // formatter's; a save requested meanwhile runs after the read-back
+        // adopts the formatter's revision. The formatter process is still an
+        // independent writer nothing here can lock out.
+        const outcome = await runFormatStepRef.current(async () => {
+          if (!(await canFormatOnDiskRef.current())) {
+            return { status: "blocked" as const };
+          }
+          const error = await runExternalFormatter(
+            formatter,
+            pathRef.current,
+            prefs.editorCustomFormatCommand,
+          );
+          if (error) return { status: "failed" as const, error };
           const readBack = await readFileText(pathRef.current);
-          if (readBack !== null && view && view.state.doc === docAtSave) {
-            applyFormattedContent(
-              view,
-              adoptDiskTextRef.current(readBack.text, readBack.mtime),
-            );
+          if (readBack === null) return { status: "unreadable" as const };
+          return {
+            status: "formatted" as const,
+            text: adoptDiskTextRef.current(readBack),
+          };
+        });
+        if (outcome.status === "failed") {
+          toast.error(`${formatter} format failed`, {
+            description: outcome.error,
+          });
+        } else if (outcome.status === "unreadable") {
+          toast.error(`${formatter} format could not be read back`, {
+            description: "The file changed while it was being formatted.",
+          });
+        } else if (outcome.status === "formatted") {
+          if (view && view.state.doc === docAtSave) {
+            applyFormattedContent(view, outcome.text);
           }
         }
       }
       onSavedRef.current?.();
+      return !isDirtyRef.current();
     }, []);
     const performSaveRef = useRef(performSave);
     performSaveRef.current = performSave;
@@ -343,50 +356,9 @@ export const EditorPane = memo(
         ...buildSharedExtensions(),
         indentCompartment.of(DEFAULT_INDENT),
         languageCompartment.of([]),
-        lspCompartment.of([]),
         diagnosticsReporter(() => pathRef.current),
-        // Before inlineCompletion so an open popup wins Tab over the ghost.
+        // Let an open completion popup claim Tab.
         Prec.highest(keymap.of([{ key: "Tab", run: acceptCompletion }])),
-        inlineCompletion({
-          getPrefs: () => {
-            const s = usePreferencesStore.getState();
-            const p = s.autocompleteProvider;
-            // autocompleteModelId holds the compat- id of the chosen endpoint.
-            const compatEp =
-              p === "openai-compatible"
-                ? s.customEndpoints.find(
-                    (e) =>
-                      e.id === endpointIdFromCompatModel(s.autocompleteModelId),
-                  )
-                : undefined;
-            const modelId =
-              p === "lmstudio"
-                ? s.lmstudioModelId
-                : p === "mlx"
-                  ? s.mlxModelId
-                  : p === "ollama"
-                    ? s.ollamaModelId
-                    : p === "openai-compatible"
-                      ? (compatEp?.modelId ?? "")
-                      : p === "openrouter"
-                        ? s.openrouterModelId
-                        : s.autocompleteModelId;
-            return {
-              enabled: s.autocompleteEnabled,
-              trigger: s.autocompleteTrigger,
-              provider: p,
-              modelId,
-              apiKey: apiKeyRef.current,
-              lmstudioBaseURL: s.lmstudioBaseURL,
-              mlxBaseURL: s.mlxBaseURL,
-              ollamaBaseURL: s.ollamaBaseURL,
-              openaiCompatibleBaseURL:
-                compatEp?.baseURL ?? s.openaiCompatibleBaseURL,
-            };
-          },
-          getPath: () => pathRef.current,
-          getLanguage: () => languageRef.current,
-        }),
         keymap.of([
           {
             key: "Mod-s",
@@ -429,35 +401,25 @@ export const EditorPane = memo(
       });
     }, [doc]);
 
-    const lspExt = useLspExtension(path, langId, doc.status === "ready");
-    useEffect(() => {
-      lspActiveRef.current = lspExt !== null;
-      const view = cmRef.current?.view;
-      if (!view) return;
-      view.dispatch({
-        effects: lspCompartment.reconfigure(lspExt ?? []),
-      });
-    }, [lspExt]);
-
     useEffect(
       () => () => useDiagnosticsStore.getState().report(pathRef.current, null),
       [],
     );
 
-    // Warm the language chunk while the file is still being read; the
-    // ready-gated effect below then resolves from cache.
+    // Warm the language chunk as soon as the size is known; the ready-gated
+    // effect below then resolves from cache. A document above the 4 MiB syntax
+    // ceiling, or one the native reader refused, imports no chunk at all —
+    // `planLanguageWarm` owns that decision, the ceiling stays in `limits.ts`.
     useEffect(() => {
-      const resolvePath = overrideLanguage ? `dummy.${overrideLanguage}` : path;
-      void resolveLanguage(resolvePath).catch(() => {});
-    }, [path, overrideLanguage]);
+      void warmLanguage(resolveLanguage, { path, overrideLanguage, doc });
+    }, [doc, path, overrideLanguage]);
 
     useEffect(() => {
       const ext =
         overrideLanguage || (path.split(".").pop()?.toLowerCase() ?? null);
       languageRef.current = ext;
       if (doc.status !== "ready") return;
-      if (doc.size > SYNTAX_MAX_BYTES) {
-        setLangId(null);
+      if (doc.size > TEXT_SYNTAX_LIMIT_BYTES) {
         const view = cmRef.current?.view;
         view?.dispatch({ effects: languageCompartment.reconfigure([]) });
         return;
@@ -474,7 +436,6 @@ export const EditorPane = memo(
       void resolve().then((result) => {
         if (cancelled) return;
         if (result.id) languageRef.current = result.id;
-        setLangId(result.id || ext);
         const view = cmRef.current?.view;
         if (!view) return;
         view.dispatch({
@@ -547,11 +508,16 @@ export const EditorPane = memo(
           const view = cmRef.current?.view;
           if (view) redo(view);
         },
-        save: () => performSaveRef.current(),
-        triggerAiComplete: () => {
+        insertText: (text: string) => {
           const view = cmRef.current?.view;
-          if (view) triggerInlineCompletion(view);
+          if (!view) return;
+          view.dispatch(view.state.replaceSelection(text));
+          view.focus();
         },
+        readText: () => cmRef.current?.view?.state.doc.toString() ?? "",
+        save: () => performSaveRef.current(),
+        isDirty: () => isDirtyRef.current(),
+        releaseRecovery,
         triggerCodeComplete: () => {
           const view = cmRef.current?.view;
           if (!view) return;
@@ -562,6 +528,27 @@ export const EditorPane = memo(
       [path, applyPendingFocus, applyPendingGoto],
     );
 
+    const draftBanner = draft ? (
+      <RecoveryDraftBanner
+        draft={draft}
+        plan={planRestore(draft, recoveryTarget())}
+        diskText={doc.status === "ready" ? doc.content : null}
+        canRestore={doc.status === "ready" && !dirty}
+        onRestore={() => {
+          if (applyRecoveredText(draft.text)) recoveryRestore(draft);
+        }}
+        onSaveCopy={async (targetPath) => {
+          const saved = await saveDraftCopy(targetPath, draft.text);
+          if (saved) await dismissDraft(draft);
+          return saved;
+        }}
+        onDiscard={() => void dismissDraft(draft)}
+        onDismiss={() =>
+          setHiddenDrafts((current) => [...current, draft.bufferRevision])
+        }
+      />
+    ) : null;
+
     if (doc.status === "loading") {
       return (
         <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
@@ -570,58 +557,45 @@ export const EditorPane = memo(
       );
     }
     if (doc.status === "error") {
+      // A draft for an unreadable/deleted original is exactly the case where
+      // the text may be the only copy left: offer compare/Save As here too.
       return (
-        <div className="flex h-full items-center justify-center px-6 text-center text-xs text-destructive">
-          {doc.message}
+        <div className="flex h-full min-h-0 flex-col">
+          {recoveryEnabled && (
+            <RecoveryStatusBar
+              status={recoveryStatus}
+              onRetry={recoveryRetry}
+            />
+          )}
+          {draftBanner}
+          <div className="flex flex-1 items-center justify-center px-6 text-center text-xs text-destructive">
+            {doc.message}
+          </div>
         </div>
       );
     }
     if (doc.status === "binary" || doc.status === "toolarge") {
       const kind = mediaPreviewKind(path);
-      const isImage = kind === "image";
-      const isVideo = kind === "video";
-      const isAudio = kind === "audio";
-      const isPdf = kind === "pdf";
-
-      if (isImage || isVideo || isAudio || isPdf) {
-        const assetUrl = assetGrant.urlFor(path);
-        if (!assetUrl) return (
-          <div className="p-4 text-xs text-muted-foreground">
-            {assetGrant.error ? <><p role="alert">Media preview unavailable: {assetGrant.error}</p><button type="button" className="mt-2 underline" onClick={assetGrant.retry}>Retry</button></> : "Loading media preview…"}
-          </div>
-        );
+      if (kind) {
         return (
-          <div className="flex h-full min-h-0 flex-col items-center justify-center bg-background p-4 overflow-auto">
-            {isImage && (
-              <img
-                src={assetUrl}
-                loading="lazy"
-                decoding="async"
-                className="max-w-full max-h-full object-contain rounded-md border border-border shadow-sm"
-                style={{
-                  backgroundImage:
-                    "conic-gradient(var(--muted) 0.25turn, transparent 0.25turn 0.5turn, var(--muted) 0.5turn 0.75turn, transparent 0.75turn)",
-                  backgroundSize: "20px 20px",
-                }}
-                alt={path.split("/").pop()}
-              />
-            )}
-            {(kind === "video" || kind === "audio") && (
-              <MediaPreview kind={kind} src={assetUrl} active={mediaActive} />
-            )}
-            {isPdf && (
-              <iframe
-                src={assetUrl}
-                className="w-full h-full border-none"
-                title={path.split("/").pop()}
-              />
-            )}
-          </div>
+          <AssetPreview
+            key={path}
+            path={path}
+            tabId={tabId}
+            kind={kind}
+            bytes={doc.size}
+            url={assetGrant.urlFor(path)}
+            token={assetGrant.tokenFor(path)}
+            grantError={assetGrant.error}
+            onRetryGrant={assetGrant.retry}
+            visible={visible}
+            mediaActive={mediaActive}
+          />
         );
       }
 
       const canForce =
-        doc.status === "toolarge" && doc.size <= FORCE_READ_LIMIT;
+        doc.status === "toolarge" && doc.size <= TEXT_OVERRIDE_LIMIT_BYTES;
       return (
         <div className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center">
           <div className="text-sm text-foreground">
@@ -646,6 +620,20 @@ export const EditorPane = memo(
 
     return (
       <div className="flex h-full min-h-0 flex-col zoom-exempt">
+        {recoveryEnabled && (
+          <RecoveryStatusBar status={recoveryStatus} onRetry={recoveryRetry} />
+        )}
+        {draftBanner}
+        {conflict && (
+          <SaveConflictDialog
+            key={`${conflict.path}:${conflict.currentRevision}`}
+            conflict={conflict}
+            onOverwrite={overwriteConflict}
+            onReload={reloadConflict}
+            onSaveCopy={saveConflictCopy}
+            onCancel={dismissConflict}
+          />
+        )}
         <CodeMirror
           ref={cmRef}
           value={doc.content}

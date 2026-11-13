@@ -1,10 +1,23 @@
 version: 2
+
+# Reviewed dependency pull requests only (docs/architecture/dependency-updates.md).
+#
+# Every entry is a version bump in an ecosystem this repository actually has, at the directory its
+# manifest lives in. Each one is bounded, labelled for triage, held for a cooldown so a compromised
+# release surfaces before adoption, and grouped for minor/patch updates only: a major bump always
+# arrives as its own pull request. Nothing here merges, refactors or publishes.
+#
+# `scripts/dependency-review/run.py` fails when a manifest loses its entry, an entry points at a
+# path this repository does not have, or a group can bundle a major bump.
+
 updates:
   - package-ecosystem: npm
     directory: "/"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    labels:
+      - dependencies
     cooldown:
       default-days: 3
     groups:
@@ -24,6 +37,8 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    labels:
+      - dependencies
     cooldown:
       default-days: 3
     groups:
@@ -38,7 +53,34 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    cooldown:
+      default-days: 3
     groups:
       github-actions:
         patterns:
           - "*"
+        update-types:
+          - minor
+          - patch
+
+  # The guard tests' own dependency (`scripts/tests/requirements.txt`, currently PyYAML). Dependabot
+  # follows requirements files per directory; this entry keeps the guard suite's pin reviewable too.
+  - package-ecosystem: pip
+    directory: "/scripts/tests"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+    cooldown:
+      default-days: 3
+    groups:
+      pip-guards:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch

@@ -22,7 +22,7 @@ below do.
 | Gate | Needed |
 | --- | --- |
 | Windows (WebView2, ConPTY) | Installer, text crispness at 125/150 % with the renderer on WebGPU (reports #1357 and #1372 blame WebGPU; `localStorage["terax:terminal-text-contrast"]` is off by default now), `terax-pty` long-poll, IME, AltGr, pwsh/cmd/WSL, resize behaviour (burst heuristic, no native live-resize signal). |
-| Linux (WebKitGTK 4.1) | Package install, WebGPU or WebGL path, `terax-pty` POST bodies, IME, resize. |
+| Linux (WebKitGTK 4.1) | Fedora 45 KDE Wayland installed (`codr-1.0.0-1.x86_64` from `82af7938d3df`; maintainer confirmed install and visual appearance on 2026-11-13), extracted `/usr/bin/codr` + `/usr/bin/codr-cli` smoke on `wayland-1`, `TERAX_VISUAL_RENDERERS=webgl` DPR 1/1.25/1.5/2 scaling (`scripts/terminal-visual`), `app-lab` bench scenarios (`candidate`, `preview`, `images`, `media`), `terax-pty`, bash/zsh/fish. Remaining: explicit IME/OS clipboard check and host RPM upgrade/remove lifecycle. |
 | Long sessions | A multi-hour daily-use run with agents on the release build; memory must return to its floor after tab switches, drags and occlusion. |
 | Accessibility | VoiceOver smoke test (the terminal input holds a selected placeholder character). |
 | Updater | Signed release artifacts and update from the previous beta. |

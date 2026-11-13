@@ -25,11 +25,10 @@ import {
 // Complements eager-budget.test.ts. That one walks the *source* import graph;
 // this one reads what the bundler actually emitted, because chunk assignment
 // can drag heavy code into the startup graph even when the source graph is
-// clean (observed: React's CJS interop landed in the lazy `ai-sdk-shared`
-// chunk, so the always-eager `react` chunk imported it, and with it every AI
-// provider SDK and zod, in both windows). Preloaded bytes are paid by every
-// launch, so the AI SDK, zod, Streamdown, CodeMirror and the icon set must stay
-// reachable only through dynamic `import()`.
+// clean (observed: a feature chunk capturing a shared runtime dependency).
+// Preloaded bytes are paid by every launch, so Streamdown, CodeMirror and the
+// icon set must stay reachable only through dynamic `import()`. The built-in
+// AI SDK and zod left the client entirely with ticket #12.
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -206,7 +205,7 @@ describe("built startup graph", () => {
   });
 
   for (const html of ["index.html", "settings.html"]) {
-    it(`${html}: no AI SDK, zod, Streamdown, CodeMirror or icon-set code is preloaded`, () => {
+    it(`${html}: no Streamdown, CodeMirror or icon-set code is preloaded`, () => {
       const result = analyzeDist(outDir, [html])[html];
       expect(result.trace.missing).toEqual([]);
       expect(result.trace.files.size).toBeGreaterThan(5);
@@ -230,8 +229,6 @@ describe("built startup graph", () => {
       ]),
     );
     for (const stem of [
-      "ai-sdk-shared",
-      "ai-anthropic",
       "streamdown",
       "codemirror",
       "iconEngine",
@@ -251,6 +248,13 @@ describe("built startup graph", () => {
         true,
       );
     }
+  });
+
+  it("emits no built-in AI SDK chunk", () => {
+    const chunks = readdirSync(join(outDir, "assets")).filter((f) =>
+      f.endsWith(".js"),
+    );
+    expect(chunks.filter((f) => /^ai-/.test(chunkName(f)))).toEqual([]);
   });
 
   it("bundles one version of every npm package", () => {
@@ -278,9 +282,17 @@ describe("built startup graph", () => {
     expect([...sources]).toHaveLength(1);
   });
 
+  const productIdentifier = (
+    JSON.parse(
+      readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8"),
+    ) as {
+      identifier: string;
+    }
+  ).identifier;
+
   it.each([
     ["missing", "", "TERAX_BENCH_IDENTIFIER"],
-    ["product", "app.crynta.terax", "not the product identifier"],
+    ["product", productIdentifier, "not the product identifier"],
   ])(
     "refuses an app-lab build with the %s identifier",
     (label, identifier, expected) => {

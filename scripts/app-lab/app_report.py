@@ -19,7 +19,7 @@ if str(_RENDERER_PROFILE) not in sys.path:
 import lab_report  # noqa: E402
 from lab_report import MIB, interval, slope, table  # noqa: E402
 
-SCENARIOS = ["tabs", "resize", "split-drag", "occlusion", "agents-steady", "idle", "fs-churn", "input"]
+SCENARIOS = ["tabs", "resize", "split-drag", "occlusion", "agents-steady", "idle", "fs-churn", "input", "workflow", "preview"]
 ROLES = ["host", "web_content", "gpu", "networking"]
 ROLE_LABELS = {"host": "host", "web_content": "WebContent", "gpu": "GPU", "networking": "Network", "workload": "PTY-procs", "web_content_prewarmed": "WC-prewarm"}
 # Footprint categories worth a column; everything else is rolled into the process total.
@@ -189,8 +189,22 @@ def qualify(scenario: str, phase: str, event: dict) -> list[str]:
     """Reasons this sample is not valid evidence for the phase it claims to measure."""
     if phase in ("blank", "setup", "done", "error"):
         return []
+    if scenario in ("workflow", "preview"):
+        # Wayland cannot be told to hand focus to a window (gtk_window_present/set_focus are
+        # hints) and WebKitGTK exposes no occlusion state, so focus is advisory for these
+        # scenarios: the app's own actions and the page's rendered behaviour are the evidence.
+        # The orchestrator records the focus state as an advisory instead (see run.py).
+        return []
     native = event.get("native") or {}
     diag = event.get("diag") or {}
+    # WebKitGTK hands the application no activation/occlusion state: on Wayland focus is only a
+    # request and the compositor decides. Focus and "is the window visible" are therefore
+    # advisories on Linux (run.py records them), while the app's own actions remain the evidence.
+    linux = native.get("platform") == "linux"
+    if (phase.endswith("-hidden") or event.get("step") == "hidden") and scenario in ("resource", "stress"):
+        # A hide cycle is *supposed* to be invisible; only the hide action itself must succeed.
+        hide = event.get("hide") or {}
+        return [] if hide.get("ok", True) else [f"hide failed: {hide.get('error', hide)}"]
     reasons = []
     if scenario == "occlusion" and event.get("step") == "hidden":
         hide = event.get("hide") or {}
@@ -204,16 +218,17 @@ def qualify(scenario: str, phase: str, event: dict) -> list[str]:
     # `unfocused` scenarios move another application to the front on purpose (a window that stays
     # visible but is not key, like an app left behind another one); occlusion still disqualifies.
     unfocused = bool(event.get("unfocused"))
-    if not native.get("appActive") and not unfocused:
-        reasons.append("application is not active")
-    if not native.get("key") and not unfocused:
-        reasons.append("benchmark window is not key")
-    if not native.get("occlusionVisible"):
+    if not unfocused and not linux:
+        if not native.get("appActive"):
+            reasons.append("application is not active")
+        if not native.get("key"):
+            reasons.append("benchmark window is not key")
+    if not native.get("occlusionVisible") and not linux:
         reasons.append("window is occluded")
-    if diag.get("visibility") != "visible":
+    if diag.get("visibility") != "visible" and not linux:
         reasons.append(f"document.visibilityState={diag.get('visibility')}")
     gpu = diag.get("ghosttyWebGpu") or {}
-    if gpu and not gpu.get("windowFocused") and not unfocused:
+    if gpu and not gpu.get("windowFocused") and not unfocused and not linux:
         reasons.append("renderer reports the window unfocused")
     show = event.get("show")
     if show is not None and not show.get("ok"):

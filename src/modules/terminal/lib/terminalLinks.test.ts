@@ -8,7 +8,9 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 }));
 vi.mock("@tauri-apps/plugin-os", () => ({ hostname: vi.fn() }));
 vi.mock("sonner", () => ({ toast: vi.fn() }));
-vi.mock("@/modules/lsp/lib/navigator", () => ({ getLspNavigator: vi.fn() }));
+vi.mock("@/modules/editor/lib/fileNavigator", () => ({
+  getFileNavigator: vi.fn(),
+}));
 vi.mock("@/modules/workspace", () => ({
   currentWorkspaceEnv: () => ({ kind: "local" }),
   getWslHome: vi.fn(),
@@ -106,7 +108,9 @@ describe("activateTerminalLink", () => {
     });
     expect(ipc).toHaveBeenCalledTimes(3);
     for (const [, args] of ipc.mock.calls)
-      expect(args).toMatchObject({ workspace: { kind: "wsl", distro: "Ubuntu" } });
+      expect(args).toMatchObject({
+        workspace: { kind: "wsl", distro: "Ubuntu" },
+      });
   });
 
   it("opens web links natively and restores terminal focus", async () => {

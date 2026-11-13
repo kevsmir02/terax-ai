@@ -1,0 +1,586 @@
+{
+  "status": "Published and verified; implementation explicitly held",
+  "date": "2026-11-12",
+  "parent": "https://github.com/kevsmir02/terax-ai/issues/1",
+  "specSha256": "877681b8a0130e8fb8a959c0d71fe7ffe82f6b9ec220da24f4e3ba8fc214fb31",
+  "executionHold": "Execution hold: published for planning only. Do not begin implementation until the user explicitly authorizes it.",
+  "parentBefore": {
+    "body": "# Personal Linux workspace\n\n## Problem Statement\n\nThe primary user runs independent terminal AI agents and works with project files on Fedora. Routine work includes launching agents, switching projects, inspecting changes, editing Markdown and configuration/code files, reviewing Git history and diffs, and reading generated documents or media. Moving between a terminal, file manager, editor and preview applications adds friction even though the user rarely writes code manually.\n\nTerax already combines much of this workflow, but also includes built-in AI, provider and credential management, AI editing and supervision, voice, language servers, and distribution support the user does not want to maintain. Removing these features carelessly would break retained functionality because file access, Markdown, notifications, agent hooks, command execution and native wrappers share infrastructure with them.\n\nThe goal is a maintainable, personal-use-first public Linux fork with a cohesive workflow and demonstrated resource efficiency. Feature deletion or lazy loading alone is not evidence of lower startup cost, memory use or package size. The fork must protect unsaved work and active processes while remaining practical to update from upstream.\n\n## Solution\n\nBuild a Linux x86-64 workspace around independently installed external agents, preserving the Ghostty-based terminal, Spaces, file management, CodeMirror editing, all existing Git capabilities, themes and customization. Remove only the explicitly selected built-in AI, voice, language-server and non-Linux build/distribution features, together with settings and dependencies exclusively used by them.\n\nMake retained capabilities usable and safe: provide modest worktree/checkpoint controls, manual optionally named checkpoints, explicit file-conflict choices, opt-in recovery drafts, guarded Space/tab/application closure, and capability-specific agent integrations. Agent permission approval stays in each agent's terminal. Spaces organize project contexts and do not isolate files or processes.\n\nProvide reading-oriented document previews for Markdown, PDF, images, audio/video and text/code. Load optional capabilities on demand, bound reads and decoded resources, explain unsupported formats and oversized files, stop unnecessary hidden work, and release tab-owned resources on close. Preserve web previews as a separate feature, unloading their frames immediately when hidden and making the reload/state-loss behavior clear.\n\nValidate Fedora first, distribute RPM/DEB packages and an Arch recipe, and publish authenticated stable releases through checked tag-driven workflows. Check for updates automatically, ask before downloading or installing, and use validated dependency-resolving package tooling or the explicitly accepted package-tool handoff. Never automatically restart the application or interrupt agents to update it.\n\n## User Stories\n\n1. As the primary user, I want terminal agents and project files in one workspace, so that routine work requires fewer application switches.\n2. As the primary user, I want the product to prioritize personal workflow and maintainability, so that a public fork does not become an unsupported broad-platform commitment.\n3. As the primary user, I want terminal correctness and protection of work to take precedence over resource savings and polish, so that optimization does not cause data loss or broken agent sessions.\n4. As the primary user, I want built-in AI chat, providers, API-key management, tools, subagents and conversation storage removed, so that I maintain only the AI workflow I use.\n5. As the primary user, I want AI completion, AI edit review, Ask AI, voice and built-in agent supervision removed, so that unwanted features do not remain in my daily interface.\n6. As the primary user, I want language-server integration removed while basic editing remains, so that I can inspect and change files without maintaining IDE services.\n7. As the primary user, I want the Ghostty terminal, tabs, splits, search, clipboard and shell integration preserved, so that external agents retain a capable terminal environment.\n8. As the primary user, I want terminal renderer fallback and compatibility behavior preserved, so that unsupported graphics do not silently replace the terminal model or lose running work.\n9. As the primary user, I want independently installed agents launched without mandatory hooks, so that ordinary terminal use remains reliable.\n10. As the primary user, I want launch/basic terminal behavior validated for OpenCode, Claude Code, Codex and Antigravity CLI, so that the tools relevant to this workspace have an explicit compatibility contract.\n11. As the primary user, I want Antigravity CLI launching distinguished from its GUI, so that the workspace starts the intended tool.\n12. As the primary user, I want existing external-agent integrations retained where applicable, so that selected built-in AI removals do not silently remove other agent support.\n13. As the primary user, I want configurable launch commands and existing pane-launch workflows preserved, so that installed tools, aliases and flags remain usable.\n14. As the primary user, I want launch support, process status, structured events, notifications and control documented separately per agent, so that support claims match actual capabilities.\n15. As the primary user, I want process-derived status distinguished from richer agent events, so that I do not mistake an active process for a completed or waiting agent turn.\n16. As the primary user, I want permission approval to remain in each agent's terminal, so that version one does not depend on a new centralized approval interface.\n17. As the primary user, I want agent hooks enabled separately by explicit choice, so that launching an agent does not silently modify its configuration.\n18. As the primary user, I want to review exact hook configuration changes before applying them, so that external tool settings remain under my control.\n19. As the primary user, I want hook installation to refuse stale configuration previews, so that concurrent external edits are not overwritten.\n20. As the primary user, I want hook removal to affect only this fork's entries, so that upstream Terax and unrelated integrations remain intact.\n21. As the primary user, I want agent-specific hook activation and trust requirements explained, so that writing configuration is not falsely reported as an active integration.\n22. As the primary user, I want CLI/control file-opening behavior preserved, so that an agent can open a file in the appropriate Space and target a supported line location.\n23. As the primary user, I want attention and completion notifications retained across Spaces, so that background work does not require constant tab polling.\n24. As the primary user, I want notifications to identify the agent and Space without prompt or transcript excerpts, so that default notifications reveal less project content.\n25. As the primary user, I want no notification-driven focus stealing, sound off by default, and duplicate/rate suppression, so that background agents do not disrupt my work.\n26. As the primary user, I want each Space to retain its project root and open tabs/layout, so that projects remain organized when I switch contexts.\n27. As the primary user, I want agents to keep running when I switch Spaces, so that project organization does not interrupt work.\n28. As the primary user, I want hidden terminal presentation paused while terminal output continues processing, so that background work remains correct without unnecessary rendering.\n29. As the primary user, I want separate Spaces allowed to reference the same checkout with a clear shared-folder indication, so that organizational separation is not mistaken for file isolation.\n30. As the primary user, I want worktrees available when I need separate file trees, so that concurrent work can use actual filesystem separation.\n31. As the primary user, I want switching a Space, closing tabs and deleting a Space treated as different actions, so that the effect of each action is predictable.\n32. As the primary user, I want closing tabs or deleting a Space to account for unsaved buffers and active processes, so that organizational cleanup does not discard work.\n33. As the primary user, I want deleting a Space to leave project and worktree directories intact, so that removing saved organization does not delete files.\n34. As the primary user, I want quitting to summarize unsaved buffers, active or uncertain processes and pending/failed recovery writes, with retry, cancel or explicit close-with-loss where needed, so that repeated close requests never silently consent to losing text.\n35. As the primary user, I want confirmed shutdown to try graceful termination and ask before force-killing remaining app-owned work, so that unresponsive processes do not cause silent loss.\n36. As the primary user, I want layout restoration without automatic rerunning of previous commands, so that reopening the application does not unexpectedly restart agents.\n37. As the primary user, I want existing file management, search and file-opening workflows retained, so that routine project navigation stays inside the workspace.\n38. As the primary user, I want Markdown, plain text, JSON, YAML, TOML and other supported configuration/code files editable, so that I can inspect and adjust agent output.\n39. As the primary user, I want syntax highlighting and find/replace preserved, so that basic editing remains useful without language servers.\n40. As the primary user, I want existing line-ending, indentation and editor-theme behavior preserved, so that removing AI services does not degrade ordinary file editing.\n41. As the primary user, I want to deliberately open accessible files outside a Space's project root, including configuration files, so that project organization does not prohibit legitimate edits.\n42. As the primary user, I want clean buffers to refresh when visible after external changes, so that I see agent edits without unnecessary hidden rereads.\n43. As the primary user, I want dirty buffers protected when disk contents change, so that my unsaved text is never silently replaced.\n44. As the primary user, I want conflict choices to compare, save elsewhere, reload/discard or explicitly overwrite the disk revision I reviewed, so that a later change requires renewed conflict handling.\n45. As the primary user, I want app-owned saves coordinated by canonical file identity with an expected disk revision that detects same-timestamp content changes, so that competing buffers cannot both silently overwrite the same baseline.\n46. As the primary user, I want opt-in recovery drafts owned by distinct editor buffers and revisions, separate from autosave, so that two Spaces editing one file preserve their unsaved text independently.\n47. As the primary user, I want recovery storage disclosed and bounded to 10 MiB per file and 100 MiB total initially, so that recovery has a predictable storage policy.\n48. As the primary user, I want recovery exclusions for known sensitive paths and visible unavailable/full states, so that I understand when drafts are not protected or may contain sensitive text.\n49. As the primary user, I want recovery to pause rather than silently evict unrecovered drafts and to show pending, durable, failed or unavailable status accurately, so that neither a quota nor an unacknowledged write quietly removes my recovery protection.\n50. As the primary user, I want successful explicit save or discard to remove only the resolved buffer revision, so that newer typing or another Space's draft remains recoverable and late completions cannot resurrect discarded text.\n51. As the primary user, I want drafts whose original files changed, moved or disappeared opened for comparison or Save As and healthy continuous editing to schedule recovery writes within two seconds, so that I can recover the last durably acknowledged revision without automatic recreation or overwrite of project files.\n52. As the primary user, I want all existing Git functionality preserved, including status, staging, diffs, history, branches, worktrees and checkpoints, so that I can inspect agent changes and manage my work in the workspace.\n53. As the primary user, I want Git diff review kept distinct from removed AI edit review, so that selecting AI removal does not remove ordinary change inspection.\n54. As the primary user, I want usable worktree creation/removal controls that refuse removal while its checkpoints or restore-safety refs remain, so that keeping recovery points does not silently leave them inaccessible after worktree deletion.\n55. As the primary user, I want a newly created worktree easy to open as a separate Space without moving running terminals, so that existing sessions retain their intended directory.\n56. As the primary user, I want manual optionally named checkpoints available without agent hooks, so that recovery does not depend on a particular agent's turn events.\n57. As the primary user, I want checkpoint capture limitations and incomplete snapshots clearly reported, so that I do not mistake a checkpoint for an atomic full backup.\n58. As the primary user, I want checkpoint inspection and restoration available through modest controls, so that retained recovery capabilities are usable.\n59. As the primary user, I want restoration to check affected unsaved/staged changes and relevant active work across every Space immediately before mutation and prevent conflicting app-owned operations during it, so that another Space cannot invalidate the safety decision.\n60. As the primary user, I want required restore-safety capture to succeed before mutation and later partial failures to retain recovery information, so that failed preparation changes no files or staging and recovery is never presented as complete Git-state undo.\n61. As the primary user, I want checkpoints retained until explicit deletion with visible grouped cleanup and distinct safety refs, so that retention does not silently remove recovery points.\n62. As the primary user, I want snapshot creation bounded and storage pressure reported without automatic Git garbage collection, so that cleanup does not make misleading disk-reclamation promises.\n63. As the primary user, I want commits and pushes explicitly initiated by me, so that an agent finishing does not publish or commit changes automatically.\n64. As the primary user, I want destructive Git actions to identify affected paths and blockers, so that discard, restoration and worktree removal are deliberate.\n65. As the primary user, I want rendered Markdown, PDF, images, audio/video and text/code previews in the workspace, so that routine reading does not require another application.\n66. As the primary user, I want PDF navigation, zoom, search and text selection to work reliably on Fedora, so that PDF support is more than an embedded URL.\n67. As the primary user, I want basic image viewing and media playback controls, so that I can inspect generated assets.\n68. As the primary user, I want CSV/TSV editable as text, so that those files remain usable without adding a dedicated table viewer.\n69. As the primary user, I want actual supported image/media codecs tested and documented, so that file-extension recognition is not mistaken for playback support.\n70. As the primary user, I want unsupported formats and oversized documents explained with safe alternatives, so that preview failure is understandable and bounded.\n71. As the primary user, I want document previews to avoid automatic remote fetches and executable application commands, so that reading a file does not silently grant it application authority.\n72. As the primary user, I want deliberate external navigation and remote-resource loading, so that network access from documents is under my control.\n73. As the primary user, I want automatic local assets constrained to the configured Space root or an outside document's directory, so that terminal cwd changes do not alter document access.\n74. As the primary user, I want native canonical-path and symlink checks and explicit grants for outside assets, so that automatic preview loading respects its intended boundary.\n75. As the primary user, I want web/dev-server previews preserved as untrusted HTTP(S) content without native command access, so that interactive previews remain useful without application privileges.\n76. As the primary user, I want web-preview frames unloaded immediately for inactive tabs/Spaces or supported hidden/minimized-window signals, but not mere visible-window focus loss, so that hidden work stops without unnecessarily destroying a still-visible page's state.\n77. As the primary user, I want closing a web preview to leave its independently running dev server alone, so that viewing and process control remain separate.\n78. As the primary user, I want optional editors and viewers loaded on demand, so that unused capabilities do not burden startup.\n79. As the primary user, I want bounded file reads and decoded-resource use, hidden rendering/playback stopped where appropriate, and tab-owned resources released on close, so that long workdays remain predictable.\n80. As the primary user, I want startup, whole-app memory, CPU/background activity and package-size changes measured, so that lightweight claims are supported by evidence.\n81. As the primary user, I want representative and stress workloads and explicit approval of evidence-based limits, so that budgets match the intended operating envelope rather than invented usage counts.\n82. As the primary user, I want themes, shortcuts, existing customization, web previews, block terminal mode, external formatters, Vim mode, autostart and other unselected optional features retained, so that removal scope does not expand silently.\n83. As the primary user, I want application, storage, control, shell-integration and hook namespaces isolated before an ordinary fork launch, with independent release trust before publication, so that development runs as well as installed builds can coexist with upstream safely.\n84. As the primary user, I want upstream data left untouched unless I explicitly choose a future import, so that the fork does not silently migrate or overwrite another application's state.\n85. As the primary user, I want Linux x86-64 RPM/DEB distribution and an Arch package recipe, so that I can install the workspace using the intended distribution tools.\n86. As the primary user, I want Fedora KDE Wayland validated first, with Debian graphical and dated Arch validation, so that public support claims match actual evidence.\n87. As the primary user, I want stable tagged releases gated by checks, version agreement, signatures and package install/upgrade evidence, so that a tag does not publish unchecked artifacts.\n88. As the primary user, I want automatic nonblocking update checks and approval before package download or installation, so that available updates do not interrupt work.\n89. As the primary user, I want installation readiness rechecked immediately before the package transaction and conflicting new work prevented through its privilege/installation interval, with no automatic relaunch, so that delayed approval cannot install over newly started work.\n90. As the primary user, I want RPM/DEB upgrades to use validated dependency-resolving package tooling or an explicit package-tool handoff, so that in-app updating does not silently bypass package-management semantics.\n91. As the primary user, I want Arch installation and upgrades managed by package tooling, so that the application does not add a separate privileged Arch installer.\n92. As the primary user, I want artifact authenticity failures to block installation, so that update failure never becomes a reason to trust an unverified package.\n93. As the primary user, I want offline, rate-limit, cancellation, package-lock and failed-transaction states handled without disrupting my work, so that updates fail predictably.\n94. As the maintainer, I want independent signing secrets kept outside the repository with offline recovery and documented replacement, so that release trust can be maintained without committing credentials.\n95. As the maintainer, I want exact toolchain pins, lockfiles, reproducibility checks and retained useful tests, so that dependency changes remain reviewable.\n96. As the maintainer, I want dependency bots to open checked PRs and pinned Ghostty source changes monitored separately where necessary, so that upstream changes are visible before adoption.\n97. As the maintainer, I want Ghostty bridge updates rebuilt and checked for compatibility, soak behavior and resources, so that source updates are not mistaken for drop-in binary replacements.\n98. As the maintainer, I want an upstream Terax remote and selective fix imports with purposeful Linux cleanup, so that the fork stays current without gratuitous merge conflicts.\n99. As the maintainer, I want useful terminal checks moved into the Linux strategy before removing their non-Linux jobs, so that narrowing platforms does not silently reduce coverage.\n100. As the maintainer, I want monthly upstream/dependency review and prompt security-fix triage, so that maintenance has an explicit policy without assuming an unprovided time allowance.\n101. As the maintainer, I want implementation staged around a working Linux build and the complete agreed scope tracked honestly, so that intermediate milestones are not misrepresented as the finished version.\n102. As the maintainer, I want final name, release ownership/URL, keys and empirical validation gates explicit before publication, so that unresolved operational inputs are never filled in silently.\n\n## Implementation Decisions\n\n- **Product boundary and priority.** Preserve the complete explicit keep scope. Resolve tradeoffs in this order: protection of files/unsaved work/processes, terminal correctness, usable retained review/editing, resource efficiency, convenience/polish. The fork is personal-use-first with best-effort public support; package production does not imply broad desktop/distribution compatibility.\n- **Selected removals.** Remove built-in AI chat, provider/model configuration, API-key management, tools, subagents, conversation storage, AI completion/edit review/Ask AI, voice, built-in supervision, language-server integration, and Windows/macOS/WSL/Nix build/distribution support. Remove settings and dependencies only when exclusive to those features. Removing application AI credentials does not remove external-agent or Git authentication.\n- **Shared ownership boundaries.** Extract or retain shared native wrappers, file-access checks, Markdown rendering, notification routing, hooks, CLI/control infrastructure and shell-command support before deleting former owners. Markdown's use of AI-named components or Streamdown does not authorize removing its renderer. External formatters must retain their required command backend. Ordinary explicit editing and automatic preview reads retain distinct access policies.\n- **Architecture continuity.** Retain Tauri/Rust OS ownership, React/TypeScript composition and CodeMirror basic editing. Keep new domain logic dependency-light and command/components thin. Prefer existing module and command contracts over unrelated rewrites. Existing themes, customization and unselected optional features remain.\n- **Terminal core.** Keep the active adapted Ghostty WASM bridge compiled against pinned official Ghostty source, with SIMD/scalar artifacts and provenance/license requirements. The separate official-ABI evaluation is not the active runtime and is not a selected migration. Ghostty updates may require bridge adaptation, recompilation and compatibility/resource testing. Preserve terminal model/process ownership and renderer fallback while measuring Linux-specific behavior rather than assuming macOS findings transfer unchanged.\n- **External-agent capabilities.** Validate OpenCode, Claude Code, Codex and terminal Antigravity CLI launch/basic terminal behavior; distinguish the Antigravity GUI command. Preserve existing integrations for other agents unless explicitly removed. Publish a per-agent capability matrix covering launching, process status, structured events, notifications and control. No particular vendor event vocabulary is assumed universal. Existing compatibility claims must be tested against actual supported versions; an installed version alone is not certification.\n- **Hooks and permissions.** Hooks are separately opt-in, with before/after review, stale-file refusal and fork-owned configuration markers. Activation/trust instructions are agent-specific. Removal touches only this fork's entries, including during coexistence with upstream. Keep existing CLI/control and permission-response infrastructure, but leave version-one approvals in agent terminals with the appropriate fallback when no UI consumer exists. New centralized approval UI and new structured OpenCode/Antigravity adapters are deferred; Antigravity CLI launch/basic status is included.\n- **Notifications.** Retain hidden-Space attention/completion routing without focus stealing. Default content is agent/Space identity and event type, without prompts, file contents or transcripts; sound defaults off and duplicate/rate suppression remains. Status labels must reflect available evidence rather than implying turn-level certainty from process lifecycle alone.\n- **Spaces and process ownership.** A Space is named organization with a project root and saved tabs/layout, not a sandbox. Multiple Spaces may share a checkout with that relationship indicated. Switching preserves running terminal work while suppressing unnecessary presentation. Keep switching, closing tabs, deleting saved organization, removing a worktree and deleting project files distinct. Closing/deleting must handle dirty buffers and active/uncertain processes; Space deletion never implies project/worktree directory deletion.\n- **Shutdown and restoration.** Summarize work and permit cancellation before quit. After confirmation, try graceful termination and ask before forcing remaining app-owned work to exit. Do not promise lifecycle control of deliberately detached external services. Layout restoration restores organization, directories and file locations without recreating live processes or automatically executing previous agent commands. A CLI's independent resume capability is not application-level process persistence.\n- **Editing and conflicts.** Preserve syntax highlighting, find/replace, line-ending/indentation behavior and editor themes. Deliberately opened accessible files may lie outside the project root. Refresh clean buffers when visible; preserve dirty text on external changes. Compare, save elsewhere, reload/discard and overwrite are explicit conflict choices, with a fresh disk-version check before writes. Do not claim atomic exclusion of independent external writers.\n- **App-owned mutation coordination.** Coordinate writes by canonical file identity and compare the expected disk revision inside native write coordination; the revision must distinguish same-mtime content changes. Competing buffers cannot both successfully overwrite the same baseline. Explicit overwrite consent applies to the reviewed disk revision and expires on subsequent change. Missing, unreadable or replaced targets produce an explicit conflict/error rather than unconditional recreation. Coordinate relevant app-initiated save/format sequences. For destructive Git/worktree operations, find affected file/worktree usage across all Spaces/panes, including outside-root editors, and recheck immediately before mutation. Prevent new conflicting app-owned saves, spawns and mutations during execution, or invalidate confirmation and refuse. Force does not silently bypass unsaved-buffer protection. Independent external writers remain outside guaranteed atomic exclusion.\n- **Recovery drafts.** Add opt-in durable unsaved-text recovery, distinct from layout persistence and autosave of original files. Initial policy is 10 MiB per file and 100 MiB total in private local storage, with known-sensitive-path exclusions and visible unavailable/full states. Filename policy is not complete secret detection. Pause recovery rather than silently evict unrecovered drafts; remove resolved drafts after explicit successful save/discard. Changed, missing or moved targets require recovery-document comparison/Save As; recovery never reruns agents or writes project files automatically. Autosave, where retained/enabled, remains a separate action on the original file.\n- **Recovery ownership and acknowledgement.** Preserve independent editor buffers. A recovery record carries stable buffer identity, original-file identity and distinguished revisions; path alone is not its owner. Save/discard cleanup resolves only that buffer revision, never newer or unrelated drafts. Late persistence completions neither overwrite newer records nor resurrect discarded drafts. Save As retargets only after success and preserves newer unsaved edits. A successful save of older text cannot cause save-and-close to discard newer typing. While storage and the application are healthy, coalescing schedules recovery persistence within two seconds during continuous editing rather than waiting indefinitely for idle. Only successfully durable revisions are acknowledged; pending, failed and unavailable states are visible. I/O stalls can delay acknowledgement, and crashes may lose newer, unacknowledged text. Quit uses a bounded flush; failure offers retry/cancel or explicit close-with-loss, and a second close event is not consent to loss. Preserve an older valid recovery record when a newer write fails.\n- **Git and worktrees.** Preserve the full existing Git command and review surface, including hunk-level behavior and history. Keep Git review separate from removed AI review. Provide modest UI for existing worktree create/remove and checkpoint operations. New worktrees can open as separate Spaces without relocating existing terminals. Maintain authorization, path/ref guards, collision handling, worktree blockers and mutation integrity. Commit and push remain explicitly user initiated; destructive actions identify affected paths and blockers.\n- **Checkpoint semantics.** Checkpoints are manual, optionally named, worktree-specific snapshots independent of agent turns. Use noncolliding identities rather than replacing recovery points by reusing a task/turn slot. Capture tracked and nonignored files without changing HEAD or the real index during creation; disclose ignored files, submodule contents, staging state and non-atomic/incomplete capture limitations. Bound snapshot creation and report storage pressure.\n- **Checkpoint restore and cleanup.** Require resolution of affected unsaved/staged changes and relevant active agent work before restore; show touched paths, effects on staging, changed-HEAD concerns and external concurrency limitations. Keep restore safety snapshots but do not promise full Git-state undo or atomic restoration. Surface partial failures. Retain checkpoints until explicit deletion; make grouped cleanup and safety refs visible separately, including any safety refs a cleanup would remove. Do not automatically run Git garbage collection or equate deleted refs with exact reclaimed bytes.\n- **Checkpoint removal and preflight.** Refuse worktree removal while its checkpoints or restore-safety refs remain; show the recovery points and require their explicit deletion before removal, or allow cancellation. Cleanup affects only the intended worktree's refs. Restoring archived checkpoints after worktree deletion is deferred. If a required safety snapshot cannot preserve affected content or publish its recovery ref, including because of limits or inconsistent capture, refuse before changing files or staging. Force cannot bypass this precondition. For failures after mutation starts, retain the safety ref, report partial effects, and require a fresh preview before retry rather than blindly repeating the old plan.\n- **Document previews.** Initial categories are rendered Markdown, PDF, images, audio/video and text/code; CSV/TSV remain editable text. PDF must support navigation, zoom, search and selection in the actual Fedora application. Retain iframe rendering only if it satisfies reliability, reader-function and resource requirements; otherwise use a dedicated on-demand viewer. Image/media containers and codecs require actual package-environment tests and clear unsupported/error states, without automatic codec installation.\n- **Preview access boundaries.** Document content does not execute application commands or automatically fetch remote resources. External navigation and remote-resource loading require deliberate action. Automatic local resources are anchored to the configured Space project root, or an outside document's directory, rather than mutable terminal cwd. Preserve native canonical containment and symlink checks; outside resources require explicit grants. Keep explicit single-file selection distinct from automatic directory-based embedding.\n- **Web previews.** Preserve deliberately entered HTTP(S) web/dev-server previews as untrusted web content without native command access. Validate initial URL restrictions and browser/navigation boundaries; redirects/popups require actual boundary testing, not assumptions from initial URL validation. Hidden means an inactive tab/Space or a window reported hidden/minimized by supported visibility signals. Unload frames immediately for those states and explain reload/transient-state loss; mere focus loss while still visible does not unload a frame. Do not promise complete Linux occlusion detection. Frame teardown does not terminate the independent server process. This lifecycle differs from terminal models that must keep consuming output.\n- **Resource contracts.** Optional editors/viewers load on demand. Bound native reads, outstanding operations and decoded/rendering resources, with explicit failure/override behavior within hard ceilings. Pause unnecessary hidden document presentation/playback and release tab-owned resources and grants on close; bound shared resources according to their ownership instead of destroying still-needed window resources. The starting text limits are 10 MiB normally, explicit override up to 50 MiB, and syntax features disabled above 4 MiB. Do not retain whole-file non-range asset allocation as an unexamined path around resource limits.\n- **Measurement gates.** Start with a provisional two-Space/four-terminal/two-busy-agent workflow, several text files and one active preview, plus a separately described stress workload. These are accepted benchmark assumptions, not observed usage. Measure cold/warm startup, whole-application process memory, idle/streaming/hidden/close-cycle behavior and package size. Account separately for external-agent processes and avoid double-counting shared memory. Propose concrete document/decoded-resource and performance ceilings from baseline evidence and obtain user approval before claiming lightweight completion; no unmeasured numeric RAM/startup target is introduced here.\n- **Fork identity.** Use independent application/storage identities, hook ownership markers, release endpoint and signing keys. Complete application, storage/cache, control-descriptor, shell-integration and hook namespace isolation is a prerequisite for every nonisolated developer or normal run, not just publication; changing the application ID alone is insufficient. Inventory shared names and preserve upstream-owned state. Read-only work and isolated temporary-profile baselines may proceed while final branding is deferred. Do not silently import, overwrite or delete upstream state. Any future import is explicit. Final product name, release owner/URL and key provisioning remain deliberate pre-publication decisions, not inferred from the Git remote or supplied with placeholder upstream identity.\n- **Platform and package contract.** Initial architecture is Linux x86-64 with RPM, DEB and an Arch recipe. Primary validation is Fedora 44 KDE Plasma on Wayland; Debian 13 requires an actual graphical WebKitGTK session; Arch uses a dated clean environment and records package versions. Other desktops/releases are best-effort until tested. Remove non-Linux workflows/packaging first and retain useful inert portability seams when they reduce upstream-import cost.\n- **Releases.** CI validates changes; version tags trigger stable release publication subject to passing checks, tag/application-version agreement, authenticated artifacts and install/upgrade evidence for the actual distributed artifacts. A tag alone is not successful validation. Preserve useful tests before deleting their platform jobs. No prerelease product channel is required initially. Final identity and independent trust provisioning block publication.\n- **Updating and trust.** Check automatically with bounded, nonblocking behavior; obtain approval before package download or installation. Defer installation until running work and unsaved buffers are resolved and never automatically relaunch. RPM/DEB integration must use validated dependency-resolving package tooling with acceptable privilege, cancellation, dependency, package-lock and upgrade behavior. The locked plugin's direct rpm/dpkg paths are not sufficient evidence. If that integration is unavailable, provide the accepted explicit package-tool handoff. Arch remains package-tool managed. Verification failure blocks installation; failed transactions receive explicit recovery rather than unvalidated automatic rollback. Keep signing secrets outside the repository with offline recovery and documented key replacement. Artifact verification and native package/repository trust are distinct; managed package repositories are deferred.\n- **Update installation interval.** Readiness checked before download is not sufficient. Recheck immediately before an app-owned package transaction; work started during download or delayed approval invalidates readiness. Before handing control to privilege/installation, prevent new conflicting app work throughout that interval, or abort before invoking the package tool. If the selected integration cannot enforce that contract, use the accepted package-tool handoff after safe closure. Distinguish available, handed-off and installed outcomes; handoff alone is never reported as successful installation. External package-manager actions are outside application enforcement. Cancellation and failure do not authorize relaunch or automatic rollback.\n- **Maintenance and completeness.** Keep an upstream Terax remote and selectively import relevant fixes. Preserve lockfiles, exact toolchain pins, reproducibility checks, lint/types/tests, terminal compatibility/soak checks and bundle/resource budgets. Dependency bots open reviewed PRs that pass checks before merging; separately monitor the Ghostty revision where ecosystem tooling does not cover it. Review upstream/dependencies monthly and triage security fixes promptly. Build in stages while preserving a working Linux app; stages do not silently defer accepted version-one additions. Broader removals or reduction of accepted completion work require the user's decision.\n\n## Testing Decisions\n\n- **Approved primary seam.** The user approved one primary acceptance seam through the real Linux Tauri application, adapting the existing real-app lab and PTY-smoke approach. Exercise actions through application workflows and observe file contents, Git state, processes, rendered behavior, notifications and resource reports. The existing orchestration runners are macOS-only today; Linux adaptation is explicit work, not present coverage. Reuse existing scenario-driver/native-command boundaries rather than adding a new abstraction seam for every feature.\n- **Supporting existing seams.** Retain focused native-command integration tests for Git, filesystem, authorization, PTY lifecycle and failure behavior, plus meaningful pure-domain tests already used by the project. These complement the primary workflow seam where deterministic refusal/race/partial-failure cases are otherwise difficult to exercise. They do not replace actual WebKitGTK, packaged-app or vendor compatibility validation.\n- **Approved challenge outcomes at existing seams.** Reuse the already approved real-app, native-command and packaged-app seams for every clarified behavior below; no new public test seam is introduced. These are planned acceptance requirements, not claims of implemented coordination, recovery, isolation or installer support.\n- **Good-test standard.** Assert external behavior and safety invariants, including failure and deny paths, rather than component structure, filenames, private helper calls or implementation-shaped snapshots. Use temporary projects, private profiles and synthetic terminal workloads; do not mutate real agent configurations, credentials or user projects to run automated tests. Keep direct vendor compatibility checks explicit, authorized and separate from deterministic fixtures. Do not add low-value tests for static prose, simple rendering or type-guaranteed behavior.\n- **Workspace lifecycle scenarios.** Launch synthetic work in two Spaces, switch repeatedly, verify continued output and notification routing without focus theft, and exercise shared-checkout indication. Attempt tab/Space deletion and quit with dirty buffers, active work and uncertain detection; test cancel, resolution, graceful exit and explicit force escalation. Restart and verify restored layout without commands being rerun. Prior art includes current tab-close guards, app-close tests, tab/split transforms and Space serialization tests.\n- **Shared-worktree and stale-confirmation scenarios.** Initiate restore/removal in one Space while another has an affected dirty editor, outside-root open file or active process. Start conflicting app-owned work after confirmation and verify refusal or prevention without tree/index mutation. Assert force does not bypass unresolved editor protection. Delay a save, type newer text, then request close; older completion must leave newer work open/recoverable. Failed recovery flush plus repeated close requests must not silently close; explicit retry/cancel/close-with-loss outcomes remain observable.\n- **Agent and control scenarios.** Exercise launcher command validation, hook-free startup, per-agent event adapters, honest status fallback, notification privacy/deduplication and file-open routing. Test hook plan/apply against concurrent external edits, installation/removal ownership and coexistence, plus permission fallback with no UI subscriber. Verify each claimed vendor integration end-to-end, including required hook trust and version differences. Prior art includes launcher, routing/gate/store/reducer, hook/configuration and control-protocol tests.\n- **File and recovery scenarios.** Exercise deliberate outside-root editing separately from denied automatic asset access; test symlink/canonicalization boundaries and stale completions. Race external changes with clean/dirty buffers and saves; verify all conflict outcomes preserve the chosen content and do not silently overwrite a newer version. Test opt-in recovery, sensitive/oversized exclusions, crash/restart, full storage, save/discard cleanup, changed/missing targets and no automatic writeback. Prior art includes filesystem integration tests, editor document synchronization, Markdown asset-policy and close-guard contracts. Recovery persistence requires new behavioral coverage because it does not exist today.\n- **Save/recovery revision scenarios.** Save two dirty views of the same canonical file against one baseline: one succeeds, the other conflicts and retains its buffer. Detect different contents with unchanged mtime and reject stale overwrite consent or missing/unreadable/replaced targets. Delay disk/draft writes across newer edits, Save As and discard; older completions cannot remove another buffer's draft, delete newer revisions, or resurrect resolved text. Continuous healthy typing schedules persistence within two seconds; forced termination restores the last durable acknowledgement, and failed writes preserve older valid recovery with visible failure rather than false acknowledgement.\n- **Git scenarios.** Use temporary repositories with tracked, nonignored untracked, ignored, staged, renamed, binary and submodule cases as applicable. Verify existing diff/history/hunk contracts, worktree blockers and ownership, manual checkpoint identity/capture limitations, staged-only restore conflicts, safety refs, partial failures and cleanup effects. Assert HEAD/index/files remain unchanged where required, and distinguish captured-content recovery from staging restoration and ref deletion from storage reclamation. Prior art includes existing Git-operation integration tests and hardening tests around review, worktrees and checkpoints.\n- **Checkpoint prerequisite scenarios.** Checkpoints and safety refs each block their worktree's removal. Explicit scoped cleanup permits later removal without changing another worktree's refs. Inject required safety-capture, consistency/limit and ref-publication failures and assert files/index are unchanged. Inject a later restore failure, verify safety information survives, and require a refreshed preview before retry.\n- **Preview scenarios.** Run PDF reader functions, representative supported image/media fixtures, corrupt/unsupported codecs, oversized files and decoded-resource stress in the actual Linux webview. Observe bounded no-range/range reads, hard-limit behavior, remote-fetch consent, local grant boundaries, revocation and delayed completion after close. Test hidden audio/video cessation and document resource cleanup. Exercise web-frame hidden teardown, state-loss/reload disclosure, independent server survival, redirects/popups and inability to invoke native APIs. Prior art includes media lifecycle tests, Markdown asset/link tests, native asset tests and preview sandbox tests; source/JSX inspection alone cannot establish runtime behavior.\n- **Web-window visibility scenarios.** Switch tab/Space and minimize/restore the app to verify immediate frame teardown and later reload using supported signals. Move focus to another window while the preview remains visible and verify no blur-only teardown. Record unavailable platform visibility signals rather than claiming untested full occlusion support; the independent server must survive every frame teardown.\n- **Terminal and resource scenarios.** Preserve real WASM compatibility/scalar validation, shell integration, PTY exactness/backpressure, renderer fallback, scaling, selection, search, clipboard/input and soak coverage. Port useful visual/real-app checks before dropping their old platform jobs. Run baseline and changed builds using the same recorded hardware/software, display scale, fonts, fixtures and workloads. Report whole-app memory/CPU/startup/package measurements and separate external-agent consumption; repeat hidden/show/close cycles and sustained streaming to detect retained growth. Thresholds and exact document ceilings require the accepted evidence-based approval gate.\n- **Packaged release seam.** As approved, install/upgrade/remove actual RPM/DEB/Arch outputs and smoke the graphical application in the named environments. Test signature rejection, dependency resolution, privilege prompts, cancellation, package locks, offline/rate-limited checks, no unapproved downloads, work-running deferral, no automatic relaunch and explicit failed-transaction recovery. Validate app/storage/hook coexistence with upstream in isolated profiles. Package extraction or an Ubuntu build alone does not establish Fedora/Debian behavior. Record artifact identity with evidence so release gates cover what is published.\n- **Isolation and update-race scenarios.** Before any ordinary run is allowed, use isolated coexistence profiles with upstream sentinel settings, descriptors and integration files and verify they remain unchanged; inventory namespaces beyond the application ID. During update download, start an agent or dirty a file and verify no transaction begins without fresh readiness. During privilege/installation, verify new conflicting work is prevented or invocation is aborted. Cancel or hand off and verify neither installation success nor relaunch is falsely reported.\n- **Required checks and completion evidence.** Preserve the project's frontend lint, type and test checks; locked Rust lint/test checks; reproducible builds; production dependency/startup graph and bundle budgets; and terminal/resource checks. Tests tied exclusively to removed features may be removed with those features, but shared invariants and useful platform coverage must survive. A passing suite is necessary, not a substitute for PDF/codec/updater/package or sustained-resource evidence. This spec-writing task does not claim any implementation or runtime checks have passed.\n\n## Out of Scope\n\n- Supporting a large user base or promising untested Linux distributions/desktops.\n- Windows, macOS, WSL and Nix build/distribution support, and Linux architectures beyond x86-64 initially.\n- Retaining or replacing the selected built-in AI, voice, AI editing/supervision or language-server features.\n- Treating Spaces as sandboxes or guaranteeing isolation between agents sharing a checkout.\n- Preserving live processes across app restarts, automatically rerunning previous commands, or embedding the Antigravity GUI.\n- A new centralized agent-permission UI, automatic per-agent-turn checkpoints, and new structured OpenCode/Antigravity adapters in version one.\n- Office document/spreadsheet rendering, dedicated CSV/TSV table previews, PDF annotation, document authoring through previews, or media editing.\n- Unlimited large-file/decoded-resource handling, automatic codec installation, or universal support claims based on extension recognition.\n- A new arbitrary-code plugin framework, broad customization-system rewrite, unrelated architectural rewrites, or removal of optional features still on watch.\n- Automatic commits/pushes, silent destructive Git cleanup, automatic Git garbage collection, full-backup checkpoint claims or atomic exclusion of independent external writers.\n- Archival checkpoint restoration after worktree deletion. Application-managed removal instead blocks until its checkpoints/safety refs are explicitly deleted. External deletion can still strand recovery metadata; reopen archival support if recovery across deleted worktrees becomes a requirement.\n- Silent upstream data migration, shared upstream identity/trust keys, unsigned update bypasses, automatic application relaunch, unapproved downloads/installation or unvalidated rollback.\n- Managed DNF/APT repositories and product prerelease channels initially.\n- Inventing final branding, release ownership/URL, signing secrets, actual user workload counts, maintenance-hour commitments or unmeasured performance budgets.\n- Implementing the product or decomposing this spec into implementation tickets as part of specification synthesis.\n\n## Further Notes\n\n- **Status:** Ready for ticketing after the November 12, 2026 challenge revision. The user approved the recommended C1-C7 resolutions covering all nine material review gaps, reusing the previously approved test seams. No challenge decision remains open. The configured tracker is the project's GitHub Issues with `ready-for-agent` as the triage label. That label does not imply prerequisites are built, waive empirical or product-publication gates, or authorize implementation in this review task.\n- **Decision provenance:** The user accepted the recommendations in interview Q1-Q48 and confirmed shared understanding at Q49. The subsequent to-spec invocation authorizes specification synthesis/publication under the skill; the interview confirmation itself did not authorize implementation. Use the project's glossary and the accepted ADRs covering independent agents, selective upstream imports, Spaces, fork identity, manual checkpoints, package-tool upgrades and hidden web-preview teardown.\n- **Scope cost:** This is feature removal plus accepted completion work: usable worktree/checkpoint UI, conflict/restore safeguards, recovery drafts, lifecycle handling, PDF reader functions, bounded/diagnosable previews, Antigravity CLI basic support and stronger release/update validation. Do not describe those additions as existing functionality or silently defer them to make a removal milestone appear complete.\n- **Current evidence:** Source inspection establishes shared coupling, a bare PDF iframe, unbounded non-range asset allocation, incomplete Git/control UI wiring, Space deletion guard gaps, checkpoint staging/cleanup limitations, macOS-only real-app runners and Linux updater bypass. Installed tools and vendor documentation establish candidate interfaces, not working integration. No PDF/codec/updater/package/end-to-end agent validation or whole-app baseline measurement has been completed by this synthesis.\n- **Explicit remaining gates:** Namespace/profile isolation is required before any ordinary fork run, while isolated baseline work may proceed. Before product publication, settle final identity/owner/endpoint and independent trust provisioning. Before declaring preview/update support, validate the actual application and distributed packages, implementing the accepted dedicated-viewer or package-tool-handoff fallback where required. Before claiming lightweight completion, measure and obtain approval for resource/performance ceilings. Preserve these gates even when implementation is divided into stages.\n- **Prerequisite ownership and blockers:** The implementation agent owns planned namespace isolation, shared mutation coordination, durable recovery, Linux harness adaptation and the applicable prerequisite tests; dependent work cannot assume those capabilities already exist. The maintainer supplies final publication identity/trust inputs and graphical/package validation environments. The implementation agent produces baseline/format/codec/updater evidence; the primary user approves evidence-based resource ceilings and accepts the intended workflow. Final branding/signing, unsupported-codec evidence and package/resource release validation block the corresponding release/support claims rather than unrelated implementation. Missing future acceptance evidence is explicit work, not an unresolved product decision.\n- **Deferred-risk disposition:** Archival checkpoint recovery after worktree deletion is Deferred, with potential stranded recovery metadata if removal occurs outside the application's guarded flow; reopen when the user requests recovery across deleted worktrees. New structured OpenCode/Antigravity adapters, centralized approvals, Office rendering and managed package repositories retain their existing deferrals and reopen only through an explicit scope decision. No accepted retained feature was removed by this review.\n- **No fabricated usage facts:** Actual day-to-day concurrency, a real recent task example, maintenance time and daily agent ranking were not supplied. The provisional workload, per-agent capability boundary and monthly review policy were explicitly accepted instead.\n",
+    "labels": [
+      {
+        "id": "LA_kwDOVqL7es8AAAADCSyWRg",
+        "name": "ready-for-agent",
+        "description": "Fully specified for an autonomous agent",
+        "color": "0E8A16"
+      }
+    ],
+    "state": "OPEN",
+    "title": "Spec: Personal Linux workspace for terminal agents and project files",
+    "url": "https://github.com/kevsmir02/terax-ai/issues/1"
+  },
+  "tickets": [
+    {
+      "draftId": 1,
+      "number": 2,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/2",
+      "title": "Workspace 01: Run an isolated Linux real-app smoke workflow",
+      "blockerNumbers": [],
+      "gated": false,
+      "bodySha256": "ed97938e08e7a9301178f7f2f3d40b16d3303b9c118653c5807f7e1a40f8b3d0",
+      "verified": true
+    },
+    {
+      "draftId": 2,
+      "number": 3,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/3",
+      "title": "Workspace 02: Record the reproducible Linux resource baseline",
+      "blockerNumbers": [
+        2
+      ],
+      "gated": false,
+      "bodySha256": "c2b8b6b507f33d1f8d63961d65eb4ba7ad169ad0ff20e102895342479a9f3d97",
+      "verified": true
+    },
+    {
+      "draftId": 3,
+      "number": 4,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/4",
+      "title": "Workspace 03: Approve initial document and decoded-resource limits",
+      "blockerNumbers": [
+        3
+      ],
+      "gated": true,
+      "bodySha256": "a2b18c6bea1d0a27dd3accb79b1a2732066b461468b8d43b37b0556bdc2c1404",
+      "verified": true
+    },
+    {
+      "draftId": 4,
+      "number": 5,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/5",
+      "title": "Workspace 04: Expand shared native file access and migrate retained consumers",
+      "blockerNumbers": [],
+      "gated": false,
+      "bodySha256": "b3984cca0a433afa946ed47bdb684cff8c7172a978ef5ddf572f32f7d25796dc",
+      "verified": true
+    },
+    {
+      "draftId": 5,
+      "number": 6,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/6",
+      "title": "Workspace 05: Migrate Markdown rendering out of built-in AI ownership",
+      "blockerNumbers": [
+        5
+      ],
+      "gated": false,
+      "bodySha256": "463a3fc8566900d69945f55d91eb88533799e0ae405d00502f9c00696cd4f389",
+      "verified": true
+    },
+    {
+      "draftId": 6,
+      "number": 7,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/7",
+      "title": "Workspace 06: Separate external-agent notifications and control from AI supervision",
+      "blockerNumbers": [],
+      "gated": false,
+      "bodySha256": "54a1542f78c59705bf2cb2e82a8bbe982d07eeaa042c0ed5f3313543fea53c66",
+      "verified": true
+    },
+    {
+      "draftId": 7,
+      "number": 8,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/8",
+      "title": "Workspace 07: Isolate every fork-owned runtime namespace",
+      "blockerNumbers": [
+        2
+      ],
+      "gated": false,
+      "bodySha256": "fe17d094f1cdadcae9fc2cfe82fdaf32b29258ba8a32c7ff24c429b446cdf67e",
+      "verified": true
+    },
+    {
+      "draftId": 8,
+      "number": 9,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/9",
+      "title": "Workspace 08: Establish pinned Linux CI and build checks",
+      "blockerNumbers": [
+        2
+      ],
+      "gated": false,
+      "bodySha256": "f851c845d7a9b95994da16cd9891c049ccd412bbdba1a166dc70c621612fbb99",
+      "verified": true
+    },
+    {
+      "draftId": 9,
+      "number": 10,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/10",
+      "title": "Workspace 09: Remove voice recording and transcription",
+      "blockerNumbers": [
+        2
+      ],
+      "gated": false,
+      "bodySha256": "1064dbc7136911186e216acdb58dc4f9da56e7964560a0bd839e03c562455305",
+      "verified": true
+    },
+    {
+      "draftId": 10,
+      "number": 11,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/11",
+      "title": "Workspace 10: Remove language servers while retaining useful basic editing",
+      "blockerNumbers": [
+        2
+      ],
+      "gated": false,
+      "bodySha256": "669c7c64215f07358c99da2376dac57e3d79ae4ed02b3a0558950bb81f78dbf5",
+      "verified": true
+    },
+    {
+      "draftId": 11,
+      "number": 12,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/12",
+      "title": "Workspace 11: Remove built-in chat and composer product surfaces",
+      "blockerNumbers": [
+        6,
+        7,
+        10
+      ],
+      "gated": false,
+      "bodySha256": "2010a000cda36f85635e0045d6d53b99f301dee2ef8cde9fd840bcb5da5b3d38",
+      "verified": true
+    },
+    {
+      "draftId": 12,
+      "number": 13,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/13",
+      "title": "Workspace 12: Remove AI editor review, completion and terminal actions",
+      "blockerNumbers": [
+        2,
+        6
+      ],
+      "gated": false,
+      "bodySha256": "bb3ef587696c63562d928b4ca8a042807e38939e71585d8260077618186bebe8",
+      "verified": true
+    },
+    {
+      "draftId": 13,
+      "number": 14,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/14",
+      "title": "Workspace 13: Contract the unused built-in AI stack",
+      "blockerNumbers": [
+        12,
+        13
+      ],
+      "gated": false,
+      "bodySha256": "d1b494a2863c4aa8e83187068d4593d95c6f6f1c824e6dc1228ca157a00ff35a",
+      "verified": true
+    },
+    {
+      "draftId": 14,
+      "number": 15,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/15",
+      "title": "Workspace 14: Save conflicting files safely across Spaces",
+      "blockerNumbers": [
+        2,
+        5
+      ],
+      "gated": false,
+      "bodySha256": "6367e2a39bc7e8dc81697938583065f046372f115ff64f49d933dcba6748c1a8",
+      "verified": true
+    },
+    {
+      "draftId": 15,
+      "number": 16,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/16",
+      "title": "Workspace 15: Recover unsaved buffer revisions durably",
+      "blockerNumbers": [
+        15
+      ],
+      "gated": false,
+      "bodySha256": "105d986fc4d893af9b17432b9a8452774a436835a0f43a2ba6ac41c49a7e3f4b",
+      "verified": true
+    },
+    {
+      "draftId": 16,
+      "number": 17,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/17",
+      "title": "Workspace 16: Manage Spaces and tabs without losing work",
+      "blockerNumbers": [
+        8,
+        16
+      ],
+      "gated": false,
+      "bodySha256": "2bbd18a05b95c83b14d2d329e12c0ed8987cdd6ab953ba2abc54e17cc6d2e91a",
+      "verified": true
+    },
+    {
+      "draftId": 17,
+      "number": 18,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/18",
+      "title": "Workspace 17: Quit with durable recovery and deliberate process termination",
+      "blockerNumbers": [
+        17
+      ],
+      "gated": false,
+      "bodySha256": "693d41f2c6e333c573eaf611a126d3ff2ee7381356237b593f23ef7ef235170e",
+      "verified": true
+    },
+    {
+      "draftId": 18,
+      "number": 19,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/19",
+      "title": "Workspace 18: Guard destructive Git actions across shared Spaces",
+      "blockerNumbers": [
+        17
+      ],
+      "gated": false,
+      "bodySha256": "1de823579b9c9ff86e3b5673ced1b8d046731b95729cad014e695e96299a441c",
+      "verified": true
+    },
+    {
+      "draftId": 19,
+      "number": 20,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/20",
+      "title": "Workspace 19: Install and remove agent hooks with fork ownership",
+      "blockerNumbers": [
+        7,
+        8
+      ],
+      "gated": false,
+      "bodySha256": "404c2540caad1a677c93122b6dc6a79f92f84a86b2618c97397e33ff69fb6ceb",
+      "verified": true
+    },
+    {
+      "draftId": 20,
+      "number": 21,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/21",
+      "title": "Workspace 20: Launch the target CLI agents and report honest attention",
+      "blockerNumbers": [
+        7,
+        8
+      ],
+      "gated": false,
+      "bodySha256": "4f03707a592095e9e816cf4a0db904d8f0afdc2b98152b325287566ecc72082f",
+      "verified": true
+    },
+    {
+      "draftId": 21,
+      "number": 22,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/22",
+      "title": "Workspace 21: Create a worktree and open it as a Space",
+      "blockerNumbers": [
+        19
+      ],
+      "gated": false,
+      "bodySha256": "8acd8283ad9c76c5022c893c32897f21894fcf9557404b8e2e6d80067274b022",
+      "verified": true
+    },
+    {
+      "draftId": 22,
+      "number": 23,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/23",
+      "title": "Workspace 22: Create, inspect and explicitly clean up manual checkpoints",
+      "blockerNumbers": [
+        19
+      ],
+      "gated": false,
+      "bodySha256": "e98222e9170dc432fa3fc42e6bb0a21c749e9fe82e442bfc4ad41fd0ea2d3fc5",
+      "verified": true
+    },
+    {
+      "draftId": 23,
+      "number": 24,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/24",
+      "title": "Workspace 23: Restore a checkpoint with preflight and recovery safeguards",
+      "blockerNumbers": [
+        23
+      ],
+      "gated": false,
+      "bodySha256": "8434a1b6ac77165908e1d20a504447c766c67174fd320def7d9b6138794d829e",
+      "verified": true
+    },
+    {
+      "draftId": 24,
+      "number": 25,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/25",
+      "title": "Workspace 24: Remove worktrees without stranding retained checkpoints",
+      "blockerNumbers": [
+        22,
+        23
+      ],
+      "gated": false,
+      "bodySha256": "8b8c6b54effa20611b3a946c3fb7489fa69764c3defe3300ea0dd8b4a9edc2d3",
+      "verified": true
+    },
+    {
+      "draftId": 25,
+      "number": 26,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/26",
+      "title": "Workspace 25: Bound asset delivery and revoke preview access",
+      "blockerNumbers": [
+        4,
+        5
+      ],
+      "gated": false,
+      "bodySha256": "eadf610aca2eb17a0efb562bc2755cad5b2d55dead872652b913569cb03a24aa",
+      "verified": true
+    },
+    {
+      "draftId": 26,
+      "number": 27,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/27",
+      "title": "Workspace 26: Read Markdown with scoped local assets and deliberate networking",
+      "blockerNumbers": [
+        6,
+        26
+      ],
+      "gated": false,
+      "bodySha256": "d5d66e116d2ccf65100b61f4561722b4d194f9543211a143b48a448151ffc37e",
+      "verified": true
+    },
+    {
+      "draftId": 27,
+      "number": 28,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/28",
+      "title": "Workspace 27: View images with bounded decode and cleanup",
+      "blockerNumbers": [
+        26
+      ],
+      "gated": false,
+      "bodySha256": "a9203018ecfffd656b7afdcd750a3a93d46a540fe042b0f013f9e3ee41c79a0a",
+      "verified": true
+    },
+    {
+      "draftId": 28,
+      "number": 29,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/29",
+      "title": "Workspace 28: Play audio/video with hidden-tab and close cleanup",
+      "blockerNumbers": [
+        26
+      ],
+      "gated": false,
+      "bodySha256": "b43318f738be104beaeb0f37c77867957d374323c2cb4846dc56caee2ee50e2d",
+      "verified": true
+    },
+    {
+      "draftId": 29,
+      "number": 30,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/30",
+      "title": "Workspace 29: Validate Fedora PDF behavior and select the reader path",
+      "blockerNumbers": [
+        2
+      ],
+      "gated": false,
+      "bodySha256": "1110b784a4b2a0e3af53f5329115d66267694c4aa7ca32632ca3d8d06b9fc76c",
+      "verified": true
+    },
+    {
+      "draftId": 30,
+      "number": 31,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/31",
+      "title": "Workspace 30: Read PDFs with lazy, bounded reader functions",
+      "blockerNumbers": [
+        26,
+        30
+      ],
+      "gated": false,
+      "bodySha256": "f5bb184d4851fbb3ed6ac4c42cb802039136f6a557d9fef1250e7973387d6227",
+      "verified": true
+    },
+    {
+      "draftId": 31,
+      "number": 32,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/32",
+      "title": "Workspace 31: Unload hidden web previews without unloading on visible blur",
+      "blockerNumbers": [
+        2
+      ],
+      "gated": false,
+      "bodySha256": "808f7f819be570984a7138c7b175948e3eac9a44a5026a053044c35a8ea7bfe6",
+      "verified": true
+    },
+    {
+      "draftId": 32,
+      "number": 33,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/33",
+      "title": "Workspace 32: Port terminal compatibility, soak and Ghostty update checks to Linux",
+      "blockerNumbers": [
+        3,
+        9
+      ],
+      "gated": false,
+      "bodySha256": "f9dcc99071763f210679262a4bf4e97566b862a0a04c216601f869e62795cb07",
+      "verified": true
+    },
+    {
+      "draftId": 33,
+      "number": 34,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/34",
+      "title": "Workspace 33: Narrow build and distribution support to Linux x86-64",
+      "blockerNumbers": [
+        33
+      ],
+      "gated": false,
+      "bodySha256": "2645f2044bece457949879ca37270faa01a930c38099af94f5103f40178b9ba7",
+      "verified": true
+    },
+    {
+      "draftId": 34,
+      "number": 35,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/35",
+      "title": "Workspace 34: Maintain upstream imports and reviewed dependency updates",
+      "blockerNumbers": [
+        33
+      ],
+      "gated": false,
+      "bodySha256": "680eb683d431f82ae6096d55d0a4441ef234e3a98f4b929b6d0c7cd8e35157fd",
+      "verified": true
+    },
+    {
+      "draftId": 35,
+      "number": 36,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/36",
+      "title": "Workspace 35: Build reproducible Linux package candidates",
+      "blockerNumbers": [
+        8,
+        9
+      ],
+      "gated": false,
+      "bodySha256": "57334ca2552fc99f9148e855cb47c2a9d3e18d849f2e99fee4c759faefad7714",
+      "verified": true
+    },
+    {
+      "draftId": 36,
+      "number": 37,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/37",
+      "title": "Workspace 36: Discover stable updates without downloading packages",
+      "blockerNumbers": [
+        8
+      ],
+      "gated": false,
+      "bodySha256": "7fe47d2065bda2f9ae8505437465160d2a72776c727253dbfa7a48ff2b01bd79",
+      "verified": true
+    },
+    {
+      "draftId": 37,
+      "number": 38,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/38",
+      "title": "Workspace 37: Validate RPM/DEB transaction integration or choose handoff",
+      "blockerNumbers": [
+        36
+      ],
+      "gated": true,
+      "bodySha256": "feba2f7168b46037bad9decbad98728eac89625e13c776e2116c17c1d6e47eb1",
+      "verified": true
+    },
+    {
+      "draftId": 38,
+      "number": 39,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/39",
+      "title": "Workspace 38: Install approved updates safely or hand off after closure",
+      "blockerNumbers": [
+        18,
+        19,
+        37,
+        38
+      ],
+      "gated": false,
+      "bodySha256": "c9560da6438fe95a419d5ce618c2ffb1ee9794abf4d3e1aa79dbaab984dae78c",
+      "verified": true
+    },
+    {
+      "draftId": 39,
+      "number": 40,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/40",
+      "title": "Workspace 39: Settle publication identity and provision independent trust",
+      "blockerNumbers": [],
+      "gated": true,
+      "bodySha256": "8950e4e31285d7c63f742f68c9670282d74044c49e9adbc9c0c18e8caf604e12",
+      "verified": true
+    },
+    {
+      "draftId": 40,
+      "number": 41,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/41",
+      "title": "Workspace 40: Gate tagged stable releases on checked immutable artifacts",
+      "blockerNumbers": [
+        36,
+        40
+      ],
+      "gated": false,
+      "bodySha256": "5f870625e393d00ad0ea7f789fa5a85951b15601459fa0ec12f18b7f5fa7cdef",
+      "verified": true
+    },
+    {
+      "draftId": 41,
+      "number": 42,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/42",
+      "title": "Workspace 41: Assemble the complete candidate and verify retained workflows",
+      "blockerNumbers": [
+        11,
+        14,
+        20,
+        21,
+        24,
+        25,
+        27,
+        28,
+        29,
+        31,
+        32,
+        34,
+        35,
+        39,
+        41
+      ],
+      "gated": false,
+      "bodySha256": "a4277afdd698b5f2d632978d4a1edf6763a36c344b0b87abbd32c5efbef617ab",
+      "verified": true
+    },
+    {
+      "draftId": 42,
+      "number": 43,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/43",
+      "title": "Workspace 42: Accept final whole-app resource budgets and stability evidence",
+      "blockerNumbers": [
+        42
+      ],
+      "gated": true,
+      "bodySha256": "85847129744b33245fbb099f7b59655cc5a7a54d8a847bc64c209a464db895db",
+      "verified": true
+    },
+    {
+      "draftId": 43,
+      "number": 44,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/44",
+      "title": "Workspace 43: Validate the exact candidate on Fedora, Debian and Arch",
+      "blockerNumbers": [
+        42
+      ],
+      "gated": true,
+      "bodySha256": "e0b8b2328780ce123ee4c2a6ff104aa6de73ccaf7e2400cd945e8f67245fb728",
+      "verified": true
+    },
+    {
+      "draftId": 44,
+      "number": 45,
+      "url": "https://github.com/kevsmir02/terax-ai/issues/45",
+      "title": "Workspace 44: Publish and verify the first validated stable release",
+      "blockerNumbers": [
+        43,
+        44
+      ],
+      "gated": true,
+      "bodySha256": "1fea6ead1c96d3214087f3ad6b66e685c5254a68561ecc769b84ff8fa2e5a6dd",
+      "verified": true
+    }
+  ],
+  "verification": {
+    "subIssues": 44,
+    "nativeBlockingEdges": 73,
+    "readyForAgentLabels": 38,
+    "gatedWithoutReadyLabel": 6,
+    "parentContentAndStatusUnchanged": true,
+    "allTicketBodiesVerified": true,
+    "allTicketsUnassignedAndOpenWhenPublished": true,
+    "implementationStarted": false
+  }
+}

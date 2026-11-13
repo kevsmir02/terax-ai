@@ -1,19 +1,9 @@
 import { quoteShellArg } from "@/lib/shellQuote";
+import { native } from "@/modules/workspace/native";
 import type { EditorFormatter } from "@/modules/settings/store";
-import { currentWorkspaceEnv } from "@/modules/workspace";
 import type { EditorView } from "@codemirror/view";
-import { invoke } from "@tauri-apps/api/core";
 
-type ReadResult = { kind: string; content?: string; mtime?: number };
-
-type CommandOutput = {
-  stdout: string;
-  stderr: string;
-  exit_code: number | null;
-  timed_out: boolean;
-};
-
-export type ExternalFormatter = Exclude<EditorFormatter, "lsp">;
+export type ExternalFormatter = EditorFormatter;
 
 type FormatterDef = {
   label: string;
@@ -67,7 +57,6 @@ export const FORMATTERS: Record<
 };
 
 export const FORMATTER_LABELS: Record<EditorFormatter, string> = {
-  lsp: "Language server",
   custom: "Custom command",
   ...Object.fromEntries(
     Object.entries(FORMATTERS).map(([id, def]) => [id, def.label]),
@@ -77,20 +66,30 @@ export const FORMATTER_LABELS: Record<EditorFormatter, string> = {
 type FormatterPrefs = {
   editorFormatter: EditorFormatter;
   editorFormatterByLang: Record<string, EditorFormatter>;
+  editorCustomFormatCommand?: string;
 };
 
 // Explicit overrides always win and always run. The global default only
-// applies to languages its tool understands; anything else falls back to
-// the language server so a global "biome" never chews on a .py file.
+// applies to languages its tool understands, so a global "biome" never chews
+// on a .py file; there is no fallback formatter, so anything that does not
+// match simply saves unformatted.
 export function resolveFormatter(
   langId: string | null,
   prefs: FormatterPrefs,
-): EditorFormatter {
+): ExternalFormatter | null {
+  const customConfigured = Boolean(prefs.editorCustomFormatCommand?.trim());
   const override = langId ? prefs.editorFormatterByLang[langId] : undefined;
-  if (override) return override;
+  if (override)
+    return override === "custom" ? configured(customConfigured) : override;
   const global = prefs.editorFormatter;
-  if (global === "lsp" || global === "custom") return global;
-  return langId && FORMATTERS[global].langs.includes(langId) ? global : "lsp";
+  if (global === "custom") return configured(customConfigured);
+  const def = FORMATTERS[global as Exclude<ExternalFormatter, "custom">];
+  return langId && def?.langs.includes(langId) ? global : null;
+}
+
+/** "custom" only formats once a command template exists. */
+function configured(customConfigured: boolean): ExternalFormatter | null {
+  return customConfigured ? "custom" : null;
 }
 
 function dirname(path: string): string {
@@ -126,12 +125,12 @@ export async function runExternalFormatter(
     return "No custom format command configured in Settings.";
   }
   try {
-    const out = await invoke<CommandOutput>("shell_run_command", {
-      command,
-      cwd: dirname(path),
-      timeoutSecs: 20,
-      workspace: currentWorkspaceEnv(),
-    });
+    // `cwd` is registry-confined on the native side
+    // (`workspace::authorize_spawn_cwd`): formatting a file that lives outside
+    // every authorized root is refused today, even though the file itself can
+    // be opened and saved. Known limitation — see
+    // `docs/architecture/security-model.md`.
+    const out = await native.shellRunCommand(command, dirname(path), 20);
     if (out.timed_out) return `${formatter} timed out`;
     if (out.exit_code !== 0) {
       return out.stderr.trim().slice(-300) || `${formatter} failed`;
@@ -142,15 +141,28 @@ export async function runExternalFormatter(
   }
 }
 
-export async function readFileText(
-  path: string,
-): Promise<{ text: string; mtime: number } | null> {
-  const res = await invoke<ReadResult>("fs_read_file", {
-    path,
-    workspace: currentWorkspaceEnv(),
-  }).catch(() => null);
-  if (res?.kind !== "text" || res.content == null) return null;
-  return { text: res.content, mtime: res.mtime ?? 0 };
+/**
+ * Reads the formatted file back with its disk revision, so the editor can adopt
+ * the formatter's write as the new baseline instead of treating it as an
+ * external change.
+ */
+export async function readFileText(path: string): Promise<{
+  content: string;
+  revision: string;
+  mtime: number;
+  size: number;
+} | null> {
+  // Explicit-user read (tier A): no secret policy, no registry.
+  const res = await native.readFile(path).catch(() => null);
+  if (res?.kind !== "text" || res.content == null || res.revision == null) {
+    return null;
+  }
+  return {
+    content: res.content,
+    revision: res.revision,
+    mtime: res.mtime ?? 0,
+    size: res.size,
+  };
 }
 
 // Minimal change dispatch: trimming the common prefix/suffix keeps the

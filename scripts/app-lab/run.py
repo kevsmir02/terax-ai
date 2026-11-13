@@ -1,4 +1,5 @@
-"""App lab: ground-truth resource benchmark of the REAL Terax application (macOS).
+"""App lab: ground-truth resource benchmark of the REAL Terax application (macOS), plus the
+Linux/WebKitGTK acceptance workflow (`--scenario workflow`, ticket 01).
 
 Unlike scripts/renderer-profile (a synthetic renderer in a bare WKWebView) this builds the real
 app, with the full React shell, real PTYs, real tabs/splits and the real window, from a source
@@ -18,8 +19,51 @@ Scenarios (`--scenario`):
   agents-steady  1 visible + `--hidden-agents` hidden agent tabs for `--duration` s (CPU/energy)
   idle           one idle shell for `--duration` s
   input          native key events / input-method calls into a PTY reader (pass/fail in page.log)
+  workflow       Linux acceptance workflow: shell spawn, exact echo, new tab, split, switch back,
+                 open a temp file and assert the editor's text (pass/fail in page.log)
+  markdown       Linux Markdown preview: Space-root assets, an outside document, a symlink escape,
+                 remote consent, inert links, cwd independence and grant revocation on close
+  preview        Linux preview acceptance: a served dev-server page in the real iframe (redirect,
+                 sandbox, no native access, hidden-tab/Space/window teardown and reload) and PDF
+                 documents (served content type and byte ranges, the frame as a separate document,
+                 open/close stability, memory) — pass/fail in page.log
+  images         Linux image seam: representative formats decode in the real WebKitGTK, oversized
+                 and corrupt inputs are refused honestly, hidden tabs release, close cycles do not
+                 retain decoded viewers or grants
+  media          Linux media seam: real container/codec support from the element's own events,
+                 bounded ranged delivery and seeking, hidden pause without auto-resume,
+                 unsupported/corrupt/interrupted inputs, close releases elements, slots and grants
+  spaces         Linux Space lifecycle: shared checkout, switch with hidden output flowing, tab
+                 close guards, Space deletion that keeps the project directory (pass/fail in page.log)
+  quit           Linux quit: the survey across Spaces, a repeated close that is not consent, cancel,
+                 save-then-quit, graceful termination, the survivor prompt, a confirmed force, and a
+                 reload that restores the layout without replaying commands (pass/fail in page.log)
+  recovery       Linux crash recovery: a dirty buffer's acknowledged draft, a harness SIGKILL of
+                 the app process group, then a relaunch that offers the draft, matches it to the
+                 last acknowledged text and discards exactly it (pass/fail in page.log)
+  git            Linux destructive-Git seam: a dirty buffer blocks a panel discard, stale and
+                 unacknowledged plans are refused, a confirmed discard still restores its file
+  checkpoints    Linux manual-checkpoint seam: two same-named captures keep distinct identities,
+                 limits/exclusions are disclosed, inspection lists captured paths, explicit cleanup
+                 removes only the named ref, and HEAD/the index/working files never move; then the
+                 visible panel preflights, refuses an unacknowledged restore, restores captured
+                 content, recovers it from the safety ref and deletes one named ref
+  worktree       Linux worktree seam: the Source Control dialog creates a worktree with a new
+                 branch and an ignored file, checks derived access, opens it as its own Space, and
+                 refuses an unknown start point, a file target, a non-empty target and a branch
+                 checked out elsewhere. Deleting that Space leaves the worktree alone; its removal
+                 is refused while it owns a checkpoint, an explicit cleanup unblocks it, and the
+                 removal keeps the branch while revoking only the derived access
 
-The app runs from an isolated bundle (identifier app.crynta.terax.app-lab, its own HOME), never
+Linux currently implements `workflow`, `spaces`, `quit`, `recovery`, `markdown`, `git`,
+`checkpoints`, `worktree`, `preview`, `images`, `resource`, `stress` and `startup` (WebKitGTK); the
+measured scenarios above refuse to run here because WebKitGTK exposes no occlusion signal, no
+composited layer tree and no native input injection (`resize`, `split-drag`, `occlusion`, `input`,
+`tabs`, `idle`, `agents-steady` and `fs-churn`). On Linux the app is
+built with `--no-bundle` into `<target>/<profile>/terax`.
+
+The app runs from an isolated bundle (an identifier inside the fork product namespace, its own
+HOME), never
 the user's profile; the bench build refuses to start under the product identifier. Build once
 (`--build-only`, release with the feature, a separate cargo target dir) and reuse with
 `--reuse-build`. To measure a pristine revision rather than the working tree use
@@ -31,9 +75,11 @@ human summary); `--compare A.json [B.json ...]` prints deltas (medians when repe
 
 import argparse
 import fcntl
+import functools
 import hashlib
 import http.server
 import json
+import math
 import os
 import platform
 import queue
@@ -45,18 +91,52 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
+import wave
 from pathlib import Path
 
 sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(REPO / "scripts"))
 sys.path.insert(0, str(REPO / "scripts/renderer-profile"))
 import app_report  # noqa: E402
+import linux_profile  # noqa: E402
+import linux_proc  # noqa: E402
+import isolation_report  # noqa: E402
+import linux_report  # noqa: E402
+import namespace_sentinels  # noqa: E402
+import pdf_fixtures  # noqa: E402
 import procstats  # noqa: E402
 
-IDENTIFIER = "app.crynta.terax.app-lab"
+SYSTEM = platform.system()
+# Scenarios the Linux/WebKitGTK runner implements with real /proc sampling. The macOS-only
+# measured scenarios (tabs, resize, split-drag, occlusion, agents-steady, idle, fs-churn, input)
+# stay unavailable here: WebKitGTK has no occlusion signal, no layer-tree mirror and no native
+# input hook.
+LINUX_SCENARIOS = (
+    "workflow",
+    "candidate",
+    "spaces",
+    "quit",
+    "recovery",
+    "markdown",
+    "git",
+    "checkpoints",
+    "media",
+    "worktree",
+    "preview",
+    "images",
+    "resource",
+    "stress",
+    "startup",
+)
+SCENARIOS = list(dict.fromkeys([*app_report.SCENARIOS, *LINUX_SCENARIOS]))
+IDENTIFIER = linux_profile.disposable_identifier("app-lab", "stable")
 PRODUCT_NAME = "Terax App Lab"
+# Bench-only native write delay for `workflow`'s stale-typing step (see save.rs).
+WORKFLOW_WRITE_DELAY_MS = 1500
 MAX_ATTEMPTS = 3
 LOCK_PATH = Path(tempfile.gettempdir()) / "terax-app-lab.lock"
 SCOPE = (
@@ -72,7 +152,12 @@ procstats.ROLE_LABEL["workload"] = "PTY-procs"
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter, allow_abbrev=False)
-    p.add_argument("--scenario", choices=list(app_report.SCENARIOS))
+    p.add_argument("--scenario", choices=SCENARIOS)
+    p.add_argument("--self-test", action="store_true", help="prove the preflight refusal and the bench binary's isolation guard, then exit")
+    p.add_argument(
+        "--identifier",
+        help="disposable app identifier (Linux default: <fork product identifier>.app-lab-<hex>)",
+    )
     p.add_argument("--variant", default=None, help="tabs: 2 (default) or 4")
     p.add_argument("--source", type=Path, help="source tree to build (default: this checkout; see export-tree.sh)")
     p.add_argument("--revision", help="label for a source tree without Git metadata")
@@ -87,6 +172,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--toggle", action="append", default=[], metavar="NAME=VALUE", help="experiment toggle: localStorage terax:bench:NAME (repeatable)")
     p.add_argument("--local-storage", action="append", default=[], metavar="KEY=VALUE", help="raw localStorage entry (VALUE 'null' removes), e.g. terax:terminal-canvas-park-ms=off")
     p.add_argument("--window", default="1280x820", help="window size in points, WxH")
+    p.add_argument("--pdf-hold-ms", type=int, default=0, help="preview: keep the representative PDF open this long after its sample, so the named reader checks (docs/architecture/pdf-reader.md) can be run against the real window")
     p.add_argument("--instrument", action="store_true", help="patch WebGPU/DOM prototypes with lifecycle counters (calls, wrappers created/finalized, canvas re-parenting); compare with an uninstrumented run")
     p.add_argument("--gc", nargs="?", const="private", choices=["private", "alloc"], help="after the idle tail, request a full garbage collection and sample +2 s/+10 s: 'private' (default) is WebKit's testing SPI, 'alloc' is allocation pressure from the page (what an in-app valve could do)")
     p.add_argument("--tick", type=float, help="idle, fs-churn: take a full sample (with the layer tree and the page event log) every this many seconds (fs-churn default 30)")
@@ -120,6 +206,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--iosurfaces", action="store_true", help="list the IOSurface regions of WebContent and GPU (`vmmap -v`: count, sizes, volatile) in every full sample")
     p.add_argument("--categories", action=argparse.BooleanOptionalAction, default=True, help="keep footprint's per-category breakdown (default on)")
     p.add_argument("--poll-interval", type=float, default=1.0, help="seconds between timeline counter samples (phys_footprint, CPU, energy per process)")
+    p.add_argument("--agents", type=int, help="resource: busy synthetic agents (default 2; stress default 4)")
+    p.add_argument("--streams", type=int, help="resource: terminal panes receiving the streaming fixture (default 2; stress default 4)")
+    p.add_argument("--stream-rate", type=float, default=400, help="resource: streaming lines per second per pane (default 400)")
+    p.add_argument("--stream-seconds", type=float, help="resource: seconds of sustained terminal streaming (default: --duration or 30)")
+    p.add_argument("--close-cycles", type=int, default=3, help="resource: editor open/close cycles (default 3)")
+    p.add_argument("--idle-seconds", type=float, default=5, help="resource: idle-terminal hold before the workload (default 5)")
+    p.add_argument("--startup-repeats", type=int, default=3, help="startup: launches per run; the first is cold (fresh profile), the rest warm (default 3)")
+    p.add_argument("--compare-format", choices=["table", "tsv", "json"], default="table", help="with --compare/--candidate: one line per metric (tsv) or machine-readable json")
+    p.add_argument("--list-metrics", action="store_true", help="print every metric name a Linux report can produce and exit")
     p.add_argument("--sampling", choices=["full", "light"], default="full", help="full: footprint+vmmap after every event (they briefly suspend the target and perturb it); light: only every --full-every-th cycle and the non-cycle phases are sampled with them, the rest rely on the cheap timeline (use a small --poll-interval)")
     p.add_argument("--light-phases", default=r"^(switch-\d+|cycle-\d+-(hidden|visible)|shrink-\d+|grow-\d+|drag-\d+)$", help="light sampling: regular expression of the phases that get only the cheap counters (every other phase, setup, the tail and GC samples, is sampled in full)")
     p.add_argument("--full-every", type=int, default=10, help="light sampling: still take a full sample every N cycles")
@@ -174,6 +269,8 @@ def other_benchmarks() -> list[str]:
 
 
 def build(args, source: Path, output: Path, target_dir: Path) -> Path:
+    if SYSTEM == "Linux":
+        return build_linux(args, source, output, target_dir)
     """Frontend with TERAX_BENCH=1, then the Tauri bundle with the `bench` feature. Returns the .app."""
     dist = output / "dist"
     bundle_dir = target_dir / args.profile / "bundle/macos"
@@ -206,6 +303,48 @@ def build(args, source: Path, output: Path, target_dir: Path) -> Path:
     return app
 
 
+def build_linux(args, source: Path, output: Path, target_dir: Path) -> Path:
+    """Frontend with TERAX_BENCH=1, then the app binary with the `bench` feature (no bundle).
+
+    `--no-bundle` skips deb/rpm/appimage (and the CLI sidecar those would need); the binary is
+    `<target>/<profile>/terax`. The generated config maps onto src-tauri/tauri.conf.json and
+    overrides the identifier, the frontend location and the hidden main window.
+    """
+    dist = output / "dist"
+    binary = target_dir / args.profile / "terax"
+    config = output / "tauri.conf.json"
+    config.write_text(json.dumps({
+        "productName": PRODUCT_NAME,
+        "identifier": args.identifier,
+        "build": {"beforeBuildCommand": "", "frontendDist": str(dist)},
+        # The real config starts hidden and relies on the page to show the window; a page error
+        # would then leave an invisible app hanging the run.
+        "app": {"windows": [{
+            "label": "main", "title": PRODUCT_NAME, "width": 1280, "height": 820, "visible": True,
+        }]},
+        "bundle": {"active": False, "createUpdaterArtifacts": False},
+    }))
+    if args.reuse_build and binary.exists() and (dist / "index.html").exists():
+        print(f"Reusing {binary}", flush=True)
+        return binary
+    env = {**os.environ, "TERAX_BENCH": "1", "TERAX_BENCH_IDENTIFIER": args.identifier, "CARGO_TARGET_DIR": str(target_dir)}
+    started = time.monotonic()
+    with (output / "build.log").open("w") as log:
+        print("Building the frontend (TERAX_BENCH=1)...", flush=True)
+        subprocess.run([str(source / "node_modules/.bin/vite"), "build", "--outDir", str(dist), "--emptyOutDir"], cwd=source, env=env, stdout=log, stderr=log, check=True)
+        frontend_s = time.monotonic() - started
+        print("Building the app (cargo %s, feature bench)..." % args.profile, flush=True)
+        command = [str(source / "node_modules/.bin/tauri"), "build", "--no-bundle", "--features", "bench", "--config", str(config)]
+        if args.profile == "debug":
+            command.append("--debug")
+        subprocess.run(command, cwd=source, env=env, stdout=log, stderr=log, check=True)
+    print(f"Built in {time.monotonic() - started:.0f}s (frontend {frontend_s:.0f}s)", flush=True)
+    (output / "build-seconds.json").write_text(json.dumps({"frontend": frontend_s, "total": time.monotonic() - started}))
+    if not binary.exists():
+        raise RuntimeError(f"build produced no {binary}")
+    return binary
+
+
 # ---------------------------------------------------------------------------------------------
 # Profile isolation
 # ---------------------------------------------------------------------------------------------
@@ -213,7 +352,9 @@ def build(args, source: Path, output: Path, target_dir: Path) -> Path:
 
 def clean_profile(home: Path) -> None:
     """Removes everything a previous run left for the bench identifier (never the product's)."""
-    assert IDENTIFIER != "app.crynta.terax"
+    assert IDENTIFIER != linux_profile.PRODUCT_IDENTIFIER
+    assert IDENTIFIER.startswith(f"{linux_profile.PRODUCT_IDENTIFIER}.")
+    assert linux_profile.UPSTREAM_IDENTIFIER not in IDENTIFIER
     shutil.rmtree(home, ignore_errors=True)
     # WebKit, Tauri and cfprefsd may resolve the user's real library even with HOME overridden.
     import pwd
@@ -245,13 +386,81 @@ def descendants(root: int, table: dict[int, tuple[int, str]]) -> list[int]:
 # Orchestration
 # ---------------------------------------------------------------------------------------------
 
+PREVIEW_FIXTURE = """<!doctype html>
+<html><head><meta charset="utf-8"><title>preview fixture</title></head>
+<body><h1>preview fixture</h1><p id="state"></p>
+<script>
+const instance = Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+const native = {
+  tauri: typeof window.__TAURI__ !== "undefined",
+  internals: typeof window.__TAURI_INTERNALS__ !== "undefined",
+  invoke: typeof (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke),
+};
+// A sandboxed frame without allow-top-navigation* must not be able to move the app window.
+const topNav = { attempted: false, error: null };
+try { topNav.attempted = true; window.top.location.href = "http://127.0.0.1:1/preview-escape"; }
+catch (error) { topNav.error = String(error); }
+// A popup must not become a window outside the application's control: the app installs no
+// new-window handler, so WebKit has to refuse the request rather than hand the page one.
+const popup = (() => {
+  try {
+    const opened = window.open("about:blank", "terax-preview-popup", "width=200,height=120");
+    if (opened) { try { opened.close(); } catch (error) {} }
+    return { requested: true, opened: Boolean(opened), error: null };
+  } catch (error) {
+    return { requested: true, opened: false, error: String(error) };
+  }
+})();
+let seq = 0;
+function payload(kind) {
+  return {
+    source: "terax-preview-fixture", kind, instance, href: location.href, seq: seq++,
+    redirected: location.pathname === "/preview-redirected", visibility: document.visibilityState,
+    native, topNav, popup,
+  };
+}
+function post(kind) { try { window.parent.postMessage(payload(kind), "*"); } catch (error) {} }
+setInterval(function () { post("beat"); }, 200);
+post("beat");
+addEventListener("pagehide", function () { post("pagehide"); });
+document.getElementById("state").textContent = instance + " " + location.pathname;
+if (location.search.indexOf("redirect=1") !== -1) {
+  setTimeout(function () { location.href = "/preview-redirected?from=fixture"; }, 600);
+}
+</script></body></html>
+"""
+
+
+INTERFERE_ACTIONS = ("write", "chmod", "signal")
+# A driver request is small (a fixture's text, a path, a signal name). Refuse anything larger
+# instead of reading an attacker-sized body into memory.
+INTERFERE_MAX_BODY = 1 << 20
+INTERFERE_MAX_WRITE = 256 * 1024
+
 
 class ReportServer:
-    """Receives phase events. A handler thread blocks until the main thread has sampled."""
+    """Receives phase events and performs harness-side interference.
 
-    def __init__(self):
+    The real-app recovery/conflict/quit rows need actions the application must not perform on
+    itself: an external write, a fixture mode change, and a forced crash. The driver asks this
+    harness process through `POST /interfere`; the handler executes it and replies with the
+    result. The endpoint is loopback-only and refuses every path outside the scenario workspace
+    (including a path reached through a symlink). A handler thread blocks until the main thread
+    has sampled an event.
+    """
+
+    def __init__(self, workspace: Path | None = None):
         self.events: queue.Queue = queue.Queue()
         self.log: list[str] = []
+        self.fixture_loads = 0
+        self.redirect_hits = 0
+        self.pings = 0
+        self.markdown_remote_hits = 0
+        # Harness-side actions, kept as evidence: a report can show the exact write, mode change
+        # or signal that produced a phase instead of inferring it from the page.
+        self.operations: list[dict] = []
+        self.app_pid: int | None = None
+        self.workspace = Path(workspace).resolve() if workspace is not None else None
         outer = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -262,13 +471,79 @@ class ReportServer:
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Access-Control-Allow-Headers", "*")
 
+            def _send(self, status: int, body: bytes, content_type: str) -> None:
+                self.send_response(status)
+                self._cors()
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
             def do_OPTIONS(self):
                 self.send_response(204)
                 self._cors()
                 self.end_headers()
 
+            def do_GET(self):
+                path = self.path.split("?")[0]
+                if path == "/preview-ping":
+                    outer.pings += 1
+                    body = json.dumps({
+                        "pong": True,
+                        "hits": outer.pings,
+                        "fixtureLoads": outer.fixture_loads,
+                        "redirectHits": outer.redirect_hits,
+                        "markdownRemoteHits": outer.markdown_remote_hits,
+                    }).encode()
+                    self._send(200, body, "application/json")
+                elif path == "/markdown-pixel.png":
+                    # A remote image the Markdown scenario must not fetch until the person
+                    # chooses to load it. Every request is counted so "no automatic fetch"
+                    # is observed, not inferred from a missing element.
+                    outer.markdown_remote_hits += 1
+                    self._send(200, PNG_1X1, "image/png")
+                elif path in ("/preview-fixture", "/preview-redirected"):
+                    # Fixture loads are served for as long as this server lives: frame teardown
+                    # must never stop it.
+                    outer.fixture_loads += 1
+                    if path == "/preview-redirected":
+                        outer.redirect_hits += 1
+                    self._send(200, PREVIEW_FIXTURE.encode(), "text/html")
+                else:
+                    self._send(404, b"not found", "text/plain")
+
             def do_POST(self):
-                body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                path = self.path.split("?")[0]
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    length = -1
+                if length < 0:
+                    self.close_connection = True
+                    self._send(400, b'{"ok": false, "error": "invalid Content-Length"}', "application/json")
+                    return
+                if path == "/interfere":
+                    if not outer.loopback(self.client_address[0]):
+                        self.close_connection = True
+                        self._send(403, b'{"ok": false, "error": "loopback only"}', "application/json")
+                        return
+                    if length > INTERFERE_MAX_BODY:
+                        self.close_connection = True
+                        self._send(413, b'{"ok": false, "error": "request too large"}', "application/json")
+                        return
+                body = self.rfile.read(length)
+                if path == "/interfere":
+                    try:
+                        request = json.loads(body)
+                    except ValueError:
+                        self._send(400, b'{"ok": false, "error": "invalid JSON"}', "application/json")
+                        return
+                    if not isinstance(request, dict):
+                        self._send(400, b'{"ok": false, "error": "invalid request"}', "application/json")
+                        return
+                    status, payload = outer.interfere(request)
+                    self._send(status, json.dumps(payload).encode(), "application/json")
+                    return
                 if self.path == "/log":  # page errors and console output, no sampling handshake
                     outer.log.append(body.decode("utf-8", "replace"))
                     self.send_response(204)
@@ -298,6 +573,88 @@ class ReportServer:
     def url(self) -> str:
         return f"http://127.0.0.1:{self.httpd.server_port}"
 
+    @staticmethod
+    def loopback(address: str) -> bool:
+        return address in ("127.0.0.1", "::1")
+
+    def _workspace_path(self, raw) -> Path:
+        """One path inside the scenario workspace, or a refusal.
+
+        `resolve()` follows every symlink (including a missing final component's parents), so a
+        link planted in the workspace cannot make the harness write outside it.
+        """
+        if self.workspace is None:
+            raise ValueError("no scenario workspace is attached to this report server")
+        if not isinstance(raw, str) or not raw:
+            raise ValueError("path is required")
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            raise ValueError("path must be absolute")
+        resolved = candidate.resolve()
+        try:
+            resolved.relative_to(self.workspace)
+        except ValueError:
+            raise ValueError(f"path is outside the scenario workspace: {raw}") from None
+        return resolved
+
+    def interfere(self, request: dict) -> tuple[int, dict]:
+        """Perform one harness-side action and return (HTTP status, reply)."""
+        action = request.get("action")
+        if action not in INTERFERE_ACTIONS:
+            return 400, {
+                "ok": False,
+                "error": f"action must be one of {', '.join(INTERFERE_ACTIONS)}",
+            }
+        try:
+            if action == "write":
+                path = self._workspace_path(request.get("path"))
+                content = request.get("content")
+                if not isinstance(content, str):
+                    raise ValueError("content must be a string")
+                encoded = content.encode("utf-8")
+                if len(encoded) > INTERFERE_MAX_WRITE:
+                    raise ValueError("content is larger than the interference write bound")
+                if path.is_dir():
+                    raise ValueError(f"path is a directory: {path}")
+                path.write_bytes(encoded)
+                result = {"ok": True, "action": "write", "path": str(path), "bytes": len(encoded)}
+            elif action == "chmod":
+                path = self._workspace_path(request.get("path"))
+                mode = request.get("mode")
+                if (
+                    not isinstance(mode, int)
+                    or isinstance(mode, bool)
+                    or not 0 <= mode <= 0o7777
+                ):
+                    raise ValueError("mode must be an integer permission bitset")
+                os.chmod(path, mode)
+                result = {"ok": True, "action": "chmod", "path": str(path), "mode": mode}
+            else:
+                if request.get("target") != "app":
+                    raise ValueError("only the app process group can be signalled")
+                name = request.get("signal")
+                if name not in ("SIGKILL", "SIGTERM"):
+                    raise ValueError("signal must be SIGKILL or SIGTERM")
+                if self.app_pid is None:
+                    raise ValueError("the app has not been launched by this server")
+                pid = self.app_pid
+                signum = getattr(signal, name)
+                # Reply first: the app's page is about to disappear with the process group, so
+                # the request that asked for the crash must not be the one that never returns.
+                threading.Timer(0.25, self._signal_group, args=(pid, signum)).start()
+                result = {"ok": True, "action": "signal", "pid": pid, "signal": name}
+        except (ValueError, OSError) as error:
+            return 400, {"ok": False, "error": str(error)}
+        self.operations.append(result)
+        return 200, result
+
+    @staticmethod
+    def _signal_group(pid: int, signum: int) -> None:
+        try:
+            os.killpg(pid, signum)
+        except ProcessLookupError:
+            pass
+
 
 def _terminate(signum, frame):  # run the cleanup in `run` (kill the app, remove the profile)
     raise KeyboardInterrupt(f"signal {signum}")
@@ -306,29 +663,68 @@ def _terminate(signum, frame):  # run the cleanup in `run` (kill the app, remove
 def main() -> int:
     args = parse_args()
     signal.signal(signal.SIGTERM, _terminate)
+    if args.list_metrics:
+        print("\n".join(linux_report.METRIC_NAMES))
+        return 0
     if args.recompute:
         for path in args.recompute:
             stored = app_report.load(path)
-            stored["metrics"] = app_report.round_metrics(app_report.compute_metrics(stored))
-            stored["humanSummary"] = app_report.summarize(stored)
+            stored.pop("metricsError", None)
+            if linux_report.is_linux_report(stored):
+                stored["metrics"] = linux_report.round_metrics(linux_report.compute_metrics(stored))
+                stored["humanSummary"] = linux_report.summarize(stored)
+            else:
+                stored["metrics"] = app_report.round_metrics(app_report.compute_metrics(stored))
+                stored["humanSummary"] = app_report.summarize(stored)
             Path(path).write_text(app_report.dump(stored))
             print(f"Recomputed {path}")
         return 0
     if args.compare and args.candidate:
-        print(app_report.compare([app_report.load(p) for p in args.compare], [app_report.load(p) for p in args.candidate]))
+        reports = [app_report.load(p) for p in args.compare]
+        candidates = [app_report.load(p) for p in args.candidate]
+        if linux_report.is_linux_report(reports[0]):
+            print(linux_report.compare(reports, candidates, args.compare_format))
+        else:
+            print(app_report.compare(reports, candidates))
         return 0
-    if platform.system() != "Darwin":
-        raise SystemExit("The app lab requires macOS (footprint, vmmap, WKWebView).")
+    if SYSTEM not in ("Darwin", "Linux"):
+        raise SystemExit(f"The app lab requires macOS or Linux, not {SYSTEM}.")
     if not args.scenario and not args.build_only:
         raise SystemExit("--scenario is required")
+    if SYSTEM == "Linux" and not args.build_only and args.scenario not in LINUX_SCENARIOS:
+        raise SystemExit(
+            f"On Linux the implemented scenarios are {', '.join(LINUX_SCENARIOS)}; the measured "
+            "scenarios that need it cannot run here (WebKitGTK has no occlusion signal, composited "
+            "layer tree or native input hook)."
+        )
+    if SYSTEM == "Darwin" and args.scenario not in app_report.SCENARIOS:
+        raise SystemExit(
+            f"The Linux scenarios ({', '.join(LINUX_SCENARIOS)}) are measured with /proc sampling "
+            "and do not run on macOS; use the macOS measured scenarios."
+        )
     source = (args.source or REPO).resolve()
     output = (args.output or Path(tempfile.mkdtemp(prefix="terax-app-lab-"))).resolve()
     output.mkdir(parents=True, exist_ok=True)
     target_dir = (args.target_dir or output.parent / f"app-lab-target-{args.profile}").resolve()
+    args.identifier = args.identifier or (
+        f"{IDENTIFIER}-{uuid.uuid4().hex[:8]}" if SYSTEM == "Linux" else IDENTIFIER
+    )
+    if SYSTEM == "Linux":
+        # Fail before the build: an unsafe identifier/profile never reaches the application.
+        linux_profile.preflight(
+            args.identifier,
+            {**linux_profile.profile_env(output / "home"), "TERAX_BENCH_ISOLATED": "1"},
+            output,
+            require_isolated=True,
+        )
     app = args.app.resolve() if args.app else build(args, source, output, target_dir)
     if args.build_only:
         print(f"Built {app}")
         return 0
+    if args.self_test:
+        if SYSTEM != "Linux":
+            raise SystemExit("--self-test proves the Linux disposable-profile preflight; run it on Linux")
+        return self_test(args, app, output)
     # Only one benchmark window at a time (building is fine alongside a run).
     lock = LOCK_PATH.open("w")
     try:
@@ -336,7 +732,7 @@ def main() -> int:
     except OSError:
         raise SystemExit(f"Another app-lab run holds {LOCK_PATH}")
 
-    if session_locked():
+    if SYSTEM == "Darwin" and session_locked():
         deadline = time.monotonic() + args.wait_unlocked
         while session_locked() and time.monotonic() < deadline:
             time.sleep(10)
@@ -397,6 +793,39 @@ def host_timeout(args, scenario: dict) -> float:
     if args.timeout is not None:
         return args.timeout
     name = args.scenario
+    if name == "workflow":
+        return 600
+    if name == "markdown":
+        return 420
+    if name == "preview":
+        # The web-preview teardown/reload cycle plus the PDF document checks (open, sample,
+        # close, memory) each take a rendered sample.
+        return 720
+    if name == "images":
+        return 600
+    if name == "media":
+        return 600
+    if name == "checkpoints":
+        # A few native Git commands in a scratch repository: no rendering cycles.
+        return 300
+    if name == "quit":
+        # Two Spaces, the survey, save-then-quit, a 2 s grace pass, the survivor
+        # prompt and a reload pass with a fresh boot.
+        return 900
+    if name == "recovery":
+        # Two launches of the real app, the second with a fresh boot; the first is
+        # killed after its draft is acknowledged, so there is no long idle tail.
+        return 600
+    if name == "startup":
+        return max(1, args.startup_repeats) * 150 + 120
+    if name in ("resource", "stress"):
+        cycles = scenario.get("cycles") or 3
+        return (
+            (cycles * (scenario.get("hiddenMs", 3000) + scenario.get("visibleMs", 2000)) / 1000)
+            + (scenario.get("closeCycles", 3) * 5)
+            + scenario.get("streamSeconds", 30)
+            + 300
+        )
     if name == "tabs":
         return scenario["cycles"] * (scenario["dwellMs"] / 1000 + 12) + 240
     if name == "occlusion":
@@ -409,6 +838,8 @@ def host_timeout(args, scenario: dict) -> float:
 
 
 def run(args, app: Path, source: Path, output: Path) -> int:
+    if SYSTEM == "Linux":
+        return run_linux(args, app, source, output)
     home = output / "home"
     clean_profile(home)
     report_path = (args.report or output / "report.json").resolve()
@@ -658,6 +1089,1959 @@ def run(args, app: Path, source: Path, output: Path) -> int:
         print("Run failed qualification: keep the app window visible/focused and rerun.", file=sys.stderr)
         return 2
     return 0
+
+
+def prepare_git_fixture(workspace: Path) -> dict:
+    """A scratch repository with one clean base commit and two unstaged edits.
+
+    The scenario discards `src/a.ts` while a dirty buffer protects it and
+    `src/b.ts` without one. Nothing here touches a real project: the directory
+    lives under the run's disposable output.
+    """
+    repo = workspace / "repo"
+    # The output directory can be reused across runs; start from a clean fixture.
+    shutil.rmtree(repo, ignore_errors=True)
+    (repo / "src").mkdir(parents=True, exist_ok=True)
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Terax App Lab",
+        "GIT_AUTHOR_EMAIL": "app-lab@example.invalid",
+        "GIT_COMMITTER_NAME": "Terax App Lab",
+        "GIT_COMMITTER_EMAIL": "app-lab@example.invalid",
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
+    base_a = "export const a = 'base';"
+    base_b = "export const b = 'base';"
+    edited_a = "export const a = 'edited on disk';"
+    edited_b = "export const b = 'edited on disk';"
+    (repo / "src/a.ts").write_text(f"{base_a}\n")
+    (repo / "src/b.ts").write_text(f"{base_b}\n")
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, env=env, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=repo, env=env, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "fixture base"], cwd=repo, env=env, check=True)
+    # Working-tree edits after the commit: what a discard has to restore.
+    (repo / "src/a.ts").write_text(f"{edited_a}\n")
+    (repo / "src/b.ts").write_text(f"{edited_b}\n")
+    return {
+        "repo": str(repo),
+        "fileA": str(repo / "src/a.ts"),
+        "fileB": str(repo / "src/b.ts"),
+        "baseA": base_a,
+        "baseB": base_b,
+        "editedA": edited_a,
+        "editedB": edited_b,
+    }
+
+
+def prepare_candidate_fixture(workspace: Path) -> dict:
+    """A scratch repository with a local bare remote, markdown, CSV/TSV and a multi-hunk diff.
+
+    Used by the combined `candidate` scenario (#42) to exercise the end-to-end retained workflow
+    (launch agent, switch Spaces, block mode, edit text + CSV/TSV, Markdown + web preview,
+    status/diff/hunk-stage/branch/commit/log/push) without touching any real repo or network.
+    """
+    remote = workspace / "candidate-origin.git"
+    repo = workspace / "candidate-repo"
+    shutil.rmtree(remote, ignore_errors=True)
+    shutil.rmtree(repo, ignore_errors=True)
+    remote.mkdir(parents=True, exist_ok=True)
+    repo.mkdir(parents=True, exist_ok=True)
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Terax App Lab",
+        "GIT_AUTHOR_EMAIL": "app-lab@example.invalid",
+        "GIT_COMMITTER_NAME": "Terax App Lab",
+        "GIT_COMMITTER_EMAIL": "app-lab@example.invalid",
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
+    subprocess.run(["git", "init", "--bare", "-q", "-b", "main"], cwd=remote, env=env, check=True)
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, env=env, check=True)
+    subprocess.run(["git", "config", "user.name", "Terax App Lab"], cwd=repo, env=env, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "app-lab@example.invalid"], cwd=repo, env=env, check=True
+    )
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=repo, env=env, check=True)
+
+    notes = repo / "notes.md"
+    csv_file = repo / "data.csv"
+    tsv_file = repo / "data.tsv"
+    multi_file = repo / "multi.txt"
+    notes.write_text("# Candidate notes\n\nInitial line.\n", encoding="utf-8")
+    csv_file.write_text("name,role\nalice,engineer\n", encoding="utf-8")
+    tsv_file.write_text("name\trole\nbob\treviewer\n", encoding="utf-8")
+    lines = [f"line {i}" for i in range(1, 26)]
+    multi_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    subprocess.run(["git", "add", "-A"], cwd=repo, env=env, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "initial candidate fixture"], cwd=repo, env=env, check=True
+    )
+    subprocess.run(["git", "push", "-q", "-u", "origin", "main"], cwd=repo, env=env, check=True)
+
+    lines[1] = "line 2 edited hunk one"
+    lines[22] = "line 23 edited hunk two"
+    multi_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return {
+        "repo": str(repo),
+        "remote": str(remote),
+        "notesMd": str(notes),
+        "csvFile": str(csv_file),
+        "tsvFile": str(tsv_file),
+        "multiFile": str(multi_file),
+    }
+
+
+def prepare_worktree_fixture(workspace: Path) -> dict:
+    """A scratch repository plus the target paths each refusal uses.
+
+    Everything lives under the run's disposable output. The successful create
+    copies `.env` (ignored by the repository), the two refusal targets already
+    exist, and nothing here is a real project.
+    """
+    repo = workspace / "worktree-repo"
+    shutil.rmtree(repo, ignore_errors=True)
+    (repo / "src").mkdir(parents=True, exist_ok=True)
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Terax App Lab",
+        "GIT_AUTHOR_EMAIL": "app-lab@example.invalid",
+        "GIT_COMMITTER_NAME": "Terax App Lab",
+        "GIT_COMMITTER_EMAIL": "app-lab@example.invalid",
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
+    (repo / ".gitignore").write_text(".env\n")
+    (repo / "src/a.ts").write_text("export const a = 'base';\n")
+    (repo / ".env").write_text("LAB_SECRET=worktree\n")
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, env=env, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=repo, env=env, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "worktree fixture"], cwd=repo, env=env, check=True)
+
+    # The output directory can be reused across runs; every target starts clean.
+    create_path = workspace / "created-worktree"
+    shutil.rmtree(create_path, ignore_errors=True)
+    file_path = workspace / "existing-worktree-file"
+    if file_path.is_dir():
+        shutil.rmtree(file_path)
+    elif file_path.exists():
+        file_path.unlink()
+    file_path.write_text("not a directory\n")
+    dirty_path = workspace / "dirty-worktree-target"
+    shutil.rmtree(dirty_path, ignore_errors=True)
+    dirty_path.mkdir(parents=True, exist_ok=True)
+    dirty_file = dirty_path / "keep.txt"
+    dirty_file.write_text("keep me\n")
+    for leftover in workspace.glob("created-worktree-*"):
+        shutil.rmtree(leftover, ignore_errors=True)
+    return {
+        "repo": str(repo),
+        "createPath": str(create_path),
+        "ignoredFile": ".env",
+        "filePath": str(file_path),
+        "dirtyPath": str(dirty_path),
+        "dirtyFile": str(dirty_file),
+    }
+
+
+def prepare_checkpoint_fixture(workspace: Path) -> dict:
+    """The Git fixture plus what a manual capture must disclose.
+
+    Two unstaged edits stay in the working tree, one file is staged in the real
+    index and two entries are ignored. A checkpoint may capture the tracked and
+    non-ignored contents, but it must report those exclusions and leave HEAD,
+    the index and the files where they are. Nothing here touches a real project.
+    """
+    fixture = prepare_git_fixture(workspace)
+    repo = Path(fixture["repo"])
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Terax App Lab",
+        "GIT_AUTHOR_EMAIL": "app-lab@example.invalid",
+        "GIT_COMMITTER_NAME": "Terax App Lab",
+        "GIT_COMMITTER_EMAIL": "app-lab@example.invalid",
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
+    (repo / ".gitignore").write_text("build/\n*.log\n")
+    (repo / "build").mkdir(parents=True, exist_ok=True)
+    (repo / "build/ignored.txt").write_text("never captured\n")
+    (repo / "notes.log").write_text("never captured\n")
+    (repo / "src/staged.ts").write_text("export const staged = true;\n")
+    subprocess.run(["git", "add", "src/staged.ts"], cwd=repo, env=env, check=True)
+    fixture.update({
+        "ignoredFile": str(repo / "build/ignored.txt"),
+        "ignoredCount": 2,
+        "stagedFile": str(repo / "src/staged.ts"),
+        "stagedCount": 1,
+    })
+    return fixture
+
+
+def prepare_image_fixtures(workspace: Path, source: Path) -> dict:
+    """Copy the committed image fixtures the `images` scenario opens.
+
+    The files are real containers (generated once, not synthesized per run), so
+    the scenario measures this webview's decoders rather than this script's idea
+    of an image. `oversized.png` carries a valid 5000x5000 IHDR and no pixel
+    data: the probe must refuse it from the header before any decode.
+    """
+    origin = source / "src-tauri/tests/fixtures/images"
+    if not origin.is_dir():
+        origin = REPO / "src-tauri/tests/fixtures/images"
+    names = {
+        "png": "sample.png",
+        "jpeg": "sample.jpg",
+        "gif": "sample.gif",
+        "webp": "sample.webp",
+        "bmp": "sample.bmp",
+        "ico": "sample.ico",
+        "avif": "sample.avif",
+        "svg": "sample.svg",
+        "corrupt": "corrupt.png",
+        "oversized": "oversized.png",
+    }
+    workspace.mkdir(parents=True, exist_ok=True)
+    copied = {}
+    for key, name in names.items():
+        destination = workspace / name
+        shutil.copyfile(origin / name, destination)
+        copied[key] = str(destination)
+    (workspace / "images-README.md").write_text(
+        "# Image fixtures\n\n"
+        "Committed containers copied by `scripts/app-lab/run.py` for the `images` scenario.\n"
+        "`sample.*` are 64x64; `oversized.png` declares 5000x5000 (95.4 MiB RGBA8) and has no\n"
+        "pixel data; `corrupt.png` has a PNG signature but no usable header.\n"
+    )
+    return copied
+
+
+def prepare_media_fixtures(workspace: Path, source: Path) -> dict:
+    """Copy the committed media fixtures the `media` scenario opens.
+
+    The containers are real files generated once with ffmpeg and committed, so
+    the scenario measures this webview's demuxers/decoders rather than this
+    script's idea of a media file. `mismatch` is WebM bytes named `.mp4` (the
+    probe must win over the extension); `unsupported.mp4` is a valid MP4 whose
+    video sample entry names a codec (`zzzz`) no build can decode; and
+    `large.wav` is generated here at ~3.5 MiB so playback has to ask for more
+    than one bounded delivery chunk.
+    """
+    origin = source / "src-tauri/tests/fixtures/media"
+    if not origin.is_dir():
+        origin = REPO / "src-tauri/tests/fixtures/media"
+    names = {
+        "mp4": "sample.mp4",
+        "m4a": "sample.m4a",
+        "mov": "sample.mov",
+        "webm": "sample.webm",
+        "mkv": "sample.mkv",
+        "ogg": "sample.ogg",
+        "wav": "sample.wav",
+        "mp3": "sample.mp3",
+        "flac": "sample.flac",
+        "aac": "sample.aac",
+        "corrupt": "corrupt.webm",
+        "unsupportedCodec": "unsupported.wav",
+    }
+    workspace.mkdir(parents=True, exist_ok=True)
+    copied = {}
+    for key, name in names.items():
+        destination = workspace / name
+        shutil.copyfile(origin / name, destination)
+        copied[key] = str(destination)
+
+    # The bytes say WebM; the name says MP4. A preview that trusted the
+    # extension would mount the wrong demuxer.
+    mismatch = workspace / "mismatched-name.mp4"
+    shutil.copyfile(origin / "sample.webm", mismatch)
+    copied["mismatch"] = str(mismatch)
+
+    # 20 s of 440 Hz stereo PCM at 44.1 kHz: ~3.5 MiB, so seeking past the
+    # first 1 MiB delivery chunk must ask for another range.
+    large = workspace / "large.wav"
+    with wave.open(str(large), "wb") as audio:
+        audio.setnchannels(2)
+        audio.setsampwidth(2)
+        audio.setframerate(44_100)
+        frames = bytearray()
+        for index in range(44_100 * 20):
+            value = int(12_000 * math.sin(2 * math.pi * 440 * index / 44_100))
+            frames += value.to_bytes(2, "little", signed=True) * 2
+        audio.writeframes(bytes(frames))
+    copied["large"] = str(large)
+
+    # What this host was measured to play (see docs/architecture/resource-limits.md);
+    # Matroska is deliberately absent: it is routed only to explain the refusal.
+    # The next `--scenario media` run corrects this list from the element's own
+    # outcomes; a mismatch fails the run instead of being silently accepted.
+    copied["measured"] = [
+        "mp4",
+        "m4a",
+        "mov",
+        "webm",
+        "ogg",
+        "wav",
+        "mp3",
+        "flac",
+        "aac",
+    ]
+    copied["expectedSupported"] = [
+        "mp4",
+        "m4a",
+        "mov",
+        "webm",
+        "ogg",
+        "wav",
+        "mp3",
+        "flac",
+        "aac",
+    ]
+
+    (workspace / "media-README.md").write_text(
+        "# Media fixtures\n\n"
+        "Committed containers copied by `scripts/app-lab/run.py` for the `media` scenario.\n"
+        "`sample.mp4`/`sample.mov` are H.264 + AAC; `sample.webm` is VP9 + Opus; "
+        "`sample.mkv` is Matroska VP9 + Opus (not claimed as supported); `sample.ogg` is Ogg "
+        "Vorbis; `sample.mp3`/`sample.flac`/`sample.m4a`/`sample.aac` are the named audio "
+        "containers; `corrupt.webm` has an EBML signature but no DocType; "
+        "`unsupported.mp4` has a valid MP4 header whose video sample entry is `zzzz`; "
+        "`mismatched-name.mp4` contains WebM bytes; `large.wav` is generated from a sine wave.\n"
+    )
+    return copied
+
+
+def scenario_json_linux(
+    args,
+    file: Path | None,
+    first_line: str | None,
+    workspace: Path,
+    fixtures: dict | None,
+    pdf: dict | None = None,
+    images: dict | None = None,
+    media: dict | None = None,
+    git_fixture: dict | None = None,
+    worktree_fixture: dict | None = None,
+    candidate_fixture: dict | None = None,
+) -> dict:
+    """The scenario as the driver receives it (Linux; no synthetic agent)."""
+    local: dict[str, str | None] = {}
+    for entry in args.local_storage:
+        key, _, value = entry.partition("=")
+        local[key] = None if value == "null" else value
+    for entry in args.toggle:
+        key, _, value = entry.partition("=")
+        local[f"terax:bench:{key}"] = value or "1"
+    # The bench build mounts the real App, whose updater auto-checks on mount: on Linux that
+    # fetches api.github.com and can raise a dialog over the window. Preseed the throttle.
+    local.setdefault("terax:updater:last-check", str(int(time.time() * 1000)))
+    width, height = (float(value) for value in args.window.lower().split("x"))
+    # The preview driver builds its fixture URL from TERAX_BENCH_REPORT_URL, which the
+    # run's own server serves; it needs no extra scenario fields.
+    scenario = {
+        "name": args.scenario,
+        "window": {"width": width, "height": height},
+        "cwds": {"shell": str(workspace)},
+        "localStorage": local,
+    }
+    if args.scenario in ("workflow", "spaces", "quit"):
+        scenario.update({"file": str(file), "fileText": first_line})
+    if args.scenario in ("spaces", "quit"):
+        scenario.update({"workspace": str(workspace)})
+    if args.scenario == "preview" and pdf:
+        files = pdf["manifest"]["files"]
+        scenario["pdf"] = {
+            "files": pdf["paths"],
+            "sizes": {key: files[key]["bytes"] for key in pdf["paths"]},
+            "textPages": files["text"]["pages"],
+            "searchPrefix": "SEARCH-NEEDLE-",
+            "searchTemplate": files["text"]["tokens"]["searchTemplate"],
+            "uniqueNeedle": files["text"]["tokens"]["unique"],
+            "uniquePage": files["text"]["tokens"]["uniquePage"],
+            "ceilingBytes": pdf["manifest"]["ceiling"]["pageBytes"],
+            "renders": {
+                key: files[key].get("renders", [])
+                for key in ("text", "zoomed-a4", "large-page")
+            },
+            "pagePt": {key: files[key].get("page") for key in ("text", "zoomed-a4", "large-page")},
+        }
+        if args.pdf_hold_ms > 0:
+            scenario["pdf"]["holdMs"] = args.pdf_hold_ms
+    if args.scenario == "images" and images:
+        scenario.update({"images": images})
+    if args.scenario == "media" and media:
+        scenario.update({"media": media})
+    if args.scenario in ("git", "checkpoints") and git_fixture:
+        scenario.update({"git": git_fixture})
+    if args.scenario == "worktree" and worktree_fixture:
+        scenario.update({"worktree": worktree_fixture})
+    if args.scenario == "candidate" and candidate_fixture:
+        node = shutil.which("node")
+        if not node:
+            raise SystemExit("node is required for the agent fixture")
+        scenario.update({
+            "agentCommand": f"exec {node} {HERE / 'agent-sim.mjs'}",
+            "candidate": candidate_fixture,
+        })
+    if args.scenario in ("resource", "stress") and fixtures:
+        node = shutil.which("node")
+        if not node:
+            raise SystemExit("node is required for the streaming terminal fixture")
+        stress = args.scenario == "stress"
+        scenario.update({
+            "agentCommand": f"exec {node} {HERE / 'agent-sim.mjs'}",
+            "workspace": str(workspace),
+            "files": fixtures["files"],
+            "closeFile": fixtures["closeFile"],
+            "previewUrl": fixtures["previewUrl"],
+            "workload": fixtures["workload"],
+            "agents": args.agents if args.agents is not None else (4 if stress else 2),
+            "streams": args.streams if args.streams is not None else (4 if stress else 2),
+            "streamSeconds": int(args.stream_seconds if args.stream_seconds is not None else (args.duration or 30)),
+            "closeCycles": args.close_cycles,
+            "cycles": args.cycles if args.cycles is not None else 3,
+            "idleSeconds": args.idle_seconds,
+            "hiddenMs": args.hidden_ms,
+            "visibleMs": args.visible_ms,
+            "streamCommand": f"exec {node} {HERE / 'stream-sim.mjs'} --rate {args.stream_rate:g}",
+        })
+    return scenario
+
+
+def build_startup_entry(kind: str, launch: int, event: dict, spawned_wall_s: float) -> dict:
+    """One startup measurement from the boot milestone event.
+
+    `native.startedUnixMs` is the host process's wall-clock start (btime + start ticks, read by
+    the app itself); `perf.timeOrigin` is the page's navigation start. The difference is the work
+    before the page exists (loader, GTK, WebKit); `perf.uptimeMs` is navigation -> boot. The
+    harness's own spawn timestamp is kept as a cross-check, never as the primary figure.
+    """
+    native = event.get("native") or {}
+    perf = event.get("perf") or {}
+
+    def number(value):
+        return round(value, 3) if isinstance(value, (int, float)) else None
+
+    started = native.get("startedUnixMs") or 0
+    origin = perf.get("timeOrigin")
+    uptime = perf.get("uptimeMs")
+    wall = event.get("tWall")
+    exec_to_nav = number(origin - started) if started and origin else None
+    nav_to_boot = number(uptime)
+    exec_to_boot = None
+    if exec_to_nav is not None and nav_to_boot is not None:
+        exec_to_boot = round(exec_to_nav + nav_to_boot, 3)
+    elif started and wall:
+        exec_to_boot = number(wall - started)
+    return {
+        "launch": launch,
+        "kind": kind,
+        "phase": event.get("phase"),
+        "exec_to_nav_ms": exec_to_nav,
+        "nav_to_boot_ms": nav_to_boot,
+        "exec_to_boot_ms": exec_to_boot,
+        "first_paint_ms": number(perf.get("firstPaintMs")),
+        "first_contentful_paint_ms": number(perf.get("firstContentfulPaintMs")),
+        "dom_content_loaded_ms": number(perf.get("domContentLoadedMs")),
+        "load_ms": number(perf.get("loadEventMs")),
+        "harness_spawn_to_boot_ms": round((time.time() - spawned_wall_s) * 1000, 3),
+        "native_started_unix_ms": int(started) if started else None,
+        "time_origin_unix_ms": number(origin),
+        "event_wall_ms": wall,
+    }
+
+
+# ---------------------------------------------------------------------------------------------
+# Fixtures (small, deterministic documents/media for the resource workload)
+# ---------------------------------------------------------------------------------------------
+
+LIMITATIONS_LINUX = [
+    "PDF: the fixtures are generated and verified by scripts/app-lab/pdf_fixtures.py. Since issue "
+    "#31 the reader is the app's own DOM, so the phase drives and asserts navigation, zoom (with "
+    "the 32 MiB per-page refusal and its suggested zoom), search, selectable text, the raster "
+    "cache's byte counts, the corrupt state, the whole-file gate, hidden-tab unloading and "
+    "tab-close grant release. It still cannot inject native input: physical keys, a real drag and "
+    "the OS clipboard round-trip, the visual crispness of a re-render, a network capture, a "
+    "password/unsupported-feature fixture and the 4-viewer admission refusal remain named manual "
+    "checks in docs/architecture/pdf-reader.md. Display renders need animation frames, which this "
+    "host suspends for an occluded window; the reader's print-intent fallback and "
+    "`data-pdf-render-fallback` report which path painted a page.",
+    "Image format support is measured only on this host's WebKitGTK build and only for the "
+    "committed fixtures; a different distro/WebKit version needs its own run.",
+    "The images scenario observes the rendered element and the decoded-viewer table; it does not "
+    "measure the webview's private decoded-bitmap memory.",
+    "Audio and video codecs are measured only on this host's WebKitGTK/GStreamer build and only "
+    "for the committed fixtures; the scenario records the element's own loadedmetadata/error "
+    "outcome and cannot promise another distro or codec pack.",
+    "WebKitGTK offers no trusted input injection, so the media scenario starts playback "
+    "programmatically (muted). If the build requires a gesture, that step is reported as a "
+    "manual check instead of a pass.",
+    "GPU/VRAM use is not per-process attributable on Linux: /proc exposes no per-process GPU "
+    "figure, so dmabuf/shared pages appear only inside Pss/Rss where they are mapped.",
+    "The app's own structures are not split by allocator: Linux has no footprint --categories "
+    "equivalent here, so only Pss/Rss/private/shared/swap per role are reported. WebKit's JS "
+    "heap and malloc zones cannot be separated from the rest of the web process.",
+    "The 1 Hz timeline can miss sub-second peaks; event samples are the more precise figures.",
+    "No layer tree, occlusion state or native input injection exists on WebKitGTK, "
+    "so hidden-window behaviour is measured from window visibility only and document "
+    "visibility is advisory.",
+    "Package size covers the bench binary and the frontend dist only; real deb/rpm/AppImage "
+    "packages are ticket #36 and are not produced by --no-bundle.",
+    "Single machine, single display, single session: not another user's fonts, shell config, "
+    "compositor or a packaged/signed install.",
+]
+
+
+def _png_bytes(width: int, height: int) -> bytes:
+    import struct
+    import zlib
+
+    rows = []
+    for y in range(height):
+        row = bytearray(b"\x00")  # filter: none
+        for x in range(width):
+            row += bytes(((x * 4) % 256, (y * 4) % 256, ((x + y) * 2) % 256))
+        rows.append(bytes(row))
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(b"".join(rows), 9)) + chunk(b"IEND", b"")
+
+
+def _png_header_only(width: int, height: int) -> bytes:
+    """A valid PNG header with no pixel data.
+
+    The native header probe reports the dimensions without decoding, so this
+    tiny file stands in for an image whose decoded raster would be enormous
+    (20 000 x 20 000 RGBA is ~1.5 GiB). The webview must never receive it: the
+    inline-image decision refuses it before an `<img>` mounts.
+    """
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IEND", b"")
+
+
+def _text_file(path: Path, lines: int, width: int = 96, seed: int = 1) -> None:
+    words = (
+        "renderer terminal scrollback pane split space preview editor memory baseline streaming "
+        "window hidden process helper sampler counter fixture workload"
+    ).split()
+    with path.open("w") as handle:
+        for line in range(lines):
+            handle.write(f"{line:05d} " + " ".join(words[(line + offset + seed) % len(words)] for offset in range(width // 8))[:width] + "\n")
+
+
+def prepare_fixtures(workspace: Path, stress: bool) -> dict:
+    """Create the accepted workload's fixtures deterministically (no random content)."""
+    workspace.mkdir(parents=True, exist_ok=True)
+    notes = workspace / "notes.txt"
+    todos = workspace / "todos.md"
+    data = workspace / "data.csv"
+    medium = workspace / "medium.txt"
+    large = workspace / "large.txt"
+    preview = workspace / "preview.html"
+    image = workspace / "pixel.png"
+    document = workspace / "fixture.pdf"
+
+    _text_file(notes, 120, seed=1)
+    todos.write_text(
+        "# Baseline fixtures\n\n"
+        "- [x] note the toolchain and the host stack\n"
+        "- [x] record the cold and warm startup\n"
+        "- [ ] compare a candidate build with the baseline\n\n"
+        "| metric | unit |\n| --- | --- |\n| memory | MiB PSS |\n| startup | ms |\n"
+    )
+    with data.open("w") as handle:
+        handle.write("line,role,pss_kib,cpu_ticks\n")
+        for row in range(400):
+            handle.write(f"{row},host,{(row * 37) % 5000},{row % 200}\n")
+    _text_file(medium, 3000, seed=2)
+    _text_file(large, 40000, seed=3)
+    image.write_bytes(_png_bytes(64, 64))
+    preview.write_text(
+        "<!doctype html><html><head><meta charset='utf-8'><title>fixture preview</title>"
+        "<style>body{font-family:sans-serif;margin:24px}table{border-collapse:collapse}"
+        "td,th{border:1px solid #888;padding:4px 8px}</style></head><body>"
+        "<h1>Preview fixture</h1><p>Static, local, deterministic. The image is a real 64x64 PNG.</p>"
+        "<img src='pixel.png' width='128' height='128' alt='gradient fixture'>"
+        "<table><tr><th>metric</th><th>unit</th></tr><tr><td>memory</td><td>MiB PSS</td></tr>"
+        "<tr><td>startup</td><td>ms</td></tr></table>"
+        "<p id='dom'>dom ready</p><script>document.querySelector('#dom').textContent='dom script ran';</script>"
+        "</body></html>"
+    )
+    document.write_bytes(
+        b"%PDF-1.4\n"
+        b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+        b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+        b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]/Contents 4 0 R"
+        b"/Resources<</Font<</F1 5 0 R>>>>>>endobj\n"
+        b"4 0 obj<</Length 45>>stream\nBT /F1 12 Tf 20 100 Td (fixture) Tj ET\nendstream endobj\n"
+        b"5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n"
+        b"trailer<</Root 1 0 R>>\n%%EOF\n"
+    )
+    (workspace / "README-FIXTURES.md").write_text(
+        "# App-lab fixtures\n\n"
+        f"Generated deterministically by `scripts/app-lab/run.py` for the {'stress' if stress else 'representative'} workload.\n\n"
+        "- notes.txt (120 lines) and todos.md: opened as editor tabs\n"
+        "- data.csv (400 rows): opened as an editor tab\n"
+        "- medium.txt (3000 lines): opened and closed in every close cycle\n"
+        "- large.txt (40000 lines): the stress workload's close-cycle file\n"
+        "- preview.html + pixel.png: served over local HTTP and shown in the active preview pane\n"
+        "- fixture.pdf: exists only to document that PDF is not rendered\n"
+    )
+    files = [str(notes), str(todos), str(data), str(medium)]
+    return {
+        "files": files,
+        "closeFile": str(large if stress else medium),
+        "previewFile": str(preview),
+        "imageFile": str(image),
+        "documentFile": str(document),
+        "workloadFiles": [str(path.relative_to(workspace)) for path in (notes, todos, data, medium, large, preview, image, document)],
+    }
+
+
+# A remote image the Markdown scenario must not fetch until the person chooses it.
+PNG_1X1 = _png_bytes(1, 1)
+
+
+def prepare_markdown_fixtures(workspace: Path, output: Path) -> dict:
+    """Documents and assets for the Markdown acceptance scenario.
+
+    The Space root is `workspace` (the app's launch directory). A document outside it gets its
+    own directory as its boundary; `escape.png` is a symlink out of the root; `remoteDoc`
+    names the orchestrator's counted pixel, which only a deliberate choice may fetch.
+    """
+    docs = workspace / "docs"
+    docs.mkdir(parents=True, exist_ok=True)
+    outside = output / "markdown-outside"
+    shared = output / "markdown-shared"
+    outside.mkdir(parents=True, exist_ok=True)
+    shared.mkdir(parents=True, exist_ok=True)
+    pixel = _png_bytes(16, 16)
+    for path in (docs / "pixel.png", outside / "pixel.png", shared / "outside.png"):
+        path.write_bytes(pixel)
+    # Header dimensions far beyond the approved 64 MiB decoded ceiling; the
+    # 45-byte file is enough for the native probe and must never be decoded.
+    (docs / "oversized.png").write_bytes(_png_header_only(20_000, 20_000))
+    secret = output / "markdown-secret.png"
+    secret.write_bytes(pixel)
+    escape = docs / "escape.png"
+    if escape.exists() or escape.is_symlink():
+        escape.unlink()
+    escape.symlink_to(secret)
+
+    inside = docs / "readme.md"
+    inside.write_text(
+        "# Inside the Space\n\n"
+        "The image below is anchored to the configured Space root.\n\n"
+        "![inside](./pixel.png)\n\n"
+        "![oversized](./oversized.png)\n\n"
+        "![escape](./escape.png)\n"
+    )
+    outside_doc = outside / "readme.md"
+    outside_doc.write_text(
+        "# Outside the Space\n\n"
+        "This document is not under the Space root, so its own folder is the boundary.\n\n"
+        "![own](./pixel.png)\n\n"
+        "![parent](../markdown-shared/outside.png)\n"
+    )
+    remote_doc = docs / "remote.md"
+    remote_doc.write_text(
+        "# Remote reference\n\n"
+        "![remote](MARKDOWN_REMOTE_URL)\n"
+    )
+    link_doc = docs / "links.md"
+    link_doc.write_text(
+        "# Links\n\n"
+        "[relative](./elsewhere.md)\n\n"
+        "[external](https://example.com/)\n"
+    )
+    # Hostile references: an asset-protocol URL the document writes itself, a javascript:
+    # link, a file: link, an inline <script> and an <img onerror>. None of them may execute,
+    # navigate, or become an app URL; the page records any effect in `markdownPwned`.
+    malicious_doc = docs / "malicious.md"
+    malicious_doc.write_text(
+        "# Hostile references\n\n"
+        "malicious-marker\n\n"
+        "![injected](asset://localhost/etc/passwd)\n\n"
+        "[js](javascript:window.__teraxMarkdownPwned='link')\n\n"
+        "[file](file:///etc/passwd)\n\n"
+        '<img src="missing.png" onerror="window.__teraxMarkdownPwned=\'onerror\'">\n\n'
+        "<script>window.__teraxMarkdownPwned = 'script'</script>\n\n"
+        "[ok](https://example.com/)\n"
+    )
+    marker = "markdown-large-marker"
+    large = docs / "large.md"
+    with large.open("w") as handle:
+        handle.write(f"# Large document\n\n{marker}\n\n![large](./pixel.png)\n\n```ts\n")
+        line = "const value = 1; // the syntax ceiling keeps this plain\n"
+        written = 0
+        target = 4 * 1024 * 1024 + 65536
+        while written < target:
+            handle.write(line)
+            written += len(line)
+        handle.write("```\n")
+        handle.write("\n![too large](./oversized.png)\n")
+    return {
+        "workspace": str(workspace),
+        "insideDoc": str(inside),
+        "outsideDoc": str(outside_doc),
+        "remoteDoc": str(remote_doc),
+        "linkDoc": str(link_doc),
+        "maliciousDoc": str(malicious_doc),
+        "largeDoc": str(large),
+        "largeMarker": marker,
+        "escapeImage": str(escape),
+    }
+
+
+def prepare_pdf_fixtures(workspace: Path) -> dict:
+    """Generate the PDF documents the preview scenario opens, and verify them independently.
+
+    The files are written by `scripts/app-lab/pdf_fixtures.py` (deterministic; a rebuild is
+    byte-identical) into the run's own workspace, never the repository. Verification is real: a
+    PDF tool reads each document, counts its pages, finds its searchable tokens and rasterises a
+    page, so a fixture that does not have the property the scenario relies on stops the run here
+    instead of producing a passing scenario about the wrong file.
+    """
+    directory = workspace / "pdf"
+    manifest = pdf_fixtures.build(directory)
+    verification = pdf_fixtures.verify(directory, manifest)
+    files = manifest["files"]
+    print(
+        f"pdf fixtures: {len(files)} documents in {directory} "
+        f"({files['text']['pages']} pages, ceiling {manifest['ceiling']['pageBytes'] // (1024 * 1024)} MiB/page)"
+    )
+    return {
+        "directory": str(directory),
+        "manifest": manifest,
+        "verification": verification,
+        "paths": {key: str(directory / entry["name"]) for key, entry in files.items()},
+    }
+
+
+class FixtureServer:
+    """Serves the fixture directory on 127.0.0.1 and records what was actually fetched.
+
+    The request log is evidence that the active preview loaded the local HTML and decoded the
+    PNG; the runner does not pretend to inspect the rendered pixels.
+    """
+
+    def __init__(self, directory: Path):
+        self.requests: list[str] = []
+        outer = self
+
+        class Handler(http.server.SimpleHTTPRequestHandler):
+            def log_message(self, *_args):  # keep the run log clean
+                pass
+
+            def do_GET(self):  # noqa: N802 - http.server's spelling
+                outer.requests.append(self.path)
+                super().do_GET()
+
+        handler = functools.partial(Handler, directory=str(directory))
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+
+    def url(self, name: str) -> str:
+        return f"http://127.0.0.1:{self.httpd.server_port}/{name}"
+
+    def close(self) -> None:
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+def harness_revision() -> dict:
+    """The revision of the runner itself, so an `--app` run says which harness measured it."""
+    root = HERE.parent.parent
+    try:
+        revision = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10
+        )
+        dirty = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain", "--", "scripts/app-lab", "scripts/linux_profile.py", "scripts/namespace_sentinels.py"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {"revision": "", "dirty": None}
+    return {
+        "revision": revision.stdout.strip() if revision.returncode == 0 else "",
+        "dirty": bool(dirty.stdout.strip()) if dirty.returncode == 0 else None,
+    }
+
+
+def toolchains() -> dict:
+    """The compilers/runtimes a report was built with (recorded, never asserted)."""
+    def version(*command: str) -> str:
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        return (result.stdout or result.stderr).strip().splitlines()[0] if result.returncode == 0 and (result.stdout or result.stderr) else ""
+
+    return {
+        "rustc": version("rustc", "-V"),
+        "cargo": version("cargo", "-V"),
+        "node": version("node", "--version"),
+        "pnpm": version("pnpm", "--version"),
+        "python": platform.python_version(),
+        "vite": version("node", "node_modules/vite/bin/vite.js", "--version"),
+        "cc": version("cc", "--version"),
+    }
+
+
+def package_sizes(binary: Path, output: Path) -> dict:
+    """Every size that is observable without packaging a release artifact."""
+    def tree_bytes(path: Path) -> int:
+        if not path.exists():
+            return 0
+        return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+
+    no_bundle = "not produced (--no-bundle): deb/rpm/AppImage belong to ticket #36"
+    sizes = {
+        "benchBinaryBytes": binary.stat().st_size if binary.exists() else 0,
+        "frontendDistBytes": tree_bytes(output / "dist"),
+        "bundle": no_bundle,
+        "note": (
+            "The bench binary is a release-mode binary with the `bench` feature and a "
+            "diagnostics-enabled frontend; it is an upper bound for the shipped Linux binary, "
+            "not a package. Installed footprint, .deb/.rpm/.AppImage compression and the CLI "
+            "sidecar are not observable from --no-bundle."
+        ),
+    }
+    build_seconds = output / "build-seconds.json"
+    if build_seconds.exists():
+        sizes["buildSeconds"] = json.loads(build_seconds.read_text())
+    return sizes
+
+
+def describe_workload(args, fixtures: dict) -> str:
+    stress = args.scenario == "stress"
+    agents = args.agents if args.agents is not None else (4 if stress else 2)
+    streams = args.streams if args.streams is not None else (4 if stress else 2)
+    files = len(fixtures["files"]) if fixtures else 0
+    kind = "stress" if stress else "representative"
+    return (
+        f"{kind} workload (provisional, accepted by the spec; not observed user usage): "
+        f"2 Spaces, 4 terminal panes, {agents} synthetic busy agents, {files} text files, "
+        f"1 active local preview, {streams} streaming panes"
+    )
+
+
+def open_focus_stealer() -> dict:
+    """Opens a separate application window so the app loses focus while staying visible.
+
+    Wayland offers no way to take focus from a process, but a newly mapped toplevel usually
+    takes it; the scenario driver records whether a blur was actually observed, so a desktop
+    that refuses to hand focus over is reported instead of assumed.
+    """
+    for tool in ("zenity", "yad"):
+        binary = shutil.which(tool)
+        if not binary:
+            continue
+        try:
+            process = subprocess.Popen(
+                [binary, "--info", "--text=Terax preview focus probe", "--timeout=6"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as error:
+            return {"tool": None, "reason": f"{tool}: {error}"}
+        return {"tool": tool, "pid": process.pid}
+    return {"tool": None, "reason": "no zenity or yad on this host"}
+
+
+def run_linux(args, binary: Path, source: Path, output: Path) -> int:
+    """Launch the real WebKitGTK app in a disposable profile and measure it from /proc.
+
+    Everything the report calls a measurement is sampled here: per-event memory (Pss/Rss per
+    role), a 1 Hz counter timeline, startup from the app's own process start and page clock, and
+    the workload's files. The app never reports its own resource use; only pids and the page's
+    timing come from inside it.
+    """
+    if args.scenario == "startup":
+        return run_linux_startup(args, binary, source, output)
+    if args.scenario == "recovery":
+        return run_linux_recovery(args, binary, source, output)
+    home = output / "home"
+    linux_profile.prepare(home, output)
+    # Coexistence: a synthetic installed upstream Terax owns state in this same profile. The
+    # run must create only fork-namespaced state and leave every upstream byte untouched.
+    sentinels = namespace_sentinels.seed(home)
+    workspace = output / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    fixture_server = None
+    fixtures = None
+    markdown_fixture = None
+    pdf = None
+    image_fixtures = None
+    media_fixtures = None
+    git_fixture = None
+    worktree_fixture = None
+    candidate_fixture = None
+    file = None
+    first_line = ""
+    if args.scenario == "markdown":
+        markdown_fixture = prepare_markdown_fixtures(workspace, output)
+    elif args.scenario in ("resource", "stress"):
+        fixtures = prepare_fixtures(workspace, args.scenario == "stress")
+        fixture_server = FixtureServer(workspace)
+        fixtures["previewUrl"] = fixture_server.url("preview.html")
+        fixtures["workload"] = describe_workload(args, fixtures)
+    elif args.scenario == "preview":
+        pdf = prepare_pdf_fixtures(workspace)
+    elif args.scenario == "images":
+        image_fixtures = prepare_image_fixtures(workspace, source)
+    elif args.scenario == "media":
+        media_fixtures = prepare_media_fixtures(workspace, source)
+    elif args.scenario == "git":
+        git_fixture = prepare_git_fixture(workspace)
+    elif args.scenario == "checkpoints":
+        git_fixture = prepare_checkpoint_fixture(workspace)
+    elif args.scenario == "worktree":
+        worktree_fixture = prepare_worktree_fixture(workspace)
+    elif args.scenario == "candidate":
+        candidate_fixture = prepare_candidate_fixture(workspace)
+    else:
+        token = uuid.uuid4().hex[:10]
+        first_line = f"workflow-file {token}"
+        file = output / "workflow-file.txt"
+        file.write_text(f"{first_line}\nsecond line for the editor\n")
+        if args.scenario == "spaces":
+            workspace.joinpath("spaces-keep.txt").write_text(
+                "This file belongs to the project and must survive Space deletion.\n"
+            )
+        if args.scenario == "workflow":
+            # The external writer and the stale-typing step both act on files inside the
+            # scenario workspace: that is the boundary `POST /interfere` enforces.
+            workspace.joinpath("workflow-conflict.txt").write_text(
+                "conflict fixture base line\nsecond line for compare\n"
+            )
+            workspace.joinpath("workflow-stale.txt").write_text(
+                "stale fixture base line\n"
+            )
+        if args.scenario == "quit":
+            workspace.joinpath("quit-notes.txt").write_text(
+                "quit-notes line, edited in the second Space before quitting.\n"
+            )
+            # A file in its own directory: making that directory read-only makes the
+            # app's atomic write (a temp file in the same directory) fail for real.
+            stalled = workspace / "quit-stalled"
+            stalled.mkdir(exist_ok=True)
+            (stalled / "notes.txt").write_text(
+                "quit-stalled base line, saved only after the directory is writable again.\n"
+            )
+    report_path = (args.report or output / "report.json").resolve()
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    scenario = scenario_json_linux(
+        args,
+        file,
+        first_line,
+        workspace,
+        fixtures,
+        pdf,
+        image_fixtures,
+        media_fixtures,
+        git_fixture,
+        worktree_fixture,
+        candidate_fixture,
+    )
+    timeout = host_timeout(args, scenario)
+    load_average = [round(value, 2) for value in os.getloadavg()]
+
+    server = ReportServer(workspace)
+    if args.scenario == "workflow":
+        # The bench build honours this only with the `bench` cargo feature; it holds a native
+        # write open so the stale-typing step can type while the save is genuinely in flight.
+        scenario["workflow"] = {
+            "conflictFile": str(workspace / "workflow-conflict.txt"),
+            "staleFile": str(workspace / "workflow-stale.txt"),
+            "writeDelayMs": WORKFLOW_WRITE_DELAY_MS,
+        }
+    if args.scenario == "quit":
+        scenario["quit"] = {
+            "stalledFile": str(workspace / "quit-stalled" / "notes.txt"),
+            "stalledDir": str(workspace / "quit-stalled"),
+        }
+    if args.scenario == "markdown" and markdown_fixture is not None:
+        remote_url = f"{server.url}/markdown-pixel.png"
+        remote_doc = Path(markdown_fixture["remoteDoc"])
+        remote_doc.write_text(
+            remote_doc.read_text().replace("MARKDOWN_REMOTE_URL", remote_url)
+        )
+        scenario["markdown"] = {**markdown_fixture, "remoteImage": remote_url}
+    env = {**{key: value for key, value in os.environ.items() if not key.startswith(("TAURI_", "VITE_", "CARGO_"))}}
+    env.update(linux_profile.profile_env(home))
+    env.update(linux_profile.session_env())
+    env.update({
+        "TERAX_BENCH_ISOLATED": "1",
+        "TERAX_BENCH_SCENARIO": json.dumps(scenario),
+        "TERAX_BENCH_REPORT_URL": server.url,
+    })
+    if args.scenario == "workflow":
+        env["TERAX_BENCH_WRITE_DELAY_MS"] = str(WORKFLOW_WRITE_DELAY_MS)
+    linux_profile.preflight(args.identifier, env, output, require_isolated=True)
+
+    revision = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"], text=True, capture_output=True)
+    has_git = revision.returncode == 0 and (source / ".git").exists()
+    build_seconds = {}
+    if (output / "build-seconds.json").exists():
+        build_seconds = json.loads((output / "build-seconds.json").read_text())
+    manifest = {
+        "schema": "terax-app-lab/1",
+        "scope": (
+            "The real Linux/WebKitGTK application (bench build: full React shell, real PTYs, tabs, "
+            "Spaces, splits, editor and preview) in a disposable profile, driven by the in-app "
+            "scenario driver over the local report server. Whole-application memory, CPU and "
+            "startup are sampled from /proc by this orchestrator, not reported by the app; "
+            "external PTY/agent processes are reported separately. Package sizes are the bench "
+            "binary and frontend dist only (no deb/rpm/AppImage)."
+        ),
+        "config": {
+            "scenario": args.scenario, "label": args.label, "profile": args.profile,
+            "hostTimeoutS": timeout, "scenarioJson": {k: v for k, v in scenario.items() if k != "localStorage"},
+            "scenarioVariant": {
+                key: scenario.get(key)
+                for key in ("agents", "streams", "streamSeconds", "cycles", "closeCycles", "hiddenMs", "visibleMs", "window", "files")
+            },
+            "buildSeconds": build_seconds, "window": args.window,
+            "pollIntervalS": args.poll_interval, "harness": harness_revision(),
+        },
+        "sourceRevision": revision.stdout.strip() if has_git else args.revision,
+        "sourceTree": str(source),
+        "platform": platform.platform(),
+        "environment": {**linux_profile.host_stack(), "toolchains": toolchains()},
+        "isolation": isolation_report.block(args.identifier, env, home, sentinels, output),
+        "appBinarySha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+        "qualification": {"qualified": True, "failures": [], "advisories": []},
+        "warnings": [],
+        "samples": [],
+        "series": [],
+        "startup": [],
+        "workload": (
+            fixtures["workload"]
+            if fixtures
+            else (
+                "Linux media acceptance scenario (real container/codec support, ranged delivery and seek, hidden pause without auto-resume, unsupported/corrupt/interrupted inputs, close cleanup)"
+                if args.scenario == "media"
+                else (
+                    "Linux image acceptance scenario (representative formats, oversized/corrupt refusal, "
+                    "hidden-tab release, open/close cycles)"
+                    if args.scenario == "images"
+                    else "Linux preview acceptance (web-frame teardown/reload plus PDF fixtures)"
+                    if pdf
+                    else "Linux acceptance workflow only (no resource workload)"
+                )
+            )
+        ),
+        "limitations": list(LIMITATIONS_LINUX),
+    }
+    if pdf:
+        # The generated fixtures and their independent (poppler) verification travel with the
+        # report, so the evidence names the exact documents the app opened.
+        manifest["pdf"] = {
+            "directory": pdf["directory"],
+            "documents": pdf["manifest"],
+            "verification": pdf["verification"],
+        }
+    manifest["environment"]["loadAverageStart"] = load_average
+    log = (output / "app.log").open("w")
+    spawned_wall = time.time()
+    process = subprocess.Popen(
+        [str(binary), str(workspace)],
+        cwd=home,
+        env=env,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    manifest["hostPid"] = process.pid
+    poller = linux_proc.Poller(args.poll_interval)
+    poller.set_host(process.pid)
+    poller.start()
+    # The interference endpoint may signal only the app this server launched.
+    server.app_pid = process.pid
+    failed: BaseException | None = None
+    workflow: dict = {}
+    git_scenario: dict = {}
+    worktree_scenario: dict = {}
+    checkpoint_scenario: dict = {}
+    markdown: dict = {}
+    images: dict = {}
+    media: dict = {}
+    started = time.monotonic()
+
+    def take_sample(phase: str, event: dict, elapsed: float) -> dict:
+        found = linux_proc.sample(process.pid)
+        return {
+            "phase": phase,
+            "tMonoNs": found["tMonoNs"],
+            "elapsedS": elapsed,
+            "event": app_report.slim_event(event),
+            "memory": found,
+            "loadAverage": [round(value, 2) for value in os.getloadavg()],
+        }
+
+    try:
+        deadline = started + timeout
+        first_event_by = started + 180
+        while True:
+            try:
+                event, done, _reply = server.events.get(timeout=1)
+            except queue.Empty:
+                if process.poll() is not None:
+                    raise RuntimeError(f"The app exited ({process.returncode}) before finishing; see {output / 'app.log'}")
+                if time.monotonic() > deadline:
+                    raise RuntimeError(f"Timed out after {timeout:.0f}s")
+                if not manifest["samples"] and time.monotonic() > first_event_by:
+                    raise RuntimeError(f"The scenario driver never reported (page log: {server.log[-3:]}); see {output / 'app.log'}")
+                continue
+            phase = event.get("phase")
+            try:
+                if "appIdentifier" not in manifest and isinstance(event.get("identifier"), str):
+                    manifest["appIdentifier"] = event["identifier"]
+                    manifest["appIdentifierInForkNamespace"] = event["identifier"].startswith(
+                        f"{linux_profile.PRODUCT_IDENTIFIER}."
+                    )
+                if phase == "error":
+                    raise RuntimeError(event)
+                if phase == "done":
+                    manifest["samples"].append({"phase": "done", "tMonoNs": time.monotonic_ns(), "event": app_report.slim_event(event)})
+                    workflow = event.get("workflow") or {}
+                    git_scenario = event.get("git") or {}
+                    worktree_scenario = event.get("worktree") or {}
+                    checkpoint_scenario = event.get("checkpoints") or {}
+                    markdown = event.get("markdown") or {}
+                    if event.get("images") is not None:
+                        images = event["images"]
+                    if event.get("media") is not None:
+                        media = event["media"]
+                    if event.get("preview") is not None:
+                        # Scenario-specific evidence that is not a pass/fail step: how many
+                        # frame instances were loaded, whether the blur was exercised, and what
+                        # the desktop reported for minimize.
+                        manifest["preview"] = event["preview"]
+                    break
+                if phase == "preview-blur":
+                    # The window must lose OS focus while staying visible, so a separate
+                    # application window is opened. The driver records whether a blur was
+                    # actually observed instead of assuming it.
+                    focus_stealer = open_focus_stealer()
+                    manifest["focusStealer"] = focus_stealer
+                    if not focus_stealer.get("tool"):
+                        manifest["qualification"]["advisories"].append(
+                            "visible blur could not be exercised: no zenity/yad on this host"
+                        )
+                reasons = app_report.qualify(args.scenario, phase, event)
+                elapsed = time.monotonic() - started
+                sample = take_sample(phase, event, elapsed)
+                if not manifest["startup"] and phase in ("booted", "workflow-shell"):
+                    manifest["startup"].append(build_startup_entry("cold", 1, event, spawned_wall))
+                manifest["samples"].append(sample)
+                if reasons:
+                    manifest["qualification"]["qualified"] = False
+                    manifest["qualification"]["failures"].append({"phase": phase, "reasons": reasons})
+                print(json.dumps({
+                    "phase": phase,
+                    "pssMiB": round(sample["memory"]["total"]["pss"] / linux_proc.MIB, 1),
+                    "appMiB": round(sample["memory"]["app"]["pss"] / linux_proc.MIB, 1),
+                    "workloadMiB": round(sample["memory"]["workload"]["pss"] / linux_proc.MIB, 1),
+                    **({"unqualified": reasons} if reasons else {}),
+                }), flush=True)
+            finally:
+                done.set()
+    except BaseException as error:  # a partial report is still worth keeping
+        failed = error
+        manifest["incomplete"] = True
+        manifest["error"] = repr(error)
+    finally:
+        poller.stop()
+        for kill in (signal.SIGTERM, signal.SIGKILL):
+            if process.poll() is not None:
+                break
+            try:
+                os.killpg(process.pid, kill)
+            except ProcessLookupError:
+                break
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
+        if fixture_server is not None:
+            manifest["environment"]["fixtureRequests"] = sorted(set(fixture_server.requests))
+            fixture_server.close()
+        server.httpd.shutdown()
+        log.close()
+        if server.log:
+            (output / "page.log").write_text("\n".join(server.log))
+        manifest["workflow"] = workflow
+        manifest["markdown"] = markdown
+        if args.scenario == "spaces":
+            keep = workspace / "spaces-keep.txt"
+            manifest["spaceDeletion"] = {
+                "projectDir": str(workspace),
+                "projectDirExists": workspace.is_dir(),
+                "keepFileExists": keep.is_file(),
+            }
+            if not (workspace.is_dir() and keep.is_file()):
+                manifest["qualification"]["qualified"] = False
+                manifest["qualification"]["failures"].append({
+                    "phase": "spaces-delete",
+                    "reasons": ["Space deletion changed the project directory"],
+                })
+        if args.scenario == "git":
+            git_report = git_scenario
+            manifest["gitScenario"] = git_report
+            if not git_report or not git_report.get("pass"):
+                manifest["qualification"]["qualified"] = False
+                manifest["qualification"]["failures"].append({
+                    "phase": "git-guard",
+                    "reasons": ["destructive Git guard scenario failed"],
+                })
+        if args.scenario == "checkpoints":
+            checkpoint_report = checkpoint_scenario
+            manifest["checkpointScenario"] = checkpoint_report
+            if not checkpoint_report or not checkpoint_report.get("pass"):
+                manifest["qualification"]["qualified"] = False
+                manifest["qualification"]["failures"].append({
+                    "phase": "checkpoints",
+                    "reasons": ["manual checkpoint scenario failed"],
+                })
+        if args.scenario == "worktree":
+            manifest["worktreeScenario"] = worktree_scenario
+            if not worktree_scenario or not worktree_scenario.get("pass"):
+                manifest["qualification"]["qualified"] = False
+                manifest["qualification"]["failures"].append({
+                    "phase": "worktree-space",
+                    "reasons": ["worktree creation/Space/removal scenario failed"],
+                })
+        manifest["images"] = images
+        manifest["media"] = media
+        # The fixture server is the independent process previews are served by; these counters
+        # show it kept answering across every frame teardown.
+        manifest["previewServer"] = {
+            "fixtureLoads": server.fixture_loads,
+            "redirectHits": server.redirect_hits,
+            "pings": server.pings,
+        }
+        # Remote Markdown images are counted here: zero before consent is the evidence that
+        # rendering the document fetched nothing.
+        manifest["markdownServer"] = {
+            "remoteImageHits": server.markdown_remote_hits,
+        }
+        # Coexistence evidence: the hashes of the upstream installation's files, taken before
+        # the launch, must still match now that the application has run and exited.
+        if manifest.get("appIdentifierInForkNamespace") is False:
+            manifest["qualification"]["advisories"].append(
+                f"the measured binary was compiled with the identifier "
+                f"{manifest.get('appIdentifier')!r}, which is outside the fork identifier namespace; "
+                f"the profile is still private, but this revision predates the fork identity table"
+            )
+        unchanged = isolation_report.finish(manifest["isolation"], home, sentinels)
+        if unchanged:
+            manifest["qualification"]["qualified"] = False
+            manifest["qualification"]["failures"].append(
+                {"phase": "coexistence", "reasons": unchanged}
+            )
+        manifest["environment"]["loadAverageEnd"] = [round(value, 2) for value in os.getloadavg()]
+        unfocused = [
+            sample["phase"] for sample in manifest["samples"]
+            if (sample["event"].get("native") or {}).get("appActive") is False
+        ]
+        if unfocused:
+            shown = ", ".join(unfocused[:6]) + ("..." if len(unfocused) > 6 else "")
+            manifest["qualification"]["advisories"].append(
+                f"focus is advisory on Wayland (the compositor decides): appActive=false in "
+                f"{len(unfocused)} of {len(manifest['samples'])} phases ({shown})"
+            )
+        busy = max((entry.get("loadAverage", [0])[0] for entry in poller.series), default=0)
+        cpus = int(manifest["environment"].get("logicalCpus") or 0)
+        if cpus and busy > cpus / 2:
+            manifest["qualification"]["advisories"].append(
+                f"host load average reached {busy:.1f} on {cpus} logical CPUs during the run; "
+                f"startup and CPU figures may be inflated by other work"
+            )
+        manifest["series"] = poller.series
+        manifest["linux"] = {
+            "sampler": "procfs",
+            "pollIntervalS": args.poll_interval,
+            "pssIsUniqueMemory": True,
+            "roles": list(linux_proc.ROLE_ORDER),
+            "workloadFiles": fixtures["workloadFiles"] if fixtures else [],
+            "fixtures": {
+                key: value
+                for key, value in (fixtures or {}).items()
+                if key in ("previewFile", "imageFile", "documentFile", "closeFile")
+            },
+            "pollerErrors": poller.errors,
+        }
+        manifest["package"] = package_sizes(binary, output)
+        for sample in reversed(manifest["samples"]):
+            diag = (sample.get("event") or {}).get("diag") or {}
+            if "devicePixelRatio" in diag:
+                manifest["environment"]["observedDevicePixelRatio"] = diag["devicePixelRatio"]
+                break
+        if workflow:
+            manifest["qualification"]["workflowPass"] = bool(workflow.get("pass"))
+        if images:
+            manifest["qualification"]["imagesPass"] = bool(images.get("pass"))
+        if media:
+            manifest["qualification"]["mediaPass"] = bool(media.get("pass"))
+        completed = [sample for sample in manifest["samples"] if "memory" in sample]
+        if completed:
+            try:
+                manifest["metrics"] = linux_report.round_metrics(linux_report.compute_metrics(manifest))
+                manifest["humanSummary"] = linux_report.summarize(manifest)
+            except Exception as error:  # a report without metrics is still evidence
+                manifest["metricsError"] = repr(error)
+        reasons = isolation_report.problems(manifest, output)
+        if reasons:
+            raise RuntimeError("refusing to write a report without isolation evidence: " + "; ".join(reasons))
+        report_path.write_text(app_report.dump(manifest))
+        linux_profile.cleanup(home, output)
+    if failed is not None:
+        raise failed
+    if args.scenario in ("workflow", "candidate", "spaces", "quit", "preview"):
+        steps = workflow.get("steps") or []
+        passed = sum(1 for step in steps if step.get("ok"))
+        print(f"{args.scenario} {'PASS' if workflow.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
+        for step in steps:
+            if not step.get("ok"):
+                print(f"  FAIL {step.get('name')}: {step.get('detail')}")
+    if args.scenario == "markdown":
+        steps = markdown.get("steps") or []
+        passed = sum(1 for step in steps if step.get("ok"))
+        print(f"markdown {'PASS' if markdown.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
+        if not markdown.get("pass"):
+            for step in steps:
+                if not step.get("ok"):
+                    print(f"  failed: {step.get('name')}: {step.get('detail')}")
+    if args.scenario == "images":
+        steps = images.get("steps") or []
+        passed = sum(1 for step in steps if step.get("ok"))
+        print(f"images {'PASS' if images.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
+        if not images.get("pass"):
+            for step in steps:
+                if not step.get("ok"):
+                    print(f"  failed: {step.get('name')}: {step.get('detail')}")
+    if args.scenario == "media":
+        steps = media.get("steps") or []
+        passed = sum(1 for step in steps if step.get("ok"))
+        print(f"media {'PASS' if media.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
+        for entry in media.get("formats", {}).items():
+            print(f"  format {entry[0]}: {json.dumps(entry[1])}")
+        for entry in media.get("manual") or []:
+            print(f"  manual check: {entry.get('name')}: {entry.get('detail')}")
+        if not media.get("pass"):
+            for step in steps:
+                if not step.get("ok"):
+                    print(f"  failed: {step.get('name')}: {step.get('detail')}")
+    if args.scenario == "checkpoints":
+        steps = checkpoint_scenario.get("steps") or []
+        passed = sum(1 for step in steps if step.get("ok"))
+        print(f"checkpoints {'PASS' if checkpoint_scenario.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
+        if not checkpoint_scenario.get("pass"):
+            for step in steps:
+                if not step.get("ok"):
+                    print(f"  failed: {step.get('name')}: {step.get('detail')}")
+    if args.scenario == "worktree":
+        steps = worktree_scenario.get("steps") or []
+        passed = sum(1 for step in steps if step.get("ok"))
+        print(f"worktree {'PASS' if worktree_scenario.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
+        if not worktree_scenario.get("pass"):
+            for step in steps:
+                if not step.get("ok"):
+                    print(f"  failed: {step.get('name')}: {step.get('detail')}")
+    isolation = manifest["isolation"]
+    print(
+        f"coexistence {'PASS' if isolation['upstreamStateUnchanged'] else 'FAIL'}: "
+        f"{isolation['upstreamSentinels']['files']} upstream files unchanged; "
+        f"descriptor {'published' if isolation['controlDescriptorPublished'] else 'MISSING'} at "
+        f"{isolation['fork']['controlDescriptor']}"
+    )
+    if "humanSummary" in manifest:
+        print("\n" + manifest["humanSummary"])
+    if args.compare:
+        print("\n" + linux_report.compare(
+            [app_report.load(path) for path in args.compare], [manifest], args.compare_format
+        ))
+    print(f"\nSaved {report_path}")
+    if args.scenario in ("workflow", "candidate", "spaces", "quit", "preview") and not workflow.get("pass"):
+        print(
+            f"Run failed: the {args.scenario} scenario reported a failing step (see page.log).",
+            file=sys.stderr,
+        )
+        return 2
+    if args.scenario == "markdown" and not markdown.get("pass"):
+        print("Run failed: the Markdown scenario reported a failing step (see page.log).", file=sys.stderr)
+        return 2
+    if args.scenario == "images" and not images.get("pass"):
+        print("Run failed: the images scenario reported a failing step (see page.log).", file=sys.stderr)
+        return 2
+    if args.scenario == "media" and not media.get("pass"):
+        print("Run failed: the media scenario reported a failing step (see page.log).", file=sys.stderr)
+        return 2
+    if args.scenario == "checkpoints" and not checkpoint_scenario.get("pass"):
+        print(
+            "Run failed: the manual checkpoint scenario reported a failing step (see page.log).",
+            file=sys.stderr,
+        )
+        return 2
+    if args.scenario == "worktree" and not worktree_scenario.get("pass"):
+        print(
+            "Run failed: the worktree scenario reported a failing step (see page.log).",
+            file=sys.stderr,
+        )
+        return 2
+    if not isolation["upstreamStateUnchanged"]:
+        print(
+            "Run failed: the run changed upstream state: "
+            + "; ".join(isolation["upstreamStateChanges"]),
+            file=sys.stderr,
+        )
+        return 3
+    return 0
+
+
+def run_linux_startup(args, binary: Path, source: Path, output: Path) -> int:
+    """Cold and warm startup: one fresh profile, then relaunches against the same profile.
+
+    The first launch runs against an empty profile directory (cold: no WebKit caches, no
+    localStorage, no control descriptor); later launches reuse that profile (warm: the app's own
+    caches are populated). Every launch is the same boot-only scenario, so the difference is
+    caches, not workload.
+    """
+    home = output / "home"
+    linux_profile.prepare(home, output)
+    sentinels = namespace_sentinels.seed(home)
+    workspace = output / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    report_path = (args.report or output / "report.json").resolve()
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    repeats = max(1, args.startup_repeats)
+    revision = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"], text=True, capture_output=True)
+    has_git = revision.returncode == 0 and (source / ".git").exists()
+    manifest = {
+        "schema": "terax-app-lab/1",
+        "scope": (
+            "Cold and warm startup of the real Linux/WebKitGTK application in a disposable "
+            "profile. Startup is measured from the host process's /proc start time and the "
+            "page's navigation-start clock to the first live terminal tab; the harness's spawn "
+            "timestamp is recorded as a cross-check only."
+        ),
+        "config": {
+            "scenario": "startup", "label": args.label, "profile": args.profile, "window": args.window,
+            "scenarioVariant": {"repeats": repeats, "window": args.window},
+            "pollIntervalS": args.poll_interval, "harness": harness_revision(),
+        },
+        "sourceRevision": revision.stdout.strip() if has_git else args.revision,
+        "sourceTree": str(source),
+        "platform": platform.platform(),
+        "environment": {**linux_profile.host_stack(), "toolchains": toolchains()},
+        "appBinarySha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+        "qualification": {"qualified": True, "failures": [], "advisories": []},
+        "warnings": [],
+        "samples": [],
+        "series": [],
+        "startup": [],
+        "workload": "boot-only startup scenario (no terminal workload besides the boot shell)",
+        "limitations": list(LIMITATIONS_LINUX),
+        "package": package_sizes(binary, output),
+    }
+    manifest["environment"]["loadAverageStart"] = [round(value, 2) for value in os.getloadavg()]
+    env = {**{key: value for key, value in os.environ.items() if not key.startswith(("TAURI_", "VITE_", "CARGO_"))}}
+    env.update(linux_profile.profile_env(home))
+    env.update(linux_profile.session_env())
+    # The startup report carries the same isolation evidence as the measured scenarios: the
+    # profile the preflight accepts and, after every launch, the upstream sentinels unchanged.
+    manifest["isolation"] = isolation_report.block(
+        args.identifier, {**env, "TERAX_BENCH_ISOLATED": "1"}, home, sentinels, output
+    )
+    scenario = scenario_json_linux(args, None, None, workspace, None)
+    try:
+        for launch in range(1, repeats + 1):
+            kind = "cold" if launch == 1 else "warm"
+            server = ReportServer()
+            launch_env = {**env, "TERAX_BENCH_ISOLATED": "1", "TERAX_BENCH_REPORT_URL": server.url,
+                          "TERAX_BENCH_SCENARIO": json.dumps(scenario)}
+            linux_profile.preflight(args.identifier, launch_env, output, require_isolated=True)
+            log = (output / f"app-{launch}.log").open("w")
+            spawned_wall = time.time()
+            process = subprocess.Popen(
+                [str(binary), str(workspace)], cwd=home, env=launch_env,
+                stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+            )
+            poller = linux_proc.Poller(args.poll_interval)
+            poller.set_host(process.pid)
+            poller.start()
+            started = time.monotonic()
+            booted = None
+            try:
+                while True:
+                    try:
+                        event, done, _reply = server.events.get(timeout=1)
+                    except queue.Empty:
+                        if process.poll() is not None:
+                            raise RuntimeError(f"launch {launch} exited ({process.returncode}) before booting; see {output / f'app-{launch}.log'}")
+                        if time.monotonic() - started > 180:
+                            raise RuntimeError(f"launch {launch} did not boot within 180 s")
+                        continue
+                    phase = event.get("phase")
+                    try:
+                        if "appIdentifier" not in manifest and isinstance(event.get("identifier"), str):
+                            manifest["appIdentifier"] = event["identifier"]
+                            manifest["appIdentifierInForkNamespace"] = event["identifier"].startswith(
+                                f"{linux_profile.PRODUCT_IDENTIFIER}."
+                            )
+                        if phase == "booted":
+                            booted = build_startup_entry(kind, launch, event, spawned_wall)
+                            found = linux_proc.sample(process.pid)
+                            booted["pssMiB"] = round(found["total"]["pss"] / linux_proc.MIB, 2)
+                            booted["appPssMiB"] = round(found["app"]["pss"] / linux_proc.MIB, 2)
+                            booted["workloadPssMiB"] = round(found["workload"]["pss"] / linux_proc.MIB, 2)
+                            manifest["startup"].append(booted)
+                            manifest["samples"].append({
+                                "phase": "booted",
+                                "launch": launch,
+                                "kind": kind,
+                                "tMonoNs": found["tMonoNs"],
+                                "event": app_report.slim_event(event),
+                                "memory": found,
+                                "loadAverage": [round(value, 2) for value in os.getloadavg()],
+                            })
+                        if phase == "done":
+                            break
+                        if phase == "error":
+                            raise RuntimeError(event)
+                    finally:
+                        done.set()
+            finally:
+                poller.stop()
+                for kill in (signal.SIGTERM, signal.SIGKILL):
+                    if process.poll() is not None:
+                        break
+                    try:
+                        os.killpg(process.pid, kill)
+                    except ProcessLookupError:
+                        break
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        pass
+                server.httpd.shutdown()
+                log.close()
+                if server.log:
+                    (output / f"page-{launch}.log").write_text("\n".join(server.log))
+                manifest["series"] = poller.series
+            if booted is None:
+                raise RuntimeError(f"launch {launch} reported no boot milestone")
+            print(json.dumps({key: booted.get(key) for key in ("launch", "kind", "exec_to_boot_ms", "nav_to_boot_ms", "first_paint_ms")}), flush=True)
+        if manifest.get("appIdentifierInForkNamespace") is False:
+            manifest["qualification"]["advisories"].append(
+                f"the measured binary was compiled with the identifier "
+                f"{manifest.get('appIdentifier')!r}, which is outside the fork identifier namespace; "
+                f"the profile is still private, but this revision predates the fork identity table"
+            )
+        unchanged = isolation_report.finish(manifest["isolation"], home, sentinels)
+        if unchanged:
+            manifest["qualification"]["qualified"] = False
+            manifest["qualification"]["failures"].append(
+                {"phase": "coexistence", "reasons": unchanged}
+            )
+        manifest["environment"]["loadAverageEnd"] = [round(value, 2) for value in os.getloadavg()]
+        manifest["linux"] = {
+            "sampler": "procfs",
+            "pollIntervalS": args.poll_interval,
+            "pssIsUniqueMemory": True,
+            "roles": list(linux_proc.ROLE_ORDER),
+            "seriesLaunch": repeats,
+            "seriesNote": "the timeline covers the last (warm) launch; startup entries cover every launch",
+        }
+        manifest["metrics"] = linux_report.round_metrics(linux_report.compute_metrics(manifest))
+        manifest["humanSummary"] = linux_report.summarize(manifest)
+    except BaseException as error:
+        manifest["incomplete"] = True
+        manifest["error"] = repr(error)
+        isolation_report.finish(manifest["isolation"], home, sentinels)
+        reasons = isolation_report.problems(manifest, output)
+        if reasons:
+            raise RuntimeError(
+                "refusing to write an incomplete report without isolation evidence: "
+                + "; ".join(reasons)
+            ) from error
+        report_path.write_text(app_report.dump(manifest))
+        linux_profile.cleanup(home, output)
+        raise
+    reasons = isolation_report.problems(manifest, output)
+    if reasons:
+        raise RuntimeError("refusing to write a report without isolation evidence: " + "; ".join(reasons))
+    report_path.write_text(app_report.dump(manifest))
+    linux_profile.cleanup(home, output)
+    print(
+        f"\ncoexistence {'PASS' if manifest['isolation']['upstreamStateUnchanged'] else 'FAIL'}: "
+        f"{manifest['isolation']['upstreamSentinels']['files']} upstream files unchanged; "
+        f"descriptor {'published' if manifest['isolation']['controlDescriptorPublished'] else 'MISSING'}"
+    )
+    print("\n" + manifest["humanSummary"])
+    if args.compare:
+        print("\n" + linux_report.compare(
+            [app_report.load(path) for path in args.compare], [manifest], args.compare_format
+        ))
+    print(f"\nSaved {report_path}")
+    if not manifest["isolation"]["upstreamStateUnchanged"]:
+        print(
+            "Run failed: the run changed upstream state: "
+            + "; ".join(manifest["isolation"]["upstreamStateChanges"]),
+            file=sys.stderr,
+        )
+        return 3
+    return 0
+
+
+def recovery_write_step(
+    acknowledged: dict, returncode: int | None, operations: list[dict]
+) -> dict:
+    """Launch 1 passes only when both drafts were acknowledged and SIGKILL ended the process."""
+    drafts = acknowledged.get("drafts") or []
+    signalled = any(
+        operation.get("action") == "signal" and operation.get("signal") == "SIGKILL"
+        for operation in operations
+    )
+    crashed = returncode == -signal.SIGKILL and signalled
+    return {
+        "name": "the harness killed the app after the acknowledged recovery write",
+        "ok": len(drafts) == 2 and crashed,
+        "detail": (
+            f"acknowledged {len(drafts)} draft(s); "
+            f"exit {returncode}; harness signal {signalled}"
+        ),
+    }
+
+
+def run_linux_recovery(args, binary: Path, source: Path, output: Path) -> int:
+    """Crash recovery across two launches of the real app (#46 S2-25).
+
+    Launch 1 dirties two buffers, waits until both recovery drafts are durably stored, and asks
+    the harness to SIGKILL the app's process group. Launch 2 starts against the same disposable
+    profile and workspace: the drafts must be offered, carry exactly the acknowledged text, and
+    discarding one must remove exactly that record. The profile is reused (never replaced) so
+    the draft survives the crash the way it does for a person.
+    """
+    home = output / "home"
+    linux_profile.prepare(home, output)
+    sentinels = namespace_sentinels.seed(home)
+    workspace = output / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    notes = workspace / "recovery-notes.txt"
+    other = workspace / "recovery-other.txt"
+    token = uuid.uuid4().hex[:10]
+    acknowledged_text = f"recovery draft {token}\nsecond line {token}\n"
+    acknowledged_other = f"other recovery draft {token}\n"
+    notes.write_text("recovery notes base line\n")
+    other.write_text("other notes base line\n")
+    report_path = (args.report or output / "report.json").resolve()
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    revision = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"], text=True, capture_output=True)
+    has_git = revision.returncode == 0 and (source / ".git").exists()
+    timeout = host_timeout(args, {"name": "recovery"})
+    steps: list[dict] = []
+    manifest = {
+        "schema": "terax-app-lab/1",
+        "scope": (
+            "Crash recovery of the real Linux/WebKitGTK application in a disposable profile: an "
+            "acknowledged editor draft is followed by a harness SIGKILL of the app's process "
+            "group, then a relaunch against the same profile that must offer that exact draft."
+        ),
+        "config": {
+            "scenario": "recovery", "label": args.label, "profile": args.profile, "window": args.window,
+            "scenarioVariant": {
+                "launches": 2,
+                "writeDelayMs": 0,
+                "acknowledgedText": acknowledged_text,
+                "workspace": str(workspace),
+            },
+            "pollIntervalS": args.poll_interval, "harness": harness_revision(),
+        },
+        "sourceRevision": revision.stdout.strip() if has_git else args.revision,
+        "sourceTree": str(source),
+        "platform": platform.platform(),
+        "environment": {**linux_profile.host_stack(), "toolchains": toolchains()},
+        "appBinarySha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+        "qualification": {"qualified": True, "failures": [], "advisories": []},
+        "warnings": [],
+        "samples": [],
+        "series": [],
+        "startup": [],
+        "workload": "two editor buffers, an acknowledged recovery draft, a forced crash and one relaunch",
+        "limitations": list(LIMITATIONS_LINUX),
+        "package": package_sizes(binary, output),
+        "recovery": {"launches": [], "steps": steps},
+    }
+    manifest["environment"]["loadAverageStart"] = [round(value, 2) for value in os.getloadavg()]
+    env = {**{key: value for key, value in os.environ.items() if not key.startswith(("TAURI_", "VITE_", "CARGO_"))}}
+    env.update(linux_profile.profile_env(home))
+    env.update(linux_profile.session_env())
+    manifest["isolation"] = isolation_report.block(
+        args.identifier, {**env, "TERAX_BENCH_ISOLATED": "1"}, home, sentinels, output
+    )
+    width, height = (float(value) for value in args.window.lower().split("x"))
+    acknowledged: dict = {}
+    try:
+        for launch, phase in ((1, "write"), (2, "restore")):
+            scenario = {
+                "name": "recovery",
+                "window": {"width": width, "height": height},
+                "cwds": {"shell": str(workspace)},
+                "localStorage": {"terax:updater:last-check": str(int(time.time() * 1000))},
+                "prefs": {"editorRecoveryDrafts": True},
+                "file": str(notes),
+                "fileText": "recovery notes base line",
+                "recovery": {
+                    "phase": phase,
+                    "file": str(notes),
+                    "otherFile": str(other),
+                    "text": acknowledged_text,
+                    "otherText": acknowledged_other,
+                },
+            }
+            if phase == "restore":
+                scenario["recovery"]["expectedBufferIds"] = acknowledged.get("bufferIds", [])
+                scenario["recovery"]["expectedText"] = acknowledged.get("text")
+                scenario["recovery"]["expectedOtherText"] = acknowledged.get("otherText")
+            server = ReportServer(workspace)
+            launch_env = {
+                **env,
+                "TERAX_BENCH_ISOLATED": "1",
+                "TERAX_BENCH_SCENARIO": json.dumps(scenario),
+                "TERAX_BENCH_REPORT_URL": server.url,
+            }
+            linux_profile.preflight(args.identifier, launch_env, output, require_isolated=True)
+            log = (output / f"app-{launch}.log").open("w")
+            spawned_wall = time.time()
+            process = subprocess.Popen(
+                [str(binary), str(workspace)], cwd=home, env=launch_env,
+                stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+            )
+            server.app_pid = process.pid
+            poller = linux_proc.Poller(args.poll_interval)
+            poller.set_host(process.pid)
+            poller.start()
+            started = time.monotonic()
+            result = {"launch": launch, "phase": phase, "spawnedWall": spawned_wall}
+            try:
+                while True:
+                    try:
+                        event, done, _reply = server.events.get(timeout=1)
+                    except queue.Empty:
+                        if process.poll() is not None:
+                            if phase == "write" and acknowledged:
+                                break  # the crash the scenario asked for
+                            raise RuntimeError(
+                                f"launch {launch} exited ({process.returncode}) before reporting; "
+                                f"see {output / f'app-{launch}.log'}"
+                            )
+                        if time.monotonic() - started > timeout:
+                            raise RuntimeError(f"launch {launch} did not finish within {timeout:.0f}s")
+                        continue
+                    current = event.get("phase")
+                    try:
+                        if "appIdentifier" not in manifest and isinstance(event.get("identifier"), str):
+                            manifest["appIdentifier"] = event["identifier"]
+                            manifest["appIdentifierInForkNamespace"] = event["identifier"].startswith(
+                                f"{linux_profile.PRODUCT_IDENTIFIER}."
+                            )
+                        if current == "error":
+                            raise RuntimeError(event)
+                        if current in ("recovery-acked", "done"):
+                            found = linux_proc.sample(process.pid)
+                            manifest["samples"].append({
+                                "phase": current,
+                                "launch": launch,
+                                "tMonoNs": found["tMonoNs"],
+                                "event": app_report.slim_event(event),
+                                "memory": found,
+                                "loadAverage": [round(value, 2) for value in os.getloadavg()],
+                            })
+                        if current == "recovery-acked":
+                            acknowledged = {
+                                "text": event.get("text"),
+                                "otherText": event.get("otherText"),
+                                "bufferIds": [entry.get("bufferId") for entry in event.get("drafts") or []],
+                                "drafts": event.get("drafts") or [],
+                            }
+                            result["acknowledged"] = acknowledged
+                        if current == "done":
+                            result["done"] = event.get("recovery") or {}
+                            break
+                    finally:
+                        done.set()
+            finally:
+                poller.stop()
+                for kill in (signal.SIGTERM, signal.SIGKILL):
+                    if process.poll() is not None:
+                        break
+                    try:
+                        os.killpg(process.pid, kill)
+                    except ProcessLookupError:
+                        break
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        pass
+                server.httpd.shutdown()
+                server.httpd.server_close()
+                log.close()
+                if server.log:
+                    (output / f"page-{launch}.log").write_text("\n".join(server.log))
+                manifest["series"] = poller.series
+            returncode = process.returncode
+            result["exitCode"] = returncode
+            result["signal"] = -returncode if returncode is not None and returncode < 0 else None
+            result["interference"] = server.operations
+            manifest["recovery"]["launches"].append(result)
+            if phase == "write":
+                step = recovery_write_step(acknowledged, returncode, server.operations)
+                steps.append(step)
+                if not step["ok"]:
+                    raise RuntimeError(
+                        f"launch 1 did not crash cleanly after recovery ack: {step['detail']}"
+                    )
+            else:
+                done_report = result.get("done") or {}
+                if not done_report:
+                    raise RuntimeError("launch 2 reported no recovery summary")
+                steps.extend(done_report.get("steps") or [])
+        unchanged = isolation_report.finish(manifest["isolation"], home, sentinels)
+        if unchanged:
+            manifest["qualification"]["qualified"] = False
+            manifest["qualification"]["failures"].append(
+                {"phase": "coexistence", "reasons": unchanged}
+            )
+    except BaseException as error:
+        manifest["incomplete"] = True
+        manifest["error"] = repr(error)
+        isolation_report.finish(manifest["isolation"], home, sentinels)
+        reasons = isolation_report.problems(manifest, output)
+        if reasons:
+            raise RuntimeError(
+                "refusing to write an incomplete report without isolation evidence: "
+                + "; ".join(reasons)
+            ) from error
+        report_path.write_text(app_report.dump(manifest))
+        linux_profile.cleanup(home, output)
+        raise
+    if manifest.get("appIdentifierInForkNamespace") is False:
+        manifest["qualification"]["advisories"].append(
+            f"the measured binary was compiled with the identifier "
+            f"{manifest.get('appIdentifier')!r}, which is outside the fork identifier namespace"
+        )
+    manifest["environment"]["loadAverageEnd"] = [round(value, 2) for value in os.getloadavg()]
+    passed = sum(1 for step in steps if step.get("ok"))
+    manifest["recovery"]["pass"] = bool(steps) and passed == len(steps)
+    manifest["qualification"]["recoveryPass"] = manifest["recovery"]["pass"]
+    if not manifest["recovery"]["pass"]:
+        manifest["qualification"]["qualified"] = False
+        manifest["qualification"]["failures"].append({
+            "phase": "recovery",
+            "reasons": ["the crash/recovery scenario did not pass"],
+        })
+    reasons = isolation_report.problems(manifest, output)
+    if reasons:
+        raise RuntimeError("refusing to write a report without isolation evidence: " + "; ".join(reasons))
+    report_path.write_text(app_report.dump(manifest))
+    linux_profile.cleanup(home, output)
+    for step in steps:
+        print(f"recovery {'PASS' if step.get('ok') else 'FAIL'} {step.get('name')}: {step.get('detail')}")
+    print(f"recovery {'PASS' if manifest['recovery']['pass'] else 'FAIL'}: {passed}/{len(steps)} steps")
+    print(
+        f"coexistence {'PASS' if manifest['isolation']['upstreamStateUnchanged'] else 'FAIL'}: "
+        f"{manifest['isolation']['upstreamSentinels']['files']} upstream files unchanged; "
+        f"descriptor {'published' if manifest['isolation']['controlDescriptorPublished'] else 'MISSING'}"
+    )
+    print(f"\nSaved {report_path}")
+    if args.scenario == "recovery" and not manifest["recovery"]["pass"]:
+        print(
+            "Run failed: the recovery scenario reported a failing step (see page logs).",
+            file=sys.stderr,
+        )
+        return 2
+    if not manifest["isolation"]["upstreamStateUnchanged"]:
+        print(
+            "Run failed: the run changed upstream state: "
+            + "; ".join(manifest["isolation"]["upstreamStateChanges"]),
+            file=sys.stderr,
+        )
+        return 3
+    return 0
+
+
+def self_test(args, binary: Path, output: Path) -> int:
+    """Prove the two refusals: an unsafe profile is rejected, and the binary's own gate refuses.
+
+    The preflight cases are pure path/identity checks. The last case launches the real bench
+    binary without TERAX_BENCH_ISOLATED=1: `modules::bench::guard` fails in `setup`, so the app
+    exits nonzero with the reason instead of starting against an undeclared environment.
+    """
+    scratch = Path(tempfile.mkdtemp(prefix="terax-app-lab-selftest-"))
+    failures: list[str] = []
+    home = scratch / "home"
+    scratch.mkdir(parents=True, exist_ok=True)
+    try:
+        linux_profile.prepare(home, scratch)
+        safe = {**linux_profile.profile_env(home), "TERAX_BENCH_ISOLATED": "1"}
+        cases = [
+            ("product identifier", linux_profile.PRODUCT_IDENTIFIER, safe),
+            ("upstream identifier", linux_profile.UPSTREAM_IDENTIFIER, safe),
+            ("foreign identifier namespace", "com.example.other", safe),
+            ("HOME outside the run output", f"{IDENTIFIER}-test", {**safe, "HOME": str(Path.home())}),
+            ("control-descriptor cache dir", f"{IDENTIFIER}-test", {**safe, "XDG_CACHE_HOME": str(linux_profile.real_cache_dir())}),
+            ("missing isolation declaration", f"{IDENTIFIER}-test", {**safe, "TERAX_BENCH_ISOLATED": ""}),
+        ]
+        for name, identifier, env in cases:
+            found = linux_profile.problems(identifier, env, scratch, require_isolated=True)
+            print(f"[self-test] {'PASS' if found else 'FAIL'} {name}: {found or 'accepted'}")
+            if not found:
+                failures.append(name)
+        accepted = linux_profile.problems(f"{IDENTIFIER}-test", safe, scratch, require_isolated=True)
+        print(f"[self-test] {'PASS' if not accepted else 'FAIL'} disposable profile accepted: {accepted}")
+        if accepted:
+            failures.append("disposable profile accepted")
+
+        # The coexistence checker must be able to fail: an untouched upstream tree passes, and
+        # one modified upstream file is reported.
+        sentinels = namespace_sentinels.seed(home)
+        untouched = namespace_sentinels.verify(home, sentinels)
+        print(f"[self-test] {'PASS' if not untouched else 'FAIL'} upstream sentinels untouched: {untouched}")
+        if untouched:
+            failures.append("upstream sentinels untouched")
+        tampered = home / ".cache" / linux_profile.UPSTREAM_NAMESPACE / "control.json"
+        tampered.write_text("{}\n")
+        detected = namespace_sentinels.verify(home, sentinels)
+        print(f"[self-test] {'PASS' if detected else 'FAIL'} a changed upstream sentinel is detected: {detected}")
+        if not detected:
+            failures.append("a changed upstream sentinel is detected")
+
+        env = {**os.environ}
+        env.update(linux_profile.profile_env(home))
+        env.update(linux_profile.session_env())
+        env.pop("TERAX_BENCH_ISOLATED", None)
+        completed = subprocess.run(
+            [str(binary)], cwd=home, env=env, capture_output=True, text=True, timeout=180,
+        )
+        output_text = completed.stdout + completed.stderr
+        refused = completed.returncode != 0 and "TERAX_BENCH_ISOLATED" in output_text
+        print(f"[self-test] {'PASS' if refused else 'FAIL'} bench binary refuses an undeclared environment: exit {completed.returncode}")
+        if not refused:
+            failures.append("bench binary isolation guard")
+            print(output_text[-2000:])
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    return 1 if failures else 0
 
 
 def footprint_of(ids: list[int], path: Path, categories: bool) -> dict:

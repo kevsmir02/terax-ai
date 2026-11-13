@@ -1,0 +1,1306 @@
+{
+  "status": "Published and verified; implementation explicitly held",
+  "parent": "https://github.com/kevsmir02/terax-ai/issues/1",
+  "specSha256": "877681b8a0130e8fb8a959c0d71fe7ffe82f6b9ec220da24f4e3ba8fc214fb31",
+  "date": "2026-11-12",
+  "commonAcceptance": [
+    "Preserve the parent spec's explicit retained scope and exclusions; no feature-on-watch removal or new deferred feature is introduced.",
+    "Use the applicable already-approved real-app, native-command or packaged-app seam; assert observable success/refusal/recovery and keep applicable repository checks green.",
+    "Run only isolated profiles until namespace isolation is complete; never mutate upstream/user credentials, settings or projects in tests.",
+    "Record evidence and distinguish Planned implementation from validated support; never claim a release-only gate is already satisfied."
+  ],
+  "tickets": [
+    {
+      "id": 1,
+      "title": "Run an isolated Linux real-app smoke workflow",
+      "blockedBy": [],
+      "delivers": "Launch the real Linux Tauri app in a disposable profile and drive a terminal-to-file workflow through the agreed acceptance seam.",
+      "stories": [
+        7,
+        8,
+        95,
+        99
+      ],
+      "acceptance": [
+        "Adapt the existing app-lab/PTY-smoke approach for Linux rather than introducing a separate product API for each feature.",
+        "Use a disposable application identity/profile and temporary projects; reject unsafe runs against the installed product profile.",
+        "Demonstrate shell spawn, input/output exactness, tab/split actions, file opening and structured pass/fail reports in the actual WebKitGTK app.",
+        "Record build/runtime prerequisites and the host software/display stack; no real agent configuration, credentials or user project is modified.",
+        "Retain existing frontend/native checks and prove the runner can execute one passing scenario and one intentional refusal/failure."
+      ],
+      "gate": null
+    },
+    {
+      "id": 2,
+      "title": "Record the reproducible Linux resource baseline",
+      "blockedBy": [
+        1
+      ],
+      "delivers": "Produce comparable reports for the unmodified application and the accepted representative and stress workloads.",
+      "stories": [
+        80,
+        81
+      ],
+      "acceptance": [
+        "Measure the identified source revision with recorded toolchains, hardware, scale, fonts and fixtures in isolated profiles.",
+        "Cover cold/warm startup, idle and streaming terminals, two Spaces/four panes/two synthetic busy agents, text files and an active preview.",
+        "Record whole-app process memory/CPU, hidden/show/close cycles and package size; separate external workload processes and avoid shared-memory double counting.",
+        "Include a larger stress workload and small document/media fixtures; report limitations instead of claiming untested PDF or codecs work.",
+        "Save machine-readable results and a comparison procedure usable after feature removal; do not invent user usage counts."
+      ],
+      "gate": null
+    },
+    {
+      "id": 3,
+      "title": "Approve initial document and decoded-resource limits",
+      "blockedBy": [
+        2
+      ],
+      "delivers": "Turn baseline evidence into explicit user-approved ceilings for bounded document/viewer behavior.",
+      "stories": [
+        70,
+        79,
+        81,
+        102
+      ],
+      "acceptance": [
+        "Propose file-read, decoded-image/PDF/media and simultaneous-viewer ceilings with evidence and documented refusal/override behavior.",
+        "Retain the existing text starting limits: 10 MiB normally, explicit override to 50 MiB, syntax features off above 4 MiB.",
+        "Obtain and record the primary user's approval of concrete values; distinguish storage quotas from runtime memory budgets.",
+        "Do not infer a final whole-app startup/memory target from these viewer ceilings; final product budgets remain in ticket 42.",
+        "Expose the approved policy as a consumable contract for dependent preview tickets."
+      ],
+      "gate": "Primary user must approve measured document/decoded-resource ceilings; agent evidence from ticket 2 is required."
+    },
+    {
+      "id": 4,
+      "title": "Expand shared native file access and migrate retained consumers",
+      "blockedBy": [],
+      "delivers": "Keep Spaces, explorer, explicit editing and formatter command access working through neutral shared contracts before deleting AI owners.",
+      "stories": [
+        37,
+        41
+      ],
+      "acceptance": [
+        "Add shared native-wrapper and file-policy ownership beside old entry points; migrate retained Spaces/explorer/file-command consumers without removing the old form yet.",
+        "Preserve explicit user editing outside the project root, including legitimate configuration files, while retaining stricter automatic-preview checks.",
+        "Preserve the shell-command functionality used by retained external formatters and CLI/control consumers.",
+        "Keep existing checks green and demonstrate equivalent allow/deny behavior, including canonical-path/symlink cases at the existing native seam.",
+        "Document remaining old consumers so later contract deletion can prove no retained caller is lost."
+      ],
+      "gate": null
+    },
+    {
+      "id": 5,
+      "title": "Migrate Markdown rendering out of built-in AI ownership",
+      "blockedBy": [
+        4
+      ],
+      "delivers": "Render existing Markdown and fenced code without depending on ownership by the built-in AI feature.",
+      "stories": [
+        65,
+        71
+      ],
+      "acceptance": [
+        "Move or compose shared Markdown/code rendering and access helpers under retained ownership while keeping compatibility entry points for unmigrated consumers.",
+        "Preserve highlighting, editor-theme consistency, local image behavior, sanitization and the current lazy-loading boundary.",
+        "Do not delete Streamdown or AI-named primitives solely because of their names when Markdown still needs them.",
+        "Verify retained Markdown behavior and production import graphs without implementing new preview consent/lifecycle policy in this prefactor.",
+        "Leave old entry points removable only after all migration consumers are accounted for."
+      ],
+      "gate": null
+    },
+    {
+      "id": 6,
+      "title": "Separate external-agent notifications and control from AI supervision",
+      "blockedBy": [],
+      "delivers": "External agents launch, signal attention and open files without invoking built-in AI review or supervision.",
+      "stories": [
+        9,
+        12,
+        16,
+        22,
+        23
+      ],
+      "acceptance": [
+        "Detach built-in managed review/supervision from retained external-agent notifications, launching, CLI hooks and control routing.",
+        "Preserve file opening to the caller's Space and supported line targeting, authenticated/bounded control access and hook-free ordinary launching.",
+        "Keep existing per-agent adapters and permission fallback infrastructure without introducing a centralized approval UI.",
+        "Keep any temporary old built-in notification path isolated until its later removal; migrate retained callers without a broken intermediate build.",
+        "Use current launcher/router/control tests to prove attention still routes and no supervisory prompt is triggered."
+      ],
+      "gate": null
+    },
+    {
+      "id": 7,
+      "title": "Isolate every fork-owned runtime namespace",
+      "blockedBy": [
+        1
+      ],
+      "delivers": "An ordinary developer or installed run can coexist with upstream without touching its settings or integration state.",
+      "stories": [
+        83,
+        84
+      ],
+      "acceptance": [
+        "Inventory and isolate application/storage/cache, control descriptors, shell integration, hook ownership and other fork-owned persistent/runtime names; changing the Tauri ID alone is insufficient.",
+        "Use a non-upstream working identity for development; final branding and release endpoints remain ticket 39 inputs.",
+        "Do not silently read/import, overwrite or delete upstream settings, data, descriptors or hook groups.",
+        "Keep isolated baseline profiles usable before ordinary-run isolation is complete.",
+        "Run coexistence tests with upstream sentinel files/configuration and prove they remain unchanged."
+      ],
+      "gate": null
+    },
+    {
+      "id": 8,
+      "title": "Establish pinned Linux CI and build checks",
+      "blockedBy": [
+        1
+      ],
+      "delivers": "Changes receive reproducible Linux lint/type/native/build checks before platform support is narrowed.",
+      "stories": [
+        85,
+        95,
+        99
+      ],
+      "acceptance": [
+        "Pin exact toolchains and retain package-manager verification, lockfiles and locked dependency checks.",
+        "Run applicable frontend lint/type/tests and Rust lint/tests plus startup/dependency/bundle checks in Linux CI.",
+        "Integrate the Linux smoke runner and produce actionable failure artifacts without touching production profiles.",
+        "Keep useful non-Linux-only coverage until ticket 32 provides its Linux replacement; do not drop it in this ticket.",
+        "Do not configure unchecked auto-merges or publish release artifacts from ordinary CI."
+      ],
+      "gate": null
+    },
+    {
+      "id": 9,
+      "title": "Remove voice recording and transcription",
+      "blockedBy": [
+        1
+      ],
+      "delivers": "The application has no recording/transcription actions, permissions or exclusively voice-related runtime costs.",
+      "stories": [
+        5
+      ],
+      "acceptance": [
+        "Remove voice capture/composer/settings behavior and its exclusively associated native commands, permissions and dependencies.",
+        "Keep remaining text composition and retained terminal/editor clipboard/input behavior working until their selected later changes.",
+        "Verify no microphone/recording path or transcription request is exposed and no retained feature imports the removed voice code.",
+        "Keep a working Linux build and relevant tests/import-budget checks."
+      ],
+      "gate": null
+    },
+    {
+      "id": 10,
+      "title": "Remove language servers while retaining useful basic editing",
+      "blockedBy": [
+        1
+      ],
+      "delivers": "Configuration/code files remain editable with highlighting and find/replace without starting language-server services.",
+      "stories": [
+        6,
+        38,
+        39,
+        40
+      ],
+      "acceptance": [
+        "Remove language-server activation/settings, status UI, clients, native process hosting and exclusively LSP dependencies.",
+        "Preserve CodeMirror highlighting, language modes, find/replace, line-ending/indent detection, themes and existing Vim/formatter behavior.",
+        "Exercise Markdown, plain text, JSON, YAML, TOML and representative code editing with no LSP process, PATH probe or eager LSP import.",
+        "Preserve existing text-size behavior and core editing checks; do not remove generic editing support merely because it once served AI/LSP."
+      ],
+      "gate": null
+    },
+    {
+      "id": 11,
+      "title": "Remove built-in chat and composer product surfaces",
+      "blockedBy": [
+        5,
+        6,
+        9
+      ],
+      "delivers": "The workspace opens and works without built-in chat, sessions, provider selection or built-in agent controls.",
+      "stories": [
+        4
+      ],
+      "acceptance": [
+        "Remove chat/composer/session/provider-model settings and built-in agent UI/navigation while keeping external-agent controls and retained file/Markdown behavior.",
+        "Replace unconditional root wiring without changing parent identity during startup or respawning live PTYs.",
+        "Remove startup hydration/subscriptions for unused built-in conversations and AI sessions.",
+        "Keep old backend forms only as temporary compatibility until ticket 13; do not touch upstream stored conversations or credentials.",
+        "Verify terminal/file/Git workflows remain usable and built-in chat surfaces cannot be opened."
+      ],
+      "gate": null
+    },
+    {
+      "id": 12,
+      "title": "Remove AI editor review, completion and terminal actions",
+      "blockedBy": [
+        1,
+        5
+      ],
+      "delivers": "Basic editing and terminal/Git review work without AI completion, AI diffs or Ask AI actions.",
+      "stories": [
+        5,
+        53,
+        82
+      ],
+      "acceptance": [
+        "Remove inline AI completion, AI edit-review surfaces, AI-specific shortcuts/settings and editor/block-terminal Ask AI actions.",
+        "Preserve ordinary Git diffs/history/hunk review, syntax highlighting, search, clipboard and block terminal functionality.",
+        "Remove exclusive native/frontend callers without deleting shared rendering/native helpers migrated earlier.",
+        "Verify removed actions are inaccessible and remaining editor/terminal shortcuts still route correctly."
+      ],
+      "gate": null
+    },
+    {
+      "id": 13,
+      "title": "Contract the unused built-in AI stack",
+      "blockedBy": [
+        11,
+        12
+      ],
+      "delivers": "Unused provider, credential, conversation, tool and subagent code is absent while retained shared infrastructure still works.",
+      "stories": [
+        4,
+        5
+      ],
+      "acceptance": [
+        "Prove retained callers have migrated before deleting old AI compatibility entry points and the closed unused feature subtree.",
+        "Remove built-in providers/SDK use, API-key management, AI transport, conversations, AI tools/subagents and exclusively associated native registrations/settings/dependencies.",
+        "Preserve Git/external-agent credentials, formatter command execution, file policies, Markdown, CLI/control and notification infrastructure.",
+        "Do not delete or migrate upstream's stored state; update fork architecture/settings documentation to reflect the actual retained contracts.",
+        "Keep Linux green and prove the production source/dependency graph contains no removed-feature import or orphan command requirement."
+      ],
+      "gate": null
+    },
+    {
+      "id": 14,
+      "title": "Save conflicting files safely across Spaces",
+      "blockedBy": [
+        1,
+        4
+      ],
+      "delivers": "Two independently dirty buffers cannot both silently overwrite the same disk revision.",
+      "stories": [
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        45
+      ],
+      "acceptance": [
+        "Coordinate app-owned save/format writes by canonical file identity and validate expected disk revision inside native coordination.",
+        "Detect changed contents even with identical mtime; missing/unreadable/replaced targets become conflict/error outcomes rather than unconditional recreation.",
+        "Provide compare, Save As, reload/discard and explicit overwrite bound to the reviewed revision; subsequent changes invalidate consent.",
+        "Preserve dirty buffers, line endings and indentation; clean hidden buffers defer unnecessary rereads until visible.",
+        "Test two Spaces saving one baseline, same-timestamp changes, stale overwrite consent and newer typing during a pending save; keep external-writer limitations explicit."
+      ],
+      "gate": null
+    },
+    {
+      "id": 15,
+      "title": "Recover unsaved buffer revisions durably",
+      "blockedBy": [
+        14
+      ],
+      "delivers": "Opt-in draft recovery restores each buffer's last durable revision after a crash without overwriting project files.",
+      "stories": [
+        46,
+        47,
+        48,
+        49,
+        50,
+        51
+      ],
+      "acceptance": [
+        "Persist distinct stable buffer/file identities and revisions, including two Spaces with the same pathname.",
+        "Enforce 10 MiB per file and 100 MiB total in disclosed private storage; exclude known sensitive paths, show unavailable/full/failure states and never silently evict unrecovered drafts.",
+        "Coalesce healthy continuous edits into persistence scheduled within two seconds; acknowledge only durable success and preserve older valid recovery on failed writes.",
+        "Cleanup only resolved revisions on successful explicit save/discard; delayed writes cannot delete newer/unrelated drafts or resurrect discarded text, and Save As retargets only after success.",
+        "Recover changed/missing targets as comparison/Save As documents; crash tests recover acknowledged text without executing commands or writing original files."
+      ],
+      "gate": null
+    },
+    {
+      "id": 16,
+      "title": "Manage Spaces and tabs without losing work",
+      "blockedBy": [
+        7,
+        15
+      ],
+      "delivers": "Switching, closing tabs and deleting saved Spaces have distinct safe behavior and preserve project organization.",
+      "stories": [
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        36,
+        37
+      ],
+      "acceptance": [
+        "Keep separate roots/tab layouts and allow two Spaces to share a checkout with a clear shared-folder indication, not an isolation promise.",
+        "Switch without stopping agents; preserve output processing and attention routing while unnecessary hidden presentation stops.",
+        "Resolve dirty buffers and active/uncertain processes before tab/Space closure; a stale save-and-close cannot discard newer typing.",
+        "Deleting saved organization never deletes project/worktree directories; cancellation leaves the selected work intact.",
+        "Restart restores layout/cwd/file locations without rerunning old agent commands; test shared roots, changed/missing files and repeated close attempts."
+      ],
+      "gate": null
+    },
+    {
+      "id": 17,
+      "title": "Quit with durable recovery and deliberate process termination",
+      "blockedBy": [
+        16
+      ],
+      "delivers": "The app can quit safely without silently bypassing failed recovery writes or killing unresolved work.",
+      "stories": [
+        34,
+        35,
+        36
+      ],
+      "acceptance": [
+        "Summarize dirty buffers and active/uncertain app-owned work across Spaces; allow cancellation and deliberate resolution.",
+        "Bound pending recovery flushes and offer retry/cancel/explicit close-with-loss on failure; repeated close events are never consent to loss.",
+        "After confirmed shutdown, attempt graceful termination and ask before forcing remaining app-owned work to exit.",
+        "Do not claim lifecycle control of deliberately detached services or process persistence on restart.",
+        "Test failed/slow storage, edits during save/close, a process that does not exit and restoration without command replay."
+      ],
+      "gate": null
+    },
+    {
+      "id": 18,
+      "title": "Guard destructive Git actions across shared Spaces",
+      "blockedBy": [
+        16
+      ],
+      "delivers": "Destructive worktree/file operations cannot ignore work in another Space or act on stale confirmation.",
+      "stories": [
+        29,
+        32,
+        59,
+        64
+      ],
+      "acceptance": [
+        "Track affected canonical worktree/file usage across every Space/pane, including outside-root editor views and matching terminal work.",
+        "Recheck resolved preconditions immediately before mutation and prevent new conflicting app-owned saves/spawns/mutations during execution, or refuse stale confirmation.",
+        "Force never silently bypasses dirty-buffer protection; show affected paths, staged-state effects and active/uncertain work.",
+        "Apply the contract to retained destructive Git actions without adding automatic commits/pushes or removing existing review capabilities.",
+        "Native and real-app tests show refusal leaves files/index unchanged; independent external writers remain outside perfect detection."
+      ],
+      "gate": null
+    },
+    {
+      "id": 19,
+      "title": "Install and remove agent hooks with fork ownership",
+      "blockedBy": [
+        6,
+        7
+      ],
+      "delivers": "Each supported agent's hooks can be deliberately reviewed, activated and removed without altering unrelated configuration.",
+      "stories": [
+        17,
+        18,
+        19,
+        20,
+        21
+      ],
+      "acceptance": [
+        "Keep hooks opt-in per agent and launching functional without them.",
+        "Show exact before/after configuration; refuse stale apply and preserve unrelated settings, comments and ownership groups.",
+        "Remove only this fork's entries and distinguish them from upstream Terax; test install/uninstall coexistence and retries.",
+        "Explain per-agent activation/trust requirements and fallback when no permission UI subscriber exists.",
+        "Use temporary fixture profiles, not real user credentials/configuration; do not add new OpenCode/Antigravity structured adapters."
+      ],
+      "gate": null
+    },
+    {
+      "id": 20,
+      "title": "Launch the target CLI agents and report honest attention",
+      "blockedBy": [
+        6,
+        7
+      ],
+      "delivers": "OpenCode, Claude Code, Codex and terminal Antigravity CLI have clear launch/basic-status behavior and private notifications.",
+      "stories": [
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        22,
+        23,
+        24,
+        25
+      ],
+      "acceptance": [
+        "Add Antigravity CLI launching/basic process detection distinctly from its separate GUI, while preserving existing agent entries and customizable commands/pane launches.",
+        "Keep normal hook-free launch and caller-Space file-open/line routing; no centralized approval UI or new structured adapters.",
+        "Document launch, process status, structured events, notifications and control separately per agent; do not equate process exit with a completed turn.",
+        "Default notifications to agent/Space identity and attention/completion, without prompt/transcript/file excerpts, focus theft or sound; retain rate/dedup suppression.",
+        "Use synthetic fixtures for deterministic behavior; actual installed/vendor-version certification is recorded by the release validation ticket rather than fabricated here."
+      ],
+      "gate": null
+    },
+    {
+      "id": 21,
+      "title": "Create a worktree and open it as a Space",
+      "blockedBy": [
+        18
+      ],
+      "delivers": "The user can create a separate file tree and immediately work in it without moving existing terminals.",
+      "stories": [
+        30,
+        54,
+        55
+      ],
+      "acceptance": [
+        "Provide modest UI over retained worktree creation with branch/ref/path validation, collision handling and derived authorization.",
+        "Offer to open the new worktree as a separate Space; existing terminals and their working directories stay unchanged.",
+        "Preserve bounded ignored-file inclusion rules and report failures without overwriting existing files.",
+        "Demonstrate successful creation/opening and refusal cases through temporary repositories and the real app."
+      ],
+      "gate": null
+    },
+    {
+      "id": 22,
+      "title": "Create, inspect and explicitly clean up manual checkpoints",
+      "blockedBy": [
+        18
+      ],
+      "delivers": "Manual optionally named recovery points are usable without agent hooks and remain until explicit deletion.",
+      "stories": [
+        56,
+        57,
+        58,
+        61,
+        62
+      ],
+      "acceptance": [
+        "Expose checkpoint creation/list/inspection with noncolliding identity and worktree ownership independent of agent turns.",
+        "Capture tracked/nonignored contents without modifying HEAD or the real index; retain existing bounded capture contracts and disclose instability, exclusions and non-atomicity.",
+        "Show ignored/submodule/staging limitations and incomplete results instead of full-backup claims.",
+        "Expose explicit grouped cleanup with safety refs identified and scoped to the selected worktree; no automatic retention deletion or Git garbage collection.",
+        "Report storage pressure without exact reclaimed-byte promises; test duplicate creation, capture limits and unrelated-ref preservation."
+      ],
+      "gate": null
+    },
+    {
+      "id": 23,
+      "title": "Restore a checkpoint with preflight and recovery safeguards",
+      "blockedBy": [
+        22
+      ],
+      "delivers": "The user can review and restore captured file contents without bypassing staged/unsaved-work protection.",
+      "stories": [
+        59,
+        60,
+        64
+      ],
+      "acceptance": [
+        "Preview affected paths and staging/HEAD effects and reuse all-Space mutation guards; require resolution of relevant dirty/staged/active work.",
+        "Publish required affected-content safety capture before changing files/index; failed/incomplete required capture or ref publication refuses, even with force.",
+        "Preserve ignored-file protection and disclose non-atomic behavior and external writers.",
+        "On failure after mutation, retain recovery information, report partial effects and require a fresh preview before retry.",
+        "Test staging-only changes, safety/limit/ref failures with no mutation, later partial failures and content recovery without a full Git-state undo claim."
+      ],
+      "gate": null
+    },
+    {
+      "id": 24,
+      "title": "Remove worktrees without stranding retained checkpoints",
+      "blockedBy": [
+        21,
+        22
+      ],
+      "delivers": "Worktree removal reports real blockers and requires deliberate cleanup of owned recovery points first.",
+      "stories": [
+        54,
+        61,
+        64
+      ],
+      "acceptance": [
+        "Expose removal with dirty/unmerged/locked/ignored/inconclusive blockers and affected-work checks across all Spaces.",
+        "Refuse while any owned checkpoint or restore-safety ref remains; show cancel or explicit scoped cleanup before removal.",
+        "Deleting a Space alone never invokes worktree removal, and removal does not discard another worktree's refs.",
+        "Revoke only the removed worktree's derived access and handle a missing directory without a repository-wide destructive prune.",
+        "Test checkpoint/safety-ref blockers and successful removal after explicit cleanup; archival restoration after deletion stays deferred."
+      ],
+      "gate": null
+    },
+    {
+      "id": 25,
+      "title": "Bound asset delivery and revoke preview access",
+      "blockedBy": [
+        3,
+        4
+      ],
+      "delivers": "Large local previews cannot bypass resource limits through full-file reads or stale asset grants.",
+      "stories": [
+        70,
+        74,
+        78,
+        79
+      ],
+      "acceptance": [
+        "Enforce approved read/preview ceilings, bounded range and non-range delivery and bounded outstanding work rather than allocating an entire large asset by default.",
+        "Preserve text limits and controlled overrides; show meaningful oversized/unsupported/read errors and safe alternatives.",
+        "Canonicalize and recheck opened paths against grant boundaries, including symlink escape and replaced targets.",
+        "Cancel obsolete work and revoke tab-owned grants on close; late completions cannot install into closed/replaced tabs.",
+        "Test both range/non-range requests, close-during-load, denial paths and bounded native allocation behavior."
+      ],
+      "gate": null
+    },
+    {
+      "id": 26,
+      "title": "Read Markdown with scoped local assets and deliberate networking",
+      "blockedBy": [
+        5,
+        25
+      ],
+      "delivers": "Markdown and fenced code render with stable project-root access and no automatic remote-content fetches.",
+      "stories": [
+        65,
+        71,
+        72,
+        73,
+        74
+      ],
+      "acceptance": [
+        "Anchor embedded local assets to the configured Space root, or an outside document's directory, not mutable terminal cwd.",
+        "Require explicit grants for outside assets and deliberate remote-resource loading/external navigation; document content cannot execute app commands.",
+        "Preserve sanitization, code highlighting, lazy loading and informative asset errors under approved document limits.",
+        "Defer unnecessary hidden refresh/rendering and release document-owned data/grants on close.",
+        "Test cwd changes, outside-root documents, symlink escapes, malicious/remote resources and stale load completions in the real app."
+      ],
+      "gate": null
+    },
+    {
+      "id": 27,
+      "title": "View images with bounded decode and cleanup",
+      "blockedBy": [
+        25
+      ],
+      "delivers": "Supported images open inside the workspace with predictable limits and meaningful failure states.",
+      "stories": [
+        65,
+        67,
+        69,
+        70,
+        79
+      ],
+      "acceptance": [
+        "Provide basic image viewing for actually tested formats, distinguishing file routing from runtime decode support.",
+        "Enforce approved byte/dimension/decoded-resource limits before unsafe work where possible and show unsupported/corrupt/oversized outcomes.",
+        "Keep explicit single-file selection separate from automatic directory embedding policy.",
+        "Avoid unnecessary hidden presentation and release image data/handles/grants on close or replacement.",
+        "Test representative images, large dimensions, corrupt/unsupported inputs and repeated open/close cycles; no codec installation."
+      ],
+      "gate": null
+    },
+    {
+      "id": 28,
+      "title": "Play audio/video with hidden-tab and close cleanup",
+      "blockedBy": [
+        25
+      ],
+      "delivers": "Supported media play with controls and stop unnecessary playback/resource use when hidden or closed.",
+      "stories": [
+        65,
+        67,
+        69,
+        70,
+        79
+      ],
+      "acceptance": [
+        "Provide basic playback controls through bounded asset delivery and approved resource policies.",
+        "Report actual container/codec support, loading errors and unsupported/corrupt media rather than trusting extension recognition.",
+        "Pause unnecessary hidden playback and avoid automatic resume that contradicts user playback state; release handles and grants on close.",
+        "Test seek/range behavior, hidden/show/close cycles, unsupported codecs and interrupted loads.",
+        "Do not install codecs automatically or promise media editing; final distro-specific support evidence remains release work."
+      ],
+      "gate": null
+    },
+    {
+      "id": 29,
+      "title": "Validate Fedora PDF behavior and select the reader path",
+      "blockedBy": [
+        1
+      ],
+      "delivers": "Determine whether the current iframe can satisfy the accepted PDF contract before choosing the retained or dedicated viewer.",
+      "stories": [
+        66
+      ],
+      "acceptance": [
+        "Exercise navigation, zoom, search and text selection with representative PDFs in the actual Fedora Tauri app and real asset/CSP context.",
+        "Record reliability, failure states and resource observations; extension recognition or a standalone browser probe is insufficient.",
+        "If the iframe cannot meet the contract, document a concrete on-demand dedicated-reader approach compatible with the approved resource/access policy.",
+        "Keep this a verifiable prerequisite decision based on evidence, not a new PDF annotation/authoring scope.",
+        "Do not claim the chosen path is shipped before ticket 30 implements and verifies it."
+      ],
+      "gate": null
+    },
+    {
+      "id": 30,
+      "title": "Read PDFs with lazy, bounded reader functions",
+      "blockedBy": [
+        25,
+        29
+      ],
+      "delivers": "PDF navigation, zoom, search and text selection work inside the workspace using the validated reader path.",
+      "stories": [
+        65,
+        66,
+        70,
+        78,
+        79
+      ],
+      "acceptance": [
+        "Implement the retained iframe only if ticket 29 proves it meets the contract; otherwise use the dedicated on-demand viewer approach.",
+        "Enforce approved document/page/decoded-resource limits with understandable loading, oversized, corrupt and unsupported states.",
+        "Keep document content non-executable in app authority and honor deliberate external navigation/resource access.",
+        "Pause unnecessary hidden rendering and release page/document data, tasks and grants on close.",
+        "Verify reader functions in the actual Fedora app and repeated hidden/open/close cycles; annotation and authoring remain out of scope."
+      ],
+      "gate": null
+    },
+    {
+      "id": 31,
+      "title": "Unload hidden web previews without unloading on visible blur",
+      "blockedBy": [
+        1
+      ],
+      "delivers": "Web/dev-server previews preserve their separate trust boundary and stop hidden page work immediately.",
+      "stories": [
+        75,
+        76,
+        77,
+        79,
+        82
+      ],
+      "acceptance": [
+        "Preserve deliberately entered HTTP(S) previews with initial URL restrictions and no native command access.",
+        "Unload on inactive tab/Space or supported hidden/minimized signals; do not unload a still-visible window solely for focus loss.",
+        "Explain reload/transient-state loss and avoid promising complete Linux occlusion detection.",
+        "Frame teardown never stops the independent dev-server process.",
+        "Test switching, minimize/restore, visible blur, redirects/popups and native-access refusal in the actual webview."
+      ],
+      "gate": null
+    },
+    {
+      "id": 32,
+      "title": "Port terminal compatibility, soak and Ghostty update checks to Linux",
+      "blockedBy": [
+        2,
+        8
+      ],
+      "delivers": "Terminal core changes retain real compatibility and resource evidence after platform narrowing.",
+      "stories": [
+        7,
+        8,
+        97,
+        99
+      ],
+      "acceptance": [
+        "Keep the active adapted bridge, pinned official source, SIMD/scalar artifacts and provenance; do not switch to the separate ABI evaluation runtime.",
+        "Port useful exactness/visual/scaling/renderer checks currently tied to non-Linux runners into the Linux strategy before their jobs disappear.",
+        "Exercise shell integration, clipboard/IME/input, search/selection, PTY backpressure, renderer fallback and sustained output.",
+        "Make a Ghostty revision update rebuild artifacts and require compatibility, soak and resource comparisons against recorded baseline evidence.",
+        "Keep tests bound to terminal behavior and mark missing platform/runtime evidence honestly."
+      ],
+      "gate": null
+    },
+    {
+      "id": 33,
+      "title": "Narrow build and distribution support to Linux x86-64",
+      "blockedBy": [
+        32
+      ],
+      "delivers": "Only the selected Linux build/distribution commitments remain without losing migrated useful tests.",
+      "stories": [
+        85,
+        86
+      ],
+      "acceptance": [
+        "Remove Windows/macOS/WSL/Nix build/distribution workflows and non-x86-64 initial release outputs.",
+        "Keep migrated Linux coverage before removing old jobs and retain a working Linux build throughout.",
+        "Remove platform internals selectively only when exclusive and beneficial; retain useful inert portability seams for upstream imports.",
+        "Do not remove themes/customization, Git, web preview, block mode, formatters, Vim, autostart or other features on watch.",
+        "Verify CI/package target matrices and documentation accurately describe the narrower support commitment."
+      ],
+      "gate": null
+    },
+    {
+      "id": 34,
+      "title": "Maintain upstream imports and reviewed dependency updates",
+      "blockedBy": [
+        32
+      ],
+      "delivers": "The fork has a practical repeatable path for upstream fixes and dependency changes.",
+      "stories": [
+        95,
+        96,
+        97,
+        98,
+        99,
+        100
+      ],
+      "acceptance": [
+        "Keep a verified upstream Terax remote separate from the fork origin and document selective import/conflict handling.",
+        "Configure reviewed dependency PRs for supported JavaScript/Rust/Actions/toolchain ecosystems with checks required before merge.",
+        "Separately monitor the pinned Ghostty source revision where ecosystem tooling does not cover it; do not assume native Zig support.",
+        "Preserve provenance/licenses, lockfiles, exact toolchains, reproducible rebuild instructions and the terminal gate from ticket 32.",
+        "Record monthly upstream/dependency review and prompt security triage as policy without inventing a maintenance-hours commitment or creating an unsolicited automation."
+      ],
+      "gate": null
+    },
+    {
+      "id": 35,
+      "title": "Build reproducible Linux package candidates",
+      "blockedBy": [
+        7,
+        8
+      ],
+      "delivers": "Produce installable x86-64 RPM/DEB candidates and an Arch recipe from a recorded revision.",
+      "stories": [
+        85,
+        86
+      ],
+      "acceptance": [
+        "Build RPM and DEB packages with correct Linux runtime dependencies and an Arch recipe aligned with the same source/version.",
+        "Use independent working fork namespaces and private candidate identities until final publication inputs are supplied.",
+        "Record reproducible build inputs, artifact hashes and installed CLI/resources/licenses; package extraction alone is not runtime certification.",
+        "Do not silently emit unsupported architectures/platform formats or reuse upstream update identity.",
+        "Provide immutable candidate outputs usable by updater evaluation and later graphical/package acceptance."
+      ],
+      "gate": null
+    },
+    {
+      "id": 36,
+      "title": "Discover stable updates without downloading packages",
+      "blockedBy": [
+        7
+      ],
+      "delivers": "The user sees bounded automatic stable-update checks and Arch/package-tool guidance without unsolicited installation.",
+      "stories": [
+        88,
+        91,
+        93
+      ],
+      "acceptance": [
+        "Use a configurable fork-owned release contract and isolated fixtures until production endpoint/trust inputs exist; never query upstream as if it were this fork.",
+        "Check asynchronously with bounded retry/error behavior for offline/rate limits and distinguish no-update, available and failed states.",
+        "Do not download a package or invoke privileges without approval.",
+        "Arch availability routes to package-tool instructions and never a separate privileged in-app Arch installer.",
+        "Keep update checking independent of the optional native installer choice and test it without real releases."
+      ],
+      "gate": null
+    },
+    {
+      "id": 37,
+      "title": "Validate RPM/DEB transaction integration or choose handoff",
+      "blockedBy": [
+        35
+      ],
+      "delivers": "Establish which dependency-resolving package-tool upgrade path can satisfy privileges, cancellation and safe-work requirements.",
+      "stories": [
+        90,
+        93
+      ],
+      "acceptance": [
+        "Use disposable RPM/DEB package environments to test dependency resolution, privilege prompts, cancellation, locks, upgrade/removal and failure recovery.",
+        "Do not accept raw rpm/dpkg support in the updater as proof of dependency-resolving or package-compatible behavior.",
+        "Prove whether the integration can recheck readiness and protect the privilege/transaction interval without relaunch.",
+        "If those guarantees cannot be validated, record the accepted explicit package-tool handoff after safe closure as the supported path.",
+        "Produce a checkable capability/evidence report consumed by ticket 38; never install into a real user's system just to gather evidence."
+      ],
+      "gate": "Maintainer-supplied disposable package/privilege validation environments and actual transaction evidence are required; withhold ready-for-agent while unavailable."
+    },
+    {
+      "id": 38,
+      "title": "Install approved updates safely or hand off after closure",
+      "blockedBy": [
+        17,
+        18,
+        36,
+        37
+      ],
+      "delivers": "An approved update uses the validated path without installing over newly started work or falsely claiming success.",
+      "stories": [
+        88,
+        89,
+        90,
+        91,
+        92,
+        93
+      ],
+      "acceptance": [
+        "Require approval before package download/install, verify authenticity and fail closed on verification failure.",
+        "Recheck work/dirty-state readiness immediately before the transaction; work started during download invalidates the old readiness result.",
+        "Prevent new conflicting app-owned work throughout privilege/installation, or abort before invoking the package tool.",
+        "Use ticket 37's safe-closure handoff when enforcement is unavailable; distinguish handed-off from installed and leave external package actions outside app guarantees.",
+        "Handle cancellation, locks and failed transactions with explicit recovery; never auto-relaunch, interrupt agents or attempt an unvalidated rollback."
+      ],
+      "gate": null
+    },
+    {
+      "id": 39,
+      "title": "Settle publication identity and provision independent trust",
+      "blockedBy": [],
+      "delivers": "The maintainer supplies final nonsecret release identity and independently recoverable signing trust before public distribution.",
+      "stories": [
+        83,
+        87,
+        92,
+        94,
+        102
+      ],
+      "acceptance": [
+        "Set final product name, repository/release owner and endpoint explicitly rather than inferring them from current origin or upstream defaults.",
+        "Reconcile final identity with the isolated working namespaces without silent upstream migration.",
+        "Provision signing secrets outside the repository and public issue bodies, record only public fingerprints/nonsecret configuration, and keep an offline recovery procedure.",
+        "Distinguish artifact authenticity from native package/repository trust; managed DNF/APT repositories remain deferred.",
+        "Document key loss/compromise replacement and verification-failure behavior without bypassing authenticity checks."
+      ],
+      "gate": "Maintainer must decide final publication identity/endpoint and provision signing/recovery inputs; no ready-for-agent until supplied."
+    },
+    {
+      "id": 40,
+      "title": "Gate tagged stable releases on checked immutable artifacts",
+      "blockedBy": [
+        35,
+        39
+      ],
+      "delivers": "Version tags produce authenticated candidate artifacts and publish only when the required evidence gates are satisfied.",
+      "stories": [
+        87,
+        94,
+        95,
+        96
+      ],
+      "acceptance": [
+        "Enforce tag/application-version agreement and passing required CI rather than publishing merely because a tag exists.",
+        "Generate/authenticate the correct RPM/DEB/Arch-facing artifacts and stable update metadata for the fork; do not retain an AppImage-only manifest assumption.",
+        "Bind package/resource/runtime evidence to the exact immutable candidate/artifact identities; fail closed while required evidence is missing.",
+        "Exercise the workflow with safe fixtures/dry runs and no public product release in this implementation ticket.",
+        "Stable-only publication and trust inputs are independent of upstream; secrets never appear in repository or issue logs."
+      ],
+      "gate": null
+    },
+    {
+      "id": 41,
+      "title": "Assemble the complete candidate and verify retained workflows",
+      "blockedBy": [
+        10,
+        13,
+        19,
+        20,
+        23,
+        24,
+        26,
+        27,
+        28,
+        30,
+        31,
+        33,
+        34,
+        38,
+        40
+      ],
+      "delivers": "One immutable candidate demonstrates the complete agreed workspace instead of treating a removal milestone as the finished product.",
+      "stories": [
+        1,
+        2,
+        3,
+        7,
+        8,
+        26,
+        37,
+        38,
+        39,
+        40,
+        52,
+        53,
+        63,
+        68,
+        82,
+        101
+      ],
+      "acceptance": [
+        "Run the complete isolated launch-agent/switch-Space/review-Git/edit/preview/commit workflow against a recorded candidate revision.",
+        "Verify all existing Git status/stage/diff/hunk/history/branch capabilities and explicit commit/push remain usable, alongside new worktree/checkpoint controls.",
+        "Confirm no selected removed feature is exposed or required, and CSV/TSV remain editable text rather than a new table viewer.",
+        "Audit themes, shortcuts, existing customization, web previews and block terminal mode, external formatters, Vim, autostart and other unselected optional features for regressions.",
+        "Retain the priority of data/process safety and terminal correctness; record exact candidate hashes and unresolved failures for tickets 42-43 without closing the parent spec."
+      ],
+      "gate": null
+    },
+    {
+      "id": 42,
+      "title": "Accept final whole-app resource budgets and stability evidence",
+      "blockedBy": [
+        41
+      ],
+      "delivers": "The primary user can judge lightweight behavior from final-candidate measurements and approve evidence-based product thresholds.",
+      "stories": [
+        78,
+        79,
+        80,
+        81,
+        102
+      ],
+      "acceptance": [
+        "Compare the exact complete candidate with ticket 2's baseline under the same recorded conditions and representative/stress workloads.",
+        "Measure startup, whole-app process memory/CPU, sustained terminal output, hidden/show/close resource behavior and package size; separate agent processes and shared memory.",
+        "Verify approved document/decoded ceilings, on-demand imports and repeated close cleanup; investigate persistent growth rather than assuming deletion saved idle memory.",
+        "Propose and obtain primary-user approval of concrete final resource/performance limits and report practical measurement limitations.",
+        "Do not mark lightweight completion from lazy-loading claims, isolated host RSS or a single passing sample; preserve artifact identity in acceptance evidence."
+      ],
+      "gate": "Final candidate evidence and primary-user approval of measured whole-app budgets are required; this gates release/completion, not unrelated implementation."
+    },
+    {
+      "id": 43,
+      "title": "Validate the exact candidate on Fedora, Debian and Arch",
+      "blockedBy": [
+        41
+      ],
+      "delivers": "Published package/support claims are backed by graphical install/upgrade/runtime evidence for the intended environments.",
+      "stories": [
+        10,
+        14,
+        21,
+        65,
+        66,
+        67,
+        69,
+        70,
+        85,
+        86,
+        87,
+        90,
+        92,
+        93,
+        99
+      ],
+      "acceptance": [
+        "Validate Fedora 44 KDE Wayland as primary, Debian 13 in a real graphical WebKitGTK session and a dated clean Arch environment with recorded versions.",
+        "Install/upgrade/remove the exact immutable candidate packages; verify dependencies, signatures, privileges/cancellation/locks, failed-transaction recovery and coexistence.",
+        "Run WebGL fallback, terminal input/clipboard/scale, PDF reader functions and representative image/media codecs; record the actually tested support matrix and clear failures.",
+        "Check actual claimed agent integrations/versions, including hook activation/trust where applicable, in explicitly authorized isolated vendor validation.",
+        "Record artifact-bound pass/fail evidence and limitations; package extraction, generic Ubuntu builds and extension recognition do not establish support."
+      ],
+      "gate": "Maintainer must provide the graphical/package/vendor validation environments and operational evidence; no ready-for-agent while unavailable."
+    },
+    {
+      "id": 44,
+      "title": "Publish and verify the first validated stable release",
+      "blockedBy": [
+        42,
+        43
+      ],
+      "delivers": "The first stable release is publicly available with verified artifacts and truthful installation/update/support information.",
+      "stories": [
+        2,
+        87,
+        94,
+        101,
+        102
+      ],
+      "acceptance": [
+        "Publish only the candidate/artifacts whose CI, version, trust, resource and distro acceptance evidence passed; any changed artifact requires applicable revalidation.",
+        "Use the configured tag-driven release path with settled fork identity and independent trust, stable-only packages/recipe and correct endpoint metadata.",
+        "Verify public download/update discovery and the supported install/handoff/Arch routes without auto-installing or restarting running agents.",
+        "Publish tested support/codec/capability limits and recovery/maintenance guidance without claiming broad compatibility or production-readiness certification.",
+        "Keep incomplete stages and remaining evidence failures from being represented as full completion; do not close or rewrite the parent spec as part of ticket publication."
+      ],
+      "gate": "Release waits for final resource/package acceptance and operational publication inputs; keep ready-for-agent off until those gates are met."
+    }
+  ],
+  "requirementMap": [
+    [
+      "Purpose, priorities and personal-use-first boundary",
+      [
+        41,
+        44
+      ]
+    ],
+    [
+      "Selected removals and exclusively owned settings/dependencies",
+      [
+        9,
+        10,
+        11,
+        12,
+        13
+      ]
+    ],
+    [
+      "Shared wrappers, policies, Markdown and formatter ownership",
+      [
+        4,
+        5,
+        6,
+        13
+      ]
+    ],
+    [
+      "Architecture continuity and bounded prefactoring",
+      [
+        4,
+        5,
+        6,
+        8,
+        13
+      ]
+    ],
+    [
+      "Terminal model, artifacts, fallback and Ghostty source upgrades",
+      [
+        1,
+        32,
+        34
+      ]
+    ],
+    [
+      "Per-agent capability matrix, permissions, CLI/control and notifications",
+      [
+        6,
+        19,
+        20,
+        43
+      ]
+    ],
+    [
+      "Spaces, shared roots, guards, shutdown and layout restoration",
+      [
+        7,
+        16,
+        17,
+        18
+      ]
+    ],
+    [
+      "Native save revisions, overwrite consent and external-writer limits",
+      [
+        14,
+        18
+      ]
+    ],
+    [
+      "Recovery identity, quotas, cadence, acknowledgement and failed close",
+      [
+        15,
+        16,
+        17
+      ]
+    ],
+    [
+      "All retained Git review/stage/history/commit/push behavior",
+      [
+        18,
+        41
+      ]
+    ],
+    [
+      "Worktree create/open/remove and retained checkpoint constraints",
+      [
+        21,
+        22,
+        23,
+        24
+      ]
+    ],
+    [
+      "Safety snapshot preflight, partial failures and no full-state undo",
+      [
+        23
+      ]
+    ],
+    [
+      "Preview categories, PDF mechanism, format support and refusal",
+      [
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        43
+      ]
+    ],
+    [
+      "Preview local/remote access, canonical grants and cleanup",
+      [
+        25,
+        26,
+        27,
+        28,
+        30
+      ]
+    ],
+    [
+      "Web trust, visibility, immediate teardown and server survival",
+      [
+        31
+      ]
+    ],
+    [
+      "Read/decode limits, lazy loading, hidden work and closed-tab resources",
+      [
+        3,
+        25,
+        26,
+        27,
+        28,
+        30,
+        31,
+        42
+      ]
+    ],
+    [
+      "Baseline workload, empirical ceilings and whole-app budget acceptance",
+      [
+        2,
+        3,
+        42
+      ]
+    ],
+    [
+      "Complete first-run namespace isolation and no upstream import",
+      [
+        1,
+        7,
+        19
+      ]
+    ],
+    [
+      "Linux platform support, packages and graphical validation",
+      [
+        8,
+        32,
+        33,
+        35,
+        43
+      ]
+    ],
+    [
+      "Release identity, signing, key recovery and metadata trust",
+      [
+        39,
+        40,
+        44
+      ]
+    ],
+    [
+      "Update approval, safe interval, package integration/handoff and Arch",
+      [
+        36,
+        37,
+        38,
+        43,
+        44
+      ]
+    ],
+    [
+      "Reproducibility, CI, dependency PRs and selective upstream imports",
+      [
+        8,
+        32,
+        34,
+        40
+      ]
+    ],
+    [
+      "Kept customization/optional features and complete milestone honesty",
+      [
+        10,
+        12,
+        33,
+        41,
+        44
+      ]
+    ],
+    [
+      "Approved test seams and Linux harness prerequisites",
+      [
+        1,
+        8,
+        32,
+        41,
+        42,
+        43
+      ]
+    ],
+    [
+      "Deferred archival recovery and all other explicit exclusions",
+      [
+        24,
+        41,
+        44
+      ]
+    ]
+  ],
+  "challengeMap": [
+    [
+      "C1: first-run isolation",
+      [
+        1,
+        7
+      ]
+    ],
+    [
+      "C2: canonical saves and all-Space destructive guards",
+      [
+        14,
+        18
+      ]
+    ],
+    [
+      "C3: draft identities, durable acknowledgement and close failure",
+      [
+        15,
+        16,
+        17
+      ]
+    ],
+    [
+      "C4: worktree removal waits for explicit recovery cleanup",
+      [
+        22,
+        24
+      ]
+    ],
+    [
+      "C5: failed required safety capture refuses before mutation",
+      [
+        23
+      ]
+    ],
+    [
+      "C6: update readiness and protected installation interval",
+      [
+        37,
+        38
+      ]
+    ],
+    [
+      "C7: hidden/minimized versus visible blur",
+      [
+        31
+      ]
+    ]
+  ],
+  "approval": "Approved but dont implement yet.",
+  "executionHold": "Do not begin implementation until the user explicitly authorizes it.",
+  "publicationManifest": "personal-linux-workspace-published.json"
+}

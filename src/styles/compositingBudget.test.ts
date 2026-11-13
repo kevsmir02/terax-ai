@@ -39,14 +39,6 @@ const ALLOWED: Record<string, { allows: string[]; why: string }> = {
     allows: ["backdrop filter"],
     why: "modal scrim, mounted only while open",
   },
-  "components/ai-elements/conversation.tsx": {
-    allows: ["backdrop filter"],
-    why: "generated AI Element; scroll-to-bottom button exists only while scrolled up",
-  },
-  "modules/ai/components/PlanDiffReview.tsx": {
-    allows: ["backdrop filter"],
-    why: "plan review overlay, mounted only during a review",
-  },
   "modules/editor/lib/chromeTheme.ts": {
     allows: ["backdrop filter"],
     why: "CodeMirror tooltip, exists only while shown",

@@ -31,10 +31,20 @@ function setup(mouseTracking = false) {
   const target = Object.assign(new EventTarget(), {
     style: { cursor: "" },
     getBoundingClientRect: () => ({ left: 100, top: 50 }),
-    ownerDocument: { createElement: () => ({ style: {}, setAttribute() {}, replaceChildren() {}, append() {}, remove() {} }) },
+    ownerDocument: {
+      createElement: () => ({
+        style: {},
+        setAttribute() {},
+        replaceChildren() {},
+        append() {},
+        remove() {},
+      }),
+    },
     append() {},
   }) as unknown as HTMLElement;
-  const scrollbar = { contains: (node: unknown) => node === scrollbarNode } as unknown as Node;
+  const scrollbar = {
+    contains: (node: unknown) => node === scrollbarNode,
+  } as unknown as Node;
   const onActivate = vi.fn();
   const options: LazyTerminalLinksOptions = {
     target,
@@ -65,7 +75,8 @@ function setup(mouseTracking = false) {
       shiftKey: false,
       ...rest,
     });
-    if (eventTarget) Object.defineProperty(event, "target", { value: eventTarget });
+    if (eventTarget)
+      Object.defineProperty(event, "target", { value: eventTarget });
     target.dispatchEvent(event);
     return event;
   };

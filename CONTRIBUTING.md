@@ -84,7 +84,9 @@ Terax positions itself as **lightweight, fast, production-grade**. Every PR is r
 - `cargo fmt` applied before pushing
 - No perf regressions in known hot paths: terminal renderer, PTY stream, AI streaming, source control, file explorer
 - No new heavy dependencies (>50KB gzip in client bundle, >5MB compiled on Rust side) without justification
-- Platform parity preserved (macOS / Linux / Windows / WSL still work)
+- Platform scope respected: this fork distributes Linux x86-64 only, so the Linux build must stay
+  working. There is no macOS/Windows/WSL parity bar; the shared code paths for them are retained as
+  inert seams for upstream imports, not as supported targets
 - Security review for changes to AI tool surface, file system access, network paths, IPC commands
 
 If you're not sure how to measure perf or what counts as a hot path, ask in Discord or an issue. Better to confirm than get bounced.
@@ -192,21 +194,18 @@ src-tauri/                  Rust backend
       git/                  Source control commands
       history/              Shell history integration
       mod.rs                Module exports
-      net.rs                AI HTTP proxy with SSRF guard
       proc.rs               Process utilities
       pty/                  Terminal sessions, shell integration, DA filter
-      secrets.rs            OS keychain access
-      shell/                Oneshot/session/background shell commands
+      shell/                One-shot command execution (external formatter)
       workspace.rs          WSL bridge, workspace env, authorization registry
 
 src/                        React frontend
   App.tsx                   Top-level coordinator
-  components/               shadcn/ui + AI Elements
+  components/               shadcn/ui primitives and shared UI
   modules/
     agents/                 Agent notifications and management
-    ai/                     Agents, sessions, tools, providers, composer
     command-palette/        Modal command palette and actions
-    editor/                 CodeMirror stack, AI autocomplete
+    editor/                 CodeMirror stack, editor themes, formatting
     explorer/               File tree
     git-history/            Git graph and history pane
     header/                 Top bar, search, window controls

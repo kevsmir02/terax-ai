@@ -6,6 +6,8 @@ describe("displayAgent", () => {
     expect(displayAgent("claude")).toBe("Claude Code");
     expect(displayAgent("codex")).toBe("Codex");
     expect(displayAgent("pi")).toBe("Pi");
+    // The CLI is named separately from its desktop app.
+    expect(displayAgent("antigravity")).toBe("Antigravity CLI");
   });
 
   it("looks the label up case-insensitively", () => {

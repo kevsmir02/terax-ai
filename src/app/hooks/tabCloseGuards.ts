@@ -59,6 +59,57 @@ export function hasNewCloseManyHazards(
   return current.busyLeafIds.some((id) => !busy.has(id));
 }
 
+export type SaveThenCloseResult = "closed" | "incomplete" | "gone";
+
+export type SaveThenCloseDeps = {
+  save: (id: number) => Promise<boolean>;
+  isDirty: (id: number) => boolean;
+  exists: (id: number) => boolean;
+  close: (id: number) => void;
+};
+
+/**
+ * Save-and-close is a request to close, not consent to discard. The save's own
+ * completeness result covers the buffer it captured; the buffer is asked again
+ * after the await because text typed meanwhile is newer than that snapshot.
+ */
+export async function saveThenClose(
+  deps: SaveThenCloseDeps,
+  id: number,
+): Promise<SaveThenCloseResult> {
+  const saved = await deps.save(id);
+  if (!deps.exists(id)) return "gone";
+  if (!saved || deps.isDirty(id)) return "incomplete";
+  deps.close(id);
+  return "closed";
+}
+
+/** Saves each requested buffer; true only when every one is fully persisted. */
+export async function saveAllForClose(
+  ids: readonly number[],
+  save: (id: number) => Promise<boolean>,
+  isDirty: (id: number) => boolean,
+): Promise<boolean> {
+  for (const id of ids) {
+    if (!(await save(id))) return false;
+    if (isDirty(id)) return false;
+  }
+  return true;
+}
+
+/**
+ * Whether a buffer that was saved for this close is dirty again. It stays in
+ * the acknowledged hazard set under the same id, so a "no new hazards" check
+ * alone would let a late edit be closed away.
+ */
+export function dirtyAfterSave(
+  savedIds: readonly number[],
+  hazards: CloseManyHazards,
+): boolean {
+  const saved = new Set(savedIds);
+  return hazards.dirtyIds.some((id) => saved.has(id));
+}
+
 export type CloseHazardSnapshot = {
   dirtyIds: number[];
   leafIds: number[];
@@ -116,7 +167,13 @@ export async function evaluateCloseHazards(
   }
   let checkedLeafIds = capture().leafIds;
   for (let pass = 0; pass < MAX_HAZARD_PASSES; pass += 1) {
-    const checks = await Promise.all(checkedLeafIds.map(isBusy));
+    const checks = await Promise.all(
+      checkedLeafIds.map((leafId) =>
+        // An unavailable probe is not evidence that the pane is safe to kill:
+        // an uncertain process must still be resolved before close.
+        isBusy(leafId).catch(() => true),
+      ),
+    );
     const latest = capture();
     if (sameIds(checkedLeafIds, latest.leafIds)) {
       return {

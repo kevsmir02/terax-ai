@@ -4,8 +4,11 @@ import type {
   ApplyHunksRequest,
   ApplyOutcome,
   BranchCreated,
+  CheckpointCleanupReport,
   CheckpointCreated,
+  CheckpointGroups,
   CheckpointInfo,
+  CheckpointInspection,
   GitBranchListResult,
   GitCommitFileChange,
   GitCommitResult,
@@ -21,6 +24,9 @@ import type {
   GitRepoInfo,
   GitStatusSnapshot,
   GitWatchInfo,
+  ManualCheckpointCreated,
+  ManualRestorePreview,
+  ManualRestoreReport,
   ProjectConfig,
   RestoreReport,
   TaskArchive,
@@ -32,6 +38,7 @@ import type {
   WorktreeAdded,
   WorktreeAddRequest,
   WorktreeEntry,
+  WorktreePreflight,
   WorktreePruneReport,
   WorktreeRemoveReport,
 } from "./types";
@@ -253,6 +260,19 @@ export const git = {
       repoRoot,
       workspace: currentWorkspaceEnv(),
     }),
+  /** What `worktreeAdd` would refuse or collide with, without creating anything. */
+  worktreePreflight: (repoRoot: string, request: WorktreeAddRequest) =>
+    invoke<WorktreePreflight>("git_worktree_preflight", {
+      repoRoot,
+      request: {
+        ...request,
+        path: request.path ?? null,
+        taskSlug: request.taskSlug ?? null,
+        base: request.base ?? null,
+        include: request.include ?? [],
+      },
+      workspace: currentWorkspaceEnv(),
+    }),
   worktreeAdd: (repoRoot: string, request: WorktreeAddRequest) =>
     invoke<WorktreeAdded>("git_worktree_add", {
       repoRoot,
@@ -271,6 +291,13 @@ export const git = {
       repoRoot,
       path,
       force,
+      workspace: currentWorkspaceEnv(),
+    }),
+  /** What `worktreeRemove` would refuse or lose; never mutates. */
+  worktreeRemovePreflight: (repoRoot: string, path: string) =>
+    invoke<WorktreeRemoveReport>("git_worktree_remove_preflight", {
+      repoRoot,
+      path,
       workspace: currentWorkspaceEnv(),
     }),
   worktreePrune: (repoRoot: string) =>
@@ -305,6 +332,82 @@ export const git = {
     invoke<number>("git_checkpoint_prune", {
       worktree,
       taskId,
+      workspace: currentWorkspaceEnv(),
+    }),
+
+  // ---- manual checkpoints (refs/codr/manual-checkpoints/<id>)
+  /** Captures tracked and non-ignored files; never moves HEAD or the real index. */
+  checkpointManualCreate: (worktree: string, name: string | null = null) =>
+    invoke<ManualCheckpointCreated>("git_checkpoint_manual_create", {
+      worktree,
+      name,
+      workspace: currentWorkspaceEnv(),
+    }),
+  /** This worktree's recovery points, grouped: manual, turn and safety refs. */
+  checkpointGroups: (worktree: string) =>
+    invoke<CheckpointGroups>("git_checkpoint_groups", {
+      worktree,
+      workspace: currentWorkspaceEnv(),
+    }),
+  /** Metadata, stored capture record and captured paths of one owned ref. */
+  checkpointInspect: (worktree: string, ref: string) =>
+    invoke<CheckpointInspection>("git_checkpoint_inspect", {
+      worktree,
+      reference: ref,
+      workspace: currentWorkspaceEnv(),
+    }),
+  /**
+   * Deletes exactly the listed refs this worktree owns. No default "clean all",
+   * no Git garbage collection, and no byte-reclamation promise.
+   */
+  checkpointCleanup: (worktree: string, refs: string[]) =>
+    invoke<CheckpointCleanupReport>("git_checkpoint_cleanup", {
+      worktree,
+      refs,
+      workspace: currentWorkspaceEnv(),
+    }),
+  /**
+   * Read-only restore preflight: affected paths, staging/HEAD effects, ignored
+   * files left alone, and the fingerprint a restore is bound to.
+   */
+  checkpointRestorePreview: (worktree: string, ref: string) =>
+    invoke<ManualRestorePreview>("git_checkpoint_manual_restore_preview", {
+      worktree,
+      reference: ref,
+      workspace: currentWorkspaceEnv(),
+    }),
+  /**
+   * Restores captured content after that preview. A required safety capture is
+   * published first; a stale fingerprint, staged affected paths, a failed
+   * capture or a failed ref publication changes nothing.
+   */
+  checkpointRestoreManual: (
+    worktree: string,
+    ref: string,
+    fingerprint: string,
+    force = false,
+  ) =>
+    invoke<ManualRestoreReport>("git_checkpoint_manual_restore", {
+      worktree,
+      reference: ref,
+      fingerprint,
+      force,
+      workspace: currentWorkspaceEnv(),
+    }),
+
+  // ---- recovery refs of a worktree registration, by path (removal)
+  /** Works when the worktree directory is already gone. */
+  checkpointGroupsAt: (repoRoot: string, worktree: string) =>
+    invoke<CheckpointGroups>("git_checkpoint_groups_at", {
+      repoRoot,
+      worktree,
+      workspace: currentWorkspaceEnv(),
+    }),
+  checkpointCleanupAt: (repoRoot: string, worktree: string, refs: string[]) =>
+    invoke<CheckpointCleanupReport>("git_checkpoint_cleanup_at", {
+      repoRoot,
+      worktree,
+      refs,
       workspace: currentWorkspaceEnv(),
     }),
 
