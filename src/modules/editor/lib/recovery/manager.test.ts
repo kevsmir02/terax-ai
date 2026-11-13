@@ -384,6 +384,87 @@ describe("quota", () => {
   });
 });
 
+describe("discarding a stored draft from the settings list", () => {
+  it("clears the open buffer's durable claim instead of desynchronising it", async () => {
+    const h = harness();
+    const buf = openBuffer(h, {
+      bufferId: "buf-a",
+      path: "/home/me/notes.txt",
+    });
+    buf.edit({ text: "unsaved words", diskRevision: null });
+    await h.advance(2000);
+    expect(h.status("buf-a").kind).toBe("durable");
+
+    const stored = (await h.manager.records()).find(
+      (record) => record.bufferId === "buf-a",
+    );
+    expect(stored).toBeDefined();
+    await h.manager.discardDraft(stored as RecoveryRecord);
+
+    expect(h.storage.records.has("buf-a")).toBe(false);
+    // The buffer is still open and may keep typing, so its status has to match
+    // storage: it must not keep claiming a durable copy that no longer exists.
+    expect(h.status("buf-a").kind).toBe("idle");
+    expect(h.status("buf-a").durableRevision).toBeNull();
+    expect(h.status("buf-a").totalBytes).toBe(0);
+
+    buf.edit({ text: "typed again", diskRevision: null });
+    await h.advance(2000);
+    expect(h.status("buf-a").kind).toBe("durable");
+    expect(h.storage.records.get("buf-a")?.text).toBe("typed again");
+  });
+
+  it("frees the total-bound pause the list told the person about", async () => {
+    const limits = {
+      perFileBytes: 10 * MiB,
+      totalBytes: 12 * MiB,
+      directory: "recovery",
+    };
+    const clock = new FakeClock();
+    const storage = new MemoryStorage();
+    const manager = createRecoveryManager({
+      storage,
+      limits,
+      enabled: () => true,
+      now: () => clock.now,
+      schedule: clock.schedule,
+      cancel: clock.cancel,
+    });
+    const a = manager.buffer({
+      bufferId: "buf-a",
+      spaceId: "sp-a",
+      path: "/home/me/a.txt",
+      diskRevision: null,
+    });
+    const b = manager.buffer({
+      bufferId: "buf-b",
+      spaceId: "sp-a",
+      path: "/home/me/b.txt",
+      diskRevision: null,
+    });
+    a.edit({ text: "a".repeat(8 * MiB), diskRevision: null });
+    await clock.advanceTo(2000);
+    await settle();
+    b.edit({ text: "b".repeat(8 * MiB), diskRevision: null });
+    await clock.advanceTo(6000);
+    await settle();
+    expect(b.status().kind).toBe("paused");
+    expect(a.status().kind).toBe("paused");
+
+    // What the stored-drafts list shows: only the draft that actually exists.
+    const listed = await manager.records();
+    expect(listed.map((record) => record.bufferId)).toEqual(["buf-a"]);
+    await manager.discardDraft(listed[0]);
+
+    expect(a.status().kind).toBe("idle");
+    expect(b.status().kind).not.toBe("paused");
+    await clock.advanceTo(10_000);
+    await settle();
+    expect(b.status().kind).toBe("durable");
+    expect(storage.records.get("buf-b")?.text.length).toBe(8 * MiB);
+  });
+});
+
 describe("acknowledgement", () => {
   it("reports pending until the write is durable", async () => {
     const h = harness();

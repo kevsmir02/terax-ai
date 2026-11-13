@@ -704,9 +704,27 @@ export function createRecoveryManager(
     async discardDraft(record) {
       // Explicit discard of someone else's orphan: remove exactly that
       // revision, and only if the stored record is still the one offered.
-      await storage.remove(record.bufferId, record.bufferRevision);
+      const outcome = await storage.remove(
+        record.bufferId,
+        record.bufferRevision,
+      );
       const state = buffers.get(record.bufferId);
-      if (state) notify(state);
+      if (state) {
+        state.totalBytes = outcome.totalBytes;
+        // If the buffer is still open and the removed record was the one it
+        // believed durable, its status must follow storage instead of claiming
+        // a draft that no longer exists. Newer typing is left to persist.
+        if (
+          outcome.removed &&
+          state.persisted !== null &&
+          state.persisted.revision <= record.bufferRevision
+        ) {
+          state.persisted = null;
+        }
+        notify(state);
+      }
+      // Freeing room is what the pause message asks the person to do.
+      tryResume();
     },
     async flushAll() {
       const statuses = new Map<string, RecoveryStatus>();

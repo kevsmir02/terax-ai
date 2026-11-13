@@ -144,6 +144,20 @@ buffer. Room comes back only from an explicitly resolved draft (or shrinking
 text), never by deleting an unrecovered one. A refused or failed write leaves the
 older record byte-identical.
 
+**Stored drafts are listed where the pause tells you to discard one.** The
+recovery settings disclosure lists every record that actually exists in the
+private folder — newest first, with its path (or an explicit unknown-path
+marker), stored size and age, and the total against the 100 MiB bound — and
+offers a per-draft **Discard** that removes exactly the offered record through
+`RecoveryManager.discardDraft`. The discard is revision-aware, so it cannot
+remove newer typing, and it frees room, so a total-bound pause resumes. If the
+record's buffer is still open, its status follows storage (it stops claiming a
+durable copy that no longer exists) without touching the open text. The action
+removes the stored copy only: the project file on disk is untouched. Loading,
+empty, unavailable and failed reads are separate visible states, known-sensitive
+paths are never listed, and the list never shows a row that is not a stored
+record.
+
 **Acknowledgement, coalescing and cleanup.**
 
 - Continuous editing schedules a persistence write after 1.5 s, not on idle: the
@@ -179,8 +193,12 @@ older record byte-identical.
 Validated support: `src/modules/editor/lib/recovery/*.test.ts` (record model,
 quota admission, coalescing in virtual time, cleanup/watermark/restore plans,
 manager races: late completions, discard-then-complete, failure-preserves-older,
-two-Space independence, Save As retarget), `RecoveryStatusBar.test.tsx` /
-`RecoveryDraftBanner.test.tsx` (visible states, offer-never-impose),
+two-Space independence, Save As retarget, and a list discard that clears an open
+buffer's durable claim and resumes a total-bound pause),
+`RecoveryStatusBar.test.tsx` / `RecoveryDraftBanner.test.tsx` (visible states,
+offer-never-impose), `src/settings/sections/RecoveryDraftList.test.tsx` (the
+stored-drafts list: newest-first rows, exact-record discard, empty, loading,
+unavailable and failed states, excluded paths),
 `src-tauri/src/modules/recovery.rs` unit tests (atomicity, private modes,
 quota refusal, revision-aware delete, corrupt-record handling) and
 `src-tauri/tests/recovery_store.rs` (restart, two-Space records through the

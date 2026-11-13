@@ -260,7 +260,10 @@ Two rules follow from this table and are covered by tests in
 ## Storage quotas are not runtime budgets
 
 The recovery-draft policy (10 MiB per file, 100 MiB total, issue #16) is a
-**disk-storage** quota. It is recorded in the same table so the two are read
+**disk-storage** quota. At the bound recovery pauses instead of evicting, and the
+recovery settings disclosure lists the stored drafts there so the person can
+discard one explicitly to free room (see `docs/architecture/security-model.md`).
+It is recorded in the same table so the two are read
 together, but it is not part of the 192 MiB decoded-asset budget and does not
 consume decoded memory: drafts on disk and rasters in memory are different
 resources with different failure modes (a full disk versus exhausted memory).

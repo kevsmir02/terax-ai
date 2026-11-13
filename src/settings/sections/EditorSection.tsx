@@ -12,6 +12,7 @@ import {
   FORMATTERS,
 } from "@/modules/editor/lib/externalFormat";
 import { EXPOSED_LANGUAGES } from "@/modules/editor/lib/languageDefinitions";
+import { formatDraftLimit } from "@/modules/editor/lib/recovery/draftList";
 import { RECOVERY_LIMITS } from "@/modules/editor/lib/recovery/model";
 import { recoveryLocation } from "@/modules/editor/lib/recovery/nativeStorage";
 import { usePreferencesStore } from "@/modules/settings/preferences";
@@ -42,6 +43,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
 import { SectionHeader } from "../components/SectionHeader";
 import { SettingRow } from "../components/SettingRow";
+import { RecoveryDraftList } from "./RecoveryDraftList";
 
 const AUTO_SAVE_STEP = 100;
 
@@ -424,14 +426,11 @@ function WordWrapColumnInput({
   );
 }
 
-function formatLimit(bytes: number): string {
-  return `${Math.round(bytes / (1024 * 1024))} MiB`;
-}
-
 /**
  * The storage disclosure that has to accompany enabling recovery drafts: where
- * the text goes, how much space it may use, what is excluded, and the fact that
- * a filename policy is not complete secret detection.
+ * the text goes, how much space it may use, what is excluded, the fact that a
+ * filename policy is not complete secret detection, and the stored drafts
+ * themselves so the quota's "discard a draft" instruction is actionable.
  */
 function RecoveryStorageDisclosure() {
   const [location, setLocation] = useState<string | null>(null);
@@ -464,10 +463,17 @@ function RecoveryStorageDisclosure() {
         {location ?? "Loading…"}
       </p>
       <p>
-        Limits: {formatLimit(RECOVERY_LIMITS.perFileBytes)} per file and{" "}
-        {formatLimit(RECOVERY_LIMITS.totalBytes)} in total. At the limit
+        Limits: {formatDraftLimit(RECOVERY_LIMITS.perFileBytes)} per file and{" "}
+        {formatDraftLimit(RECOVERY_LIMITS.totalBytes)} in total. At the limit
         recovery pauses and keeps the drafts it already has; nothing is evicted.
+        Stored drafts are listed here so you can free room by discarding one.
       </p>
+      {available !== false && (
+        <div className="flex flex-col gap-1 border-t border-border pt-2">
+          <p className="text-foreground">Stored drafts</p>
+          <RecoveryDraftList quotaBytes={RECOVERY_LIMITS.totalBytes} />
+        </div>
+      )}
       <p>
         Known-sensitive paths from the shared file policy (for example{" "}
         <code>.env</code>, <code>*.pem</code>, <code>~/.ssh</code>) are not
