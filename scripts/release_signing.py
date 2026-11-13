@@ -233,13 +233,34 @@ def trusted_key_from_contract(contract: dict) -> minisign.TrustedKey | None:
 # ---------------------------------------------------------------------------------------------
 
 
-def default_notes(version: str) -> str:
-    # The product name comes from the shared identity table, not a second literal.
+def default_notes(version: str, contract: dict | None = None) -> str:
+    # The product name and upstream base commit come from the shared identity and contract tables.
     product = packaging.candidate().product_name
+    source_contract = contract if contract is not None else load_contract()
+    upstream = source_contract.get("upstream") or {}
+    repository = str(upstream.get("repository") or "").strip()
+    base_commit = str(upstream.get("baseCommit") or "").strip()
+    derived = ""
+    if repository and base_commit:
+        derived = f" Derived from {repository}@{base_commit}."
+    elif base_commit:
+        derived = f" Derived from upstream revision {base_commit}."
     return (
         f"{product} {version} - stable Linux release (RPM, DEB and the Arch recipe). "
-        "Unofficial fork of Terax; not affiliated with Crynta."
+        f"Unofficial fork of Terax; not affiliated with Crynta.{derived}"
     )
+
+
+def _artifacts_by_kind(artifacts: list[Artifact]) -> dict[str, Artifact]:
+    by_kind: dict[str, Artifact] = {}
+    for artifact in artifacts:
+        if artifact.kind in by_kind:
+            raise SigningError(
+                f"multiple {artifact.kind} artifacts staged ({by_kind[artifact.kind].name} and "
+                f"{artifact.name}); expected exactly one per format"
+            )
+        by_kind[artifact.kind] = artifact
+    return by_kind
 
 
 def build_manifest(
@@ -260,14 +281,7 @@ def build_manifest(
     `trusted=None` is the unprovisioned-trust-root case: the manifest records the key id that
     signed it and no fingerprint, and the gate refuses until the contract carries the public key.
     """
-    by_kind: dict[str, Artifact] = {}
-    for artifact in artifacts:
-        if artifact.kind in by_kind:
-            raise SigningError(
-                f"multiple {artifact.kind} artifacts staged ({by_kind[artifact.kind].name} and "
-                f"{artifact.name}); expected exactly one per format"
-            )
-        by_kind[artifact.kind] = artifact
+    by_kind = _artifacts_by_kind(artifacts)
     missing = [kind for kind in TARGET_ARTIFACTS.values() if kind not in by_kind]
     if missing:
         raise SigningError(
@@ -359,14 +373,7 @@ def sign_candidate(
     artifacts = staged_artifacts(root)
     if not artifacts:
         raise SigningError(f"{root} holds no rpm, deb or {ARCH_ARTIFACT} artifact to sign")
-    seen_kinds: dict[str, str] = {}
-    for artifact in artifacts:
-        if artifact.kind in seen_kinds:
-            raise SigningError(
-                f"multiple {artifact.kind} artifacts staged ({seen_kinds[artifact.kind]} and "
-                f"{artifact.name}); expected exactly one per format"
-            )
-        seen_kinds[artifact.kind] = artifact.name
+    _artifacts_by_kind(artifacts)
 
     if key is not None:
         signer_key = minisign.TrustedKey(key.key_id, key.public_key)
@@ -402,7 +409,11 @@ def sign_candidate(
             raise SigningError(f"{artifact.name}: {error}") from error
         observed_key_ids.add(parsed.key_id_text)
         signed_version = minisign.trusted_comment_version(parsed.trusted_comment)
-        if signed_version is not None and signed_version != version:
+        if signed_version != version:
+            if signed_version is None:
+                raise SigningError(
+                    f"{artifact.name} signature trusted comment has no version; expected {version}"
+                )
             raise SigningError(
                 f"{artifact.name} is signed for version {signed_version}, not {version}"
             )
@@ -538,7 +549,7 @@ def update_problems(
                 )
             )
         announced_fingerprint = str(signing.get("fingerprint") or "")
-        if announced_fingerprint and announced_fingerprint != trusted.fingerprint:
+        if announced_fingerprint != trusted.fingerprint:
             problems.append(
                 (
                     "artifact-signature-key-mismatch",
@@ -669,7 +680,16 @@ def update_problems(
             )
             continue
         signed_version = minisign.trusted_comment_version(parsed_signature.trusted_comment)
-        if signed_version is not None and version is not None and signed_version != version:
+        if signed_version is None:
+            problems.append(
+                (
+                    "artifact-signature-version-mismatch",
+                    f"{name} signature trusted comment carries no version"
+                    + (f" (expected {version})" if version is not None else ""),
+                )
+            )
+            continue
+        if version is not None and signed_version != version:
             problems.append(
                 (
                     "artifact-signature-version-mismatch",
@@ -820,7 +840,7 @@ def main(argv: list[str] | None = None) -> int:
     notes = arguments.notes
     if arguments.notes_file:
         notes = Path(arguments.notes_file).read_text(encoding="utf-8").strip()
-    notes = (notes or "").strip() or default_notes(arguments.version)
+    notes = (notes or "").strip() or default_notes(arguments.version, contract=contract)
 
     try:
         document = sign_candidate(

@@ -695,6 +695,76 @@ class ReleaseSigningWorkflowTest(unittest.TestCase):
         self.assertIn("steps.target.outputs.commit", run)
         self.assertIn("steps.target.outputs.tag", run)
 
+    def test_an_unannotated_tag_falls_back_to_adr_0010_release_notes(self) -> None:
+        import os
+        import minisign
+        import release_signing
+
+        notes_step = self.steps()[self.step_index("release-notes.md")]
+        version = packaging.version()
+        tag = f"v{version}"
+        script = notes_step["run"].replace("${{ steps.target.outputs.tag }}", tag)
+
+        with tempfile.TemporaryDirectory(prefix="terax-notes-workflow-") as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            runner_temp = root / "runner-temp"
+            runner_temp.mkdir()
+            git_env = {
+                **os.environ,
+                "GIT_AUTHOR_NAME": "test",
+                "GIT_AUTHOR_EMAIL": "test@example.invalid",
+                "GIT_COMMITTER_NAME": "test",
+                "GIT_COMMITTER_EMAIL": "test@example.invalid",
+            }
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            (repo / "README").write_text("x\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, env=git_env, check=True)
+            subprocess.run(["git", "tag", tag], cwd=repo, check=True)
+            subprocess.run(
+                ["bash", "-c", script],
+                cwd=repo,
+                env={**os.environ, "RUNNER_TEMP": str(runner_temp)},
+                check=True,
+            )
+
+            candidate = root / "linux-packages"
+            candidate.mkdir()
+            identity = packaging.candidate()
+            for name, payload in (
+                (f"{identity.slug}-{version}-1.{packaging.RPM_ARCH}.rpm", b"rpm\n"),
+                (f"{identity.slug}_{version}_{packaging.DEB_ARCH}.deb", b"deb\n"),
+                ("PKGBUILD", b"pkgname=terax-workspace\n"),
+            ):
+                (candidate / name).write_bytes(payload)
+            key = minisign.generate_keypair(seed=b"\x01" * 32, key_id=b"\x02" * 8)
+            commit = "0123456789abcdef0123456789abcdef01234567"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO / "scripts/release_signing.py"),
+                    "--candidate", str(candidate),
+                    "--version", version,
+                    "--tag", tag,
+                    "--commit", commit,
+                    "--notes-file", str(runner_temp / "release-notes.md"),
+                ],
+                cwd=REPO,
+                env={**os.environ, release_signing.SIGNING_KEY_ENV: release_signing.key_to_text(key)},
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            notes = json.loads((candidate / "latest.json").read_text(encoding="utf-8"))["notes"]
+            self.assertIn("unofficial", notes.lower())
+            self.assertIn("not affiliated", notes.lower())
+            self.assertIn("crynta", notes.lower())
+            base_commit = release_contract()["upstream"]["baseCommit"]
+            self.assertIn(base_commit[:7], notes)
+
     def test_the_signed_set_still_leaves_only_as_a_workflow_artifact(self) -> None:
         self.assertIn("name: linux-x86_64-packages", self.body)
         self.assertIn("linux-packages/", self.body)

@@ -14,6 +14,7 @@ import importlib.util
 import json
 import os
 import signal
+import socket
 import subprocess
 import tempfile
 import time
@@ -211,6 +212,23 @@ class InterfereTest(unittest.TestCase):
         )
         self.assertEqual(len(self.server.operations), 1)
         self.assertEqual(self.server.operations[0]["action"], "write")
+
+    def test_oversized_content_length_is_rejected_before_reading_body(self) -> None:
+        port = self.server.httpd.server_port
+        oversized = self.run.INTERFERE_MAX_BODY + 1
+        with socket.create_connection(("127.0.0.1", port), timeout=1.5) as sock:
+            sock.sendall(
+                f"POST /interfere HTTP/1.1\r\n"
+                f"Host: 127.0.0.1:{port}\r\n"
+                f"Content-Length: {oversized}\r\n"
+                f"\r\n".encode("ascii")
+            )
+            chunks = []
+            while chunk := sock.recv(4096):
+                chunks.append(chunk)
+            response = b"".join(chunks).decode("utf-8", "replace")
+        self.assertTrue(response.startswith("HTTP/1.0 413"), response)
+        self.assertIn("request too large", response)
 
 
 class RecoveryScenarioWiringTest(unittest.TestCase):

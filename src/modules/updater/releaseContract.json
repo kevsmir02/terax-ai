@@ -27,6 +27,7 @@
   },
   "upstream": {
     "repository": "crynta/terax-ai",
+    "baseCommit": "cb48a3449a566d66725e2daecc4a21276e75b0ff",
     "endpoints": [
       "https://github.com/crynta/terax-ai/releases/latest/download/latest.json"
     ]

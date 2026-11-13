@@ -523,6 +523,29 @@ class SignedUpdateManifestTest(GateTestCase):
         self.assertIn("artifact-signature-version-mismatch",
                       codes(self.decide(contract_path=self.settled())))
 
+    def test_a_signature_without_a_version_is_refused(self) -> None:
+        deb = next(self.candidate.glob("*.deb"))
+        versionless = minisign.sign_bytes(
+            self.key, deb.read_bytes(),
+            f"timestamp:1\tfile:{deb.name}",
+            prehashed=True,
+        )
+        document = self.update_manifest()
+        document["platforms"]["linux-x86_64"]["signature"] = versionless
+        self.write_update_manifest(document)
+        (self.candidate / f"{deb.name}.minisig").write_text(versionless, encoding="utf-8")
+        decision = self.decide(contract_path=self.settled())
+        self.assertFalse(decision.publishable)
+        self.assertIn("artifact-signature-version-mismatch", codes(decision))
+
+    def test_an_empty_signing_fingerprint_is_refused(self) -> None:
+        document = self.update_manifest()
+        document["signing"]["fingerprint"] = ""
+        self.write_update_manifest(document)
+        decision = self.decide(contract_path=self.settled())
+        self.assertFalse(decision.publishable)
+        self.assertIn("artifact-signature-key-mismatch", codes(decision))
+
     def test_the_published_signature_file_must_match_the_manifest(self) -> None:
         deb = next(self.candidate.glob("*.deb"))
         other = minisign.sign_bytes(

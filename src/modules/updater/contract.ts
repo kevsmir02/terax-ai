@@ -35,7 +35,7 @@ export interface UpdaterContract {
     devServerCommand: string;
     note: string;
   };
-  upstream: { repository: string; endpoints: string[] };
+  upstream: { repository: string; baseCommit?: string; endpoints: string[] };
 }
 
 export const releaseContract = rawContract as UpdaterContract;
