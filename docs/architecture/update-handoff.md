@@ -36,7 +36,7 @@ implying success.
 | Package locks and concurrent installs | not validated | needs two package operations against one database | a second `dnf`/`apt` while the first holds the lock |
 | Upgrade and removal | not validated | needs an installed previous candidate | install N, upgrade to N+1, remove, and check the user profile survives |
 | Failure recovery / partial upgrade | not validated | needs a deliberately broken transaction | break a transaction and boot the app against the result |
-| Package signature rejection | not validated | no fork signing key exists (issue #40) | install an unsigned/foreign package and observe the tool refusing it |
+| Package signature rejection | not validated | native DNF/APT repos are deferred and no clean distro transaction has run yet (#44) | install an unsigned or foreign package with `dnf`/`apt` on a clean VM and verify `.minisig` rejection behavior separately |
 
 Nothing in this table is a hidden pass: the app makes no claim in the UI that an install
 succeeded, and `docs/architecture/update-discovery.md` keeps its own "Not claimed" list.

@@ -8,10 +8,10 @@
 //! test can prove the two never collide, and so code that must *refuse* upstream state
 //! (rather than read, overwrite or delete it) has the upstream names to refuse.
 //!
-//! The identity is **provisional**. Final branding, release endpoints and signing keys
-//! are ticket #39/#40 inputs; nothing here is shippable identity. Renaming the fork is a
-//! one-file change here, plus `src-tauri/tauri.conf.json`, which a build tool forces to
-//! be a literal and which the tests below compare against this table.
+//! The publication identity (`Codr`, `io.github.kevsmir02.codr`, `codr`, `CODR`) was
+//! finalized under #40. Renaming the fork requires updating `src/modules/identity/namespace.json`
+//! and `src-tauri/tauri.conf.json` (whose literal fields the tests below check against this table),
+//! and is a breaking change for installed packages and update endpoints.
 
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -29,10 +29,9 @@ pub struct Upstream {
     pub publisher: String,
 }
 
-/// The package/install identity of the fork's Linux candidate builds. Final branding is
-/// ticket #39/#40; these names are deliberately private working values, and the packaging
-/// script (`scripts/package-candidate/run.py`) generates the bundle configuration from them
-/// instead of repeating literals.
+/// The settled package/install identity of the fork (`Codr`), derived from
+/// `src/modules/identity/namespace.json`. The packaging script (`scripts/package-candidate/run.py`)
+/// generates bundle configuration overlays from these fields instead of repeating literals.
 #[derive(Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Packaging {

@@ -2,9 +2,8 @@
 
 The candidate path is deliberately narrow: one architecture (`x86_64`), two formats (`rpm`,
 `deb`) and a source-built Arch recipe. The Tauri bundler is driven with a generated config
-overlay so the shipped metadata comes from the identity table
-(`src/modules/identity/namespace.json`) instead of repeated literals, and artwork/app identity
-that is still undecided (tickets #39/#40) never leaks into a package.
+overlay so the shipped metadata comes from the settled identity table
+(`src/modules/identity/namespace.json`) instead of repeated literals.
 
 `manifest_document()` is pure: it assembles the machine-readable record from values the runner
 measured. The inspection helpers below read the produced `.rpm`/`.deb` with tools that exist on
@@ -296,10 +295,10 @@ def candidate_config() -> dict:
             "shortDescription": c.short_description,
             "longDescription": c.long_description,
         },
-        # A candidate inherits the fork-owned release contract (see
-        # `src/modules/updater/releaseContract.json`): a non-live `.invalid` endpoint and no
-        # trust root until #39/#40. It must never carry upstream's feed or key, which is what
-        # `updater_problems()` checks. Issue #37 owns discovery behaviour.
+        # A candidate inherits the finalized fork-owned release contract (see
+        # `src/modules/updater/releaseContract.json`): the settled endpoint and committed
+        # minisign public key (`94097B75DB498B21`). It must never carry upstream's feed or key,
+        # which is what `updater_problems()` checks. Issue #37 owns discovery behaviour.
     }
 
 

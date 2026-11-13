@@ -35,7 +35,7 @@ def _identity() -> dict:
 
 
 IDENTITY = _identity()
-# This fork's provisional product identifier (final branding: ticket #39/#40).
+# This fork's settled product identifier (`io.github.kevsmir02.codr`).
 PRODUCT_IDENTIFIER = IDENTITY["appIdentifier"]
 # The directory token the control descriptor, shell integration and CLI launcher use.
 NAMESPACE = IDENTITY["namespace"]

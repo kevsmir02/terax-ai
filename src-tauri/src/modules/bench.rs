@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, WebviewWindow};
 
-/// Identifier of this fork's application (provisional; `modules::identity`).
+/// Identifier of this fork's application (`modules::identity`).
 fn product_identifier() -> &'static str {
     crate::modules::identity::app_identifier()
 }

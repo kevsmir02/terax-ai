@@ -55,13 +55,7 @@ build, sign the staged artifacts with the maintainer's minisign key, write the s
 and run the second gate stage, which binds the staged artifacts to the triggering commit, their
 sha256 and a signature that must verify under the committed public key.
 
-Today the third precondition cannot hold, so a tag fails loudly before any artifact is produced
-and nothing is published anywhere — the workflow has no write permission, no release-upload action
-and no way to publish, and the gate has no publish code path. The one secret it reads is the
-release signing key, injected for the signer step only; without it the signer refuses by name
-(`signing-key-missing`). The refusal names each missing input and the ticket that supplies it;
-`docs/architecture/linux-packages.md` carries the full table; trust, custody, verification and key
-replacement are `docs/architecture/release-trust.md`:
+Ticket #40 settled the publication identity (`Codr`, `kevsmir02/terax-ai`, `https://github.com/kevsmir02/terax-ai/releases/latest/download/latest.json`) and provisioned the public trust root (`94097B75DB498B21`); the workflow still has no auto-publish code path, so a tagged run produces signed run artifacts and leaves human publication to #45. The one secret it reads is the release signing key, injected for the signer step only (`TERAX_RELEASE_SIGNING_KEY` and `TERAX_RELEASE_SIGNING_KEY_PASSPHRASE`); without it the signer refuses by name (`signing-key-missing`). `docs/architecture/linux-packages.md` carries the readiness table; trust, custody, verification and key replacement are in `docs/architecture/release-trust.md`:
 
 | Missing input | Ticket |
 | --- | --- |
@@ -151,14 +145,12 @@ off; it falls back to `handoff-unavailable` and points at the main window's dial
 
 ## Not claimed
 
-- No live fork release endpoint, owner URL or signing key exists yet. A version tag therefore
-  publishes nothing: the gate refuses (see above), and no hosted run of the release workflow exists.
-- No tagged release, signing, upload or public artifact discovery has been exercised end to end;
-  those are release-only claims owned by #40/#44/#45.
+- No hosted run of the release workflow or public release exists yet; first public publication and
+  hosted release-workflow execution belong to #45.
 - No RPM/DEB/Arch install, upgrade, signature rejection or package-lock behavior has been
-  validated. That needs the packaged-app seam with real artifacts on a disposable system.
-- The readiness check is unit- and component-tested, but a real package-tool run — hand off,
-  run the command, start the new binary — has not been observed in this repository; that run is
-  the human check named in #39.
+  validated. That needs the packaged-app seam with real artifacts on a disposable system (#44).
+- The readiness check is unit- and component-tested, and discovery cryptographically verifies the
+  Ed25519 global signature, but a real package-tool run (hand off, run the command, start the new
+  binary) has not been observed against a published release yet.
 - No privilege interval, in-app transaction or rollback exists, by decision rather than as an
   unfinished gap.

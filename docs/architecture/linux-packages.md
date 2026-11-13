@@ -87,8 +87,7 @@ another version), plus the signer and the provisioning script. The verifier
 (`scripts/minisign.py`) is pinned against a signature produced by the real `tauri signer sign` and
 against RFC 8032's test vector, and the workflow order is pinned by the guard test. **Not
 validated:** a real hosted run of the workflow itself (no tagged release has been run through
-GitHub Actions), signing with the maintainer's real key (none is provisioned), and any publication
-(that is #45's job).
+GitHub Actions yet), and any publication (that is #45's job).
 
 Updates are never installed by the application. A user installs or upgrades the RPM/DEB with
 their package manager (`dnf`, `apt`); the application never downloads, installs or restarts
