@@ -71,7 +71,7 @@ describe("updater dialog body", () => {
       ],
       startedAfterApproval: true,
       summary:
-        "Terax did not hand off: 1 file with unsaved changes (src/app.ts) and 1 agent still working (Claude Code). Terax does not save, close, stop or interrupt any of it; what to finish or close stays your decision.",
+        "Codr did not hand off: 1 file with unsaved changes (src/app.ts) and 1 agent still working (Claude Code). Codr does not save, close, stop or interrupt any of it; what to finish or close stays your decision.",
     });
 
     expect(html).toContain("src/app.ts");
@@ -111,7 +111,7 @@ describe("updater dialog body", () => {
 
     expect(html).toContain("cancelled");
     expect(html).toContain("locked");
-    expect(html).toContain("close Terax");
+    expect(html).toContain("close Codr");
     expect(html).toContain("run the command again");
     expect(html).toContain("nothing is rolled back");
     expect(html).toContain("cannot tell you whether the transaction finished");

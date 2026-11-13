@@ -40,7 +40,7 @@ fn env_prefix() -> &'static str {
         .expect("identity table envPrefix")
 }
 
-/// An environment variable of this fork, e.g. `env_name("CLI")` -> `TERAX_WORKSPACE_FORK_CLI`.
+/// An environment variable of this fork, e.g. `env_name("CLI")` -> `CODR_CLI`.
 fn env_name(suffix: &str) -> String {
     format!("{}_{suffix}", env_prefix())
 }

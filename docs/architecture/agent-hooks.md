@@ -16,15 +16,15 @@ Code: `src-tauri/src/modules/agent.rs` (planning, ownership, apply),
 ## Ownership: what "this fork's entries" means
 
 The marker is the fork's own CLI variable from
-`src/modules/identity/namespace.json` (`envPrefix` = `TERAX_WORKSPACE_FORK`, so
-`TERAX_WORKSPACE_FORK_CLI`). An entry is fork-owned only when its command
+`src/modules/identity/namespace.json` (`envPrefix` = `CODR`, so
+`CODR_CLI`). An entry is fork-owned only when its command
 literally invokes that CLI in one of the three shell dialects the adapters emit:
 
 | Dialect | Fork-owned invocation |
 | --- | --- |
-| POSIX | `"$TERAX_WORKSPACE_FORK_CLI" hook <agent> <event>` |
-| cmd | `"%TERAX_WORKSPACE_FORK_CLI%" hook <agent> <event>` |
-| PowerShell | `$env:TERAX_WORKSPACE_FORK_CLI hook <agent> <event>` |
+| POSIX | `"$CODR_CLI" hook <agent> <event>` |
+| cmd | `"%CODR_CLI%" hook <agent> <event>` |
+| PowerShell | `$env:CODR_CLI hook <agent> <event>` |
 
 Consequences, all covered by tests:
 
@@ -35,14 +35,14 @@ Consequences, all covered by tests:
 - User-written hooks are foreign. A matcher group that contains any command this
   fork did not write is left alone as a whole.
 - Lookalikes are foreign: `TERAX_CLI`, an unquoted variable, a different verb
-  (`"$TERAX_WORKSPACE_FORK_CLI" report …`), or a suffix
-  (`"$TERAX_WORKSPACE_FORK_CLI_EXTRA" hook …`) does not match.
+  (`"$CODR_CLI" report …`), or a suffix
+  (`"$CODR_CLI_EXTRA" hook …`) does not match.
 - A removal plan on a file that holds no fork entries produces no write, so the
   file stays byte-identical (comments, indentation, CRLF included).
 - The Pi integration is a separate extension file
-  (`~/.pi/agent/extensions/terax-workspace-notifications.ts`). Upstream's
+  (`~/.pi/agent/extensions/codr-notifications.ts`). Upstream's
   `terax-notifications.ts` sits next to it and is never opened. A file at our
-  own path whose contents are not our `terax-workspace-pi-notifications-v*`
+  own path whose contents are not our `codr-pi-notifications-v*`
   family is a conflict: install is refused and removal does nothing.
 - Installed definitions are byte-stable across application versions, so an
   upgrade does not rewrite a file that is already current.
@@ -113,10 +113,10 @@ A written configuration is **configured**, not active. The plan and status carry
 
 | Agent | Config this fork writes | Install | Removal | Restart | User trust/activation | Verified against a real CLI |
 | --- | --- | --- | --- | --- | --- | --- |
-| Claude Code | `~/.claude/settings.json` → `hooks` | supported | supported | required | may ask to review hooks / changed settings; approve the group that calls `TERAX_WORKSPACE_FORK_CLI` | **no** |
+| Claude Code | `~/.claude/settings.json` → `hooks` | supported | supported | required | may ask to review hooks / changed settings; approve the group that calls `CODR_CLI` | **no** |
 | Codex | `~/.codex/hooks.json` → `hooks` | supported | supported | required | may show a hook review/trust prompt; approve the entry that calls the fork CLI | **no** |
-| Gemini CLI | `~/.gemini/settings.json` → `hooks` | supported | supported | required | may ask to trust/review hooks; approve the `terax-workspace` group | **no** |
-| Pi | `~/.pi/agent/extensions/terax-workspace-notifications.ts` | supported | supported | required | may ask to allow/trust the extension | **no** |
+| Gemini CLI | `~/.gemini/settings.json` → `hooks` | supported | supported | required | may ask to trust/review hooks; approve the `codr` group | **no** |
+| Pi | `~/.pi/agent/extensions/codr-notifications.ts` | supported | supported | required | may ask to allow/trust the extension | **no** |
 | OpenCode | nothing | unsupported | unsupported | — | use OpenCode's own approvals | n/a |
 | Antigravity CLI | nothing | unsupported | unsupported | — | launching/basic status only | n/a |
 

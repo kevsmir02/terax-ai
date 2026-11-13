@@ -3,7 +3,7 @@
 `scripts/pty-smoke` and `scripts/app-lab` both launch the real Tauri application. On Linux the
 application resolves its identity, storage and the control descriptor from the environment. The
 control descriptor is keyed by the fork's namespace directory, not by the application
-identifier (`$XDG_CACHE_HOME/terax-workspace/control.json`, plus a per-pid launcher under
+identifier (`$XDG_CACHE_HOME/codr/control.json`, plus a per-pid launcher under
 `.../run/<pid>/bin/terax`), so a run that inherits the real cache directory would write the
 *installed* application's live descriptor. The only safe shape is therefore a private `HOME`
 **and** a private `XDG_*` tree under the run's output directory, while the display and session

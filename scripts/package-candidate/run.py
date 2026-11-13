@@ -199,7 +199,7 @@ def run_cli(binary: Path, output: Path) -> dict:
     environment = {
         **os.environ,
         **linux_profile.profile_env(home),
-        "TERAX_WORKSPACE_FORK_BENCH_ISOLATED": "1",
+        "CODR_BENCH_ISOLATED": "1",
     }
     result = subprocess.run(
         [str(binary), "--help"],

@@ -36,7 +36,7 @@ const report = (
 const groups: CheckpointGroups = {
   manual: [
     {
-      ref: "refs/terax-workspace/manual-checkpoints/aa",
+      ref: "refs/codr/manual-checkpoints/aa",
       id: "aa",
       name: "before refactor",
       commit: "c1",

@@ -97,9 +97,9 @@ launch itself, `MAX_ATTEMPTS = 3`), so it cannot become a hanging or flaky gate.
 branch protection until it has been observed green on a hosted runner. It runs the same
 `scripts/tests` invariants as `repo-guards` before it builds anything.
 
-On failure — and on success, for the record — it uploads `report.json`, `page.log`, `app.log`,
+On failure - and on success, for the record - it uploads `report.json`, `page.log`, `app.log`,
 `build.log` and `openbox.log` as the `linux-app-smoke` artifact. Every launch uses
-`--identifier dev.terax-workspace.fork.app-lab-ci` (a disposable profile under the fork identifier
+`--identifier io.github.kevsmir02.codr.app-lab-ci` (a disposable profile under the fork identifier
 in `src/modules/identity/namespace.json`; upstream's `app.crynta.terax.*` is refused), a private
 `HOME` and private `XDG_*` tree under the output directory, and the app-lab preflight plus the
 bench binary's own guard refuse anything else, so the job cannot touch a production profile even

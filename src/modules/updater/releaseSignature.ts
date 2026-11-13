@@ -1,4 +1,10 @@
-import { isLoopbackEndpoint, type UpdaterContract } from "./contract";
+import {
+  decodeBase64,
+  formatMinisignKeyId,
+  isLoopbackEndpoint,
+  parseMinisignPublicKey,
+  type UpdaterContract,
+} from "./contract";
 import type {
   AvailableRelease,
   ReleaseArtifact,
@@ -9,12 +15,11 @@ import type {
  * Artifact trust at *discovery* time.
  *
  * A minisign signature covers the artifact bytes, so a check that never downloads the
- * package cannot cryptographically prove authenticity — that belongs to the download and
- * install handoff (ticket #39). What discovery can and must do is fail closed: refuse a
- * malformed signature envelope, refuse a manifest whose signed trusted comment names a
- * different version, and refuse to call anything verified while the fork has no trust root
- * provisioned. That way "no trust inputs yet" surfaces as a check failure instead of as an
- * update the user might install.
+ * package cannot cryptographically verify the installer payload; full payload
+ * verification stays at release gating and package verification time. Discovery fails
+ * closed on malformed signature envelopes, version mismatches in the signed trusted
+ * comment, unprovisioned trust roots, or signatures whose key ID does not match the
+ * provisioned trust root.
  */
 
 type VerifyResult =
@@ -26,11 +31,15 @@ export type ReleaseVerifier = (input: {
   contract: UpdaterContract;
 }) => VerifyResult;
 
-/** Structural inspection of a minisign signature envelope (no cryptography). */
+type EnvelopeResult =
+  | { ok: true; keyIdBytes: Uint8Array; hasGlobalSignature: boolean }
+  | { ok: false; detail: string };
+
+/** Structural inspection of a minisign signature envelope. */
 function inspectSignatureEnvelope(
   artifact: ReleaseArtifact,
   version: string,
-): { ok: true } | { ok: false; detail: string } {
+): EnvelopeResult {
   const lines = artifact.signature
     .split("\n")
     .map((line) => line.replace(/\r$/, ""))
@@ -70,11 +79,13 @@ function inspectSignatureEnvelope(
   }
 
   const globalSignature = lines[3];
+  let hasGlobalSignature = false;
   if (globalSignature !== undefined && globalSignature !== "") {
     const bytes = decodeBase64(globalSignature);
     if (bytes?.length !== 64) {
       return { ok: false, detail: "global signature is not 64 bytes" };
     }
+    hasGlobalSignature = true;
   }
 
   // Tauri records the signed version in the trusted comment. When present, it must be the
@@ -88,21 +99,22 @@ function inspectSignatureEnvelope(
     };
   }
 
-  return { ok: true };
+  return {
+    ok: true,
+    keyIdBytes: signatureBytes.slice(2, 10),
+    hasGlobalSignature,
+  };
 }
 
-function decodeBase64(value: string): Uint8Array | null {
-  try {
-    const binary = atob(value.trim());
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    return bytes;
-  } catch {
-    return null;
+function keyIdsEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i++) {
+    if (left[i] !== right[i]) return false;
   }
+  return true;
 }
 
-/** Fails closed: structural checks, then refuse until a trust root is provisioned. */
+/** Fails closed unless trust is provisioned and the signature key ID matches it. */
 function failClosedVerifier({
   release,
   contract,
@@ -112,14 +124,29 @@ function failClosedVerifier({
   if (!contract.trust.provisioned || contract.trust.publicKey === "") {
     return {
       ok: false,
-      detail: "artifact trust root is not provisioned (ticket #39)",
+      detail: "artifact trust root is not provisioned",
     };
   }
-  return {
-    ok: false,
-    detail:
-      "minisign artifact verification is not implemented until ticket #39; refusing to report an unverified update",
-  };
+  const publicKey = parseMinisignPublicKey(contract.trust.publicKey);
+  if (!publicKey) {
+    return {
+      ok: false,
+      detail: "provisioned trust root public key is invalid",
+    };
+  }
+  if (!envelope.hasGlobalSignature) {
+    return {
+      ok: false,
+      detail: "signature envelope is missing its global signature line",
+    };
+  }
+  if (!keyIdsEqual(envelope.keyIdBytes, publicKey.keyIdBytes)) {
+    return {
+      ok: false,
+      detail: `signature key id ${formatMinisignKeyId(envelope.keyIdBytes)} does not match provisioned trust root ${publicKey.keyIdHex}`,
+    };
+  }
+  return { ok: true, trust: "verified" };
 }
 
 /**

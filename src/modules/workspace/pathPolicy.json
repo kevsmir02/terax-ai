@@ -53,9 +53,9 @@
     "/appdata/local/terax",
     "/appdata/local/app.crynta.terax",
     "/.local/share/app.crynta.terax",
-    "/.cache/terax-workspace",
-    "/appdata/local/dev.terax-workspace.fork",
-    "/.local/share/dev.terax-workspace.fork",
-    "/.config/dev.terax-workspace.fork"
+    "/.cache/codr",
+    "/appdata/local/io.github.kevsmir02.codr",
+    "/.local/share/io.github.kevsmir02.codr",
+    "/.config/io.github.kevsmir02.codr"
   ]
 }

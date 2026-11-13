@@ -30,7 +30,7 @@ fn recovery_refs(repo: &TestRepo) -> Vec<String> {
     repo.git(&[
         "for-each-ref",
         "--format=%(refname)",
-        "refs/terax-workspace/",
+        "refs/codr/",
     ])
     .lines()
     .map(str::to_string)

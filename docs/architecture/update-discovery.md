@@ -1,8 +1,8 @@
 # Update discovery (fork-owned, no install)
 
-Status: **planned scope implemented for discovery only.** Nothing here downloads a package,
-installs one, prompts for privilege or relaunches the application. Those are ticket #39
-(install/readiness handoff) and #40/#39 (final identity and release trust) inputs.
+Status: **discovery and package-tool handoff implemented; release endpoint and trust root
+provisioned (`Codr` / `94097B75DB498B21`).** Nothing here downloads a package, installs one,
+prompts for privilege or relaunches the application (`update-handoff.md`).
 
 ## What this build is allowed to do
 
@@ -27,26 +27,22 @@ that test in the same change; the test is what makes a re-grant a deliberate, re
 
 ## Release contract
 
-`src/modules/updater/releaseContract.json` is the single source of the fork's release
-channel. It is provisional and non-live on purpose:
+`src/modules/updater/releaseContract.json` is the single source of the fork's release channel:
 
-- endpoint host is under `.invalid` (RFC 2606), so a build cannot query a live feed by
-  accident;
-- channel is `stable` only;
-- `trust.provisioned` is `false` with an empty `publicKey`, because no fork signing key
-  exists yet;
-- upstream's feed (`crynta/terax-ai` releases) is recorded only so code and tests can
-  refuse it. The inherited `src-tauri/tauri.conf.json` endpoint and upstream minisign key
-  have been removed; the Tauri updater config now mirrors this contract with an empty key
-  and is inert (discovery does not call the native updater plugin).
+- `endpoints`: `https://github.com/kevsmir02/terax-ai/releases/latest/download/latest.json`;
+- `channel`: `stable` only;
+- `trust.provisioned`: `true` with Codr's minisign public key (`keyId` `94097B75DB498B21`,
+  `fingerprint` `sha256:a02fd6ac492d1f070919bde106c20c0a376fbcdb6db8bc4c17ca0efd68197487`);
+- upstream's feed (`crynta/terax-ai` releases) is recorded only so code and tests can refuse it.
+  `src-tauri/tauri.conf.json` mirrors this contract (`endpoints` and `pubkey`) without using the
+  native updater plugin at runtime (discovery does not call `plugin-updater`).
 
 `src/modules/updater/contract.ts` resolves the contract. In a development build only, the
-`VITE_TERAX_WORKSPACE_UPDATE_ENDPOINT` environment variable can point the check at an
-isolated fixture endpoint, and only a loopback endpoint is accepted. Production builds
-ignore it. `pnpm dev:update-fixtures` serves `src/modules/updater/fixtures` on
-`127.0.0.1:8787` (`/stable.json`, `/stable-current.json`, `/stable-bad-signature.json`,
-`/stable-prerelease.json`, plus `/rate-limited`, `/offline`, `/malformed` failure routes).
-No route serves a package.
+`VITE_CODR_UPDATE_ENDPOINT` environment variable can point the check at an isolated fixture
+endpoint, and only a loopback endpoint is accepted. Production builds ignore it.
+`pnpm dev:update-fixtures` serves `src/modules/updater/fixtures` on `127.0.0.1:8787`
+(`/stable.json`, `/stable-current.json`, `/stable-bad-signature.json`, `/stable-prerelease.json`,
+plus `/rate-limited`, `/offline`, `/malformed` failure routes). No route serves a package.
 
 ## Tagged releases: a gate that refuses, not a publish
 
@@ -97,20 +93,23 @@ It settles into one of three outcomes:
 | `available` | A newer stable release exists, its envelope passed inspection and an explicit verifier accepted it. |
 | `failed` | Check failed: `offline`, `timeout`, `rate-limited`, `server-error`, `bad-payload`, `unsupported-channel`, `unsupported-target`, `signature`, `no-endpoint`, `misconfigured`. |
 
-Artifact trust at discovery time is **structural only**: a valid minisign envelope, a
-trusted comment that names the announced version, and a provisioned trust root. A check
-that does not download the artifact cannot cryptographically verify it, so the production
-verifier fails closed (`check-failed: signature`) until #40 provisions keys. A development
-build against loopback fixtures labels releases `fixture-unverified`, and the UI says so.
+Artifact trust at discovery time checks structure and key identity: a valid minisign envelope,
+a trusted comment that names the announced version, a provisioned trust root, and an 8-byte key ID
+matching `trust.publicKey`. Because discovery never downloads the artifact bytes, full Ed25519/
+BLAKE2b verification over the package payload happens in `scripts/release_gate.py` before
+publication (and offline via `minisign -Vm` before manual installation). Production discovery fails
+closed (`check-failed: signature`) on unprovisioned keys, malformed envelopes, version mismatches,
+or mismatched key IDs. A development build against loopback fixtures labels releases
+`fixture-unverified`, and the UI says so.
 
 Release *production*, unlike discovery, does verify cryptographically: the release gate checks every
 announced artifact's signature against the committed public key before a release could be published
 (`docs/architecture/release-trust.md`). A published `latest.json` and its `.minisig` files are what
-that gate accepted; the application still only inspects structure because it never downloads.
+that gate accepted; the application still never downloads the payload itself.
 
 Automatic checks run at most once per `check.intervalMs` (6 h), tracked under the fork's
-namespaced key (`terax-workspace:updater:last-check`). An explicit user check bypasses the
-throttle. The hook never blocks the UI and never downloads.
+namespaced key (`codr:updater:last-check`). An explicit user check bypasses the throttle. The hook
+never blocks the UI and never downloads.
 
 ## Install handoff (implemented; the app still never installs)
 

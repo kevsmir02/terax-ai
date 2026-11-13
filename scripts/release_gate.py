@@ -20,13 +20,12 @@ to the announced sha256, that artifact's signature must verify under
 signature. A missing manifest, a missing signature, a signature from another key, a signature over
 other bytes and a staged artifact nobody announced are all refusals.
 
-Publication inputs — release owner/URL and signing trust — are not decided yet (they are the
-trust/identity ticket's job, breakdown ticket 39 = GitHub issue #40). While
-`src/modules/updater/releaseContract.json` is `"provisional": true` the gate refuses, naming every
-input it is missing, and the workflow has no permission, action or secret that could publish
-anyway. Flipping `provisional` to `false` is the deliberate change that relaxes that refusal — and
-even then the gate keeps failing closed until the contract is non-live-free, the trust root is
-provisioned and the signing input is present.
+Publication inputs - release owner/URL and signing trust root - live in
+`src/modules/updater/releaseContract.json` (breakdown ticket 39 = GitHub issue #40). While a
+contract is `"provisional": true` the gate refuses, naming every input it is missing. Even once
+settled (`"provisional": false`), the gate keeps failing closed if an endpoint uses a reserved
+host or upstream URL, if the trust root is missing/invalid, if the signing secret input is absent
+in the environment, or if any signature fails verification under `trust.publicKey`.
 
 The gate never prints a secret: it reports whether the signing input is present, never its value.
 """
@@ -296,7 +295,7 @@ def _identity(tag: str, version: str | None, commit: str,
 
 
 # ---------------------------------------------------------------------------------------------
-# Publication inputs: the contract is the single source, and it is provisional on purpose
+# Publication inputs: releaseContract.json is the single source of identity and trust root
 # ---------------------------------------------------------------------------------------------
 
 

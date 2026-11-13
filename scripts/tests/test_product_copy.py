@@ -290,12 +290,12 @@ class SecurityPolicyCopyTest(unittest.TestCase):
     does not run.
     """
 
-    def test_the_policy_says_this_is_an_unofficial_candidate_build(self) -> None:
+    def test_the_policy_says_this_is_an_unofficial_fork(self) -> None:
         # Prose wraps: compare collapsed whitespace, or a reflow breaks the assertion.
         body = " ".join(SECURITY.read_text(encoding="utf-8").lower().split())
         self.assertIn("unofficial", body)
         self.assertIn("not affiliated", body)
-        self.assertIn("candidate build", body)
+        self.assertIn("codr", body)
 
     def test_the_policy_routes_reports_to_this_repository(self) -> None:
         body = SECURITY.read_text(encoding="utf-8")
@@ -310,14 +310,14 @@ class SecurityPolicyCopyTest(unittest.TestCase):
             "SECURITY.md sends a reporter to an upstream route this fork does not own",
         )
 
-    def test_the_policy_does_not_claim_signing_that_is_not_provisioned(self) -> None:
+    def test_the_policy_records_the_provisioned_key_and_no_published_release(self) -> None:
         body = SECURITY.read_text(encoding="utf-8")
-        self.assertNotRegex(
+        self.assertIn("94097B75DB498B21", body)
+        self.assertIn(
+            "sha256:a02fd6ac492d1f070919bde106c20c0a376fbcdb6db8bc4c17ca0efd68197487",
             body,
-            re.compile(r"signed releases?[^.]{0,40}verified", re.IGNORECASE),
-            "SECURITY.md claims releases are signed and verified; no key is provisioned",
         )
-        self.assertIn("no key is provisioned", body.lower())
+        self.assertIn("no stable release is published yet", body.lower())
 
     def test_the_policy_states_the_no_install_boundary(self) -> None:
         body = SECURITY.read_text(encoding="utf-8").lower()

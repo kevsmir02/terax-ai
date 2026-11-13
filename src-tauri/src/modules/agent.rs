@@ -460,7 +460,7 @@ fn hook_group(spec: &AgentSpec, event: &EventSpec, windows: bool) -> Value {
 }
 
 /// True only for commands this fork wrote. An entry belongs to this fork when
-/// its command *invokes* this fork's own CLI (`TERAX_WORKSPACE_FORK_CLI`, from
+/// its command *invokes* this fork's own CLI (`CODR_CLI`, from
 /// the identity table) in one of the three shell dialects the adapters emit.
 /// Upstream's hooks (`$TERAX_CLI`, `notify;Terax;`, `terax;notify`,
 /// `__terax_notify`) and any user hook are deliberately not ours: they are
@@ -1059,15 +1059,15 @@ mod tests {
     fn commands_resolve_the_cli_through_the_environment_for_every_shell() {
         assert_eq!(
             hook_command(Dialect::Posix, "codex", "Stop"),
-            r#"[ -n "$TERAX_WORKSPACE_FORK_CLI" ] && "$TERAX_WORKSPACE_FORK_CLI" hook codex Stop || printf '{}'"#
+            r#"[ -n "$CODR_CLI" ] && "$CODR_CLI" hook codex Stop || printf '{}'"#
         );
         assert_eq!(
             hook_command(Dialect::Cmd, "gemini", "AfterAgent"),
-            r#"if defined TERAX_WORKSPACE_FORK_CLI ("%TERAX_WORKSPACE_FORK_CLI%" hook gemini AfterAgent) else (echo {})"#
+            r#"if defined CODR_CLI ("%CODR_CLI%" hook gemini AfterAgent) else (echo {})"#
         );
         assert_eq!(
             hook_command(Dialect::PowerShell, "claude", "Stop"),
-            r#"if ($env:TERAX_WORKSPACE_FORK_CLI) { & $env:TERAX_WORKSPACE_FORK_CLI hook claude Stop } else { '{}' }"#
+            r#"if ($env:CODR_CLI) { & $env:CODR_CLI hook claude Stop } else { '{}' }"#
         );
     }
 
@@ -1078,7 +1078,7 @@ mod tests {
                 for event in agent.events {
                     let group = hook_group(agent, event, windows);
                     let command = group["hooks"][0]["command"].as_str().unwrap();
-                    assert!(command.contains("TERAX_WORKSPACE_FORK_CLI"), "{command}");
+                    assert!(command.contains("CODR_CLI"), "{command}");
                     assert!(
                         command.chars().all(
                             |c| c.is_ascii_alphanumeric() || " \"$%{}()[]&|'-=_:\\".contains(c)
@@ -1127,7 +1127,7 @@ mod tests {
         assert!(hook.get("async").is_none());
         assert!(hook.get("shell").is_none());
         assert_eq!(unix["hooks"]["SessionEnd"][0]["hooks"][0]["timeout"], 5);
-        assert!(commands(&unix, "Stop")[0].starts_with("[ -n \"$TERAX_WORKSPACE_FORK_CLI\" ]"));
+        assert!(commands(&unix, "Stop")[0].starts_with("[ -n \"$CODR_CLI\" ]"));
 
         let windows = parsed(&install("claude", None, true));
         let hook = &windows["hooks"]["Stop"][0]["hooks"][0];
@@ -1135,7 +1135,7 @@ mod tests {
         assert!(hook["command"]
             .as_str()
             .unwrap()
-            .starts_with("if ($env:TERAX_WORKSPACE_FORK_CLI)"));
+            .starts_with("if ($env:CODR_CLI)"));
     }
 
     #[test]
@@ -1166,7 +1166,7 @@ mod tests {
         assert!(hook["command"]
             .as_str()
             .unwrap()
-            .starts_with("if defined TERAX_WORKSPACE_FORK_CLI"));
+            .starts_with("if defined CODR_CLI"));
     }
 
     #[test]
@@ -1207,7 +1207,7 @@ mod tests {
         assert!(commands(&unix, "AfterAgent")[0].contains("hook gemini AfterAgent"));
         let windows = parsed(&install("gemini", None, true));
         assert!(commands(&windows, "Notification")[0]
-            .starts_with("if defined TERAX_WORKSPACE_FORK_CLI"));
+            .starts_with("if defined CODR_CLI"));
     }
 
     #[test]
@@ -1262,7 +1262,7 @@ mod tests {
                     let ours = commands(&value, event.event)
                         .iter()
                         .filter(|command| {
-                            command.contains("TERAX_WORKSPACE_FORK_CLI")
+                            command.contains("CODR_CLI")
                                 || command.contains("hook ")
                         })
                         .count();
@@ -1425,12 +1425,12 @@ mod tests {
         };
         let posix = |agent: &str, event: &str| {
             format!(
-                r#"[ -n "$TERAX_WORKSPACE_FORK_CLI" ] && "$TERAX_WORKSPACE_FORK_CLI" hook {agent} {event} || printf '{{}}'"#
+                r#"[ -n "$CODR_CLI" ] && "$CODR_CLI" hook {agent} {event} || printf '{{}}'"#
             )
         };
         let cmd = |agent: &str, event: &str| {
             format!(
-                r#"if defined TERAX_WORKSPACE_FORK_CLI ("%TERAX_WORKSPACE_FORK_CLI%" hook {agent} {event}) else (echo {{}})"#
+                r#"if defined CODR_CLI ("%CODR_CLI%" hook {agent} {event}) else (echo {{}})"#
             )
         };
 
@@ -1473,7 +1473,7 @@ mod tests {
             group("claude", "Stop", true),
             json!({ "hooks": [{
                 "type": "command",
-                "command": r#"if ($env:TERAX_WORKSPACE_FORK_CLI) { & $env:TERAX_WORKSPACE_FORK_CLI hook claude Stop } else { '{}' }"#,
+                "command": r#"if ($env:CODR_CLI) { & $env:CODR_CLI hook claude Stop } else { '{}' }"#,
                 "shell": "powershell"
             }] })
         );
@@ -1540,7 +1540,7 @@ mod tests {
         let legacy = json!({
             "hooks": {
                 "Notification": [
-                    { "hooks": [ { "type": "command", "command": "[ -n \"$TERAX_WORKSPACE_FORK_TERMINAL\" ] && printf '{\"terminalSequence\":\"\\u001b]777;notify;Terax;attention\\u0007\"}' || true" } ] }
+                    { "hooks": [ { "type": "command", "command": "[ -n \"$CODR_TERMINAL\" ] && printf '{\"terminalSequence\":\"\\u001b]777;notify;Terax;attention\\u0007\"}' || true" } ] }
                 ],
                 "Stop": [
                     { "hooks": [ { "type": "command", "command": "\"C:\\\\Terax\\\\terax.exe\" __terax_notify claude finished" } ] },
@@ -1637,7 +1637,7 @@ mod tests {
             .after
             .as_deref()
             .unwrap()
-            .contains("TERAX_WORKSPACE_FORK_CLI"));
+            .contains("CODR_CLI"));
 
         let again = plan_at("claude", Action::Install, &path, fresh.after.clone(), false).unwrap();
         assert!(!again.changed);
@@ -1722,7 +1722,7 @@ mod tests {
         assert_eq!(applied.status.config_state, "installed");
         let installed = std::fs::read_to_string(&path).unwrap();
         assert!(installed.contains("sonn"), "the external edit is preserved");
-        assert!(installed.contains("TERAX_WORKSPACE_FORK_CLI"));
+        assert!(installed.contains("CODR_CLI"));
 
         // Repeating a preview that still matches reports no write needed, so a
         // retry after a stale refusal is explicit and idempotent.
@@ -1846,9 +1846,9 @@ mod tests {
             r#"printf '\033]777;notify;Terax;claude;Stop\007'"#,
             r#"terax.exe __terax_notify claude finished"#,
             // The fork's variable without this fork's invocation.
-            r#"[ -n "$TERAX_WORKSPACE_FORK_CLI" ] && notify-send ready"#,
-            r#""$TERAX_WORKSPACE_FORK_CLI_EXTRA" hook claude Stop"#,
-            r#""$TERAX_WORKSPACE_FORK_CLI" report claude Stop"#,
+            r#"[ -n "$CODR_CLI" ] && notify-send ready"#,
+            r#""$CODR_CLI_EXTRA" hook claude Stop"#,
+            r#""$CODR_CLI" report claude Stop"#,
             "claude hook claude Stop",
         ];
         for command in foreign {
@@ -1890,7 +1890,7 @@ mod tests {
         );
 
         // An older fork version's entry is partial, never installed.
-        std::fs::write(&path, "{\n  \"hooks\": {\n    \"Stop\": [\n      { \"hooks\": [ { \"type\": \"command\", \"command\": \"[ -n \\\"$TERAX_WORKSPACE_FORK_CLI\\\" ] && \\\"$TERAX_WORKSPACE_FORK_CLI\\\" hook claude OldEvent || printf '{}'\" } ] }\n    ]\n  }\n}\n").unwrap();
+        std::fs::write(&path, "{\n  \"hooks\": {\n    \"Stop\": [\n      { \"hooks\": [ { \"type\": \"command\", \"command\": \"[ -n \\\"$CODR_CLI\\\" ] && \\\"$CODR_CLI\\\" hook claude OldEvent || printf '{}'\" } ] }\n    ]\n  }\n}\n").unwrap();
         let partial = status_at("claude", &path);
         assert_eq!(partial.config_state, "partial");
         assert!(!partial.installed);
@@ -2067,7 +2067,7 @@ mod tests {
             .is_symlink());
         assert!(std::fs::read_to_string(&managed)
             .unwrap()
-            .contains("TERAX_WORKSPACE_FORK_CLI"));
+            .contains("CODR_CLI"));
         let mode = std::fs::metadata(&managed).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
     }
@@ -2097,7 +2097,7 @@ mod tests {
             pi_after(None, Action::Install, p).unwrap().as_deref(),
             Some(pi_extension().as_str())
         );
-        let v1 = "// terax-workspace-pi-notifications-v1\nexport default () => {}\n";
+        let v1 = "// codr-pi-notifications-v1\nexport default () => {}\n";
         assert_eq!(
             pi_after(Some(v1), Action::Install, p).unwrap().as_deref(),
             Some(pi_extension().as_str())

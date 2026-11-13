@@ -70,7 +70,7 @@ fn a_manual_checkpoint_captures_tracked_and_nonignored_files_without_moving_head
     assert_eq!(
         created.checkpoint.ref_name,
         format!(
-            "refs/terax-workspace/manual-checkpoints/{}",
+            "refs/codr/manual-checkpoints/{}",
             created.checkpoint.id
         )
     );

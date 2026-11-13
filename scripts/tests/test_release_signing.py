@@ -74,7 +74,7 @@ def signed_candidate(directory: Path, key: minisign.KeyPair, *,
     for name, payload in (
         (f"{identity.slug}-{version}-1.x86_64.rpm", b"rpm payload\n"),
         (f"{identity.slug}_{version}_amd64.deb", b"deb payload\n"),
-        ("PKGBUILD", b"pkgname=terax-workspace\n"),
+        ("PKGBUILD", b"pkgname=codr\n"),
         ("manifest.json", b"{}\n"),
         ("SHA256SUMS", b""),
     ):
@@ -233,7 +233,7 @@ class SigningTest(unittest.TestCase):
         directory = self.tmp / "incomplete"
         directory.mkdir()
         (directory / f"{packaging.candidate().slug}_{VERSION}_amd64.deb").write_bytes(b"deb")
-        (directory / "PKGBUILD").write_bytes(b"pkgname=terax-workspace\n")
+        (directory / "PKGBUILD").write_bytes(b"pkgname=codr\n")
         with self.assertRaises(release_signing.SigningError) as caught:
             release_signing.sign_candidate(
                 directory=directory, version=VERSION, tag=TAG, commit=COMMIT,
@@ -262,10 +262,10 @@ class SigningTest(unittest.TestCase):
         for name, payload in (
             (f"{identity.slug}-{VERSION}-1.x86_64.rpm", b"rpm"),
             (f"{identity.slug}_{VERSION}_amd64.deb", b"deb"),
-            ("PKGBUILD", b"pkgname=terax-workspace\n"),
+            ("PKGBUILD", b"pkgname=codr\n"),
         ):
             (directory / name).write_bytes(payload)
-        contract = self.settled_contract("https://releases.terax-workspace.dev/stable/latest.json")
+        contract = self.settled_contract("https://releases.codr.dev/stable/latest.json")
         result = self.run_signing(
             "--candidate", str(directory), "--version", VERSION, "--tag", TAG,
             "--commit", COMMIT, "--contract", str(contract),
@@ -278,7 +278,7 @@ class SigningTest(unittest.TestCase):
         # The contract endpoint names `latest.json`; artifacts are its siblings.
         self.assertEqual(
             document["platforms"]["linux-x86_64"]["url"],
-            "https://releases.terax-workspace.dev/stable/"
+            "https://releases.codr.dev/stable/"
             + Path(document["platforms"]["linux-x86_64"]["url"]).name,
         )
 
@@ -306,7 +306,7 @@ class SigningTest(unittest.TestCase):
         files = {
             f"{identity.slug}-{VERSION}-1.x86_64.rpm": b"rpm",
             f"{identity.slug}_{VERSION}_amd64.deb": b"deb",
-            "PKGBUILD": b"pkgname=terax-workspace\n",
+            "PKGBUILD": b"pkgname=codr\n",
         }
         for name, payload in files.items():
             (directory / name).write_bytes(payload)
@@ -337,7 +337,7 @@ class SigningTest(unittest.TestCase):
         for name, payload in (
             (f"{identity.slug}-{VERSION}-1.x86_64.rpm", b"rpm"),
             (f"{identity.slug}_{VERSION}_amd64.deb", b"deb"),
-            ("PKGBUILD", b"pkgname=terax-workspace\n"),
+            ("PKGBUILD", b"pkgname=codr\n"),
         ):
             (directory / name).write_bytes(payload)
             foreign = fixture_key(11)
@@ -368,7 +368,7 @@ class SigningTest(unittest.TestCase):
         for name, payload in (
             (f"{identity.slug}-{VERSION}-1.x86_64.rpm", b"rpm"),
             (f"{identity.slug}_{VERSION}_amd64.deb", b"deb"),
-            ("PKGBUILD", b"pkgname=terax-workspace\n"),
+            ("PKGBUILD", b"pkgname=codr\n"),
         ):
             (directory / name).write_bytes(payload)
         (directory / "PKGBUILD.sig").write_text("not a valid minisign signature\n", encoding="utf-8")
@@ -388,7 +388,7 @@ class SigningTest(unittest.TestCase):
             (f"{identity.slug}-{VERSION}-1.x86_64.rpm", b"rpm"),
             (f"{identity.slug}_{VERSION}_amd64.deb", b"deb-one"),
             (f"{identity.slug}_{VERSION}_second.deb", b"deb-two"),
-            ("PKGBUILD", b"pkgname=terax-workspace\n"),
+            ("PKGBUILD", b"pkgname=codr\n"),
         ):
             (directory / name).write_bytes(payload)
         with self.assertRaises(release_signing.SigningError) as caught:
@@ -419,7 +419,7 @@ class SigningTest(unittest.TestCase):
         for name, payload in (
             (f"{identity.slug}-{VERSION}-1.x86_64.rpm", b"rpm"),
             (f"{identity.slug}_{VERSION}_amd64.deb", b"deb"),
-            ("PKGBUILD", b"pkgname=terax-workspace\n"),
+            ("PKGBUILD", b"pkgname=codr\n"),
         ):
             (directory / name).write_bytes(payload)
             envelope = minisign.sign_bytes(
@@ -494,12 +494,12 @@ class ProvisioningTest(unittest.TestCase):
     def test_it_refuses_to_overwrite_an_existing_key(self) -> None:
         directory = self.tmp / "existing"
         directory.mkdir()
-        (directory / "terax-workspace-release.key").write_text("old key\n")
+        (directory / "codr-release.key").write_text("old key\n")
         result = self.run_script("--directory", str(directory),
                                  "--minisign", self.stub_minisign(fixture_key(7)))
         self.assertEqual(result.returncode, 3, result.stderr)
         self.assertIn("key-already-exists", result.stderr)
-        self.assertEqual((directory / "terax-workspace-release.key").read_text(), "old key\n")
+        self.assertEqual((directory / "codr-release.key").read_text(), "old key\n")
 
     def test_it_refuses_when_the_minisign_tool_is_absent(self) -> None:
         result = self.run_script("--directory", str(self.tmp / "no-tool"),
@@ -517,11 +517,11 @@ class ProvisioningTest(unittest.TestCase):
         self.assertIn(key.key_id_text, result.stdout)
         self.assertIn("sha256:", result.stdout)
         self.assertNotIn("stub secret key material", result.stdout + result.stderr)
-        secret = directory / "terax-workspace-release.key"
+        secret = directory / "codr-release.key"
         self.assertTrue(secret.is_file())
         self.assertEqual(secret.stat().st_mode & 0o777, 0o600, "the secret key is owner-only")
         self.assertFalse(
-            [path for path in (REPO / "scripts").rglob("terax-workspace-release.*")],
+            [path for path in (REPO / "scripts").rglob("codr-release.*")],
             "the key must never be written inside the repository",
         )
 

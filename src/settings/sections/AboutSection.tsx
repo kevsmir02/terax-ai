@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { useUpdater } from "@/modules/updater";
 import { canRequestHandoff } from "@/modules/updater/updateState";
-import { GithubIcon, Globe02Icon } from "@hugeicons/core-free-icons";
+import { GithubIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { getIdentifier, getName, getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -9,8 +9,7 @@ import { arch, platform } from "@tauri-apps/plugin-os";
 import { useEffect, useState } from "react";
 import { SectionHeader } from "../components/SectionHeader";
 
-const REPO_URL = "https://github.com/crynta/terax-ai";
-const WEBSITE = "https://terax.app";
+const REPO_URL = "https://github.com/kevsmir02/terax-ai";
 
 const PLATFORM_LABEL: Record<string, string> = {
   macos: "macOS",
@@ -23,7 +22,7 @@ const PLATFORM_LABEL: Record<string, string> = {
 
 export function AboutSection() {
   const [version, setVersion] = useState("");
-  const [name, setName] = useState("Terax");
+  const [name, setName] = useState("Codr");
   const [identifier, setIdentifier] = useState("");
   const [build, setBuild] = useState("");
   const { state, check, requestHandoff } = useUpdater({ autoCheck: false });
@@ -40,7 +39,7 @@ export function AboutSection() {
         : state.kind === "up-to-date"
           ? "You're up to date"
           : state.kind === "check-failed"
-            ? "Check failed — retry"
+            ? "Check failed - retry"
             : "Check for updates";
   const onUpdateClick = () => {
     if (available) void requestHandoff();
@@ -74,10 +73,10 @@ export function AboutSection() {
             {name}
           </span>
           <span className="text-[11px] text-muted-foreground">
-            Open-source terminal workspace for coding agents
+            Open-source Linux terminal workspace (unofficial fork of Terax)
           </span>
           <span className="mt-1 font-mono text-[11px] text-muted-foreground">
-            v{version || "—"}
+            v{version || "-"}
           </span>
         </div>
       </div>
@@ -89,7 +88,7 @@ export function AboutSection() {
         </dd>
 
         <dt className="text-muted-foreground">Bundle ID</dt>
-        <dd className="font-mono text-[11.5px]">{identifier || "—"}</dd>
+        <dd className="font-mono text-[11.5px]">{identifier || "-"}</dd>
 
         <dt className="text-muted-foreground">License</dt>
         <dd>Apache 2.0</dd>
@@ -102,18 +101,7 @@ export function AboutSection() {
             className="inline-flex items-center gap-1.5 rounded-md text-[12px] underline-offset-2 hover:text-foreground hover:underline"
           >
             <HugeiconsIcon icon={GithubIcon} size={12} strokeWidth={1.75} />
-            crynta/terax-ai
-          </button>
-        </dd>
-        <dt className="text-muted-foreground">Website</dt>
-        <dd>
-          <button
-            type="button"
-            onClick={() => void openUrl(WEBSITE)}
-            className="inline-flex items-center gap-1.5 rounded-md text-[12px] underline-offset-2 hover:text-foreground hover:underline"
-          >
-            <HugeiconsIcon icon={Globe02Icon} size={12} strokeWidth={1.75} />
-            terax.app
+            kevsmir02/terax-ai
           </button>
         </dd>
       </dl>
@@ -146,7 +134,7 @@ export function AboutSection() {
         </div>
         {state.kind === "update-available" && (
           <p className="text-[11px] text-muted-foreground">
-            A newer stable release was found. Terax does not download or install
+            A newer stable release was found. Codr does not download or install
             it; update with your package tool after closing the app.
           </p>
         )}
@@ -160,7 +148,7 @@ export function AboutSection() {
         )}
         {state.kind === "handed-off" && (
           <p className="text-[11px] text-muted-foreground">
-            Handed off: Terax did not download, install or verify anything, and
+            Handed off: Codr did not download, install or verify anything, and
             it cannot confirm the result. Run the package tool from your
             terminal.
           </p>

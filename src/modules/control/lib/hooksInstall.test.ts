@@ -23,7 +23,7 @@ const plan = (overrides: Partial<HooksPlan> = {}): HooksPlan => ({
   path: "/home/me/.claude/settings.json",
   before: '{\n  "model": "opus"\n}\n',
   after:
-    '{\n  "model": "opus",\n  "hooks": { "Stop": [ { "hooks": [ { "command": "[ -n \\"$TERAX_WORKSPACE_FORK_CLI\\" ]" } ] } ] }\n}\n',
+    '{\n  "model": "opus",\n  "hooks": { "Stop": [ { "hooks": [ { "command": "[ -n \\"$CODR_CLI\\" ]" } ] } ] }\n}\n',
   revision: "42:00000000deadbeef",
   changed: true,
   foreignGroups: 2,

@@ -311,7 +311,7 @@ def sign_bytes(key: KeyPair, data: bytes, comment: str, *,
     global_signature = _sign_detached(
         key.seed, signature + comment.encode("utf-8"), prehashed=False
     )
-    header = untrusted or "signature from terax-workspace release key"
+    header = untrusted or "signature from codr release key"
     return (
         f"{UNTRUSTED_PREFIX}{header}\n"
         f"{_b64encode(blob)}\n"

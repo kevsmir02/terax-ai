@@ -270,7 +270,7 @@ type WorktreeBranch =
   | { mode: "detach" };
 
 export type WorktreeAddRequest = {
-  /** Absolute location; omitted: `~/.terax-workspace/worktrees/<project>/<task>`. */
+  /** Absolute location; omitted: `~/.codr/worktrees/<project>/<task>`. */
   path?: string | null;
   taskSlug?: string | null;
   branch: WorktreeBranch;

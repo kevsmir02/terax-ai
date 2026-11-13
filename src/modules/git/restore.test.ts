@@ -18,7 +18,7 @@ import type {
 } from "./types";
 
 const manual = (id: string, name: string | null): ManualCheckpoint => ({
-  ref: `refs/terax-workspace/manual-checkpoints/${id}`,
+  ref: `refs/codr/manual-checkpoints/${id}`,
   id,
   name,
   commit: "c",
@@ -29,7 +29,7 @@ const manual = (id: string, name: string | null): ManualCheckpoint => ({
 });
 
 const safety = (taskId: string, millis: number): SafetyRef => ({
-  ref: `refs/terax-workspace/checkpoints/${taskId}/prerestore-${millis}`,
+  ref: `refs/codr/checkpoints/${taskId}/prerestore-${millis}`,
   taskId,
   commit: "c",
   tree: "t",
@@ -57,7 +57,7 @@ const groups = (
 const preview = (
   overrides: Partial<ManualRestorePreview> = {},
 ): ManualRestorePreview => ({
-  ref: "refs/terax-workspace/manual-checkpoints/a",
+  ref: "refs/codr/manual-checkpoints/a",
   kind: "manual",
   name: "before refactor",
   commit: "c",
@@ -148,8 +148,8 @@ describe("restore preconditions", () => {
       groups([manual("a", "one")], [safety("a", 5)]),
     );
     expect(restorable.map((entry) => entry.ref)).toEqual([
-      "refs/terax-workspace/manual-checkpoints/a",
-      "refs/terax-workspace/checkpoints/a/prerestore-5",
+      "refs/codr/manual-checkpoints/a",
+      "refs/codr/checkpoints/a/prerestore-5",
     ]);
     expect(restorable.map((entry) => entry.kind)).toEqual(["manual", "safety"]);
   });

@@ -1,26 +1,30 @@
 # Release trust: identity, signing key and verification
 
-Status: **procedure and wiring implemented; no key is provisioned by this change.** The release
-workflow can sign, the gate verifies signatures and refuses when they are missing, and the
-maintainer has a script to generate the offline key. What does not exist yet is the key itself, so
-`src/modules/updater/releaseContract.json` stays `"provisional": true` with an empty
-`trust.publicKey` and the tagged-release gate keeps refusing every release. Provisioning the key is
-a maintainer action, not a code change (issue #40 / breakdown ticket 39).
+Status: **identity and independent minisign trust root provisioned (`94097B75DB498B21`).**
+The publication identity (`Codr`, `io.github.kevsmir02.codr`, `kevsmir02/terax-ai`), stable
+update endpoint, and minisign public trust root are committed in
+`src/modules/identity/namespace.json` and `src/modules/updater/releaseContract.json`
+(`"provisional": false`). Before tagging the first public release (#45), the maintainer must still
+ensure the encrypted private key and passphrase secrets (`TERAX_RELEASE_SIGNING_KEY` and
+`TERAX_RELEASE_SIGNING_KEY_PASSPHRASE`) are uploaded to GitHub Actions repository secrets and
+complete the distro validation gates (#42, #44).
 
-Nothing here enables a download or an install. Artifact authenticity is separate from native
-package trust; the application still discovers a release and hands the transaction to the package
-tool (`update-handoff.md`).
+Nothing here enables an in-app download or install. Artifact authenticity (minisign `.minisig`)
+remains distinct from native DNF/APT repository trust (deferred); the application discovers a
+release and hands the upgrade transaction to the user's package tool (`update-handoff.md`).
 
 ## What is trusted, and for what
 
 | Item | Value | Where it lives |
 | --- | --- | --- |
-| Product name | `Terax Workspace` (unofficial fork of Terax) | `src/modules/identity/namespace.json` |
+| Product name | `Codr` (unofficial fork of Terax) | `src/modules/identity/namespace.json` |
+| Bundle / app identifier | `io.github.kevsmir02.codr` | `src/modules/identity/namespace.json`, `src-tauri/tauri.conf.json` |
 | Release owner / repository | `kevsmir02/terax-ai` | `releaseContract.json` (`endpoints`, ADR 0010) |
-| Update endpoint | `https://github.com/kevsmir02/terax-ai/releases/latest/download/` | `releaseContract.json` |
+| Update endpoint | `https://github.com/kevsmir02/terax-ai/releases/latest/download/latest.json` | `releaseContract.json` |
 | First stable line | `1.0.0` | `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` |
 | Signing algorithm | minisign (Ed25519), envelope `Ed` or prehashed `ED` | this document |
-| Trust root | one minisign **public** key: key id + fingerprint | `releaseContract.json` `trust.publicKey` |
+| Trust root key id | `94097B75DB498B21` | `releaseContract.json` (`trust.keyId`) |
+| Trust root fingerprint | `sha256:a02fd6ac492d1f070919bde106c20c0a376fbcdb6db8bc4c17ca0efd68197487` | `releaseContract.json` (`trust.fingerprint`) |
 | Secret key | passphrase-protected minisign secret, offline | maintainer custody, never this repository |
 
 The fork publishes stable only. ADR
@@ -121,13 +125,14 @@ against the RFC 8032 test vector, so the verifier is not leaf-testing itself.
 Run this on a machine you control, outside any checkout of this repository:
 
 ```sh
-python3 scripts/provision_signing_key.py --directory ~/.config/terax-workspace/release-keys
+python3 scripts/provision_signing_key.py --directory ~/.config/codr/release-keys
 ```
 
 What it does and refuses:
 
-- generates a passphrase-protected minisign keypair with `minisign -G` (the standard format the
-  release workflow's signer already reads) and sets the directory `0700`, the secret key `0600`;
+- generates a passphrase-protected minisign keypair (`minisign -G`, or equivalent
+  `node_modules/.bin/tauri signer generate -w <keyfile>`) in the standard format the release
+  workflow's signer already reads and sets the directory `0700`, the secret key `0600`;
 - **refuses** a destination inside the repository (`destination-inside-repository`);
 - **refuses** to overwrite an existing key (`key-already-exists`); there is no `--force`;
 - **refuses** when `minisign` is missing (`provisioning-tool-missing`);
@@ -153,7 +158,7 @@ fingerprint, which is what a reviewer compares against the committed value.
 A user, or a reviewer, verifies a downloaded artifact with the committed public key:
 
 ```sh
-minisign -Vm terax-workspace_1.0.0_amd64.deb -p terax-workspace-release.pub
+minisign -Vm codr_1.0.0_amd64.deb -p codr-release.pub
 # or, from the manifest's signature text:
 minisign -Vm PKGBUILD -x PKGBUILD.minisig -P <base64 public key>
 ```
@@ -164,10 +169,13 @@ version, every announced target points at a staged file, its sha256 and size mat
 committed one, the signed version matches the announced one, and the published `.minisig` is the same
 signature as the manifest entry.
 
-What the application verifies: structure and a provisioned trust root only
-(`src/modules/updater/releaseSignature.ts`). With no provisioned key it reports
-`check-failed (signature)` rather than offering a release. Install-time cryptographic verification
-does not exist, because no install path exists.
+What the application verifies at discovery time (`src/modules/updater/releaseSignature.ts`):
+structure, version binding, provisioned trust root presence, and key ID match against
+`releaseContract.json`. Unprovisioned trust roots, malformed envelopes, version mismatches, or foreign
+key IDs fail closed (`check-failed: signature`) without offering an update. Install-time
+cryptographic verification does not exist in-app because the app never downloads or installs
+packages; inspect downloaded artifacts against `.minisig` files before running `dnf`, `apt`, or
+`makepkg`.
 
 ## Offline recovery
 

@@ -6408,7 +6408,7 @@ async function checkpointsScenario(run: ScenarioRun): Promise<unknown> {
       first.id !== second.id &&
         first.ref !== second.ref &&
         /^[0-9a-f]{32}$/.test(first.id) &&
-        first.ref.startsWith("refs/terax-workspace/manual-checkpoints/") &&
+        first.ref.startsWith("refs/codr/manual-checkpoints/") &&
         first.name === "app-lab checkpoint",
       `ids ${first.id.slice(0, 8)} != ${second.id.slice(0, 8)}`,
     );

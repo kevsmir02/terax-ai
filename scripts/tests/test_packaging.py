@@ -56,8 +56,8 @@ def tar_gz(files: dict[str, bytes], modes: dict[str, int] | None = None) -> byte
 
 def sample_deb() -> bytes:
     control = (
-        "Package: terax-workspace\n"
-        "Version: 0.9.0\n"
+        "Package: codr\n"
+        "Version: 1.0.0\n"
         "Architecture: amd64\n"
         "Maintainer: candidate\n"
         "Installed-Size: 1\n"
@@ -65,16 +65,16 @@ def sample_deb() -> bytes:
         "Description: candidate fixture\n"
     ).encode()
     data = {
-        "usr/bin/terax-workspace": b"\x7fELF candidate",
-        "usr/bin/terax-workspace-cli": b"\x7fELF cli",
-        "usr/lib/Terax Workspace/licenses/terminal/ghostty.txt": b"license\n",
-        "usr/share/applications/Terax Workspace.desktop": b"[Desktop Entry]\n",
+        "usr/bin/codr": b"\x7fELF candidate",
+        "usr/bin/codr-cli": b"\x7fELF cli",
+        "usr/lib/Codr/licenses/terminal/ghostty.txt": b"license\n",
+        "usr/share/applications/Codr.desktop": b"[Desktop Entry]\n",
     }
     return ar_archive(
         [
             ("debian-binary", b"2.0\n"),
             ("control.tar.gz", tar_gz({"control": control})),
-            ("data.tar.gz", tar_gz(data, {"usr/bin/terax-workspace": 0o755})),
+            ("data.tar.gz", tar_gz(data, {"usr/bin/codr": 0o755})),
         ]
     )
 
@@ -198,11 +198,14 @@ class DependencyTest(unittest.TestCase):
     def test_the_candidate_follows_the_fork_release_contract(self) -> None:
         contract = json.loads(packaging.RELEASE_CONTRACT.read_text())
         settings = packaging.updater_settings()
+        self.assertFalse(contract["provisional"])
         self.assertEqual(settings["endpoints"], contract["endpoints"])
         self.assertEqual(settings["pubkey"], contract["trust"]["publicKey"])
+        self.assertTrue(settings["pubkey"])
         self.assertEqual(packaging.updater_problems(), [])
         for endpoint in contract["endpoints"]:
-            self.assertIn(".invalid", endpoint)
+            self.assertTrue(endpoint.startswith("https://"))
+            self.assertNotIn(".invalid", endpoint)
 
     def test_an_upstream_endpoint_or_key_is_refused(self) -> None:
         base = json.loads(packaging.TAURI_CONFIG.read_text())
@@ -339,20 +342,20 @@ class DebReaderTest(unittest.TestCase):
 
     def test_control_fields_are_read_from_the_archive(self) -> None:
         control = packaging.deb_control(self.deb)
-        self.assertEqual(control["Package"], "terax-workspace")
+        self.assertEqual(control["Package"], "codr")
         self.assertEqual(control["Architecture"], "amd64")
         self.assertEqual(control["Depends"], "libwebkit2gtk-4.1-0, libgtk-3-0")
 
     def test_contents_are_enumerated_with_modes_and_roles(self) -> None:
         files = packaging.extract_deb(self.deb, self.root / "data")
         paths = {entry["path"]: entry for entry in files}
-        self.assertEqual(paths["/usr/bin/terax-workspace"]["kind"], "binary")
-        self.assertEqual(paths["/usr/bin/terax-workspace"]["mode"], "0o755")
-        self.assertEqual(paths["/usr/bin/terax-workspace-cli"]["kind"], "cli")
+        self.assertEqual(paths["/usr/bin/codr"]["kind"], "binary")
+        self.assertEqual(paths["/usr/bin/codr"]["mode"], "0o755")
+        self.assertEqual(paths["/usr/bin/codr-cli"]["kind"], "cli")
         self.assertEqual(
-            paths["/usr/lib/Terax Workspace/licenses/terminal/ghostty.txt"]["kind"], "license"
+            paths["/usr/lib/Codr/licenses/terminal/ghostty.txt"]["kind"], "license"
         )
-        self.assertEqual(paths["/usr/share/applications/Terax Workspace.desktop"]["kind"], "desktop")
+        self.assertEqual(paths["/usr/share/applications/Codr.desktop"]["kind"], "desktop")
 
     def test_a_non_archive_is_refused(self) -> None:
         bad = self.root / "bad.deb"
@@ -391,27 +394,27 @@ class BundleTypeMarkerTest(unittest.TestCase):
 
 
 class RpmDumpTest(unittest.TestCase):
-    """`rpm -qlp --dump` keeps spaces in paths (the resource dir is `/usr/lib/Terax Workspace`)."""
+    """`rpm -qlp --dump` parses binary, resource, and license entries."""
     def setUp(self) -> None:
         self.lines = [
-            "/usr/bin/terax-workspace 14816432 1794460064 "
+            "/usr/bin/codr 14816432 1794460064 "
             "2d23cca23316ec63df95abe2af21dfa96aeceecb3b3d7b998cc40c1fb64fa78b "
             "0100755 root root 0 0 0 X",
-            "/usr/lib/Terax Workspace 0 1794460064 "
+            "/usr/lib/Codr 0 1794460064 "
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 "
             "040755 root root 0 0 0 X",
-            "/usr/lib/Terax Workspace/licenses/terminal/ghostty.txt 1062 1794458330 "
+            "/usr/lib/Codr/licenses/terminal/ghostty.txt 1062 1794458330 "
             "5eccd0eeca906db6d661b64dd05e1d4a4b2e49d37d43bbcfd2c8cce4d7832920 "
             "0100644 root root 0 0 0 X",
         ]
 
-    def test_a_directory_is_skipped_and_a_spaced_path_is_kept(self) -> None:
+    def test_a_directory_is_skipped_and_a_license_path_is_kept(self) -> None:
         files = packaging.parse_rpm_dump(self.lines)
         self.assertEqual(
             [entry["path"] for entry in files],
             [
-                "/usr/bin/terax-workspace",
-                "/usr/lib/Terax Workspace/licenses/terminal/ghostty.txt",
+                "/usr/bin/codr",
+                "/usr/lib/Codr/licenses/terminal/ghostty.txt",
             ],
         )
         self.assertEqual(files[0]["mode"], "0755")
@@ -423,7 +426,7 @@ class ArchRecipeTest(unittest.TestCase):
     def test_the_recipe_is_aligned_and_flagged_as_unbuilt(self) -> None:
         self.assertEqual(packaging.arch_problems(), [])
         recipe = packaging.PKGBUILD.read_text()
-        self.assertIn("pkgname=terax-workspace", recipe)
+        self.assertIn("pkgname=codr", recipe)
         self.assertIn("pkgver=1.0.0", recipe)
         self.assertIn("arch=('x86_64')", recipe)
         self.assertIn("NOT BUILT", recipe)

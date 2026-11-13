@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 // Isolated release-feed fixture server for update *discovery* development.
 //
-// The fork's real release endpoint/trust inputs are ticket #39/#40 decisions; until then
-// a development build must be able to exercise the checker without touching a live feed.
-// This binds 127.0.0.1 only and serves `src/modules/updater/fixtures`:
+// In development, a build must be able to exercise the checker without touching a live
+// feed. This binds 127.0.0.1 only and serves `src/modules/updater/fixtures`:
 //
 //   pnpm dev:update-fixtures
-//   VITE_TERAX_WORKSPACE_UPDATE_ENDPOINT=http://127.0.0.1:8787/stable.json pnpm dev
+//   VITE_CODR_UPDATE_ENDPOINT=http://127.0.0.1:8787/stable.json pnpm dev
 //
 // Routes can also simulate the bounded failure states:
 //   /rate-limited  -> 429 with Retry-After

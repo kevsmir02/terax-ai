@@ -5,7 +5,7 @@ set -uo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 rcfile="$script_dir/bashrc.bash"
 failures=0
-unset TERAX_WORKSPACE_FORK_BLOCKS TERAX_WORKSPACE_FORK_CLI __TERAX_WORKSPACE_FORK_HOOKS_LOADED _terax_block_seen
+unset CODR_BLOCKS CODR_CLI __CODR_HOOKS_LOADED _terax_block_seen
 
 check() {
   local label="$1" expected="$2" actual="$3"
@@ -192,7 +192,7 @@ case "${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}" in
     ;;
 esac
 
-nounset="$(integration "" 'set -u; unset TERAX_WORKSPACE_FORK_BLOCKS _terax_block_seen; unset PS1; _terax_precmd >/dev/null; _terax_finish_prompt; printf ok')"
+nounset="$(integration "" 'set -u; unset CODR_BLOCKS _terax_block_seen; unset PS1; _terax_precmd >/dev/null; _terax_finish_prompt; printf ok')"
 check "the hooks do not abort under set -u" ok "$nounset"
 
 nounset_ble="$(integration 1 'set -u; unset PROMPT_COMMAND; _terax_ble_precmd >/dev/null; printf ok')"

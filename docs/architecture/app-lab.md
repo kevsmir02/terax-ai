@@ -110,7 +110,7 @@ per-run identifier (`<fork identifier>.app-lab-<hex>`, derived from
 `XDG_DATA_HOME`/`XDG_CONFIG_HOME`/`XDG_CACHE_HOME`/`XDG_STATE_HOME` under `<output>/home`, while
 `XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`, `DISPLAY` and `DBUS_SESSION_BUS_ADDRESS` keep coming from the
 live session. `XDG_CACHE_HOME` is mandatory: the control server writes
-`$XDG_CACHE_HOME/terax-workspace/control.json` and `terax-workspace/run/<pid>/bin/terax`, which are
+`$XDG_CACHE_HOME/codr/control.json` and `codr/run/<pid>/bin/terax`, which are
 keyed by the fork namespace, *not* by identifier — inheriting the real cache directory would
 overwrite the installed application's live descriptor. The preflight refuses (before the build and
 again before the launch) the fork product identifier, **any upstream Terax identifier**, an

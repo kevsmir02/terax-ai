@@ -5,18 +5,18 @@
 # fish_features=no-mark-prompt so these markers aren't emitted twice.
 
 # Installed into conf.d, which every fish session sources; only Terax-spawned
-# shells (TERAX_WORKSPACE_FORK_TERMINAL=1) may get their prompt wrapped.
-if not set -q TERAX_WORKSPACE_FORK_TERMINAL
+# shells (CODR_TERMINAL=1) may get their prompt wrapped.
+if not set -q CODR_TERMINAL
     exit 0
 end
-if set -q __TERAX_WORKSPACE_FORK_HOOKS_LOADED
+if set -q __CODR_HOOKS_LOADED
     exit 0
 end
-set -g __TERAX_WORKSPACE_FORK_HOOKS_LOADED 1
+set -g __CODR_HOOKS_LOADED 1
 
-if set -q TERAX_WORKSPACE_FORK_CLI; and test -x "$TERAX_WORKSPACE_FORK_CLI"
+if set -q CODR_CLI; and test -x "$CODR_CLI"
     function terax
-        command "$TERAX_WORKSPACE_FORK_CLI" $argv
+        command "$CODR_CLI" $argv
     end
 end
 
@@ -62,14 +62,14 @@ end
 function __terax_install_prompt
     # ponytail: cover Conda's named wrapper; generalize if another prompt
     # framework preserves Terax indirectly.
-    if not set -q TERAX_WORKSPACE_FORK_BLOCKS
+    if not set -q CODR_BLOCKS
         and functions -q __fish_prompt_orig
         and functions fish_prompt | string match -q '*__fish_prompt_orig*'
         and functions __fish_prompt_orig | string match -q '*__terax_user_prompt*'
         return
     end
     __terax_capture_user_prompt
-    if set -q TERAX_WORKSPACE_FORK_BLOCKS
+    if set -q CODR_BLOCKS
         function fish_right_prompt
         end
         function fish_greeting
@@ -82,7 +82,7 @@ function __terax_install_prompt
         printf '\e]133;A\e\\'
         # Block mode: host renders its own input bar, so suppress the shell prompt
         # (B marker only) and reserve header/gap rows, mirroring zsh.
-        if set -q TERAX_WORKSPACE_FORK_BLOCKS
+        if set -q CODR_BLOCKS
             if set -q __terax_block_seen
                 printf '\n\n'
             else

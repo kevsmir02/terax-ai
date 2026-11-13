@@ -58,8 +58,10 @@ class ProblemsTest(unittest.TestCase):
                 any("upstream" in p for p in problems), f"{identifier}: {problems}"
             )
 
-    def test_the_identity_is_provisional_and_not_upstream(self) -> None:
-        self.assertTrue(linux_profile.IDENTITY["provisional"])
+    def test_the_identity_is_finalized_and_not_upstream(self) -> None:
+        self.assertFalse(linux_profile.IDENTITY["provisional"])
+        self.assertEqual(linux_profile.PRODUCT_IDENTIFIER, "io.github.kevsmir02.codr")
+        self.assertEqual(linux_profile.NAMESPACE, "codr")
         self.assertNotEqual(
             linux_profile.PRODUCT_IDENTIFIER, linux_profile.UPSTREAM_IDENTIFIER
         )

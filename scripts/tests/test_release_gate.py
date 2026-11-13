@@ -32,7 +32,7 @@ OTHER_COMMIT = "fedcba9876543210fedcba9876543210fedcba98"
 VERSION = packaging.version()
 TAG = f"v{VERSION}"
 CONTRACT = REPO / "src/modules/updater/releaseContract.json"
-ENDPOINT = "https://releases.terax-workspace.dev/stable/"
+ENDPOINT = "https://releases.codr.dev/stable/"
 
 
 def codes(decision) -> set:
@@ -51,7 +51,7 @@ def refusal(decision, code: str):
 
 def settled_contract(path: Path, trusted: minisign.TrustedKey | None = None,
                      **overrides) -> Path:
-    """A copy of the contract with the publication inputs supplied (what #40 would decide).
+    """A copy of the contract with isolated fixture publication inputs supplied.
 
     `overrides` replaces top-level keys, so a test can settle only the flag and prove the gate
     still refuses while the endpoint or the trust root is missing. `trusted` is a fixture key
@@ -68,6 +68,20 @@ def settled_contract(path: Path, trusted: minisign.TrustedKey | None = None,
         "note": "settled by the trust ticket",
     }
     document.update(overrides)
+    path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def provisional_contract(path: Path) -> Path:
+    """A provisional, unprovisioned contract fixture for testing gate refusals."""
+    document = json.loads(CONTRACT.read_text())
+    document["provisional"] = True
+    document["endpoints"] = ["https://updates.invalid/codr/stable/latest.json"]
+    document["trust"] = {
+        "provisioned": False,
+        "publicKey": "",
+        "note": "unprovisioned provisional fixture",
+    }
     path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
     return path
 
@@ -112,6 +126,11 @@ class GateTestCase(unittest.TestCase):
         return settled_contract(
             self.tmp / f"settled-{self._contracts}.json", self.trusted, **overrides
         )
+
+    def provisional(self) -> Path:
+        """An explicit provisional contract fixture (pre-#40 state)."""
+        self._contracts += 1
+        return provisional_contract(self.tmp / f"provisional-{self._contracts}.json")
 
     def build_candidate(
         self,
@@ -585,9 +604,7 @@ class SignedUpdateManifestTest(GateTestCase):
                       codes(self.decide(contract_path=self.settled())))
 
     def test_an_unprovisioned_trust_root_cannot_call_a_signature_verified(self) -> None:
-        # The state this repository is actually in: signed bytes exist, but the contract carries
-        # no public key, so the gate must not treat the signature as authentic.
-        decision = self.decide()  # the committed, provisional contract
+        decision = self.decide(contract_path=self.provisional())
         self.assertIn("artifact-signature-unverifiable", codes(decision))
         self.assertIn("signing-trust-missing", codes(decision))
 
@@ -610,7 +627,7 @@ class SignedUpdateManifestTest(GateTestCase):
 
     def test_tampered_pkgbuild_with_updated_manifest_checksum_is_still_refused(self) -> None:
         pkgbuild = self.candidate / "PKGBUILD"
-        tampered = b"pkgname=terax-workspace\n# tampered\n"
+        tampered = b"pkgname=codr\n# tampered\n"
         pkgbuild.write_bytes(tampered)
         document = self.update_manifest()
         document["platforms"]["linux-x86_64-arch"]["sha256"] = packaging.sha256_bytes(tampered)
@@ -638,19 +655,43 @@ class SignedUpdateManifestTest(GateTestCase):
 
 
 class PublicationInputTest(GateTestCase):
-    """Publication identity and signing trust are undecided (#40), so this must refuse loudly."""
+    """Finalized contract supplies publication identity and trust, while provisional refuses loudly."""
+
+    def test_committed_contract_satisfies_publication_inputs_with_signing_key(self) -> None:
+        contract = json.loads(CONTRACT.read_text())
+        self.assertIs(contract["provisional"], False)
+        self.assertEqual(
+            contract["endpoints"],
+            ["https://github.com/kevsmir02/terax-ai/releases/latest/download/latest.json"],
+        )
+        self.assertIs(contract["trust"]["provisioned"], True)
+        self.assertTrue(contract["trust"]["publicKey"])
+        # Note: artifact signatures in self.candidate are signed by self.key (fixture key),
+        # so against the committed contract only publication/signing-input preconditions are green;
+        # real artifacts would be signed by the committed trust root.
+        pre = self.decide(
+            environment={release_gate.SIGNING_KEY_ENV: "not-a-real-key"},
+            candidate=None,
+            require_artifacts=False,
+        )
+        self.assertTrue(pre.publishable, pre.refusals)
+        self.assertEqual(pre.refusals, ())
+
+    def test_publication_is_refused_without_signing_key_secret_on_committed_contract(self) -> None:
+        pre = self.decide(environment={}, candidate=None, require_artifacts=False)
+        self.assertFalse(pre.publishable)
+        self.assertEqual(codes(pre), {"signing-input-missing"})
 
     def test_publication_is_refused_while_the_contract_is_provisional(self) -> None:
-        decision = self.decide()
+        decision = self.decide(contract_path=self.provisional())
         self.assertFalse(decision.publishable)
         self.assertIn("publication-provisional", codes(decision))
         self.assertIn("releaseContract.json",
                       refusal(decision, "publication-provisional").message)
 
     def test_the_refusal_names_every_missing_publication_input(self) -> None:
-        # Nothing supplied: the state this fork is actually in today.
         messages = {entry.code: entry.message
-                    for entry in self.decide(environment={}).refusals}
+                    for entry in self.decide(contract_path=self.provisional(), environment={}).refusals}
         for code in ("publication-provisional", "publication-endpoint-missing",
                      "signing-trust-missing", "signing-input-missing"):
             self.assertIn(code, messages, f"{code} must be its own named refusal")
@@ -661,7 +702,7 @@ class PublicationInputTest(GateTestCase):
     def test_each_missing_input_names_the_ticket_that_supplies_it(self) -> None:
         contract = json.loads(CONTRACT.read_text())
         expected = release_gate.BREAKDOWN_TO_ISSUE[contract["finalTrustTicket"]]
-        for entry in self.decide().refusals:
+        for entry in self.decide(contract_path=self.provisional(), environment={}).refusals:
             if entry.code.startswith(("publication-", "signing-")):
                 with self.subTest(code=entry.code):
                     self.assertEqual(entry.ticket, expected,
@@ -686,8 +727,8 @@ class PublicationInputTest(GateTestCase):
 
     def test_a_non_public_endpoint_is_refused_even_when_the_contract_is_settled(self) -> None:
         for endpoint in (
-            "https://updates.invalid/terax-workspace/stable/latest.json",
-            "https://updates.terax-workspace.test/stable/latest.json",
+            "https://updates.invalid/codr/stable/latest.json",
+            "https://updates.codr.test/stable/latest.json",
             "http://127.0.0.1:8787/stable.json",
         ):
             with self.subTest(endpoint=endpoint):
@@ -778,7 +819,8 @@ class CommandLineTest(GateTestCase):
     def test_a_dry_run_prints_the_decision_and_exits_zero(self) -> None:
         # The workflow's dry-run input: the whole gate runs against a local artifact set and the
         # decision is printed, with nothing published (there is no publish path to reach).
-        result = self.run_gate(*self.base_arguments(), "--dry-run")
+        result = self.run_gate(*self.base_arguments(), "--contract", str(self.provisional()),
+                               "--dry-run")
         self.assertEqual(result.returncode, 0, result.stderr)
         decision = json.loads(result.stdout)
         self.assertFalse(decision["publishable"])
@@ -787,7 +829,7 @@ class CommandLineTest(GateTestCase):
         self.assertIn("gate", result.stderr.lower())
 
     def test_a_refusal_without_dry_run_exits_non_zero_and_says_why(self) -> None:
-        result = self.run_gate(*self.base_arguments())
+        result = self.run_gate(*self.base_arguments(), "--contract", str(self.provisional()))
         self.assertEqual(result.returncode, release_gate.EXIT_REFUSED, result.stderr)
         self.assertIn("refus", result.stderr.lower())
         self.assertIn("publication-provisional", result.stderr)
@@ -806,6 +848,7 @@ class CommandLineTest(GateTestCase):
                                "--ci-status", str(self.ci_path()), "--preconditions-only")
         self.assertEqual(result.returncode, release_gate.EXIT_REFUSED)
         codes_here = {entry["code"] for entry in json.loads(result.stdout)["refusals"]}
+        self.assertIn("signing-input-missing", codes_here)
         self.assertFalse([code for code in codes_here if code.startswith("artifact-")], codes_here)
 
     def test_absent_ci_evidence_is_a_refusal_not_a_usage_error(self) -> None:

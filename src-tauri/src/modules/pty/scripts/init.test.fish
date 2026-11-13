@@ -1,4 +1,4 @@
-set -gx TERAX_WORKSPACE_FORK_TERMINAL 1
+set -gx CODR_TERMINAL 1
 set -l script_dir (dirname (status filename))
 
 function fish_prompt

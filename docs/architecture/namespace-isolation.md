@@ -1,24 +1,20 @@
-# Namespace isolation (fork identity)
+# Namespace isolation (Codr fork identity)
 
-This fork (`dev.terax-workspace.fork`) must be installable and runnable **next to** an
-installed upstream Terax without either application reading, importing, overwriting or
-deleting the other's state. Changing the Tauri identifier alone does **not** achieve that:
-several of the names this application writes are keyed by the product *name* or by a
-hardcoded path, not by the bundle identifier.
-
-The identity is **provisional**. Final product name, release owner/URL and signing keys are
-ticket #39/#40 inputs; nothing here is shippable identity, and no upstream URL or key is
-replaced with an invented one.
+Codr (`io.github.kevsmir02.codr`) must be installable and runnable **next to** an installed
+upstream Terax without either application reading, importing, overwriting or deleting the other's
+state. Changing the Tauri identifier alone does **not** achieve that: several of the names this
+application writes are keyed by the product *name* or by a hardcoded path, not by the bundle
+identifier.
 
 ## One table
 
 Every name below is derived from `src/modules/identity/namespace.json`:
 
-| Field | Value (provisional) | Used for |
+| Field | Value | Used for |
 | --- | --- | --- |
-| `appIdentifier` | `dev.terax-workspace.fork` | Tauri bundle id → app config/data/cache/state dirs and the WebKit data dir |
-| `namespace` | `terax-workspace` | cache directory, shell integration, git refs and ref-adjacent per-user dirs |
-| `envPrefix` | `TERAX_WORKSPACE_FORK` | every environment variable the app sets for a child shell |
+| `appIdentifier` | `io.github.kevsmir02.codr` | Tauri bundle id → app config/data/cache/state dirs and the WebKit data dir |
+| `namespace` | `codr` | cache directory, shell integration, git refs and ref-adjacent per-user dirs |
+| `envPrefix` | `CODR` | every environment variable the app sets for a child shell |
 | `upstream.appIdentifier` | `app.crynta.terax` | the identity this fork refuses to run under or read |
 | `upstream.namespace` | `terax` | the directory this fork refuses to write |
 | `upstream.envPrefix` | `TERAX` | the variables that identify an upstream-owned shell (`TERAX_CLI`, `TERAX_CONTROL_ADDR`) |
@@ -35,35 +31,35 @@ a literal; tests compare that literal against the table (Rust
 
 | Surface | Upstream name | Fork name | Why it had to move |
 | --- | --- | --- | --- |
-| Tauri/bundle identifier | `app.crynta.terax` | `dev.terax-workspace.fork` | selects `app_config_dir`/`app_data_dir`/`app_local_data_dir`/`app_cache_dir` and the WebKit data directory (`tauri-runtime-wry` sets `data_directory = app_local_data_dir`) |
-| App data dir (secrets file, AI session records) | `$XDG_DATA_HOME/app.crynta.terax` | `$XDG_DATA_HOME/dev.terax-workspace.fork` | identifier-derived; holding the same identifier would make both applications share one secrets file |
+| Tauri/bundle identifier | `app.crynta.terax` | `io.github.kevsmir02.codr` | selects `app_config_dir`/`app_data_dir`/`app_local_data_dir`/`app_cache_dir` and the WebKit data directory (`tauri-runtime-wry` sets `data_directory = app_local_data_dir`) |
+| App data dir (secrets file, AI session records) | `$XDG_DATA_HOME/app.crynta.terax` | `$XDG_DATA_HOME/io.github.kevsmir02.codr` | identifier-derived; holding the same identifier would make both applications share one secrets file |
 | WebKit/webview data (localStorage, IndexedDB, cookies, caches) | identifier-derived | identifier-derived | same directory as above; the `terax:*` localStorage keys are private to the webview once the directory differs |
 | App config dir (window state, settings) | identifier-derived | identifier-derived | `tauri-plugin-window-state` writes here; shared identifier = two windows fighting over one file |
 | App cache/state dirs | identifier-derived | identifier-derived | updater/webview caches |
-| Control descriptor | `$XDG_CACHE_HOME/terax/control.json` | `$XDG_CACHE_HOME/terax-workspace/control.json` | **product-name keyed**, not identifier keyed: a dev run overwrote the installed app's live descriptor (ticket #2, risk 2) |
-| Per-pid CLI launcher | `$XDG_CACHE_HOME/terax/run/<pid>/bin/terax` | `$XDG_CACHE_HOME/terax-workspace/run/<pid>/bin/terax` | same directory; also the stale-launcher sweep must not delete the other app's launchers. The launcher *file name* stays `terax` (the CLI command name, packaging identity, #39) but only ever exists inside the fork's own directory |
+| Control descriptor | `$XDG_CACHE_HOME/terax/control.json` | `$XDG_CACHE_HOME/codr/control.json` | **product-name keyed**, not identifier keyed: a dev run overwrote the installed app's live descriptor (ticket #2, risk 2) |
+| Per-pid CLI launcher | `$XDG_CACHE_HOME/terax/run/<pid>/bin/terax` | `$XDG_CACHE_HOME/codr/run/<pid>/bin/terax` | same directory; also the stale-launcher sweep must not delete the other app's launchers. The launcher *file name* stays `terax` (the CLI command name, packaging identity, #39) but only ever exists inside the fork's own directory |
 | Agent-read denylist | `$XDG_CACHE_HOME/terax` | fork dir **and** upstream dir refused | ticket #5 flagged this list as needing to stay in sync with the control module; both now come from the identity table, and upstream's credential file stays unreadable |
-| Shell integration root | `~/.cache/terax/shell-integration` | `~/.cache/terax-workspace/shell-integration` | generated rc files; writing them over upstream's would change the other app's shell behaviour |
-| fish integration file | `~/.config/fish/conf.d/terax.fish` | `~/.config/fish/conf.d/terax-workspace.fish` | shared `conf.d`: our file must not shadow or rewrite upstream's |
-| Shell-side markers (`TERAX_TERMINAL`, `TERAX_BLOCKS`, `TERAX_USER_ZDOTDIR`) | `TERAX_*` | `TERAX_WORKSPACE_FORK_*` | upstream's generated scripts gate on `TERAX_TERMINAL`; setting it would activate the *other* application's integration inside our shells |
-| Control/env handshake (`TERAX_CONTROL_ADDR`, `TERAX_CONTROL_TOKEN`, `TERAX_PANE_ID`) | `TERAX_*` | `TERAX_WORKSPACE_FORK_*` | cross-process: a fork CLI reading an upstream address/token would talk to the other app's server |
-| CLI variable (`TERAX_CLI`) | `TERAX_CLI` | `TERAX_WORKSPACE_FORK_CLI` | persisted inside shared agent configs; setting it would make upstream's installed hooks invoke whichever CLI is on `PATH` |
-| Hook ownership markers | `$TERAX_CLI … hook …`, `notify;Terax;`, `terax;notify`, `__terax_notify` | only commands containing `TERAX_WORKSPACE_FORK_CLI` are ours | the ownership predicate used to claim upstream's commands, so uninstall removed the *other* application's hooks. Upstream commands are now foreign and are never rewritten or removed |
-| Hook tuning (`TERAX_HOOK_TIMEOUT`, `TERAX_HOOK_WAIT`, `TERAX_HOOK_DEBUG`) | `TERAX_HOOK_*` | `TERAX_WORKSPACE_FORK_HOOK_*` | read from the child shell's environment; a user value set for the other installation must not silently retune this one |
-| Gemini hook label | `"name": "terax"` | `"name": "terax-workspace"` | label written into a shared settings file |
+| Shell integration root | `~/.cache/terax/shell-integration` | `~/.cache/codr/shell-integration` | generated rc files; writing them over upstream's would change the other app's shell behaviour |
+| fish integration file | `~/.config/fish/conf.d/terax.fish` | `~/.config/fish/conf.d/codr.fish` | shared `conf.d`: our file must not shadow or rewrite upstream's |
+| Shell-side markers (`TERAX_TERMINAL`, `TERAX_BLOCKS`, `TERAX_USER_ZDOTDIR`) | `TERAX_*` | `CODR_*` | upstream's generated scripts gate on `TERAX_TERMINAL`; setting it would activate the *other* application's integration inside our shells |
+| Control/env handshake (`TERAX_CONTROL_ADDR`, `TERAX_CONTROL_TOKEN`, `TERAX_PANE_ID`) | `TERAX_*` | `CODR_*` | cross-process: a fork CLI reading an upstream address/token would talk to the other app's server |
+| CLI variable (`TERAX_CLI`) | `TERAX_CLI` | `CODR_CLI` | persisted inside shared agent configs; setting it would make upstream's installed hooks invoke whichever CLI is on `PATH` |
+| Hook ownership markers | `$TERAX_CLI … hook …`, `notify;Terax;`, `terax;notify`, `__terax_notify` | only commands containing `CODR_CLI` are ours | the ownership predicate used to claim upstream's commands, so uninstall removed the *other* application's hooks. Upstream commands are now foreign and are never rewritten or removed |
+| Hook tuning (`TERAX_HOOK_TIMEOUT`, `TERAX_HOOK_WAIT`, `TERAX_HOOK_DEBUG`) | `TERAX_HOOK_*` | `CODR_HOOK_*` | read from the child shell's environment; a user value set for the other installation must not silently retune this one |
+| Gemini hook label | `"name": "terax"` | `"name": "codr"` | label written into a shared settings file |
 | Pi extension | `.pi/agent/extensions/terax-notifications.ts`, header `// terax-pi-notifications-v2` | `<ns>-notifications.ts`, header `// <ns>-pi-notifications-v<version>` | shared extensions directory; the stale-version check must only consider our own family, and foreign content at our path is refused instead of overwritten |
 | OSC 777 notification marker | `ESC ]777;notify;Terax;<agent>;<event>` | same sequence, parsed read-only | written into terminal output by hook configs the user may still have from upstream. Reading it is interop, writing nothing; no state is touched |
-| Git refs | `refs/terax/checkpoints/*`, `refs/terax/tasks/*` | `refs/terax-workspace/*` (`checkpoints/*`, `manual-checkpoints/*`, `tasks/*`) | refs live in the user's repository; a shared namespace lets cleanup/prune delete the other installation's checkpoints. Manual checkpoints have their own root so a task named `manual` cannot collide with one ([checkpoints](checkpoints.md)) |
-| Task worktree state | `~/.terax/worktrees/...`, `~/.terax/task-worktrees.json` | `~/.terax-workspace/...` | both applications would otherwise share one registry and one directory tree |
-| Branch prefix default | `terax/` | `terax-workspace/` | new branches created by the fork must not collide with upstream's convention |
+| Git refs | `refs/terax/checkpoints/*`, `refs/terax/tasks/*` | `refs/codr/*` (`checkpoints/*`, `manual-checkpoints/*`, `tasks/*`) | refs live in the user's repository; a shared namespace lets cleanup/prune delete the other installation's checkpoints. Manual checkpoints have their own root so a task named `manual` cannot collide with one ([checkpoints](checkpoints.md)) |
+| Task worktree state | `~/.terax/worktrees/...`, `~/.terax/task-worktrees.json` | `~/.codr/...` | both applications would otherwise share one registry and one directory tree |
+| Branch prefix default | `terax/` | `codr/` | new branches created by the fork must not collide with upstream's convention |
 | Project config `.terax/project.toml` | `.terax/project.toml` | **unchanged** | user-owned project file, read-only for both applications; sharing the *file* is the point of the format |
 | Child env shared with project scripts (`TERAX_TASK`, `TERAX_PORT*`, `TERAX_WORKSPACE_PATH`, `TERAX_ROOT_PATH`) | unchanged | unchanged | `~/.terax/project.toml` scripts (shared with upstream projects) reference them; they are a contract, not fork-owned state. `identity.rs` asserts the fork prefix never shadows them |
 | Shell history (`~/.zsh_history`, `~/.bash_history`, fish history) | user-owned | unchanged, read-only | the completion index is in memory; this application writes no history file, so there is nothing to isolate — but it also must not be mistaken for fork state |
 | Dev/bench/smoke identifiers | `app.crynta.terax.<lab>-<hex>` | `<fork identifier>.<lab>-<hex>` | runners derive them from the table; the preflight refuses the fork product identifier, any identifier under it that is not disposable, and **any upstream identifier** (which would share the upstream profile) |
-| Update channel (endpoint + minisign key) | upstream `latest.json` + upstream key | fork-owned provisional contract (`src/modules/updater/releaseContract.json`): `.invalid` endpoint, no provisioned key | release identity/trust is #39/#40; discovery is #37. The contract is deliberately non-live, so no build can query upstream's feed, and a publication claim stays blocked until the final endpoint and keys land. Candidate packages are built with `createUpdaterArtifacts=false` ([linux packages](linux-packages.md)) |
+| Update channel (endpoint + minisign key) | upstream `latest.json` + upstream key | fork-owned release contract (`src/modules/updater/releaseContract.json`): `https://github.com/kevsmir02/terax-ai/releases/latest/download/latest.json`, provisioned minisign key `94097B75DB498B21` | settled under #39/#40 ([ADR-0010](../adr/0010-publish-under-own-identity-and-trust.md), [release trust](release-trust.md)); discovery is #37. Candidate packages are built with `createUpdaterArtifacts=false` ([linux packages](linux-packages.md)) |
 | macOS FSEvents queue label | `app.crynta.terax.fsevents` | identifier-derived | hardcoded copy of the identifier; macOS is out of scope (#33) but the label now follows the table |
 | macOS/Windows keyring service (`KEYRING_SERVICE`) | `terax-ai` | removed | the service existed only for built-in AI provider keys, which are gone (#12/#14); the `keyring` dependency and its service name no longer exist in the binary, so there is nothing for a fork to share or read |
-| Bundle `productName`, publisher, binary/desktop entry names | `Terax`, `Crynta`, `/usr/bin/terax`, `/usr/bin/terax-cli` | `Terax Workspace`, `Terax Workspace Candidate`, `/usr/bin/terax-workspace`, `/usr/bin/terax-workspace-cli` | packaging identity: installing two packages that ship the same binary paths would overwrite the other installation. The candidate overlay derives these from the table's `packaging` block; final branding is #39/#40 ([linux packages](linux-packages.md)) |
+| Bundle `productName`, publisher, binary/desktop entry names | `Terax`, `Crynta`, `/usr/bin/terax`, `/usr/bin/terax-cli` | `Codr`, `kevsmir02`, `/usr/bin/codr`, `/usr/bin/codr-cli` (candidate builds: `Codr Candidate`) | packaging identity: installing two packages that ship the same binary paths would overwrite the other installation. The candidate overlay derives these from the table's `packaging` block ([linux packages](linux-packages.md)) |
 | Build-time CLI target (`TERAX_CLI_TARGET`) | `TERAX_CLI_TARGET` | **unchanged** | read by `scripts/build-cli.mjs` and set by `.github/workflows/release.yml`; a build input for the release pipeline, not runtime state. Its rename belongs with the release pipeline in #39/#40, not with namespace isolation |
 
 ## Refusal instead of migration

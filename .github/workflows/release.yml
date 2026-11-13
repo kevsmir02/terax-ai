@@ -8,16 +8,14 @@ name: Release gate
 #   * the candidate set was built from that same commit and hashes to its recorded checksums, and
 #   * publication identity and signing trust are decided.
 #
-# The last precondition is not decided yet: `src/modules/updater/releaseContract.json` is
-# provisional, no fork signing key exists and the endpoint is a non-resolving placeholder. So a
-# tag runs this workflow, gets a named refusal before a single artifact is produced, and fails
-# loudly. A tag trigger is safe here precisely because the gate refuses everything today;
-# `.github/workflows/release.yml` gains no write permission, no upload-to-release action and no
-# signing secret until that contract is settled (breakdown ticket 39 = GitHub issue #40), and
-# `scripts/tests/test_ci_workflows.py` derives that rule from the contract itself.
+# The publication identity (`Codr` / `kevsmir02/terax-ai`) and minisign public trust root
+# (`94097B75DB498B21`) are settled in `src/modules/updater/releaseContract.json`
+# (`"provisional": false`), while this workflow remains non-publishing: it stages and signs
+# artifacts and runs `scripts/release_gate.py`, which refuses whenever CI evidence, tags, signing
+# secrets, or signature verification against the committed public key are missing or mismatched.
 #
-# `workflow_dispatch` with `dry_run: true` is the safe exercise path: the whole gate — including
-# the artifact-identity stage — runs against the local candidate set and prints its decision,
+# `workflow_dispatch` with `dry_run: true` is the safe exercise path: the whole gate - including
+# the artifact-identity stage - runs against the local candidate set and prints its decision,
 # while still uploading only a run-scoped workflow artifact.
 
 on:

@@ -59,8 +59,8 @@ describe("worktree removal api", () => {
     });
 
     const refs = [
-      "refs/terax-workspace/manual-checkpoints/aa",
-      "refs/terax-workspace/checkpoints/task/1",
+      "refs/codr/manual-checkpoints/aa",
+      "refs/codr/checkpoints/task/1",
     ];
     await git.checkpointCleanupAt("/repo", managed, refs);
     expect(mocks.invoke).toHaveBeenLastCalledWith("git_checkpoint_cleanup_at", {

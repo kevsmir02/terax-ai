@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Generate this fork's offline release-signing key (issue #40, breakdown ticket 39).
+"""Generate Codr's offline release-signing key (issue #40, breakdown ticket 39).
 
 Run by the maintainer, once, on a machine they control (never in CI and never in a container
 built from this repository):
 
-    python3 scripts/provision_signing_key.py --directory ~/.config/terax-workspace/release-keys
+    python3 scripts/provision_signing_key.py --directory ~/.config/codr/release-keys
 
 What it does:
 
@@ -39,8 +39,8 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 import minisign  # noqa: E402
 
-PUBLIC_NAME = "terax-workspace-release.pub"
-SECRET_NAME = "terax-workspace-release.key"
+PUBLIC_NAME = "codr-release.pub"
+SECRET_NAME = "codr-release.key"
 EXIT_OK = 0
 EXIT_REFUSED = 3
 EXIT_USAGE = 2
@@ -70,7 +70,7 @@ def provision(directory: Path, binary: str) -> int:
         print(
             "refusing: destination-inside-repository: "
             f"{directory} is inside {REPO_ROOT}; the signing secret must never be able to reach "
-            "the repository. Choose a directory outside it (e.g. ~/.config/terax-workspace/"
+            "the repository. Choose a directory outside it (e.g. ~/.config/codr/"
             "release-keys)",
             file=sys.stderr,
         )

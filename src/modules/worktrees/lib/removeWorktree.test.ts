@@ -52,7 +52,7 @@ const read = (path: string) => readFileSync(join(root, path), "utf8");
 const groups: CheckpointGroups = {
   manual: [
     {
-      ref: "refs/terax-workspace/manual-checkpoints/aa",
+      ref: "refs/codr/manual-checkpoints/aa",
       id: "aa",
       name: "before refactor",
       commit: "c1",
@@ -64,7 +64,7 @@ const groups: CheckpointGroups = {
   ],
   turns: [
     {
-      ref: "refs/terax-workspace/checkpoints/task/2",
+      ref: "refs/codr/checkpoints/task/2",
       taskId: "task",
       turn: 2,
       commit: "c2",
@@ -75,7 +75,7 @@ const groups: CheckpointGroups = {
   ],
   safety: [
     {
-      ref: "refs/terax-workspace/checkpoints/task/prerestore-3",
+      ref: "refs/codr/checkpoints/task/prerestore-3",
       taskId: "task",
       commit: "c3",
       tree: "t3",
@@ -138,8 +138,8 @@ describe("worktree removal blockers", () => {
         turns: 1,
         safety: 1,
         sample: [
-          "refs/terax-workspace/manual-checkpoints/aa",
-          "refs/terax-workspace/checkpoints/task/2",
+          "refs/codr/manual-checkpoints/aa",
+          "refs/codr/checkpoints/task/2",
         ],
       },
     });
@@ -177,9 +177,9 @@ describe("worktree removal blockers", () => {
 describe("explicit scoped cleanup", () => {
   it("names exactly the refs of the worktree being removed", () => {
     expect(recoveryRefsToDelete(groups)).toEqual([
-      "refs/terax-workspace/manual-checkpoints/aa",
-      "refs/terax-workspace/checkpoints/task/2",
-      "refs/terax-workspace/checkpoints/task/prerestore-3",
+      "refs/codr/manual-checkpoints/aa",
+      "refs/codr/checkpoints/task/2",
+      "refs/codr/checkpoints/task/prerestore-3",
     ]);
     // Nothing is selected by default: an empty listing means no cleanup.
     expect(

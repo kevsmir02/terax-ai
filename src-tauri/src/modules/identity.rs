@@ -81,7 +81,7 @@ pub fn env_prefix() -> &'static str {
     &table().env_prefix
 }
 
-/// An environment variable of this fork, e.g. `env("CLI")` -> `TERAX_WORKSPACE_FORK_CLI`.
+/// An environment variable of this fork, e.g. `env("CLI")` -> `CODR_CLI`.
 pub fn env(suffix: &str) -> String {
     format!("{}_{suffix}", table().env_prefix)
 }
@@ -144,9 +144,12 @@ mod tests {
     }
 
     #[test]
-    fn the_working_identity_is_provisional_and_not_upstream() {
+    fn the_working_identity_is_finalized_and_not_upstream() {
         let table = table();
-        assert!(table.provisional, "the working identity is provisional");
+        assert!(!table.provisional, "the working identity is finalized");
+        assert_eq!(table.app_identifier, "io.github.kevsmir02.codr");
+        assert_eq!(table.namespace, "codr");
+        assert_eq!(table.env_prefix, "CODR");
         assert!(table.final_identity_ticket > 0);
         assert!(!table.note.is_empty());
         assert_ne!(table.app_identifier, table.upstream.app_identifier);
@@ -256,7 +259,7 @@ mod tests {
         let contract = parse(include_str!("../../../src/modules/updater/releaseContract.json"));
         let config = parse(include_str!("../../tauri.conf.json"));
 
-        assert_eq!(contract["provisional"], serde_json::json!(true));
+        assert_eq!(contract["provisional"], serde_json::json!(false));
         assert_eq!(contract["channel"], serde_json::json!("stable"));
 
         let endpoints = contract["endpoints"]
@@ -265,7 +268,10 @@ mod tests {
             .iter()
             .map(|value| value.as_str().expect("endpoint string").to_string())
             .collect::<Vec<_>>();
-        assert!(!endpoints.is_empty(), "a release endpoint is configured");
+        assert_eq!(
+            endpoints,
+            vec!["https://github.com/kevsmir02/terax-ai/releases/latest/download/latest.json"]
+        );
 
         let upstream = contract["upstream"]["endpoints"]
             .as_array()
@@ -286,14 +292,18 @@ mod tests {
                 !endpoint.contains("crynta"),
                 "{endpoint} names the upstream release owner"
             );
+            assert!(
+                endpoint.starts_with("https://"),
+                "the finalized endpoint must use HTTPS: {endpoint}"
+            );
             let host = endpoint
                 .split("://")
                 .nth(1)
                 .and_then(|rest| rest.split('/').next())
                 .unwrap_or_default();
             assert!(
-                host.ends_with(".invalid"),
-                "the default endpoint must not be live until #39/#40 provision one: {endpoint}"
+                !host.ends_with(".invalid"),
+                "the finalized endpoint must not stay on .invalid: {endpoint}"
             );
         }
 
@@ -307,8 +317,15 @@ mod tests {
             configured, endpoints,
             "tauri.conf.json must mirror the fork release contract"
         );
-        // No fork trust root exists yet; upstream's embedded key must not be reused.
-        assert_eq!(config["plugins"]["updater"]["pubkey"], serde_json::json!(""));
+        let pubkey = config["plugins"]["updater"]["pubkey"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(!pubkey.is_empty(), "the fork updater pubkey must be provisioned");
+        assert_eq!(
+            config["plugins"]["updater"]["pubkey"],
+            contract["trust"]["publicKey"],
+            "tauri.conf.json updater pubkey must match releaseContract.json"
+        );
         assert!(
             !include_str!("../../tauri.conf.json").contains("3BABFD8AB60E3469"),
             "the upstream signing key must not remain in the fork config"

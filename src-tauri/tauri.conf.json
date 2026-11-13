@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Terax",
+  "productName": "Codr",
   "version": "1.0.0",
-  "identifier": "dev.terax-workspace.fork",
+  "identifier": "io.github.kevsmir02.codr",
   "build": {
     "beforeDevCommand": "pnpm build:cli:dev && pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
   "app": {
     "windows": [
       {
-        "title": "Terax",
+        "title": "Codr",
         "width": 800,
         "height": 600,
         "minWidth": 420,
@@ -35,7 +35,7 @@
   "bundle": {
     "active": true,
     "externalBin": [
-      "binaries/terax-workspace-cli"
+      "binaries/codr-cli"
     ],
     "resources": {
       "../packages/ghostty-core/LICENSE": "licenses/terminal/ghostty-web.txt",
@@ -48,9 +48,9 @@
       "deb"
     ],
     "createUpdaterArtifacts": false,
-    "copyright": "Copyright 2026 Crynta",
+    "copyright": "Copyright 2026 Crynta and Codr contributors",
     "license": "Apache-2.0",
-    "publisher": "Crynta",
+    "publisher": "kevsmir02",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -70,11 +70,11 @@
       }
     },
     "category": "DeveloperTool",
-    "shortDescription": "Terminal workspace with editor, Git and previews",
-    "longDescription": "Terax — an open-source terminal workspace: multi-tab terminal, file explorer, code editor, source control and rendered previews, for launching independently installed coding agents.",
+    "shortDescription": "Codr - Linux terminal workspace with editor, Git and previews",
+    "longDescription": "Codr is an unofficial fork of Terax for Linux x86-64: multi-tab terminal, file explorer, code editor, source control and rendered previews, built by kevsmir02 and not affiliated with Crynta.",
     "fileAssociations": [
       {
-        "name": "Terax Document",
+        "name": "Codr Document",
         "role": "Editor",
         "mimeType": "text/plain",
         "ext": [
@@ -93,9 +93,9 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk0MDk3Qjc1REI0OThCMjEKUldRaGkwbmJkWHNKbEZ1OWI0OHNtallkdFpLelozQW42cmpoS1J6K2tkTDB0RzhmN0RCSmo4bEwK",
       "endpoints": [
-        "https://updates.invalid/terax-workspace/stable/latest.json"
+        "https://github.com/kevsmir02/terax-ai/releases/latest/download/latest.json"
       ]
     }
   }

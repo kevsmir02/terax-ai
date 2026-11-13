@@ -249,5 +249,5 @@ export function describeHandoffBlock(
     );
   }
 
-  return `Terax did not hand off: ${join(parts)}. Terax does not save, close, stop or interrupt any of it; what to finish or close stays your decision.`;
+  return `Codr did not hand off: ${join(parts)}. Codr does not save, close, stop or interrupt any of it; what to finish or close stays your decision.`;
 }

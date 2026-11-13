@@ -56,11 +56,11 @@ export function failureSummary(failure: CheckFailure): string {
 function failureTitle(failure: CheckFailure): string {
   switch (failure.reason) {
     case "signature":
-      return "Update check failed — verification";
+      return "Update check failed - verification";
     case "offline":
-      return "Update check failed — offline";
+      return "Update check failed - offline";
     case "rate-limited":
-      return "Update check failed — rate limited";
+      return "Update check failed - rate limited";
     default:
       return "Update check failed";
   }
@@ -72,7 +72,7 @@ export function checkSummary(state: UpdaterState): CopySummary {
       return {
         title: "Check for updates",
         detail:
-          "Terax only reads the release feed; it never downloads or installs on its own.",
+          "Codr only reads the release feed; it never downloads or installs on its own.",
         action: "check",
       };
     case "checking":
@@ -90,9 +90,9 @@ export function checkSummary(state: UpdaterState): CopySummary {
       };
     case "update-available":
       return {
-        title: `Terax v${state.release.version} is available`,
+        title: `Codr v${state.release.version} is available`,
         detail:
-          "A newer stable release was found. Terax does not download or install it for " +
+          "A newer stable release was found. Codr does not download or install it for " +
           "you: update with your package tool, and this app will not restart itself.",
         action: "request-update",
       };
@@ -104,7 +104,7 @@ export function checkSummary(state: UpdaterState): CopySummary {
       };
     case "handoff-unavailable":
       return {
-        title: `Terax v${state.release.version} needs a package-tool update`,
+        title: `Codr v${state.release.version} needs a package-tool update`,
         detail: `${state.detail} Nothing was downloaded, and no package transaction ran.`,
         action: "dismiss",
       };
@@ -112,22 +112,22 @@ export function checkSummary(state: UpdaterState): CopySummary {
       return {
         title: "Checking that nothing is in the way…",
         detail:
-          "Terax is reading the live state right now: unsaved editor buffers, processes " +
+          "Codr is reading the live state right now: unsaved editor buffers, processes " +
           "your terminals started, and agents that are still working. It does not save, " +
           "close, stop or interrupt anything.",
         action: null,
       };
     case "handoff-blocked":
       return {
-        title: `Not handed off — v${state.release.version} waits on your work`,
+        title: `Not handed off - v${state.release.version} waits on your work`,
         detail: state.summary,
         action: "request-handoff",
       };
     case "handed-off":
       return {
-        title: `Handed off: Terax v${state.release.version}`,
+        title: `Handed off: Codr v${state.release.version}`,
         detail:
-          "Terax gave you the artifact and the command below and stopped there. It did " +
+          "Codr gave you the artifact and the command below and stopped there. It did " +
           "not download, install or verify anything, and it cannot confirm the result: " +
           "your package tool owns the transaction.",
         action: "dismiss",
@@ -147,9 +147,9 @@ export function checkSummary(state: UpdaterState): CopySummary {
 export function handoffRecoveryNote(): string {
   return (
     "If your package tool is cancelled, fails, or reports that the package database is " +
-    "locked: nothing is rolled back by Terax. It is safe to close Terax first, wait for " +
+    "locked: nothing is rolled back by Codr. It is safe to close Codr first, wait for " +
     "the running package operation to finish (or remove the stale lock your tool names), " +
-    "then run the command again. Terax cannot tell you whether the transaction finished " +
+    "then run the command again. Codr cannot tell you whether the transaction finished " +
     "and never relaunches itself."
   );
 }

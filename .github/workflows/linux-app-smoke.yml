@@ -14,7 +14,7 @@ name: Linux app smoke
 # report, page log and app log are uploaded for diagnosis.
 #
 # It cannot touch a production profile: the runner gets a per-run identifier inside the fork's
-# `dev.terax-workspace.fork.app-lab-*` namespace (`src/modules/identity/namespace.json`), a
+# `io.github.kevsmir02.codr.app-lab-*` namespace (`src/modules/identity/namespace.json`), a
 # private `HOME` and private `XDG_*` tree under the output directory, and both the preflight and
 # the bench binary's own guard refuse anything else (`scripts/linux_profile.py`, `--self-test`).
 # Upstream's `app.crynta.terax.*` is refused as well, so a borrowed literal here would abort
@@ -115,7 +115,7 @@ jobs:
       - name: Build the bench app (debug, no bundle)
         run: |
           python3 scripts/app-lab/run.py --scenario workflow --profile debug --build-only \
-            --identifier dev.terax-workspace.fork.app-lab-ci \
+            --identifier io.github.kevsmir02.codr.app-lab-ci \
             --target-dir src-tauri/target \
             --output "$RUNNER_TEMP/app-lab"
 
@@ -127,7 +127,7 @@ jobs:
             dbus-run-session -- "$RUNNER_TEMP/with-display.sh" \
             python3 scripts/app-lab/run.py --scenario workflow --profile debug --self-test \
               --reuse-build \
-              --identifier dev.terax-workspace.fork.app-lab-ci \
+              --identifier io.github.kevsmir02.codr.app-lab-ci \
               --target-dir src-tauri/target \
               --output "$RUNNER_TEMP/app-lab"
 
@@ -140,7 +140,7 @@ jobs:
             dbus-run-session -- "$RUNNER_TEMP/with-display.sh" \
             python3 scripts/app-lab/run.py --scenario workflow --profile debug \
               --reuse-build \
-              --identifier dev.terax-workspace.fork.app-lab-ci \
+              --identifier io.github.kevsmir02.codr.app-lab-ci \
               --target-dir src-tauri/target \
               --output "$RUNNER_TEMP/app-lab" \
               --label "linux-app-smoke ${{ github.sha }}"

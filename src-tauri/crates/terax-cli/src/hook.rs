@@ -278,9 +278,9 @@ mod tests {
     #[test]
     fn the_environment_requires_every_terax_variable() {
         let full: &[(&str, &str)] = &[
-            ("TERAX_WORKSPACE_FORK_PANE_ID", "7"),
-            ("TERAX_WORKSPACE_FORK_CONTROL_ADDR", "127.0.0.1:4000"),
-            ("TERAX_WORKSPACE_FORK_CONTROL_TOKEN", "tok"),
+            ("CODR_PANE_ID", "7"),
+            ("CODR_CONTROL_ADDR", "127.0.0.1:4000"),
+            ("CODR_CONTROL_TOKEN", "tok"),
         ];
         let environment = HookEnvironment::from_lookup(lookup(full)).unwrap();
         assert_eq!(environment.pane_id, 7);
@@ -300,9 +300,9 @@ mod tests {
         }
         assert_eq!(
             HookEnvironment::from_lookup(lookup(&[
-                ("TERAX_WORKSPACE_FORK_PANE_ID", "x"),
-                ("TERAX_WORKSPACE_FORK_CONTROL_ADDR", "a"),
-                ("TERAX_WORKSPACE_FORK_CONTROL_TOKEN", "t"),
+                ("CODR_PANE_ID", "x"),
+                ("CODR_CONTROL_ADDR", "a"),
+                ("CODR_CONTROL_TOKEN", "t"),
             ])),
             None
         );
@@ -330,12 +330,12 @@ mod tests {
         let with = |timeout: &'static str, wait: &'static str| {
             let pairs: &'static [(&'static str, &'static str)] = Box::leak(
                 vec![
-                    ("TERAX_WORKSPACE_FORK_PANE_ID", "1"),
-                    ("TERAX_WORKSPACE_FORK_CONTROL_ADDR", "a"),
-                    ("TERAX_WORKSPACE_FORK_CONTROL_TOKEN", "t"),
-                    ("TERAX_WORKSPACE_FORK_HOOK_TIMEOUT", timeout),
-                    ("TERAX_WORKSPACE_FORK_HOOK_WAIT", wait),
-                    ("TERAX_WORKSPACE_FORK_HOOK_DEBUG", "1"),
+                    ("CODR_PANE_ID", "1"),
+                    ("CODR_CONTROL_ADDR", "a"),
+                    ("CODR_CONTROL_TOKEN", "t"),
+                    ("CODR_HOOK_TIMEOUT", timeout),
+                    ("CODR_HOOK_WAIT", wait),
+                    ("CODR_HOOK_DEBUG", "1"),
                 ]
                 .into(),
             );

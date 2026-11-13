@@ -17,7 +17,7 @@ workspace ticket is the manual path below.
 | Turn (retained) | `refs/<namespace>/checkpoints/<task>/<turn>` | task id + turn |
 | Safety | `refs/<namespace>/checkpoints/<id>/prerestore-<millis>` | manual id or task id + millis |
 
-`<namespace>` is the fork namespace (`terax-workspace`), never upstream's `refs/terax`: refs live
+`<namespace>` is the fork namespace (`codr`), never upstream's `refs/terax`: refs live
 in the user's repository and a shared namespace would let one installation list, restore or
 delete the other's recovery points.
 

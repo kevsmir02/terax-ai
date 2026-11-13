@@ -1,13 +1,12 @@
 # Security
 
-This repository is an **unofficial Linux fork** of Terax (upstream: `crynta/terax-ai`). It is not
-affiliated with Crynta, it is not the upstream product, and upstream's security process and contact
-address do not apply here. This is a personal candidate build: it carries no production-readiness
-certification and no warranty.
+This repository builds **Codr**, an **unofficial Linux fork** of Terax (upstream: `crynta/terax-ai`).
+It is not affiliated with Crynta, it is not the upstream product, and upstream's security process and
+contact address do not apply here. No production-readiness certification or warranty is claimed.
 
 ## Reporting a vulnerability
 
-Report privately through this repository's **Security → Report a vulnerability** form
+Report privately through this repository's **Security -> Report a vulnerability** form
 (<https://github.com/kevsmir02/terax-ai/security/advisories/new>). That keeps the report out of
 public view until a fix exists.
 
@@ -24,8 +23,9 @@ Include:
 ## Supported versions
 
 No stable release is published yet: the first one is gated on artifact, resource and distribution
-evidence (issue #45). Until it exists, only the current `main` tip is considered, and only as a
-candidate. Once a stable release exists, only the latest stable minor receives fixes.
+evidence (issue #45). Until it exists, only the current `main` tip is considered, and no release
+binary is supported for production use yet. Once a stable release exists, only the latest stable
+minor receives fixes.
 
 ## What is in scope
 
@@ -53,11 +53,16 @@ candidate. Once a stable release exists, only the latest stable minor receives f
   commands, and capabilities grant no updater install command.
 - **This application never downloads, installs or restarts itself.** Updates are performed with your
   package tool: the app can hand the package artifact to it after you approve, and a handoff is
-  never reported as a completed install.
-- **Update checks fail closed.** The release contract carries no provisioned trust root yet, so
-  signature verification refuses an artifact instead of trusting something unsigned. Release
-  signing is **not** in place: no key is provisioned, the tagged-release gate refuses publication
-  until it is, and nothing in this repository or its issues holds a private key.
+  never reported as a completed install or as verified downloaded bytes.
+- **Independent artifact trust root (minisign) vs package/repo trust.** The fork's independent
+  minisign public key is provisioned (`94097B75DB498B21`,
+  `sha256:a02fd6ac492d1f070919bde106c20c0a376fbcdb6db8bc4c17ca0efd68197487`; see
+  `docs/architecture/release-trust.md`), and nothing in this repository or its issues holds a
+  private signing key. At discovery time the app fails closed on malformed envelopes, version
+  mismatches, or non-matching key IDs. Download-time package installation and managed DNF/APT
+  repository trust remain separate and deferred: `dnf` and `apt` do not verify minisign signatures,
+  so inspect downloaded artifacts with the published `.minisig` files before running your package
+  manager.
 
 ## What we cannot promise
 
@@ -65,6 +70,6 @@ candidate. Once a stable release exists, only the latest stable minor receives f
   point of a terminal.
 - Local model endpoints (LM Studio, OpenAI-compatible servers) are trusted at the network level;
   only point the application at servers you control.
-- No release artifact has been validated on Debian or Arch yet, and the packaged install path is not
-  validated on any distribution until issue #44 records it. Read the supported-matrix statements in
-  `README.md` before relying on a package.
+- No release artifact has been validated on Fedora, Debian or Arch yet, and the packaged install path
+  is not validated on any distribution until issue #44 records it. Read the supported-matrix
+  statements in `README.md` before relying on a package.

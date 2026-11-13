@@ -335,7 +335,7 @@ export const git = {
       workspace: currentWorkspaceEnv(),
     }),
 
-  // ---- manual checkpoints (refs/terax-workspace/manual-checkpoints/<id>)
+  // ---- manual checkpoints (refs/codr/manual-checkpoints/<id>)
   /** Captures tracked and non-ignored files; never moves HEAD or the real index. */
   checkpointManualCreate: (worktree: string, name: string | null = null) =>
     invoke<ManualCheckpointCreated>("git_checkpoint_manual_create", {

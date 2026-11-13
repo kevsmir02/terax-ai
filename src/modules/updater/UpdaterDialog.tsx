@@ -158,7 +158,7 @@ export function UpdaterDialogBody({
               ))}
             </ul>
             <p className="text-[10.5px] text-muted-foreground">
-              Run by you with {guidance.tooling.join(", ")}. Terax never runs
+              Run by you with {guidance.tooling.join(", ")}. Codr never runs
               these commands and never asks for privilege to replace itself.
             </p>
           </div>

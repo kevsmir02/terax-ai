@@ -22,7 +22,7 @@ export interface PackageGuidance {
   steps: {
     label: string;
     command?: string;
-    /** Every step is run by the user, never by Terax. */
+    /** Every step is run by the user, never by Codr. */
     by: "user";
   }[];
   /** Always false: this build hands off to package tooling instead of installing. */
@@ -32,9 +32,9 @@ export interface PackageGuidance {
 export function archGuidance(): PackageGuidance {
   return {
     distro: "arch",
-    title: "Arch Linux — update with package tooling",
+    title: "Arch Linux - update with package tooling",
     summary:
-      "Terax does not install or upgrade itself on Arch. Arch updates stay with pacman " +
+      "Codr does not install or upgrade itself on Arch. Arch updates stay with pacman " +
       "and your AUR helper or makepkg recipe, so package ownership and dependencies " +
       "remain with the package tool.",
     tooling: ["pacman", "makepkg", "AUR helper"],
@@ -52,7 +52,7 @@ export function archGuidance(): PackageGuidance {
       },
       {
         label:
-          "Close Terax before the package tool replaces it; Terax never relaunches itself.",
+          "Close Codr before the package tool replaces it; Codr never relaunches itself.",
         by: "user",
       },
     ],
@@ -77,10 +77,10 @@ export function packageGuidanceFor(
   const tool = debian ? "apt" : "dnf";
   return {
     distro,
-    title: `${debian ? "Debian / Ubuntu" : "Fedora / RHEL"} — package-tool handoff`,
+    title: `${debian ? "Debian / Ubuntu" : "Fedora / RHEL"} - package-tool handoff`,
     summary:
       "Download the package with your browser or package tool and install it with that " +
-      "package tool so dependencies and ownership stay with it. Terax does not run the " +
+      "package tool so dependencies and ownership stay with it. Codr does not run the " +
       "transaction.",
     tooling: [tool],
     steps: [
@@ -90,8 +90,7 @@ export function packageGuidanceFor(
         by: "user",
       },
       {
-        label:
-          "Close Terax before replacing it; Terax never relaunches itself.",
+        label: "Close Codr before replacing it; Codr never relaunches itself.",
         by: "user",
       },
     ],

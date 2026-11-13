@@ -44,24 +44,19 @@ describe("manual checkpoint api", () => {
       workspace,
     });
 
-    await git.checkpointInspect(
-      "/wt",
-      "refs/terax-workspace/manual-checkpoints/abc",
-    );
+    await git.checkpointInspect("/wt", "refs/codr/manual-checkpoints/abc");
     expect(mocks.invoke).toHaveBeenLastCalledWith("git_checkpoint_inspect", {
       worktree: "/wt",
-      reference: "refs/terax-workspace/manual-checkpoints/abc",
+      reference: "refs/codr/manual-checkpoints/abc",
       workspace,
     });
   });
 
   it("cleans up only the refs the caller names", async () => {
-    await git.checkpointCleanup("/wt", [
-      "refs/terax-workspace/manual-checkpoints/abc",
-    ]);
+    await git.checkpointCleanup("/wt", ["refs/codr/manual-checkpoints/abc"]);
     expect(mocks.invoke).toHaveBeenLastCalledWith("git_checkpoint_cleanup", {
       worktree: "/wt",
-      refs: ["refs/terax-workspace/manual-checkpoints/abc"],
+      refs: ["refs/codr/manual-checkpoints/abc"],
       workspace,
     });
   });
@@ -69,20 +64,20 @@ describe("manual checkpoint api", () => {
   it("previews a restore and binds the confirmation to its fingerprint", async () => {
     await git.checkpointRestorePreview(
       "/wt",
-      "refs/terax-workspace/manual-checkpoints/abc",
+      "refs/codr/manual-checkpoints/abc",
     );
     expect(mocks.invoke).toHaveBeenLastCalledWith(
       "git_checkpoint_manual_restore_preview",
       {
         worktree: "/wt",
-        reference: "refs/terax-workspace/manual-checkpoints/abc",
+        reference: "refs/codr/manual-checkpoints/abc",
         workspace,
       },
     );
 
     await git.checkpointRestoreManual(
       "/wt",
-      "refs/terax-workspace/manual-checkpoints/abc",
+      "refs/codr/manual-checkpoints/abc",
       "fingerprint",
       true,
     );
@@ -90,7 +85,7 @@ describe("manual checkpoint api", () => {
       "git_checkpoint_manual_restore",
       {
         worktree: "/wt",
-        reference: "refs/terax-workspace/manual-checkpoints/abc",
+        reference: "refs/codr/manual-checkpoints/abc",
         fingerprint: "fingerprint",
         force: true,
         workspace,

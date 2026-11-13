@@ -100,8 +100,8 @@ Terax는 Tauri 2 + Rust와 React 19로 만든 가볍고 오픈 소스이며 터�
 > removed, and no other architecture is produced. See the
 > [English README](../../README.md#platform-support).
 
-Install the RPM (`sudo dnf install ./terax-workspace-*.x86_64.rpm`) or the DEB (`sudo apt
-install ./terax-workspace_*_amd64.deb`) from the
+Install the RPM (`sudo dnf install ./codr-*.x86_64.rpm`) or the DEB (`sudo apt
+install ./codr_*_amd64.deb`) from the
 [Releases](https://github.com/crynta/terax-ai/releases/latest) page with your package manager.
 Fedora 44 KDE Plasma on Wayland is the primary validation target; Debian 13 still needs an
 actual graphical WebKitGTK session, and package install/upgrade validation is ticket #44.

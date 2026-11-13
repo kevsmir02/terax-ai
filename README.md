@@ -1,6 +1,6 @@
 <div align="center">
-  <img src="public/logo.png" width="144" height="144" alt="Terax Workspace" />
-  <h1>Terax Workspace</h1>
+  <img src="public/logo.png" width="144" height="144" alt="Codr" />
+  <h1>Codr</h1>
 
   <p><strong>Unofficial Linux fork of Terax: a lightweight terminal-first workspace for external coding agents.</strong></p>
   <p>
@@ -123,10 +123,10 @@ installed with your package tool (pacman/AUR on Arch, apt/dnf for the DEB/RPM pa
 
 ### Linux notes
 
-- **Fedora (primary target):** `sudo dnf install ./terax-workspace-*.x86_64.rpm`. Fedora 44 KDE
+- **Fedora (primary target):** `sudo dnf install ./codr-*.x86_64.rpm`. Fedora 44 KDE
   Plasma on Wayland is the primary validation target for the application; the *packaged*
   install/upgrade path is not validated yet (ticket #44).
-- **Debian:** `sudo apt install ./terax-workspace_*_amd64.deb`. Debian 13 still needs an actual
+- **Debian:** `sudo apt install ./codr_*_amd64.deb`. Debian 13 still needs an actual
   graphical WebKitGTK session before support is claimed (ticket #44).
 - **Arch / AUR:** `packaging/arch/PKGBUILD` builds the same source and version. It is **authored,
   not built**: no `makepkg` run is recorded yet, so Arch support is a dated clean-environment

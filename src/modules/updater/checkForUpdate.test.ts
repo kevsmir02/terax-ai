@@ -15,7 +15,7 @@ const CURRENT = "0.9.0";
 
 const contract = resolveContract({
   devMode: true,
-  env: { VITE_TERAX_WORKSPACE_UPDATE_ENDPOINT: ENDPOINT },
+  env: { VITE_CODR_UPDATE_ENDPOINT: ENDPOINT },
 });
 
 const fixtureTrust = createReleaseVerifier({ devMode: true, contract });
@@ -269,6 +269,28 @@ describe("checkForUpdate", () => {
     const { fetchImpl } = recordingFetch(() =>
       jsonResponse(fixture("stable.json")),
     );
+    const unprovisioned = {
+      ...contract,
+      trust: { ...contract.trust, provisioned: false, publicKey: "" },
+    };
+    const outcome = await checkForUpdate({
+      ...baseOptions,
+      contract: unprovisioned,
+      fetchImpl,
+      sleep: noSleep,
+      verify: productionTrust,
+    });
+
+    expect(outcome.kind).toBe("failed");
+    if (outcome.kind !== "failed") return;
+    expect(outcome.failure.reason).toBe("signature");
+    expect(outcome.failure.detail).toMatch(/trust root/i);
+  });
+
+  it("refuses a release signed with an untrusted key id", async () => {
+    const { fetchImpl } = recordingFetch(() =>
+      jsonResponse(fixture("stable.json")),
+    );
     const outcome = await checkForUpdate({
       ...baseOptions,
       fetchImpl,
@@ -279,7 +301,52 @@ describe("checkForUpdate", () => {
     expect(outcome.kind).toBe("failed");
     if (outcome.kind !== "failed") return;
     expect(outcome.failure.reason).toBe("signature");
-    expect(outcome.failure.detail).toMatch(/trust root/i);
+    expect(outcome.failure.detail).toMatch(/key id/i);
+  });
+
+  it("verifies key id ownership when a release matches the provisioned trust root", async () => {
+    const parsed = JSON.parse(fixture("stable.json")) as {
+      version: string;
+      channel: string;
+      notes: string;
+      pub_date: string;
+      platforms: Record<
+        string,
+        { url: string; signature: string; size: number }
+      >;
+    };
+    // Header "Ed" (0x45, 0x64) + little-endian bytes of 94097B75DB498B21 + 64 signature bytes.
+    const sigBytes = new Uint8Array(74);
+    sigBytes.set([0x45, 0x64, 0x21, 0x8b, 0x49, 0xdb, 0x75, 0x7b, 0x09, 0x94]);
+    const sigB64 = Buffer.from(sigBytes).toString("base64");
+    const globalB64 = Buffer.from(new Uint8Array(64)).toString("base64");
+    const matchingManifest = {
+      ...parsed,
+      platforms: {
+        "linux-x86_64": {
+          ...parsed.platforms["linux-x86_64"],
+          signature: [
+            "untrusted comment: signature from codr release key",
+            sigB64,
+            "trusted comment: timestamp:1759233600\tfile:codr_0.10.0_amd64.deb\tversion:0.10.0",
+            globalB64,
+          ].join("\n"),
+        },
+      },
+    };
+    const { fetchImpl } = recordingFetch(() =>
+      jsonResponse(JSON.stringify(matchingManifest)),
+    );
+    const outcome = await checkForUpdate({
+      ...baseOptions,
+      fetchImpl,
+      sleep: noSleep,
+      verify: productionTrust,
+    });
+
+    expect(outcome.kind).toBe("available");
+    if (outcome.kind !== "available") return;
+    expect(outcome.release.trust).toBe("verified");
   });
 
   it("refuses a prerelease payload on the stable channel", async () => {

@@ -1,17 +1,17 @@
 {
-  "provisional": true,
-  "note": "PROVISIONAL working identity of the personal Linux workspace fork. It is deliberately not the upstream Terax identity and it is not shippable branding: the final product name, release owner/URL and signing keys are decided in ticket #39/#40. This table is the single source of the fork-owned names: the Rust application, the Python runners and the frontend checks all read it, and RENAME HERE FIRST. A build tool that forces a literal (src-tauri/tauri.conf.json) is compared against this table by tests instead of duplicating it.",
+  "provisional": false,
+  "note": "Finalized publication identity for Codr (`kevsmir02/terax-ai`), settled in breakdown ticket #39 (GitHub issue #40). The Rust application, Python scripts, and frontend checks read this file instead of duplicating identity strings.",
   "finalIdentityTicket": 39,
-  "appIdentifier": "dev.terax-workspace.fork",
-  "namespace": "terax-workspace",
-  "envPrefix": "TERAX_WORKSPACE_FORK",
+  "appIdentifier": "io.github.kevsmir02.codr",
+  "namespace": "codr",
+  "envPrefix": "CODR",
   "packaging": {
-    "productName": "Terax Workspace",
-    "vendor": "Terax Workspace Candidate",
-    "packageName": "terax-workspace",
-    "cliBinaryName": "terax-workspace-cli",
-    "shortDescription": "Terax Workspace — personal Linux terminal workspace (unreleased candidate)",
-    "longDescription": "Unofficial Terax Workspace candidate build for Linux x86-64. This is not a release: final product name, release owner, update endpoint and signing keys are undecided (tickets #39/#40), so the packages carry a private working identity and must not be published."
+    "productName": "Codr",
+    "vendor": "kevsmir02",
+    "packageName": "codr",
+    "cliBinaryName": "codr-cli",
+    "shortDescription": "Codr - open-source Linux terminal workspace with editor, Git and previews",
+    "longDescription": "Codr is an unofficial fork of Terax for Linux x86-64: multi-tab terminal, file explorer, code editor, source control, and rendered previews, built by kevsmir02 and not affiliated with Crynta."
   },
   "sharedChildEnv": [
     "TERAX_TASK",

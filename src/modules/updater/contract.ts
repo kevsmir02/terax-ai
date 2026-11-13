@@ -3,16 +3,10 @@ import rawContract from "./releaseContract.json";
 /**
  * The fork-owned release contract.
  *
- * The personal Linux workspace fork is not upstream Terax: it has its own application
- * identity (see `modules/identity/namespace.json`), and it must have its own release
- * feed. The inherited configuration pointed at upstream's `releases/latest/download`
- * feed with upstream's embedded signing key, which would have made this fork check (and
- * eventually install) upstream artifacts as if they were its own.
- *
- * Until ticket #39/#40 settle the final owner, URL and signing keys, the contract is
- * provisional and non-live: `.invalid` endpoints, no trust root, stable channel only.
- * Tests and development override the endpoints with isolated fixtures; the only accepted
- * override is a loopback endpoint in a development build.
+ * Codr is not upstream Terax: it has its own application identity
+ * (`modules/identity/namespace.json`), its own GitHub release feed, and its own minisign
+ * trust root. Upstream's feed stays recorded under `upstream` only so tests and contract
+ * validation can refuse it.
  */
 export interface UpdaterContract {
   provisional: boolean;
@@ -28,7 +22,13 @@ export interface UpdaterContract {
     maxRetryAfterMs: number;
     intervalMs: number;
   };
-  trust: { provisioned: boolean; publicKey: string; note: string };
+  trust: {
+    provisioned: boolean;
+    keyId?: string;
+    fingerprint?: string;
+    publicKey: string;
+    note: string;
+  };
   fixtures: {
     directory: string;
     endpointEnv: string;
@@ -41,6 +41,55 @@ export interface UpdaterContract {
 export const releaseContract = rawContract as UpdaterContract;
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
+
+export function decodeBase64(value: string): Uint8Array | null {
+  try {
+    const binary = atob(value.trim());
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+export function formatMinisignKeyId(keyIdBytes: Uint8Array): string {
+  let hex = "";
+  for (let i = keyIdBytes.length - 1; i >= 0; i--) {
+    hex += (keyIdBytes[i] ?? 0).toString(16).toUpperCase().padStart(2, "0");
+  }
+  return hex;
+}
+
+export function parseMinisignPublicKey(
+  value: string,
+): { keyIdHex: string; keyIdBytes: Uint8Array } | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  let text = trimmed;
+  if (!trimmed.startsWith("untrusted comment: ")) {
+    const raw = decodeBase64(trimmed);
+    if (!raw) return null;
+    text = new TextDecoder().decode(raw);
+  }
+  const lines = text
+    .split("\n")
+    .map((line) => line.replace(/\r$/, ""))
+    .filter((line) => line !== "");
+  if (lines.length < 2 || !(lines[0] ?? "").startsWith("untrusted comment: ")) {
+    return null;
+  }
+  const keyBytes = decodeBase64(lines[1] ?? "");
+  if (keyBytes?.length !== 42) return null;
+  if (String.fromCharCode(keyBytes[0] ?? 0, keyBytes[1] ?? 0) !== "Ed") {
+    return null;
+  }
+  const keyIdBytes = keyBytes.slice(2, 10);
+  return {
+    keyIdHex: formatMinisignKeyId(keyIdBytes),
+    keyIdBytes,
+  };
+}
 
 function parseUrl(value: string): URL | null {
   try {
@@ -81,20 +130,33 @@ export function isUpstreamEndpoint(endpoint: string): boolean {
 /** Problems that make the contract unusable. Empty means the contract is coherent. */
 export function contractProblems(contract: UpdaterContract): string[] {
   const problems: string[] = [];
-  if (!contract.provisional) {
-    problems.push(
-      "contract must stay provisional until #39/#40 provision release trust",
-    );
-  }
   if (contract.channel !== "stable")
     problems.push("only the stable channel is supported");
   if (contract.endpoints.length === 0)
     problems.push("no release endpoint configured");
   for (const endpoint of contract.endpoints) {
-    if (!parseUrl(endpoint))
+    const parsed = parseUrl(endpoint);
+    if (!parsed) {
       problems.push(`endpoint is not a URL: ${endpoint}`);
+      continue;
+    }
     if (isUpstreamEndpoint(endpoint)) {
       problems.push(`endpoint is upstream's release feed: ${endpoint}`);
+    }
+    if (!contract.provisional && !isLoopbackEndpoint(endpoint)) {
+      if (parsed.protocol !== "https:") {
+        problems.push(`production endpoint must use HTTPS: ${endpoint}`);
+      }
+      const host = parsed.hostname.toLowerCase();
+      if (
+        host.endsWith(".invalid") ||
+        host.endsWith(".test") ||
+        host.endsWith(".example")
+      ) {
+        problems.push(
+          `finalized contract cannot use reserved placeholder host: ${endpoint}`,
+        );
+      }
     }
   }
   if (contract.check.attempts < 1 || contract.check.attempts > 5) {
@@ -106,8 +168,27 @@ export function contractProblems(contract: UpdaterContract): string[] {
   if (contract.check.baseDelayMs >= contract.check.maxDelayMs) {
     problems.push("backoff base delay must stay below its ceiling");
   }
-  if (contract.trust.provisioned && contract.trust.publicKey === "") {
-    problems.push("a provisioned trust root needs a public key");
+  if (!contract.provisional && !contract.trust.provisioned) {
+    problems.push("finalized contract requires a provisioned trust root");
+  }
+  if (contract.trust.provisioned) {
+    if (contract.trust.publicKey === "") {
+      problems.push("a provisioned trust root needs a public key");
+    } else {
+      const parsedKey = parseMinisignPublicKey(contract.trust.publicKey);
+      if (!parsedKey) {
+        problems.push(
+          "provisioned trust publicKey is not a valid minisign key",
+        );
+      } else if (
+        contract.trust.keyId &&
+        contract.trust.keyId.toUpperCase() !== parsedKey.keyIdHex
+      ) {
+        problems.push(
+          `trust keyId ${contract.trust.keyId} does not match publicKey (${parsedKey.keyIdHex})`,
+        );
+      }
+    }
   }
   if (!contract.trust.provisioned && contract.trust.publicKey !== "") {
     problems.push("an unprovisioned trust root must not carry a key");

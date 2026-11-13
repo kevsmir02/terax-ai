@@ -486,7 +486,7 @@ describe("checkpoint restore through the shared guard", () => {
     kind: "restore",
     repoRoot: REPO,
     worktreeRoot: WT,
-    ref: "refs/terax-workspace/manual-checkpoints/abc",
+    ref: "refs/codr/manual-checkpoints/abc",
     paths: ["src/a.ts"],
     previewFingerprint,
   };

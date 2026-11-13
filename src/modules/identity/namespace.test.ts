@@ -33,8 +33,11 @@ interface NamespaceTable {
 const table = readJson<NamespaceTable>("src/modules/identity/namespace.json");
 
 describe("fork identity namespace", () => {
-  it("is a provisional identity distinct from upstream", () => {
-    expect(table.provisional).toBe(true);
+  it("is the finalized Codr identity distinct from upstream", () => {
+    expect(table.provisional).toBe(false);
+    expect(table.appIdentifier).toBe("io.github.kevsmir02.codr");
+    expect(table.namespace).toBe("codr");
+    expect(table.envPrefix).toBe("CODR");
     expect(table.appIdentifier).not.toBe(table.upstream.appIdentifier);
     expect(table.appIdentifier.startsWith(table.upstream.appIdentifier)).toBe(
       false,
@@ -43,10 +46,14 @@ describe("fork identity namespace", () => {
     expect(table.envPrefix).not.toBe(table.upstream.envPrefix);
   });
 
-  it("does not adopt upstream's product or publisher name", () => {
+  it("sets fork product and publisher names distinct from upstream", () => {
     // The package metadata is what a distribution index shows. Reading a value from the identity
     // table is not enough if the value itself is upstream's: that is a silent upstream migration
     // (issue #40, acceptance 2), not an import.
+    expect(table.packaging.productName).toBe("Codr");
+    expect(table.packaging.vendor).toBe("kevsmir02");
+    expect(table.packaging.packageName).toBe("codr");
+    expect(table.packaging.cliBinaryName).toBe("codr-cli");
     expect(table.packaging.productName).not.toBe(table.upstream.productName);
     expect(table.packaging.vendor).not.toBe(table.upstream.publisher);
     expect(table.packaging.packageName).toBe(table.namespace);
@@ -55,11 +62,18 @@ describe("fork identity namespace", () => {
     ).toBe(true);
   });
 
-  it("matches the Tauri config literal", () => {
-    const config = readJson<{ identifier: string }>(
-      "src-tauri/tauri.conf.json",
-    );
+  it("matches the Tauri config literals", () => {
+    const config = readJson<{
+      identifier: string;
+      productName: string;
+      bundle: { publisher?: string; externalBin?: string[] };
+    }>("src-tauri/tauri.conf.json");
     expect(config.identifier).toBe(table.appIdentifier);
+    expect(config.productName).toBe(table.packaging.productName);
+    expect(config.bundle.publisher).toBe(table.packaging.vendor);
+    expect(config.bundle.externalBin).toEqual([
+      `binaries/${table.packaging.cliBinaryName}`,
+    ]);
   });
 
   it("is the data directory the shared path policy refuses to readers", () => {

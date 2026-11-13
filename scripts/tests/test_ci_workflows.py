@@ -736,10 +736,20 @@ class ReleaseSigningWorkflowTest(unittest.TestCase):
             for name, payload in (
                 (f"{identity.slug}-{version}-1.{packaging.RPM_ARCH}.rpm", b"rpm\n"),
                 (f"{identity.slug}_{version}_{packaging.DEB_ARCH}.deb", b"deb\n"),
-                ("PKGBUILD", b"pkgname=terax-workspace\n"),
+                ("PKGBUILD", b"pkgname=codr\n"),
             ):
                 (candidate / name).write_bytes(payload)
             key = minisign.generate_keypair(seed=b"\x01" * 32, key_id=b"\x02" * 8)
+            contract_doc = release_contract()
+            contract_doc["provisional"] = False
+            contract_doc["endpoints"] = ["https://releases.codr.dev/stable/latest.json"]
+            contract_doc["trust"] = {
+                "provisioned": True,
+                "publicKey": minisign.TrustedKey(key.key_id, key.public_key).tauri_text(),
+                "note": "fixture trust root for release-notes workflow test",
+            }
+            contract_path = runner_temp / "contract.json"
+            contract_path.write_text(json.dumps(contract_doc), encoding="utf-8")
             commit = "0123456789abcdef0123456789abcdef01234567"
             result = subprocess.run(
                 [
@@ -749,6 +759,7 @@ class ReleaseSigningWorkflowTest(unittest.TestCase):
                     "--version", version,
                     "--tag", tag,
                     "--commit", commit,
+                    "--contract", str(contract_path),
                     "--notes-file", str(runner_temp / "release-notes.md"),
                 ],
                 cwd=REPO,

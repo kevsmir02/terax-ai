@@ -38,27 +38,20 @@ signing secret in the environment the step refuses (`signing-key-missing` /
 `signing-passphrase-missing`) rather than skipping. `docs/architecture/release-trust.md` owns trust,
 custody, key replacement and what is *not* promised.
 
-**Why it refuses today.** Publication identity and signing trust are undecided, so
-`src/modules/updater/releaseContract.json` stays `"provisional": true` (that file is the single
-source; the gate reads it and never restates the endpoint or key). The refusal names every missing
-input separately, and each names the ticket that supplies it:
+**Release gating status.** Publication identity and the independent minisign trust root (key ID
+`94097B75DB498B21`) are settled in `src/modules/updater/releaseContract.json` (`"provisional": false`)
+and `src/modules/identity/namespace.json`. No stable release is published yet:
 
-| Missing input | Supplied by |
+| Remaining gate | Owned by |
 | --- | --- |
-| Release owner, public endpoint, final product identity | issue #40 (breakdown ticket 39, "Settle publication identity and provision independent trust") |
-| Fork signing key, its public trust root, offline recovery | issue #40 |
+| Upload signing secrets (`TERAX_RELEASE_SIGNING_KEY` and passphrase) into GitHub Actions secrets | Maintainer before tagging |
 | A candidate validated on Fedora, Debian and Arch | issue #44 |
 | A complete candidate with the retained workflows verified | issue #42 |
 | The first public stable release and its support claims | issue #45 |
 
-Until those land, the gate is the thing that keeps a tag from publishing: a refusal fails the job
-loudly instead of skipping publication, the workflow asks for `contents: read`/`checks: read`
-only, it contains no release-upload action, and the script has no code that could upload. The one
-secret the workflow reads is the release signing key, injected for the signer step only: it grants
-authenticity, not publication. `scripts/tests/test_ci_workflows.py` derives that rule from
-`releaseContract.json`, so flipping `provisional` to `false` is the deliberate, reviewed change that
-relaxes it, and even then the gate still refuses while the endpoint is a reserved placeholder, the
-trust root is unprovisioned, the signing input is absent or a signature does not verify.
+The release workflow remains non-publishing (`contents: read`/`checks: read`, no release-upload
+action, and `scripts/release_gate.py` still refuses whenever CI evidence is missing, tags disagree,
+signatures fail verification under the committed key, or signing secrets are absent).
 
 **Exercising it safely.** No tag and no public release are needed:
 
@@ -102,24 +95,23 @@ their package manager (`dnf`, `apt`); the application never downloads, installs 
 itself, and no workflow here promises otherwise.
 
 
-## Private candidate identity
+## Package identity (`Codr`)
 
-The fork's working identity lives in one table, `src/modules/identity/namespace.json`
+The fork's publication identity lives in one table, `src/modules/identity/namespace.json`
 (see [namespace isolation](namespace-isolation.md)). Its `packaging` block is the single source
-of the candidate identity; the Tauri bundle metadata is generated from it:
+of the package identity; the Tauri bundle metadata is aligned with it:
 
-| Field | Candidate value | Where it lands |
+| Field | Value | Where it lands |
 | --- | --- | --- |
-| `productName` | `Terax Workspace` | window/bundle product name → kebab package name `terax-workspace` |
-| `vendor` | `Terax Workspace Candidate` | deb `Maintainer` fallback / rpm `Vendor` |
-| `packageName` | `terax-workspace` | rpm/deb `Name`, `mainBinaryName`, `/usr/bin/terax-workspace` |
-| `cliBinaryName` | `terax-workspace-cli` | installed sidecar `/usr/bin/terax-workspace-cli` |
-| `appIdentifier` | `dev.terax-workspace.fork` | Tauri identifier (storage/WebKit namespace) |
+| `productName` | `Codr` | window/bundle product name -> kebab package name `codr` |
+| `vendor` | `kevsmir02` | deb `Maintainer` / rpm `Vendor` |
+| `packageName` | `codr` | rpm/deb `Name`, `mainBinaryName`, `/usr/bin/codr` |
+| `cliBinaryName` | `codr-cli` | installed sidecar `/usr/bin/codr-cli` |
+| `appIdentifier` | `io.github.kevsmir02.codr` | Tauri identifier (storage/WebKit namespace) |
 
 The names deliberately differ from upstream `Terax` / `Crynta` / `app.crynta.terax` and from the
-upstream package paths `/usr/bin/terax`, `/usr/bin/terax-cli`, so a candidate can be installed
-next to an upstream build without owning the same files. Final branding, release owner and keys
-remain tickets #40/#41; the table is marked `provisional`.
+upstream package paths `/usr/bin/terax`, `/usr/bin/terax-cli`, so a package can be installed
+next to an upstream build without owning the same files.
 
 The *CLI command* exposed inside terminal sessions is still `terax`
 (documented deferral in [namespace isolation](namespace-isolation.md)); only the installed
@@ -168,7 +160,7 @@ with a disposable `HOME`/`XDG` profile under the run output.
 
 `dist-packages/<package>-<version>-<shortrev>/` contains:
 
-- `terax-workspace-<version>-<release>.x86_64.rpm`, `terax-workspace_<version>_amd64.deb`
+- `codr-<version>-<release>.x86_64.rpm`, `codr_<version>_amd64.deb`
   (read-only, stable names, never rewritten);
 - `SHA256SUMS`;
 - `manifest.json` — the machine-readable record: revision, host, toolchain, hashed build inputs,
@@ -210,15 +202,14 @@ environment that records package versions. The packaging runner writes a revisio
 
 ## Known gaps
 
-- Update discovery is issue #37: a candidate inherits the fork-owned release contract — a
-  non-live `.invalid` endpoint and no provisioned trust root — so it cannot query or install an
-  upstream release. Candidates keep `bundle.createUpdaterArtifacts=false` because the bundler's
-  updater payloads are not this fork's release artifacts; authenticity is the post-build minisign
-  step (`scripts/release_signing.py`), not that switch. Until #40/#41 provision the real endpoint
-  and key, no signature can be verified against a committed key and nothing may be published. The
-  tagged-release gate (`scripts/release_gate.py`) enforces that refusal; publishing is #45.
-- The deb `Maintainer` field is derived by the bundler from the Cargo authors (upstream credit),
-  not from the candidate vendor; final maintainer identity belongs to #40.
+- Update discovery (issue #37) now points at the settled `kevsmir02/terax-ai` stable release feed
+  with provisioned minisign trust root (`94097B75DB498B21`). Candidates keep
+  `bundle.createUpdaterArtifacts=false` because the bundler's updater payloads are not this fork's
+  release artifacts; authenticity comes from the post-build minisign step
+  (`scripts/release_signing.py`). The tagged-release gate (`scripts/release_gate.py`) verifies all
+  signatures against that committed public key; publishing the first release is issue #45.
+- Native DNF/APT repository signing remains deferred: packages carry `.minisig` signatures rather
+  than RPM/APT repository metadata signatures (see [release trust](release-trust.md)).
 
 ## Evidence and checks
 

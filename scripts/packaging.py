@@ -70,7 +70,7 @@ WEBKIT_GTK = re.compile(r"(webkit2gtk|libwebkit2gtk)", re.IGNORECASE)
 GTK = re.compile(r"(^|[-_])gtk3($|[-_])|libgtk-3", re.IGNORECASE)
 
 MANIFEST_SCHEMA_VERSION = 1
-MANIFEST_KIND = "terax-workspace-linux-package-candidate"
+MANIFEST_KIND = "codr-linux-package-candidate"
 
 REQUIRED_MANIFEST_FIELDS = (
     "schemaVersion",
@@ -244,8 +244,8 @@ def identity_problems(candidate_identity: Candidate | None = None) -> list[str]:
         upstream["appIdentifier"] + "."
     ):
         found.append(f"appIdentifier {c.app_identifier!r} belongs to upstream")
-    if not table.get("provisional", False):
-        found.append("the identity table is no longer marked provisional")
+    if table.get("provisional", False):
+        found.append("the identity table is still marked provisional")
     return found
 
 
@@ -292,7 +292,7 @@ def candidate_config() -> dict:
             # enables a download or an install.
             "createUpdaterArtifacts": False,
             "publisher": c.vendor,
-            "copyright": "Copyright 2026 Crynta and Terax Workspace contributors",
+            "copyright": "Copyright 2026 Crynta and Codr contributors",
             "shortDescription": c.short_description,
             "longDescription": c.long_description,
         },
@@ -542,8 +542,8 @@ def manifest_problems(document: dict) -> list[str]:
     for field in REQUIRED_CANDIDATE_FIELDS:
         if field not in identity:
             found.append(f"manifest candidate is missing {field!r}")
-    if identity.get("provisional") is not True:
-        found.append("manifest must mark the candidate identity provisional")
+    if identity.get("provisional") is not False:
+        found.append("manifest must mark the finalized candidate identity non-provisional")
     if str(identity.get("appIdentifier", "")).startswith(
         identity_table()["upstream"]["appIdentifier"]
     ):
@@ -563,7 +563,7 @@ def manifest_problems(document: dict) -> list[str]:
         found.append(f"manifest artifacts {sorted(formats)} do not match targets {sorted(targets)}")
     # The package must install the identity the manifest claims. This is the check that a build
     # without the generated overlay fails: it installs the base config's `terax` binaries while
-    # the manifest still says `terax-workspace`.
+    # the manifest still says `codr`.
     upstream = identity_table()["upstream"]
     for artifact in artifacts or []:
         for field in REQUIRED_ARTIFACT_FIELDS:
