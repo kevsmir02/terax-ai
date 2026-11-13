@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """Pre-publication and live-release verification for tagged Codr releases (issue #45).
 
-Reuses `release_signing`, `minisign`, and `packaging` so both the CI `publish-release` job and
-post-publication live checks enforce the exact same identity, checksum, and signature rules.
+Delegates manifest, checksum, and signature verification to `release_gate.verify_staged_artifacts`
+so CI pre-publication checks and live GitHub Release checks enforce one set of rules.
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
+import tempfile
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,6 +22,7 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 import minisign  # noqa: E402
 import packaging  # noqa: E402
+import release_gate  # noqa: E402
 import release_signing  # noqa: E402
 
 
@@ -45,20 +46,6 @@ def _read_json(path: Path, label: str) -> tuple[dict | None, str | None]:
     if not isinstance(data, dict):
         return None, f"{label} is not a JSON object"
     return data, None
-
-
-def _parse_sha256sums(text: str) -> dict[str, str]:
-    sums: dict[str, str] = {}
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        parts = stripped.split(None, 1)
-        if len(parts) != 2:
-            continue
-        digest, name = parts[0], parts[1].lstrip("* ")
-        sums[name] = digest
-    return sums
 
 
 def verify_gated_candidate(
@@ -95,8 +82,7 @@ def verify_gated_candidate(
     contract = release_signing.load_contract(contract_path)
     if contract.get("provisional") is True:
         problems.append("releaseContract.json is still provisional")
-    trusted = release_signing.trusted_key_from_contract(contract)
-    if trusted is None:
+    if release_signing.trusted_key_from_contract(contract) is None:
         problems.append("releaseContract.json has no provisioned trust root")
 
     root = Path(candidate)
@@ -109,28 +95,13 @@ def verify_gated_candidate(
     expected_version = tag[1:] if tag.startswith("v") else tag
     if manifest.get("tag") != tag:
         problems.append(f"latest.json tag {manifest.get('tag')!r} != {tag!r}")
-    update_issues, _ = release_signing.update_problems(
-        manifest,
-        directory=root,
-        version=expected_version,
+    refusals = release_gate.verify_staged_artifacts(
+        candidate=root,
         commit=commit,
-        trusted=trusted,
+        version=expected_version,
+        contract_path=contract_path,
     )
-    problems.extend(f"{code}: {message}" for code, message in update_issues)
-
-    sums_path = root / "SHA256SUMS"
-    if not sums_path.is_file():
-        problems.append("SHA256SUMS is missing from staged directory")
-    else:
-        recorded_sums = _parse_sha256sums(sums_path.read_text(encoding="utf-8"))
-        for artifact in release_signing.staged_artifacts(root):
-            expected_sum = recorded_sums.get(artifact.name)
-            if expected_sum != artifact.sha256:
-                problems.append(
-                    f"SHA256SUMS mismatch for {artifact.name}: "
-                    f"expected {expected_sum!r}, measured {artifact.sha256!r}"
-                )
-
+    problems.extend(f"{r.code}: {r.message}" for r in refusals)
     return VerificationResult(problems=tuple(problems), manifest=manifest)
 
 
@@ -140,7 +111,7 @@ def render_release_body(
     manifest: dict,
     contract: dict,
 ) -> str:
-    """Build truthful GitHub Release notes covering identity, verification, and scope limits."""
+    """Build GitHub Release notes from `latest.json`, staged artifacts, and `releaseContract.json`."""
     product = packaging.candidate().product_name
     version = str(manifest.get("version") or packaging.version())
     tag = str(manifest.get("tag") or f"v{version}")
@@ -161,6 +132,7 @@ def render_release_body(
     rows = "\n".join(
         f"| `{a.name}` | `{a.kind}` | {a.size} | `{a.sha256}` |" for a in artifacts
     )
+    example_name = artifacts[0].name if artifacts else f"{packaging.candidate().slug}_{version}_{packaging.DEB_ARCH}.deb"
 
     lines = [
         f"## {product} {tag}",
@@ -180,27 +152,13 @@ def render_release_body(
         "",
         "## Verify signatures before installing",
         "",
-        "Codr never downloads, installs, or restarts itself. Verify the downloaded artifact against "
-        "its `.minisig` file before running your package manager:",
+        f"{product} never downloads, installs, or restarts itself. Verify the downloaded artifact "
+        "against its `.minisig` file before running your package manager:",
         "",
         "```sh",
         "sha256sum -c SHA256SUMS",
-        f"minisign -Vm {packaging.candidate().slug}_{version}_{packaging.DEB_ARCH}.deb "
-        f"-x {packaging.candidate().slug}_{version}_{packaging.DEB_ARCH}.deb.minisig "
-        f"-P {raw_pubkey}",
+        f"minisign -Vm {example_name} -x {example_name}.minisig -P {raw_pubkey}",
         "```",
-        "",
-        "## Tested scope, waived targets, and known limits",
-        "",
-        "- **Validated target:** Fedora 45 KDE Wayland (RPM candidate dependency resolution, "
-        "isolated Wayland smoke, container RPM install/remove, and maintainer host install).",
-        "- **Waived / unbuilt routes:** Debian 13 (`.deb` graphical WebKitGTK install) was waived "
-        "for personal-tool scope; `packaging/arch/PKGBUILD` is authored and signed, not built "
-        "(`makepkg` has not been run).",
-        "- **Unverified / deferred:** host `dnf upgrade` across versions, native DNF/APT "
-        "repository GPG signing (deferred), physical IME/OS clipboard round-trip, and live "
-        "vendor CLI turn/hook certification. Does not claim broad compatibility or "
-        "production-readiness certification.",
     ]
     return "\n".join(lines) + "\n"
 
@@ -222,13 +180,8 @@ def verify_published_release(
     contract_path: Path = release_signing.RELEASE_CONTRACT,
     fetch: Callable[[str], bytes] = _default_fetch,
 ) -> VerificationResult:
-    """Fetch a live GitHub Release's `latest.json` and signed assets and verify every byte."""
+    """Fetch a live GitHub Release's assets into a temp dir and run the release gate over them."""
     problems: list[str] = []
-    contract = release_signing.load_contract(contract_path)
-    trusted = release_signing.trusted_key_from_contract(contract)
-    if trusted is None:
-        return VerificationResult(problems=("releaseContract.json has no provisioned trust root",))
-
     try:
         manifest_raw = fetch(manifest_url)
         manifest = json.loads(manifest_raw.decode("utf-8"))
@@ -239,72 +192,62 @@ def verify_published_release(
         return VerificationResult(problems=("latest.json is not a JSON object",))
 
     expected_version = expected_tag[1:] if expected_tag.startswith("v") else expected_tag
-    if manifest.get("version") != expected_version:
-        problems.append(f"latest.json version {manifest.get('version')!r} != {expected_version!r}")
     if manifest.get("tag") != expected_tag:
         problems.append(f"latest.json tag {manifest.get('tag')!r} != {expected_tag!r}")
-    if manifest.get("channel") != release_signing.CHANNEL:
-        problems.append(f"latest.json channel {manifest.get('channel')!r} != 'stable'")
-    if expected_commit and manifest.get("commit") != expected_commit:
-        problems.append(f"latest.json commit {manifest.get('commit')!r} != {expected_commit!r}")
+    commit = str(expected_commit or manifest.get("commit") or "")
+    if not commit:
+        return VerificationResult(problems=("latest.json has no commit and none was supplied",))
 
-    signing = manifest.get("signing") or {}
-    if signing.get("keyId") != trusted.key_id_text:
-        problems.append(f"signing keyId {signing.get('keyId')!r} != {trusted.key_id_text!r}")
-    if signing.get("fingerprint") != trusted.fingerprint:
-        problems.append(
-            f"signing fingerprint {signing.get('fingerprint')!r} != {trusted.fingerprint!r}"
-        )
-
-    platforms = manifest.get("platforms") or {}
+    platforms = manifest.get("platforms")
     if not isinstance(platforms, dict) or release_signing.PRIMARY_TARGET not in platforms:
         problems.append(f"latest.json missing primary target {release_signing.PRIMARY_TARGET!r}")
         return VerificationResult(problems=tuple(problems), manifest=manifest)
 
     base_url = manifest_url.rsplit("/", 1)[0] + "/"
-    downloaded_hashes: dict[str, str] = {}
-    for target, entry in sorted(platforms.items()):
-        if not isinstance(entry, dict):
-            problems.append(f"platform {target!r} entry is not an object")
-            continue
-        url = str(entry.get("url") or "")
-        parsed = urlsplit(url)
-        if parsed.scheme != "https":
-            problems.append(f"platform {target!r} URL {url!r} is not https")
-            continue
-        name = Path(parsed.path).name
-        try:
-            payload = fetch(url)
-        except Exception as error:
-            problems.append(f"failed to fetch artifact {url}: {error}")
-            continue
-        digest = hashlib.sha256(payload).hexdigest()
-        downloaded_hashes[name] = digest
-        if digest != entry.get("sha256"):
-            problems.append(f"{name}: sha256 {digest} != announced {entry.get('sha256')}")
-        if entry.get("size") is not None and len(payload) != entry.get("size"):
-            problems.append(f"{name}: size {len(payload)} != announced {entry.get('size')}")
+    with tempfile.TemporaryDirectory(prefix="codr-live-release-") as tmp:
+        staged = Path(tmp)
+        (staged / release_signing.MANIFEST_NAME).write_bytes(manifest_raw)
 
-        sig_text = str(entry.get("signature") or "")
-        sig_issues = minisign.signature_problems(trusted, payload, sig_text)
-        problems.extend(f"{name} (manifest): {issue}" for issue in sig_issues)
+        for sibling in ("SHA256SUMS", "manifest.json"):
+            try:
+                (staged / sibling).write_bytes(fetch(base_url + sibling))
+            except Exception as error:
+                problems.append(f"failed to fetch {sibling}: {error}")
 
-        try:
-            sibling_sig = fetch(base_url + name + release_signing.SIGNATURE_SUFFIX).decode("utf-8")
-        except Exception as error:
-            problems.append(f"failed to fetch sibling .minisig for {name}: {error}")
-            continue
-        if sibling_sig.strip() != sig_text.strip():
-            problems.append(f"{name}: sibling .minisig does not match manifest signature")
+        for target, entry in sorted(platforms.items()):
+            if not isinstance(entry, dict):
+                problems.append(f"platform {target!r} entry is not an object")
+                continue
+            url = str(entry.get("url") or "")
+            parsed = urlsplit(url)
+            if parsed.scheme != "https":
+                problems.append(f"platform {target!r} URL {url!r} is not https")
+                continue
+            name = Path(parsed.path).name
+            if not name:
+                problems.append(f"platform {target!r} URL {url!r} has no filename")
+                continue
+            try:
+                payload = fetch(url)
+                (staged / name).write_bytes(payload)
+                if entry.get("size") is not None and len(payload) != entry.get("size"):
+                    problems.append(f"{name}: size {len(payload)} != announced {entry.get('size')}")
+            except Exception as error:
+                problems.append(f"failed to fetch artifact {url}: {error}")
+                continue
+            try:
+                sig_bytes = fetch(base_url + name + release_signing.SIGNATURE_SUFFIX)
+                (staged / (name + release_signing.SIGNATURE_SUFFIX)).write_bytes(sig_bytes)
+            except Exception as error:
+                problems.append(f"failed to fetch sibling .minisig for {name}: {error}")
 
-    try:
-        sums_text = fetch(base_url + "SHA256SUMS").decode("utf-8")
-        sums = _parse_sha256sums(sums_text)
-        for name, digest in downloaded_hashes.items():
-            if sums.get(name) != digest:
-                problems.append(f"SHA256SUMS mismatch for {name}: {sums.get(name)!r} != {digest!r}")
-    except Exception as error:
-        problems.append(f"failed to fetch/verify SHA256SUMS: {error}")
+        refusals = release_gate.verify_staged_artifacts(
+            candidate=staged,
+            commit=commit,
+            version=expected_version,
+            contract_path=contract_path,
+        )
+        problems.extend(f"{r.code}: {r.message}" for r in refusals)
 
     return VerificationResult(problems=tuple(problems), manifest=manifest)
 

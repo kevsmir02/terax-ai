@@ -1,15 +1,12 @@
-"""Tests for pre-publication and live-release verification (issue #45).
+"""Guards the boundary between gated candidate artifacts and GitHub Release publication (#45).
 
-Exercises `scripts/release_verify.py` at its pure boundaries:
-1. `verify_gated_candidate` against a staged candidate directory, gate report, and contract;
-2. `render_release_body` for truthful GitHub Release notes (attribution, hashes, verification,
-   and support/scope limits);
-3. `verify_published_release` against a mock HTTPS fetcher serving `latest.json` and signed assets.
+Builds fixtures using `packaging.manifest_document` and `packaging.sha256sums` (so `SHA256SUMS`
+covers only the RPM and DEB bundles while `PKGBUILD` is signed alongside them) so the tests
+mirror the real `scripts/package-candidate/run.py` staging layout.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sys
 import tempfile
@@ -32,48 +29,61 @@ CONTRACT_SOURCE = REPO / "src/modules/updater/releaseContract.json"
 ENDPOINT = "https://github.com/kevsmir02/terax-ai/releases/latest/download/latest.json"
 
 
-def _sha256(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
 def _setup_fixture(root: Path):
     candidate = root / "linux-packages"
     candidate.mkdir()
     identity = packaging.candidate()
-    rpm_name = f"{identity.slug}-{VERSION}-1.{packaging.RPM_ARCH}.rpm"
-    deb_name = f"{identity.slug}_{VERSION}_{packaging.DEB_ARCH}.deb"
-    arch_name = "PKGBUILD"
-    payloads = {
-        rpm_name: b"rpm-fixture-payload\n",
-        deb_name: b"deb-fixture-payload\n",
-        arch_name: b"pkgname=codr\npkgver=" + VERSION.encode("ascii") + b"\n",
-    }
-    for name, data in payloads.items():
-        (candidate / name).write_bytes(data)
-
-    sums_lines = [f"{_sha256(data)}  {name}" for name, data in sorted(payloads.items())]
-    (candidate / "SHA256SUMS").write_text("\n".join(sums_lines) + "\n", encoding="utf-8")
-
-    manifest = {
-        "schemaVersion": packaging.MANIFEST_SCHEMA_VERSION,
-        "revision": {"commit": COMMIT, "dirty": False},
-        "package": {
-            "productName": identity.product_name,
-            "packageName": identity.package_name,
-            "version": VERSION,
-        },
-        "artifacts": [
+    artifacts = []
+    for fmt, arch in (("rpm", packaging.RPM_ARCH), ("deb", packaging.DEB_ARCH)):
+        name = (
+            f"{identity.slug}-{VERSION}-1.{arch}.rpm"
+            if fmt == "rpm"
+            else f"{identity.slug}_{VERSION}_{arch}.deb"
+        )
+        payload = f"{fmt}-fixture-payload\n".encode("utf-8")
+        (candidate / name).write_bytes(payload)
+        artifacts.append(
             {
-                "name": name,
-                "format": "rpm" if name.endswith(".rpm") else "deb",
-                "sha256": _sha256(data),
-                "size": len(data),
+                "format": fmt,
+                "arch": arch,
+                "fileName": name,
+                "path": f"linux-packages/{name}",
+                "sizeBytes": len(payload),
+                "sha256": packaging.sha256_bytes(payload),
+                "packageName": identity.package_name,
+                "version": VERSION,
+                "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0"],
+                "files": [{"path": f"/usr/bin/{identity.package_name}", "kind": "binary"}],
+                "binaries": [
+                    {"path": f"/usr/bin/{identity.package_name}", "kind": "binary"},
+                    {"path": f"/usr/bin/{identity.cli_binary_name}", "kind": "cli"},
+                ],
+                "licenses": [{"path": "/usr/share/doc/LICENSE.txt", "kind": "license"}],
             }
-            for name, data in sorted(payloads.items())
-            if name != arch_name
-        ],
-    }
+        )
+
+    manifest = packaging.manifest_document(
+        revision={
+            "commit": COMMIT,
+            "branch": "main",
+            "describe": TAG,
+            "dirty": False,
+            "recordedAt": "2026-11-13T16:00:00+00:00",
+        },
+        host={"system": "Linux", "machine": "x86_64"},
+        toolchain={"rustc": "rustc 1.99.1"},
+        inputs=[{"path": "package.json", "sha256": packaging.sha256_bytes(b"x"), "sizeBytes": 1}],
+        artifacts=artifacts,
+        dependencies={"declared": {}, "observedElf": [], "unresolvedOnHost": []},
+        validation={"build": {"status": "complete"}},
+    )
     (candidate / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    # Real candidate builds list only RPM and DEB in SHA256SUMS, never PKGBUILD.
+    (candidate / "SHA256SUMS").write_text(packaging.sha256sums(artifacts), encoding="utf-8")
+    (candidate / "PKGBUILD").write_text(
+        f"pkgname={identity.package_name}\npkgver={VERSION}\n_commit={COMMIT}\n",
+        encoding="utf-8",
+    )
 
     key = minisign.generate_keypair(seed=b"\x07" * 32, key_id=b"\x11\x22\x33\x44\x55\x66\x77\x88")
     trusted = minisign.TrustedKey(key.key_id, key.public_key)
@@ -114,7 +124,9 @@ def _setup_fixture(root: Path):
                     "tag": TAG,
                     "version": VERSION,
                     "commit": COMMIT,
-                    "artifacts": {name: _sha256(data) for name, data in sorted(payloads.items())},
+                    "artifacts": {
+                        a["fileName"]: a["sha256"] for a in artifacts
+                    },
                     "digest": "fixture-digest",
                 },
             },
@@ -127,9 +139,10 @@ def _setup_fixture(root: Path):
 
 
 class VerifyGatedCandidateTest(unittest.TestCase):
-    def test_accepts_publishable_non_dry_run_candidate(self) -> None:
+    def test_accepts_publishable_non_dry_run_candidate_without_pkgbuild_in_sha256sums(self) -> None:
         with tempfile.TemporaryDirectory(prefix="codr-release-verify-") as tmp:
             candidate, gate_report, contract_path, _, _ = _setup_fixture(Path(tmp))
+            self.assertNotIn("PKGBUILD", (candidate / "SHA256SUMS").read_text(encoding="utf-8"))
             result = release_verify.verify_gated_candidate(
                 candidate=candidate,
                 gate_report=gate_report,
@@ -186,9 +199,9 @@ class VerifyGatedCandidateTest(unittest.TestCase):
 
 
 class RenderReleaseBodyTest(unittest.TestCase):
-    def test_renders_truthful_release_notes_without_em_dash(self) -> None:
+    def test_renders_release_notes_from_manifest_and_contract_without_em_dash(self) -> None:
         with tempfile.TemporaryDirectory(prefix="codr-release-notes-") as tmp:
-            candidate, _, contract_path, contract, trusted = _setup_fixture(Path(tmp))
+            candidate, _, _, contract, trusted = _setup_fixture(Path(tmp))
             manifest = json.loads((candidate / "latest.json").read_text(encoding="utf-8"))
             body = release_verify.render_release_body(
                 candidate=candidate,
@@ -198,10 +211,8 @@ class RenderReleaseBodyTest(unittest.TestCase):
             self.assertNotIn("\u2014", body)
             self.assertIn("Unofficial fork of Terax; not affiliated with Crynta", body)
             self.assertIn(trusted.key_id_text, body)
+            self.assertIn(trusted.file_text().splitlines()[1], body)
             self.assertIn("minisign -Vm", body)
-            self.assertIn("Fedora 45 KDE Wayland", body)
-            self.assertIn("Debian 13", body)
-            self.assertIn("Arch", body)
             self.assertIn("never downloads, installs, or restarts itself", body.lower())
 
 
@@ -244,7 +255,7 @@ class VerifyPublishedReleaseTest(unittest.TestCase):
                 fetch=fake_fetch,
             )
             self.assertFalse(result.ok)
-            self.assertTrue(any("sha256" in p or "signature" in p for p in result.problems))
+            self.assertTrue(any("signature" in p or "sha256" in p for p in result.problems))
 
 
 if __name__ == "__main__":

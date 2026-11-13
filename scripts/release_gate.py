@@ -617,6 +617,21 @@ def _signed_artifact_refusals(
     return [Refusal(code, message) for code, message in problems], bound
 
 
+def verify_staged_artifacts(
+    *,
+    candidate: Path,
+    commit: str,
+    version: str | None,
+    contract_path: Path = RELEASE_CONTRACT,
+) -> list[Refusal]:
+    """Verify staged manifest, SHA256SUMS, latest.json, and minisign signatures together."""
+    artifact_refusals, _ = _artifact_refusals(candidate, commit, version)
+    signing_refusals, _ = _signed_artifact_refusals(
+        Path(candidate), commit, version, contract_path
+    )
+    return [*artifact_refusals, *signing_refusals]
+
+
 def decide(
     *,
     tag: str,
