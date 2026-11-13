@@ -13,11 +13,13 @@ name: Linux app smoke
 # (`MAX_ATTEMPTS = 3` in `scripts/app-lab/run.py`) are the whole retry story. When it fails, the
 # report, page log and app log are uploaded for diagnosis.
 #
-# It cannot touch a production profile: the runner gets a per-run identifier inside
-# `app.crynta.terax.app-lab-*`, a private `HOME` and private `XDG_*` tree under the output
-# directory, and both the preflight and the bench binary's own guard refuse anything else
-# (`scripts/linux_profile.py`, `--self-test`). The two invariant steps below prove the refusals
-# before and after the build.
+# It cannot touch a production profile: the runner gets a per-run identifier inside the fork's
+# `dev.terax-workspace.fork.app-lab-*` namespace (`src/modules/identity/namespace.json`), a
+# private `HOME` and private `XDG_*` tree under the output directory, and both the preflight and
+# the bench binary's own guard refuse anything else (`scripts/linux_profile.py`, `--self-test`).
+# Upstream's `app.crynta.terax.*` is refused as well, so a borrowed literal here would abort
+# every job before the build. The two invariant steps below prove the refusals before and after
+# the build.
 on:
   workflow_dispatch:
   schedule:
@@ -113,7 +115,7 @@ jobs:
       - name: Build the bench app (debug, no bundle)
         run: |
           python3 scripts/app-lab/run.py --scenario workflow --profile debug --build-only \
-            --identifier app.crynta.terax.app-lab-ci \
+            --identifier dev.terax-workspace.fork.app-lab-ci \
             --target-dir src-tauri/target \
             --output "$RUNNER_TEMP/app-lab"
 
@@ -125,7 +127,7 @@ jobs:
             dbus-run-session -- "$RUNNER_TEMP/with-display.sh" \
             python3 scripts/app-lab/run.py --scenario workflow --profile debug --self-test \
               --reuse-build \
-              --identifier app.crynta.terax.app-lab-ci \
+              --identifier dev.terax-workspace.fork.app-lab-ci \
               --target-dir src-tauri/target \
               --output "$RUNNER_TEMP/app-lab"
 
@@ -138,7 +140,7 @@ jobs:
             dbus-run-session -- "$RUNNER_TEMP/with-display.sh" \
             python3 scripts/app-lab/run.py --scenario workflow --profile debug \
               --reuse-build \
-              --identifier app.crynta.terax.app-lab-ci \
+              --identifier dev.terax-workspace.fork.app-lab-ci \
               --target-dir src-tauri/target \
               --output "$RUNNER_TEMP/app-lab" \
               --label "linux-app-smoke ${{ github.sha }}"
