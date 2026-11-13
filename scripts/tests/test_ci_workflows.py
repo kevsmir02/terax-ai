@@ -6,14 +6,16 @@ Run with: python3 -m unittest discover -s scripts/tests
 
 These guard decisions the workflows only state in YAML, so a later edit cannot silently drop them:
 a `stable` toolchain, a `node-version` literal, a `pnpm install` without `--frozen-lockfile`, a
-`cargo check` without `--locked`, a release upload added to `ci.yml`, a smoke job that points
-at the product identifier or has no bounded timeout, or a workflow/doc that quietly re-adds a
-Windows, macOS, Nix or non-x86-64 target that this fork does not build or distribute.
+`cargo check` without `--locked`, a release upload added to `ci.yml`, a smoke job that launches
+the product identifier (or an identifier in upstream Terax's namespace, which the preflight
+refuses) or has no bounded timeout, or a workflow/doc that quietly re-adds a Windows, macOS, Nix
+or non-x86-64 target that this fork does not build or distribute.
 """
 
 import json
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -29,6 +31,7 @@ REPO = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 
 import packaging  # noqa: E402  (the candidate identity table lives in scripts/packaging.py)
+import linux_profile  # noqa: E402  (the preflight the runners actually call)
 
 WORKFLOWS = REPO / ".github/workflows"
 CI = WORKFLOWS / "ci.yml"
@@ -40,7 +43,13 @@ NVMRC = REPO / ".nvmrc"
 README = REPO / "README.md"
 TRANSLATED_READMES = REPO / "docs/readme"
 CONTRIBUTOR_TESTING = REPO / "docs/contributing/testing.md"
-PRODUCT_IDENTIFIER = "app.crynta.terax"
+
+# Derived from the identity table (`src/modules/identity/namespace.json`), never restated: a
+# literal here is a second source of truth, and the guard then asserts identifiers under the
+# wrong namespace. Both values have drifted exactly this way once already.
+IDENTITY = packaging.identity_table()
+PRODUCT_IDENTIFIER = IDENTITY["appIdentifier"]
+UPSTREAM_IDENTIFIER = IDENTITY["upstream"]["appIdentifier"]
 APP_LAB_NAMESPACE = f"{PRODUCT_IDENTIFIER}.app-lab"
 
 # The supported distribution set after ticket #34: Linux x86-64, and nothing else. A workflow
@@ -587,6 +596,58 @@ class LinuxSmokeWorkflowTest(unittest.TestCase):
                 f"identifier {identifier!r} is not a disposable app-lab profile",
             )
 
+    def test_the_identifier_it_names_is_one_the_preflight_accepts(self) -> None:
+        # The assertion that would have caught this workflow being dead on arrival: an identifier
+        # inside upstream's namespace passes a name-shape check but `scripts/app-lab/run.py`
+        # refuses it before the build, so no job could ever start. Derive the answer from the
+        # preflight itself rather than from a second reading of the namespace rules.
+        identifiers = re.findall(r"--identifier\s+(\S+)", self.body)
+        self.assertTrue(identifiers, "the run must name its disposable identifier")
+        with tempfile.TemporaryDirectory(prefix="terax-smoke-guard-") as tmp:
+            root = Path(tmp) / "run"
+            root.mkdir()
+            env = linux_profile.profile_env(root / "home")
+            for identifier in identifiers:
+                with self.subTest(identifier=identifier):
+                    problems = linux_profile.problems(
+                        identifier, env, root, require_isolated=False
+                    )
+                    self.assertEqual(
+                        problems,
+                        [],
+                        f"{identifier!r} is refused by the preflight, so every smoke job "
+                        "aborts before the build",
+                    )
+                    self.assertTrue(
+                        identifier.startswith(f"{PRODUCT_IDENTIFIER}."),
+                        f"{identifier!r} is not in the fork identifier namespace",
+                    )
+
+    def test_the_contributor_doc_names_a_profile_the_preflight_accepts(self) -> None:
+        # The doc told a contributor to reproduce the job with the very identifier the preflight
+        # refuses; it was the same stale literal as the workflow. A doc that cannot run is a gap.
+        identifiers = [
+            token.strip("`,")
+            for token in re.findall(r"--identifier\s+(\S+)", text(CONTRIBUTOR_TESTING))
+        ]
+        self.assertTrue(
+            identifiers, "the smoke section must name the identifier the job uses"
+        )
+        with tempfile.TemporaryDirectory(prefix="terax-smoke-doc-") as tmp:
+            root = Path(tmp) / "run"
+            root.mkdir()
+            env = linux_profile.profile_env(root / "home")
+            for identifier in identifiers:
+                with self.subTest(identifier=identifier):
+                    self.assertEqual(
+                        linux_profile.problems(
+                            identifier, env, root, require_isolated=False
+                        ),
+                        [],
+                        f"docs/contributing/testing.md documents {identifier!r}, which the "
+                        "preflight refuses",
+                    )
+
     def test_it_uploads_the_failure_evidence(self) -> None:
         self.assertIn("actions/upload-artifact", self.body)
         self.assertIn("if: always()", self.body)
@@ -653,6 +714,21 @@ class ApplicationIdentityTest(unittest.TestCase):
                     PRODUCT_IDENTIFIER,
                     f"{path.name}: tests and benchmarks never run in the product profile",
                 )
+
+    def test_no_workflow_launches_an_upstream_identifier(self) -> None:
+        # The preflight refuses upstream's identifier *and anything under it*, so a workflow that
+        # names one never reaches a build. Naming the upstream namespace here is the point (like
+        # the removed-platform markers), not a second source of the fork's names.
+        for path in workflow_files():
+            for identifier in re.findall(r"--identifier\s+(\S+)", text(path)):
+                identifier = identifier.strip('"\'')
+                with self.subTest(workflow=path.name, identifier=identifier):
+                    self.assertNotEqual(identifier, UPSTREAM_IDENTIFIER)
+                    self.assertFalse(
+                        identifier.startswith(f"{UPSTREAM_IDENTIFIER}."),
+                        f"{path.name}: {identifier!r} belongs to upstream Terax, which the "
+                        "linux_profile preflight refuses",
+                    )
 
 
 if __name__ == "__main__":
