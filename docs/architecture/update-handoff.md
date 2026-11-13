@@ -45,7 +45,8 @@ succeeded, and `docs/architecture/update-discovery.md` keeps its own "Not claime
 
 - **Discovery only.** `checkForUpdate` GETs the manifest endpoint; it never downloads a
   package. `src/modules/updater/requestDownload.ts` returns `not-implemented`, and the state
-  machine stops at `handoff-unavailable` — there is no `installed` or `ready` state.
+  machine stops at `handed-off` (or `handoff-blocked`) — there is no `installed` or `ready`
+  state.
 - **No capability to install.** `src-tauri/capabilities/desktop.json` and the other
   capability files grant no `updater:` permission, so no window can call the plugin's
   `check`, `download`, `install` or `download_and_install`; `scripts/tests/test_capabilities.py`
@@ -56,6 +57,7 @@ succeeded, and `docs/architecture/update-discovery.md` keeps its own "Not claime
 - **The handoff copy** names the artifact and the tool (`apt`/`dnf`, plus pacman/makepkg/AUR
   guidance for Arch) and states that the app does not run the transaction
   (`src/modules/updater/packageGuidance.ts`).
+
 
 ## Safe closure
 
@@ -70,21 +72,34 @@ starts one: `requestDownload` stops at `not-implemented` and no capability grant
 command. The question "can the integration recheck readiness and protect the privilege
 interval without relaunching?" therefore cannot be answered by measurement here — the
 integration does not exist, and building one to measure it would contradict this decision.
-What does exist is the readiness check at *handoff* time: it is #39's, and it must invalidate
-a previous result when work starts after the check.
+What does exist is the readiness check at *handoff* time, implemented by #39
+(`src/modules/updater/handoffReadiness.ts`): it invalidates a previous result when work
+starts after the check, and it blocks rather than resolving the work.
+
 
 ## Consumed by issue #39
 
-#39 still owns the *handoff* half of the sequencing and must not weaken this decision:
+#39 owns the *handoff* half of the sequencing and must not weaken this decision. It now
+does, in code:
 
-- recheck dirty work immediately before the handoff so work started after the check
-  invalidates it;
-- distinguish "handed off to your package tool" from "installed", and keep external package
-  actions outside the app's guarantees;
-- cancellation, package-lock and failed-transaction copy with an explicit recovery path;
-- never relaunch, never interrupt an agent, never attempt an unvalidated rollback.
+- rechecks the live state — unsaved buffers, terminal processes and working agents —
+  immediately before the handoff, binding the approval to the snapshot it was taken
+  against, so work started after the check invalidates it
+  (`src/modules/updater/handoffReadiness.ts`, `handoffWork.ts`, `updateState.ts`);
+- distinguishes "handed off to your package tool" from "installed": the furthest state is
+  `handed-off`, and there is no `installed`/`ready` member in the state union;
+- gives cancellation, package-lock and failed-transaction copy with an explicit recovery
+  path (close Terax, run the command again, nothing is rolled back by the app);
+- never relaunches, never interrupts an agent, never attempts a rollback. Work in the way
+  blocks the handoff and is left for the person to finish, with a "review the work" action
+  that only focuses it.
+
+The in-app install half stays absent by this decision, not by oversight: `requestDownload`
+still returns `not-implemented`, no capability grants `updater:*`, and the handoff adds no
+native capability.
 
 If a real transaction path is ever validated in disposable environments, this record is
 superseded by that evidence — with the environments, the transaction logs and the resulting
 guarantees named. Until then, "package-tool handoff after safe closure" is the supported
 path and no other path may be described as supported.
+

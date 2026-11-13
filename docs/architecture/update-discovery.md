@@ -68,29 +68,59 @@ It settles into one of three outcomes:
 Artifact trust at discovery time is **structural only**: a valid minisign envelope, a
 trusted comment that names the announced version, and a provisioned trust root. A check
 that does not download the artifact cannot cryptographically verify it, so the production
-verifier fails closed (`check-failed: signature`) until #39 provisions keys. A development
+verifier fails closed (`check-failed: signature`) until #40 provisions keys. A development
 build against loopback fixtures labels releases `fixture-unverified`, and the UI says so.
 
 Automatic checks run at most once per `check.intervalMs` (6 h), tracked under the fork's
 namespaced key (`terax-workspace:updater:last-check`). An explicit user check bypasses the
 throttle. The hook never blocks the UI and never downloads.
 
-## Install handoff (deliberately unimplemented)
+## Install handoff (implemented; the app still never installs)
 
 The supported upgrade path is the accepted **package-tool handoff after safe closure**;
 `docs/architecture/update-handoff.md` records that decision, what it does and does not
-guarantee, and what issue #39 still owns.
+guarantee, and how issue #39 consumes it.
 
-`requestDownload` requires explicit approval and returns `not-implemented` with ticket
-#39. The state machine has no `installed`/`ready` state: `handoff-unavailable` is the
-furthest a user request goes. Arch guidance (pacman/makepkg/AUR helper) and the deb/rpm
-package-tool handoff text are shown in the dialog; Terax never executes those commands and
-never requests privilege.
+The app discovers the release and stops. `requestDownload` still requires explicit
+approval and returns `not-implemented` for a download: no capability grants `updater:*`,
+nothing imports `@tauri-apps/plugin-process`, and no path reaches a native install
+command. The handoff instead runs entirely on state the app already has:
+
+1. The person approves (`Update with package tool`).
+2. The app reads the live state **at that moment** — unsaved editor buffers from the editor
+   handles' own answers, a foreground-process probe per terminal leaf, and the agent phases
+   the terminals reported (`working`/`attention`) — and binds the approval to that
+   snapshot (`src/modules/updater/handoffReadiness.ts`,
+   `handoffWork.ts`).
+3. It re-reads the same evidence immediately before handing off. Work that appeared in
+   between — a buffer that went dirty, a new process, an agent that started — invalidates
+   the approval instead of being handed off over.
+4. Any work in the way blocks the handoff (`handoff-blocked`), names it by file, process or
+   agent, and offers to focus it. The app never saves, closes, stops or interrupts
+   anything: that stays the person's decision, and a fresh approval is required after
+   they resolve it.
+5. A clear check ends at `handed-off`: the artifact name and the package-tool command
+   (apt/dnf, pacman/makepkg/AUR for Arch), plus the explicit statements that Terax did not
+   download, install or verify anything and cannot confirm the result.
+
+There is no `installed`/`ready` state, and no success claim anywhere in the copy.
+Cancellation, package locks and failed transactions are the package tool's outcomes: the
+dialog says that nothing is rolled back by Terax, that closing Terax first and running the
+command again is the recovery path, and that Terax cannot tell whether a transaction
+finished. Nothing relaunches the app.
+
+A window that cannot read the workspace's live state (the settings window) does not hand
+off; it falls back to `handoff-unavailable` and points at the main window's dialog.
 
 ## Not claimed
 
-- No live fork release endpoint, owner URL or signing key exists yet.
-- No RPM/DEB/Arch install, upgrade, signature rejection or package-lock behavior has been
-  validated. That needs the packaged-app seam with real artifacts.
-- No readiness interval, privilege interval or failed-transaction recovery is implemented
-  (ticket #39).
+- No live fork release endpoint, owner URL or signing key exists yet (publication identity
+  and signing trust are #40's, and stay provisional).
+- No RPM/DEB/Arch install, upgrade, signature rejection or package-lock behaviour has been
+  validated. That needs the packaged-app seam with real artifacts on a disposable system.
+- The readiness check is unit- and component-tested, but a real package-tool run — hand
+  off, run the command, start the new binary — has not been observed in this repository;
+  that run is the human check named in #39.
+- No privilege interval, in-app transaction or rollback exists, by decision rather than
+  as an unfinished gap.
+

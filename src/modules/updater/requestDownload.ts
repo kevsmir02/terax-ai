@@ -20,11 +20,14 @@ export interface DownloadRequest {
  * The gated download request seam.
  *
  * Discovery ends here. This build deliberately performs no download: installing is only
- * ever an explicit user action, and the install transaction (readiness recheck, package
- * tool, privilege interval, no automatic relaunch) is ticket #39's contract. Returning a
- * `not-implemented` result keeps that seam visible instead of faking a download with a
+ * ever an explicit user action, and there is no in-app transaction to gate. The supported
+ * upgrade path is the package-tool handoff (#39), which lives outside this seam —
+ * `useUpdater.requestHandoff` asks this function first, reads `not-implemented`, and hands
+ * the artifact and command to the person instead of downloading anything. Returning an
+ * honest `not-implemented` keeps that seam visible instead of faking a download with a
  * browser fetch or an installer call.
  */
+
 export async function requestDownload({
   approved,
 }: DownloadRequest): Promise<DownloadRequestResult> {

@@ -8,9 +8,15 @@ import {
   resolveContract,
   type UpdaterContract,
 } from "./contract";
+import {
+  checkHandoff,
+  type HandoffHazard,
+  type HandoffWork,
+} from "./handoffReadiness";
 import { createReleaseVerifier } from "./releaseSignature";
 import { requestDownload } from "./requestDownload";
 import {
+  canRequestHandoff,
   initialUpdaterState,
   reduceUpdaterState,
   shouldRunCheck,
@@ -95,6 +101,17 @@ async function performCheck(): Promise<CheckOutcome> {
 interface HookOptions {
   /** When false, the hook does not run an automatic check on mount. */
   autoCheck?: boolean;
+  /**
+   * Live evidence for the handoff readiness check. It is read twice per approval:
+   * once to bind the approval to a snapshot, once immediately before the handoff
+   * so work that started in between invalidates the approval.
+   *
+   * A window that cannot read the workspace's live state (the settings window) must
+   * leave this out: without it the handoff is refused rather than guessed at.
+   */
+  readHandoffWork?: () => Promise<HandoffWork>;
+  /** Focus the work a blocked check named. Never saves, closes or interrupts it. */
+  reviewHandoffWork?: (hazards: readonly HandoffHazard[]) => void;
 }
 
 interface RunCheckOptions {
@@ -103,15 +120,21 @@ interface RunCheckOptions {
 }
 
 /**
- * Async, non-blocking, bounded update discovery.
+ * Async, non-blocking, bounded update discovery, plus the package-tool handoff.
  *
  * A check reads the fork-owned stable release manifest and settles into no-update,
  * update-available or check-failed. It never downloads a package, never asks for
- * privilege and never relaunches. `requestUpdate` is the only path toward an update and
- * only runs from an explicit user action; this build's handoff is `not-implemented`
- * because ticket #39 owns the install/readiness contract.
+ * privilege and never relaunches. `requestHandoff` is the only path toward an
+ * update and only runs from an explicit user action: it confirms the in-app
+ * download is still unimplemented, binds the approval to a readiness snapshot,
+ * re-reads that evidence immediately before handing off, and stops at
+ * `handed-off` or `handoff-blocked`. Nothing here installs or verifies anything.
  */
-export function useUpdater({ autoCheck = true }: HookOptions = {}) {
+export function useUpdater({
+  autoCheck = true,
+  readHandoffWork,
+  reviewHandoffWork,
+}: HookOptions) {
   const [state, dispatch] = useReducer(reduceUpdaterState, initialUpdaterState);
   const autoStarted = useRef(false);
 
@@ -139,14 +162,59 @@ export function useUpdater({ autoCheck = true }: HookOptions = {}) {
     [],
   );
 
-  const requestUpdate = useCallback(async () => {
-    if (state.kind !== "update-available") return;
-    const result = await requestDownload({
+  const requestHandoff = useCallback(async () => {
+    if (!canRequestHandoff(state)) return;
+
+    // The in-app download seam is asked first and is deliberately unimplemented: that
+    // answer is what makes this a handoff, and nothing here may reach a native command.
+    const download = await requestDownload({
       release: state.release,
       approved: true,
     });
-    dispatch({ type: "download-requested", result, at: Date.now() });
-  }, [state]);
+    if (download.kind !== "not-implemented") {
+      dispatch({
+        type: "download-requested",
+        result: download,
+        at: Date.now(),
+      });
+      return;
+    }
+
+    // No live evidence means no honest readiness check, so no handoff. The settings
+    // window is exactly this case: it cannot see the workspace's buffers or processes.
+    if (!readHandoffWork) {
+      dispatch({
+        type: "download-requested",
+        result: {
+          kind: "not-implemented",
+          ticket: 39,
+          detail:
+            "This window cannot read the workspace's unsaved buffers, running processes " +
+            "and agents, so it cannot check handoff readiness. Start the handoff from the " +
+            "update dialog in the main window.",
+        },
+        at: Date.now(),
+      });
+      return;
+    }
+
+    // The approval is bound to the state it was taken against, and the same
+    // evidence is re-read right before the handoff: work that started meanwhile
+    // invalidates the approval instead of being handed off over.
+    const { approval, work } = await checkHandoff(readHandoffWork);
+    dispatch({ type: "handoff-approved", approval });
+    dispatch({
+      type: "handoff-assessed",
+      at: Date.now(),
+      approval,
+      work,
+    });
+  }, [state, readHandoffWork]);
+
+  const reviewWork = useCallback(() => {
+    if (state.kind !== "handoff-blocked") return;
+    reviewHandoffWork?.(state.hazards);
+  }, [state, reviewHandoffWork]);
 
   const dismiss = useCallback(() => {
     dispatch({ type: "dismissed" });
@@ -158,5 +226,5 @@ export function useUpdater({ autoCheck = true }: HookOptions = {}) {
     void runCheck();
   }, [autoCheck, runCheck]);
 
-  return { state, check: runCheck, requestUpdate, dismiss };
+  return { state, check: runCheck, requestHandoff, reviewWork, dismiss };
 }

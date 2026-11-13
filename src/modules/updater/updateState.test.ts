@@ -1,8 +1,16 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CheckOutcome } from "./checkForUpdate";
+import {
+  type HandoffApproval,
+  type HandoffWork,
+  handoffSnapshot,
+} from "./handoffReadiness";
 import type { AvailableRelease } from "./releaseManifest";
 import {
   canRequestDownload,
+  canRequestHandoff,
   initialUpdaterState,
   reduceUpdaterState,
   shouldRunCheck,
@@ -168,6 +176,181 @@ describe("updater state machine", () => {
     expect(run([{ type: "dismissed" }], discovered)).toEqual(
       initialUpdaterState,
     );
+  });
+});
+
+const nothingAtStake: HandoffWork = { buffers: [], processes: [], agents: [] };
+
+const approvalAt = (at: number): HandoffApproval => ({
+  at,
+  snapshot: handoffSnapshot(nothingAtStake),
+});
+
+const discoveredUpdate = () =>
+  run([
+    { type: "check-started", manual: true, at: 1 },
+    { type: "check-settled", outcome: available, at: 10 },
+  ]);
+
+describe("package-tool handoff readiness", () => {
+  it("checks the live state on approval and hands off only when the check is clear", () => {
+    const checking = run(
+      [{ type: "handoff-approved", approval: approvalAt(100) }],
+      discoveredUpdate(),
+    );
+    expect(checking.kind).toBe("handoff-checking");
+    if (checking.kind !== "handoff-checking") return;
+    expect(checking.approval.at).toBe(100);
+
+    const handedOff = run(
+      [
+        {
+          type: "handoff-assessed",
+          at: 101,
+          approval: approvalAt(100),
+          work: nothingAtStake,
+        },
+      ],
+      checking,
+    );
+    expect(handedOff).toEqual({
+      kind: "handed-off",
+      release,
+      approvedAt: 100,
+      handedOffAt: 101,
+    });
+    // A handed-off update is the end of the app's involvement: no further approval.
+    expect(canRequestHandoff(handedOff)).toBe(false);
+  });
+
+  it("blocks the handoff and names the work the readiness check found", () => {
+    const checking = run(
+      [{ type: "handoff-approved", approval: approvalAt(100) }],
+      discoveredUpdate(),
+    );
+    const blocked = run(
+      [
+        {
+          type: "handoff-assessed",
+          at: 101,
+          approval: approvalAt(100),
+          work: {
+            buffers: [{ spaceId: "space-a", tabId: 7, title: "src/app.ts" }],
+            processes: [],
+            agents: [],
+          },
+        },
+      ],
+      checking,
+    );
+    expect(blocked.kind).toBe("handoff-blocked");
+    if (blocked.kind !== "handoff-blocked") return;
+    expect(blocked.hazards).toEqual([
+      { kind: "buffer", tabId: 7, spaceId: "space-a", title: "src/app.ts" },
+    ]);
+    expect(blocked.summary).toContain("src/app.ts");
+    expect(blocked.startedAfterApproval).toBe(true);
+    expect(canRequestHandoff(blocked)).toBe(true);
+  });
+
+  it("requires a fresh approval and ignores an assessment taken against the old one", () => {
+    const checking = run(
+      [{ type: "handoff-approved", approval: approvalAt(100) }],
+      discoveredUpdate(),
+    );
+    const blocked = run(
+      [
+        {
+          type: "handoff-assessed",
+          at: 101,
+          approval: approvalAt(100),
+          work: {
+            buffers: [],
+            processes: [{ spaceId: "space-a", leafId: 41, state: "running" }],
+            agents: [],
+          },
+        },
+      ],
+      checking,
+    );
+    expect(blocked.kind).toBe("handoff-blocked");
+
+    // The old approval cannot carry the work it was blocked on: the person has to
+    // approve again, and a late assessment of the previous attempt changes nothing.
+    const replayed = run(
+      [
+        {
+          type: "handoff-assessed",
+          at: 102,
+          approval: approvalAt(100),
+          work: nothingAtStake,
+        },
+      ],
+      blocked,
+    );
+    expect(replayed).toBe(blocked);
+
+    const reapproved = run(
+      [{ type: "handoff-approved", approval: approvalAt(200) }],
+      blocked,
+    );
+    expect(reapproved.kind).toBe("handoff-checking");
+    if (reapproved.kind !== "handoff-checking") return;
+    expect(reapproved.approval.at).toBe(200);
+
+    const handedOff = run(
+      [
+        {
+          type: "handoff-assessed",
+          at: 201,
+          approval: approvalAt(200),
+          work: nothingAtStake,
+        },
+      ],
+      reapproved,
+    );
+    expect(handedOff.kind).toBe("handed-off");
+  });
+
+  it("ignores an assessment that belongs to a superseded approval", () => {
+    const checking = run(
+      [{ type: "handoff-approved", approval: approvalAt(200) }],
+      discoveredUpdate(),
+    );
+    const late = run(
+      [
+        {
+          type: "handoff-assessed",
+          at: 201,
+          approval: approvalAt(100),
+          work: nothingAtStake,
+        },
+      ],
+      checking,
+    );
+    expect(late).toBe(checking);
+  });
+
+  it("does not accept an approval without a discovered release", () => {
+    expect(
+      run([{ type: "handoff-approved", approval: approvalAt(1) }]),
+    ).toEqual(initialUpdaterState);
+  });
+
+  it("has no installed or ready state", () => {
+    // The app hands off and stops; only the package tool can install. The union is
+    // read from its source so a future `installed`/`ready` member fails here.
+    const source = readFileSync(
+      join(import.meta.dirname, "updateState.ts"),
+      "utf8",
+    );
+    const union = source.slice(
+      source.indexOf("export type UpdaterState"),
+      source.indexOf("export type UpdaterEvent"),
+    );
+    expect(union).toContain('kind: "handed-off"');
+    expect(union).not.toMatch(/kind: "installed"/);
+    expect(union).not.toMatch(/kind: "ready"/);
   });
 });
 
