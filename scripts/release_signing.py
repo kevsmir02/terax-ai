@@ -732,11 +732,11 @@ def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
             "a signing input; never downloads, installs or publishes anything."
         )
     )
-    parser.add_argument("--candidate", required=True,
+    parser.add_argument("--candidate", default=None,
                         help="staged directory holding the rpm, deb, PKGBUILD and their signatures")
-    parser.add_argument("--version", required=True, help="application version, e.g. 1.0.0")
-    parser.add_argument("--tag", required=True, help="release tag, e.g. v1.0.0")
-    parser.add_argument("--commit", required=True, help="commit the artifacts were built from")
+    parser.add_argument("--version", default=None, help="application version, e.g. 1.0.0")
+    parser.add_argument("--tag", default=None, help="release tag, e.g. v1.0.0")
+    parser.add_argument("--commit", default=None, help="commit the artifacts were built from")
     parser.add_argument("--notes", default=None, help="release notes text")
     parser.add_argument("--notes-file", default=None, help="read release notes from this file")
     parser.add_argument("--contract", default=str(RELEASE_CONTRACT),
@@ -754,7 +754,16 @@ def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
                         help="print the key id of an existing signature file and exit")
     parser.add_argument("--step-summary", default=None,
                         help="append a markdown summary (e.g. $GITHUB_STEP_SUMMARY)")
-    return parser.parse_args(argv)
+    arguments = parser.parse_args(argv)
+    if not arguments.show_key_id:
+        missing = [
+            f"--{name}"
+            for name in ("candidate", "version", "tag", "commit")
+            if not getattr(arguments, name)
+        ]
+        if missing:
+            parser.error("the following arguments are required: " + ", ".join(missing))
+    return arguments
 
 
 def render_step_summary(document: dict) -> str:

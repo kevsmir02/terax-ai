@@ -412,6 +412,12 @@ class SigningTest(unittest.TestCase):
             f"expected keyId refusal, got {problems}",
         )
 
+    def test_show_key_id_works_standalone_without_signing_arguments(self) -> None:
+        directory = signed_candidate(self.tmp / "show-key", self.key)
+        result = self.run_signing("--show-key-id", str(directory / "PKGBUILD.minisig"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(self.key.key_id_text, result.stdout)
+
 
 class ProvisioningTest(unittest.TestCase):
     """`scripts/provision_signing_key.py` control flow, without a real keypair."""
