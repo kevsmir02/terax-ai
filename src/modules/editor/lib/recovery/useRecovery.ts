@@ -39,7 +39,17 @@ export type RecoveryView = {
   restore(record: RecoveryRecord): void;
   dismissDraft(record: RecoveryRecord): Promise<void>;
   refreshDrafts(): Promise<void>;
+  /**
+   * The buffer is going away with its tab. `discard` resolves the draft and
+   * then disposes, so a timer armed before the close or a later quit flush
+   * cannot persist text the person explicitly threw away; `keep-draft` leaves
+   * the durable record to be offered again next session.
+   */
+  release(intent: RecoveryCloseIntent): void;
 };
+
+/** What closing a tab decided about the buffer's recovery draft. */
+export type RecoveryCloseIntent = "discard" | "keep-draft";
 
 export function useRecovery(input: {
   spaceId: string;
@@ -126,6 +136,10 @@ export function useRecovery(input: {
         );
       },
       refreshDrafts,
+      release: (intent) => {
+        if (intent === "discard") void handle.discardAndDispose();
+        else handle.dispose();
+      },
     }),
     [bufferId, status, drafts, handle, manager, refreshDrafts],
   );

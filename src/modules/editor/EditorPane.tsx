@@ -57,6 +57,7 @@ import { useEditorThemeExt } from "./lib/useEditorThemeExt";
 import { initVimGlobals, vimHandlersExtension } from "./lib/vim";
 import { mediaPreviewKind } from "./lib/mediaPreview";
 import { planRestore } from "./lib/recovery/cleanup";
+import type { RecoveryCloseIntent } from "./lib/recovery/useRecovery";
 import { RecoveryDraftBanner } from "./RecoveryDraftBanner";
 import { RecoveryStatusBar } from "./RecoveryStatusBar";
 import { SaveConflictDialog } from "./SaveConflictDialog";
@@ -86,8 +87,11 @@ export type EditorPaneHandle = {
   save: () => Promise<boolean>;
   /** True while the buffer has text newer than its last persisted baseline. */
   isDirty: () => boolean;
-  /** Explicitly resolves this buffer's recovery draft (an announced discard). */
-  discardRecovery: () => void;
+  /**
+   * The tab is closing: dispose this buffer's recovery state, resolving its
+   * draft first when the close was an explicit discard.
+   */
+  releaseRecovery: (intent: RecoveryCloseIntent) => void;
   /** Open CodeMirror's completion popup. */
   triggerCodeComplete: () => void;
 };
@@ -157,7 +161,7 @@ export const EditorPane = memo(
       applyRecoveredText,
       saveDraftCopy,
       dismissDraft,
-      discardRecovery,
+      releaseRecovery,
     } = useDocument({
       path,
       visible,
@@ -510,7 +514,7 @@ export const EditorPane = memo(
         },
         save: () => performSaveRef.current(),
         isDirty: () => isDirtyRef.current(),
-        discardRecovery,
+        releaseRecovery,
         triggerCodeComplete: () => {
           const view = cmRef.current?.view;
           if (!view) return;

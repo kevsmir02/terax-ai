@@ -525,7 +525,7 @@ export function decideMediaPlayback(
 // --- formatting ----------------------------------------------------------
 
 /** Byte count as the ceiling labels are written: whole MiB, one decimal. */
-function mibLabel(bytes: number): string {
+export function mibLabel(bytes: number): string {
   const value = bytes / MIB;
   const rounded = Number.isInteger(value) ? value : Math.round(value * 10) / 10;
   return `${rounded} MiB`;

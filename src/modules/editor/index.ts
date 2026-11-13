@@ -1,4 +1,5 @@
 export type { EditorPaneHandle } from "./EditorPane";
+export type { RecoveryCloseIntent } from "./lib/recovery/useRecovery";
 export { EditorStack } from "./EditorStackLazy";
 export { GitDiffStack } from "./GitDiffStackLazy";
 export { useDiagnosticsStore } from "./lib/diagnosticsStore";

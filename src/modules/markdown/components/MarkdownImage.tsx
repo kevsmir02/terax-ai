@@ -33,6 +33,7 @@ import {
   markdownImageState,
   markdownImageViewerId,
 } from "../lib/inlineImage";
+import { useFileBytes } from "../lib/useFileBytes";
 
 type HastImageProps = {
   readonly node?: {
@@ -153,6 +154,14 @@ function BoundedMarkdownImage({
   const [attempt, setAttempt] = useState(0);
   const visible = documentVisible && inView;
 
+  // Only a failed load needs the file's size: a local file above the
+  // delivery ceiling is refused by the native handler, and the element only
+  // reports a load error (its 413 body is unreadable from here).
+  const fileBytes = useFileBytes(
+    source.kind === "file" ? source.path : "",
+    decodeFailed && source.kind === "file",
+  );
+
   const base = {
     source,
     visible,
@@ -160,6 +169,7 @@ function BoundedMarkdownImage({
     admission: null,
     evicted: false,
     decodeFailed,
+    fileBytes,
   };
   // The probe is requested only for a visible file image, before the ceiling
   // decision can exist. A deferred image yields no path, so the hook stays off.

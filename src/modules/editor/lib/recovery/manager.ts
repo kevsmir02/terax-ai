@@ -125,8 +125,15 @@ export type BufferRecovery = {
   retry(): void;
   /** Save As succeeded: the same buffer now belongs to `path`. */
   retarget(input: { path: string; diskRevision: string | null }): void;
-  /** Buffer gone (tab closed). Its durable record stays. */
+  /** Buffer gone (tab closed without a discard). Its durable record stays. */
   dispose(): void;
+  /**
+   * The buffer is gone *and* the person resolved it by discarding: resolve the
+   * current revision (cancelling any armed write) and then dispose, in that
+   * order. A timer that was already armed, a write in flight or a later quit
+   * flush must not resurrect the discarded text.
+   */
+  discardAndDispose(): Promise<void>;
 };
 
 export type RecoveryManager = {
@@ -550,29 +557,14 @@ export function createRecoveryManager(
       tryResume();
     },
     async discard() {
-      if (state.revision === 0 && state.retireThrough === 0) {
-        // Nothing has ever been recorded for this buffer: the document loaded
-        // clean, so there is no draft to resolve and no IPC is worth doing.
-        setStatus(state);
-        return;
-      }
-      const resolved = Math.max(state.revision, state.retireThrough);
-      state.retireThrough = resolved;
-      state.pending = null;
-      // A discarded text must not be written by a timer that is already armed.
-      state.coalescer.cancel();
-      state.coalescer = freshCoalescer(state);
-      await enqueue(state, async () => {
-        try {
-          const outcome = await storage.remove(state.bufferId, resolved);
-          state.totalBytes = outcome.totalBytes;
-          state.persisted = null;
-        } catch (error) {
-          state.failure = failureOf(error);
-        }
-      });
-      setStatus(state);
-      tryResume();
+      await resolveDraft(state);
+    },
+    async discardAndDispose() {
+      // Resolve first: the delete must be queued behind any write that is
+      // already in the chain, and the armed coalescer must be cancelled before
+      // the buffer is retired.
+      await resolveDraft(state);
+      retireBuffer(state);
     },
     retry() {
       state.failure = null;
@@ -594,11 +586,48 @@ export function createRecoveryManager(
       notify(state);
     },
     dispose() {
-      state.disposed = true;
-      state.coalescer.cancel();
-      state.listeners.clear();
+      retireBuffer(state);
     },
   });
+
+  /**
+   * Explicit discard for one buffer: resolves every revision it has seen,
+   * cancels an armed coalescer and deletes the stored record up to that
+   * revision. Shared by `discard` and `discardAndDispose` so closing a buffer
+   * by discard cannot resolve less than discarding it while open.
+   */
+  const resolveDraft = async (state: BufferState): Promise<void> => {
+    if (state.revision === 0 && state.retireThrough === 0) {
+      // Nothing has ever been recorded for this buffer: the document loaded
+      // clean, so there is no draft to resolve and no IPC is worth doing.
+      setStatus(state);
+      return;
+    }
+    const resolved = Math.max(state.revision, state.retireThrough);
+    state.retireThrough = resolved;
+    state.pending = null;
+    // A discarded text must not be written by a timer that is already armed.
+    state.coalescer.cancel();
+    state.coalescer = freshCoalescer(state);
+    await enqueue(state, async () => {
+      try {
+        const outcome = await storage.remove(state.bufferId, resolved);
+        state.totalBytes = outcome.totalBytes;
+        state.persisted = null;
+      } catch (error) {
+        state.failure = failureOf(error);
+      }
+    });
+    setStatus(state);
+    tryResume();
+  };
+
+  /** Forgets a buffer. Its durable record is left for the next session. */
+  const retireBuffer = (state: BufferState): void => {
+    state.disposed = true;
+    state.coalescer.cancel();
+    state.listeners.clear();
+  };
 
   const resolveSavedRevision = (
     state: BufferState,

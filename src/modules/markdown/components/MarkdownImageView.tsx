@@ -84,6 +84,13 @@ function noticeFor(state: MarkdownImageState): Notice | null {
         alternatives: state.alternatives,
         retry: state.retryable,
       };
+    case "file-too-large":
+      return {
+        title: "Image file too large to preview",
+        reason: state.reason,
+        alternatives: state.alternatives,
+        retry: false,
+      };
     default:
       return null;
   }

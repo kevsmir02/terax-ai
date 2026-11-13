@@ -92,6 +92,17 @@ A refused image renders its reason in the document and claims nothing. A remote
 reference the person consented to load and an inline `data:` image have no path
 for the header probe, so their element mounts lazily only to report its
 intrinsic size; the same ceiling and admission then decide whether it stays.
+
+A local image above the 10 MiB asset-delivery ceiling is refused by the native
+handler with a 413 before any byte reaches the decoder, and an `<img>` cannot
+read that response body: all the document sees is a load error. That is a limit
+of ours, not a defect in the file, so a failed load of a local image measures
+the file (`fs_stat`) and, above the delivery ceiling, renders a
+`file-too-large` notice that names the file's size and the 10 MiB preview read
+limit with the external-viewer alternative. Only a failure inside the ceiling
+is reported as "may be corrupt or undecodable"; a remote or `data:` element
+keeps its measured-at-load decode error because there is no size to measure.
+
 The asset policy above is unchanged: the probe adds no grant and the admission
 table grants no access, so an unprobed, remote or outside-root image still needs
 the explicit choice. The probe canonicalizes an automatic local image against

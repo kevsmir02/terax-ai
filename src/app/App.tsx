@@ -29,6 +29,7 @@ import { useControlBridge } from "@/modules/control";
 import {
   type EditorPaneHandle,
   NewEditorDialog,
+  type RecoveryCloseIntent,
   setFileNavigator,
   useApplyEditorFontSize,
   useEditorFileSync,
@@ -402,27 +403,49 @@ export default function App() {
     [activeLeafId],
   );
 
+  /**
+   * The one choke point for a tab's recovery state. Every tab-removal path
+   * (single close, bulk close, file deletion, Space deletion) goes through
+   * here *before* the handle is dropped, so an armed persistence timer can no
+   * longer write text the person explicitly discarded.
+   */
+  const releaseTabRecovery = useCallback(
+    (id: number, intent: RecoveryCloseIntent) => {
+      editorRefs.current.get(id)?.releaseRecovery(intent);
+      editorRefs.current.delete(id);
+      previewRefs.current.delete(id);
+    },
+    [],
+  );
+
   const disposeTab = useCallback(
-    (id: number) => {
+    (id: number, intent: RecoveryCloseIntent) => {
       // Terminal-leaf-keyed maps (terminalRefs/searchAddons) are pruned by
       // the effect below as the pane tree changes; only the tab-id-keyed
       // handles need explicit cleanup here.
-      editorRefs.current.delete(id);
-      previewRefs.current.delete(id);
+      releaseTabRecovery(id, intent);
       closeTab(id);
     },
-    [closeTab],
+    [closeTab, releaseTabRecovery],
   );
 
   const disposeTabs = useCallback(
-    (anchorId: number, plan: CloseTabsPlan) => {
+    (
+      anchorId: number,
+      plan: CloseTabsPlan,
+      /**
+       * Ids the confirmation resolved by discarding; every other id keeps its
+       * draft. Required so a bulk path cannot silently skip the decision.
+       */
+      discardIds: readonly number[],
+    ) => {
+      const discard = new Set(discardIds);
       const closedIds = closeTabs(anchorId, plan);
       for (const id of closedIds) {
-        editorRefs.current.delete(id);
-        previewRefs.current.delete(id);
+        releaseTabRecovery(id, discard.has(id) ? "discard" : "keep-draft");
       }
     },
-    [closeTabs],
+    [closeTabs, releaseTabRecovery],
   );
 
   const disposeDeletedTabs = useCallback(
@@ -434,9 +457,17 @@ export default function App() {
           .spaces.find((s) => s.id === spaceId)?.root;
         newTabInSpace(spaceId, root ?? undefined);
       }
-      for (const id of ids) disposeTab(id);
+      // The file is gone, not the person's unsaved text: the draft stays for
+      // the next session, exactly like closing the tab by hand.
+      for (const id of ids) disposeTab(id, "keep-draft");
     },
     [disposeTab, newTabInSpace],
+  );
+
+  /** The editor's own close (`:q`): a plain close, not an explicit discard. */
+  const handleEditorClose = useCallback(
+    (id: number) => disposeTab(id, "keep-draft"),
+    [disposeTab],
   );
 
   const isTabDirty = useCallback((id: number): boolean => {
@@ -1216,7 +1247,7 @@ export default function App() {
 
   const prepareDiscard = useCallback((id: number): (() => void) | null => {
     const handle = editorRefs.current.get(id);
-    return handle ? () => handle.discardRecovery() : null;
+    return handle ? () => handle.releaseRecovery("discard") : null;
   }, []);
 
   const {
@@ -1713,7 +1744,7 @@ export default function App() {
                         onFocusLeaf={handleFocusLeaf}
                         registerEditorHandle={registerEditorHandle}
                         onEditorDirtyChange={handleEditorDirty}
-                        onEditorCloseTab={disposeTab}
+                        onEditorCloseTab={handleEditorClose}
                         registerPreviewHandle={registerPreviewHandle}
                         onPreviewUrlChange={handlePreviewUrl}
                         onOpenCommitFile={openCommitFileDiffTab}
