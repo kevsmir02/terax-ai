@@ -1,6 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { assetScopes } from "@/lib/assetScopes";
-import { setWindowVibrancy } from "@/modules/settings/store";
+import {
+  setEditorRecoveryDrafts,
+  setWindowVibrancy,
+} from "@/modules/settings/store";
+import {
+  parseRecord,
+  type RecoveryRecord,
+} from "@/modules/editor/lib/recovery/model";
 import { mediaKind, mediaMime } from "@/modules/preview/lib/mediaFormats";
 import { useMediaPlaybackStore } from "@/modules/preview/lib/mediaPlayback";
 import {
@@ -135,6 +142,31 @@ class ScenarioRun {
   }
 
   /**
+   * A harness-side action the application must not perform on itself: an external write, a
+   * fixture mode change, or a signal to the app's process group. The report server performs it
+   * and replies; a refusal (outside the scenario workspace, a foreign signal target) throws.
+   */
+  async interfere(
+    request: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const response = await fetch(`${this.reportUrl}/interfere`, {
+      method: "POST",
+      body: JSON.stringify(request),
+      cache: "no-store",
+      credentials: "omit",
+    });
+    const reply = (await response.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
+    if (!response.ok || reply.ok !== true)
+      throw new Error(
+        `the harness refused ${String(request.action)}: ${response.status} ${String(reply.error ?? "")}`,
+      );
+    return reply;
+  }
+
+  /**
    * The web view's composited layer tree (UI-process mirror of WebKit's layers; see
    * `bench_window layers`). The full list is kept at rest, only the counts elsewhere.
    */
@@ -188,6 +220,12 @@ class ScenarioRun {
     if (this.scenario.prefs?.windowVibrancy !== undefined) {
       await setWindowVibrancy(this.scenario.prefs.windowVibrancy);
       await pause(1500);
+    }
+    if (this.scenario.prefs?.editorRecoveryDrafts !== undefined) {
+      // Recovery is opt-in and off by default; the crash row enables it through the app's own
+      // preference store, exactly as Settings does.
+      await setEditorRecoveryDrafts(this.scenario.prefs.editorRecoveryDrafts);
+      await pause(300);
     }
     await this.frontWindow();
     await this.sessionReady(tab.activeLeafId);
@@ -1469,6 +1507,267 @@ async function workflowScenario(
     JSON.stringify(editorText().slice(0, 120)),
   );
   await run.sync("workflow-file", { token, file, fileTabId });
+
+  // 6. The external-writer conflict workflow (#46 S2-13): the harness rewrites the
+  //    same file from outside the app while the buffer is dirty, and the app's own
+  //    save produces the reviewed conflict dialog.
+  const workflow = scenario.workflow;
+  if (workflow) {
+    const readDiskText = async (target: string): Promise<string> => {
+      const result = await invoke<{ kind: string; content?: string }>(
+        "fs_read_file",
+        { path: target, workspace: { kind: "local" }, force: false },
+      ).catch((): { kind: string; content?: string } => ({ kind: "failed" }));
+      return result.kind === "text" ? (result.content ?? "") : "";
+    };
+    const bufferText = (tabId: number) => run.app().readEditor(tabId) ?? "";
+    const dialogText = () =>
+      Array.from(document.querySelectorAll('[role="dialog"]'))
+        .map((node) => node.textContent ?? "")
+        .join("\n");
+    const dialogButton = (label: string): HTMLButtonElement | null => {
+      for (const node of document.querySelectorAll<HTMLButtonElement>(
+        '[role="dialog"] button',
+      )) {
+        if ((node.textContent ?? "").trim() === label) return node;
+      }
+      return null;
+    };
+    const waitDialog = (needle: string, what: string, timeout = 20_000) =>
+      run.waitFor(() => dialogText().includes(needle), what, timeout);
+
+    const conflictFile = workflow.conflictFile;
+    const conflictBase =
+      (await readDiskText(conflictFile)).split("\n")[0] ?? "";
+    const conflictTab = run.app().openFileTab(conflictFile, true);
+    try {
+      await run.waitFor(
+        () =>
+          run.app().activeId === conflictTab &&
+          bufferText(conflictTab).includes(conflictBase),
+        "the conflict fixture",
+      );
+    } catch (error) {
+      throw new Error(await failed("external writer setup", String(error)));
+    }
+    const dirtyText = `app draft ${token}`;
+    run.app().editEditor(conflictTab, `${dirtyText}\n`);
+    await run.waitFor(
+      () => bufferText(conflictTab).includes(dirtyText),
+      "the dirty buffer",
+    );
+    const external1 = `external v1 ${token}\n`;
+    try {
+      await run.interfere({
+        action: "write",
+        path: conflictFile,
+        content: external1,
+      });
+    } catch (error) {
+      throw new Error(await failed("external writer", String(error)));
+    }
+    const conflictSave = await run.app().saveEditor(conflictTab);
+    try {
+      await waitDialog("File changed on disk", "the conflict dialog");
+    } catch (error) {
+      throw new Error(
+        await failed(
+          "conflict dialog",
+          `${String(error)}; save answered ${conflictSave}`,
+        ),
+      );
+    }
+    const controls = ["Save As", "Reload from disk", "Overwrite"];
+    const copyInput = document.querySelector<HTMLInputElement>(
+      '[role="dialog"] input',
+    );
+    await check(
+      "the conflict dialog offers compare, Save As, reload and overwrite",
+      conflictSave === false &&
+        controls.every((label) => dialogButton(label) !== null) &&
+        dialogText().includes("On disk (reviewed)") &&
+        dialogText().includes("Your unsaved text") &&
+        dialogText().includes(dirtyText) &&
+        dialogText().includes(`external v1 ${token}`) &&
+        (copyInput?.value ?? "").trim().length > 0,
+      `controls ${controls.map((label) => `${label}=${dialogButton(label) !== null}`).join(",")}; compare ${dialogText().includes("On disk (reviewed)") && dialogText().includes("Your unsaved text")}; copy ${copyInput?.value ?? "-"}`,
+    );
+    await check(
+      "the reviewed conflict enables overwrite and keeps the buffer dirty",
+      dialogButton("Overwrite")?.disabled === false &&
+        run.app().tabs.some((tab) => tab.id === conflictTab) &&
+        bufferText(conflictTab).includes(dirtyText),
+      `overwrite disabled ${dialogButton("Overwrite")?.disabled}`,
+    );
+
+    // A second external change after the review must invalidate the consent: the
+    // overwrite is bound to the revision the dialog showed, not to the dialog.
+    const external2 = `external v2 ${token}\n`;
+    await run.interfere({
+      action: "write",
+      path: conflictFile,
+      content: external2,
+    });
+    dialogButton("Overwrite")?.click();
+    try {
+      await waitDialog(`external v2 ${token}`, "the refreshed conflict review");
+    } catch (error) {
+      throw new Error(await failed("reviewed-revision consent", String(error)));
+    }
+    const afterSecondWrite = await readDiskText(conflictFile);
+    await check(
+      "a second external change invalidates the reviewed overwrite",
+      afterSecondWrite === external2 &&
+        bufferText(conflictTab).includes(dirtyText) &&
+        dialogButton("Overwrite") !== null,
+      `disk ${JSON.stringify(afterSecondWrite.slice(0, 40))}; buffer kept ${bufferText(conflictTab).includes(dirtyText)}`,
+    );
+
+    // Without a reviewed revision (an unreadable target) overwriting is refused
+    // before it can be attempted.
+    await run.interfere({
+      action: "chmod",
+      path: conflictFile,
+      mode: 0o000,
+    });
+    dialogButton("Overwrite")?.click();
+    try {
+      await waitDialog("Unavailable", "the unreadable conflict review");
+    } catch (error) {
+      throw new Error(await failed("unreviewed conflict", String(error)));
+    }
+    await check(
+      "overwrite is disabled without a reviewed revision",
+      dialogButton("Overwrite")?.disabled === true &&
+        bufferText(conflictTab).includes(dirtyText),
+      `overwrite disabled ${dialogButton("Overwrite")?.disabled}`,
+    );
+    await run.interfere({
+      action: "chmod",
+      path: conflictFile,
+      mode: 0o644,
+    });
+
+    // Reload/discard adopts what is on disk now; nothing abandoned is written.
+    dialogButton("Reload from disk")?.click();
+    try {
+      await run.waitFor(
+        () =>
+          !dialogText().includes("File changed on disk") &&
+          bufferText(conflictTab).includes(`external v2 ${token}`),
+        "the reloaded disk text",
+        20_000,
+      );
+    } catch (error) {
+      throw new Error(await failed("reload from disk", String(error)));
+    }
+    await check(
+      "reloading the reviewed conflict adopts the disk text",
+      (await readDiskText(conflictFile)) === external2 &&
+        run.app().tabs.some((tab) => tab.id === conflictTab),
+      `editor ${bufferText(conflictTab).slice(0, 40)}`,
+    );
+    await run.sync("workflow-conflict", {
+      token,
+      conflictFile,
+      disk: external2.length,
+    });
+
+    // 7. Stale typing (#46 S2-37): the native write is held open by the bench-only
+    //    delay, the person types again, and the close guard must keep the tab with
+    //    the newer text instead of closing on the stale snapshot.
+    const delay = workflow.writeDelayMs ?? 0;
+    if (delay > 0) {
+      const staleFile = workflow.staleFile;
+      const staleBase = (await readDiskText(staleFile)).split("\n")[0] ?? "";
+      const staleTab = run.app().openFileTab(staleFile, true);
+      try {
+        await run.waitFor(
+          () =>
+            run.app().activeId === staleTab &&
+            bufferText(staleTab).includes(staleBase),
+          "the stale-typing fixture",
+        );
+      } catch (error) {
+        throw new Error(await failed("stale typing setup", String(error)));
+      }
+      const firstText = `stale snapshot ${token}`;
+      const newerText = `typed during the write ${token}`;
+      run.app().editEditor(staleTab, `${firstText}\n`);
+      try {
+        await run.waitFor(
+          () =>
+            bufferText(staleTab).includes(firstText) &&
+            run
+              .app()
+              .tabs.some(
+                (tab) =>
+                  tab.id === staleTab &&
+                  tab.kind === "editor" &&
+                  tab.dirty === true,
+              ),
+          "the first stale text",
+        );
+      } catch (error) {
+        throw new Error(await failed("stale typing state", String(error)));
+      }
+      run.app().requestCloseTab(staleTab);
+      try {
+        await run.waitFor(
+          () => run.app().pendingGuards().closeTabId === staleTab,
+          "the unsaved-changes guard",
+        );
+      } catch (error) {
+        throw new Error(await failed("stale typing guard", String(error)));
+      }
+      const savingStarted = performance.now();
+      run.app().saveAndCloseTab();
+      // The native write is delayed; type while it is still in flight.
+      await pause(Math.min(500, Math.floor(delay / 3)));
+      run.app().editEditor(staleTab, `${newerText}\n`);
+      try {
+        await run.waitFor(
+          () =>
+            run.app().pendingGuards().closeSaveState === "incomplete" ||
+            !run.app().tabs.some((tab) => tab.id === staleTab),
+          "the save-and-close outcome",
+          delay + 20_000,
+        );
+      } catch (error) {
+        throw new Error(await failed("stale save-and-close", String(error)));
+      }
+      const stillOpen = run.app().tabs.some((tab) => tab.id === staleTab);
+      const staleDisk = await readDiskText(staleFile);
+      const elapsed = performance.now() - savingStarted;
+      await check(
+        "typing during a pending save keeps the tab open with the newer text",
+        stillOpen &&
+          run.app().pendingGuards().closeSaveState === "incomplete" &&
+          bufferText(staleTab).includes(newerText) &&
+          staleDisk.includes(firstText) &&
+          !staleDisk.includes(newerText) &&
+          elapsed >= delay / 2,
+        `open ${stillOpen}; state ${run.app().pendingGuards().closeSaveState}; newer ${bufferText(staleTab).includes(newerText)}; disk stale ${staleDisk.includes(firstText) && !staleDisk.includes(newerText)}; ${Math.round(elapsed)}ms`,
+      );
+      run.app().cancelPendingClose();
+      await pause(200);
+      await check(
+        "cancelling the incomplete save-and-close keeps the newer text",
+        run.app().tabs.some((tab) => tab.id === staleTab) &&
+          bufferText(staleTab).includes(newerText),
+        `tabs ${run.app().tabs.length}`,
+      );
+      await run.sync("workflow-stale-typing", {
+        token,
+        staleFile,
+        delayMs: delay,
+      });
+    } else {
+      await run.log(
+        "[workflow] SKIP stale typing: no bench write delay was configured",
+      );
+    }
+  }
 
   const pass = steps.every((step) => step.ok);
   await run.log(
@@ -3723,6 +4022,111 @@ async function quitScenario(run: ScenarioRun): Promise<unknown> {
       quit().totals.buffers === 0,
     `first ${savedText.includes("unsaved text from the first Space")}; notes ${savedNotes.includes("unsaved text from the second Space")}; buffers ${quit().totals.buffers}`,
   );
+
+  // 5. A failed native write is reported, not read as a saved buffer (#46 S2-47).
+  //    The harness makes the file's directory read-only: the app writes through a
+  //    temp file in that directory, so this is a real EACCES on the native path.
+  const quitFixture = scenario.quit;
+  if (quitFixture) {
+    // Close the current question first: a new survey is what includes the new buffer.
+    run.app().cancelQuit();
+    await pause(150);
+    await waitUntil(
+      () => quit().phase === "idle",
+      "the cancelled post-save survey",
+    );
+    const stalledLine =
+      (await readFile(quitFixture.stalledFile)).split("\n")[0] ?? "";
+    const stalledTab = run.app().openFileTab(quitFixture.stalledFile, true);
+    try {
+      await run.waitFor(
+        () =>
+          run.app().tabs.some((tab) => tab.id === stalledTab) &&
+          editorText().includes(stalledLine),
+        "the stalled-write editor",
+      );
+    } catch (error) {
+      throw new Error(await failed("stalled-write setup", String(error)));
+    }
+    const stalledText = `stalled unsaved ${Date.now().toString(36)}`;
+    run.app().editEditor(stalledTab, `${stalledText}\n`);
+    await run.waitFor(
+      () => editorText().includes(stalledText),
+      "the stalled dirty buffer",
+    );
+    await run.interfere({
+      action: "chmod",
+      path: quitFixture.stalledDir,
+      mode: 0o555,
+    });
+    run.app().requestQuit();
+    await pause(150);
+    await waitUntil(() => quit().phase === "resolving", "the stalled survey");
+    run.app().saveAllAndQuit();
+    try {
+      await waitUntil(
+        () =>
+          quit().phase === "resolving" &&
+          quit().note === "save-incomplete" &&
+          quit().totals.buffers >= 1,
+        "the failed-save report",
+        30_000,
+      );
+    } catch (error) {
+      throw new Error(
+        await failed(
+          "stalled native write",
+          `${String(error)}; phase ${quit().phase}; note ${quit().note}; buffers ${quit().totals.buffers}`,
+        ),
+      );
+    }
+    const diskWhileReadOnly = await readFile(quitFixture.stalledFile);
+    await check(
+      "a failed native write is reported instead of claiming the buffer was saved",
+      !quit().closed &&
+        quit().note === "save-incomplete" &&
+        quit().totals.buffers >= 1 &&
+        pageText().includes("The save did not cover the current text") &&
+        !diskWhileReadOnly.includes(stalledText),
+      `closed ${quit().closed}; note ${quit().note}; buffers ${quit().totals.buffers}; disk stale ${!diskWhileReadOnly.includes(stalledText)}`,
+    );
+    await run.sync("quit-stalled-write", {
+      note: quit().note,
+      buffers: quit().totals.buffers,
+    });
+    await run.interfere({
+      action: "chmod",
+      path: quitFixture.stalledDir,
+      mode: 0o755,
+    });
+    run.app().saveAllAndQuit();
+    try {
+      await waitUntil(
+        () => quit().phase === "resolving" && quit().totals.buffers === 0,
+        "the restored save",
+        30_000,
+      );
+    } catch (error) {
+      throw new Error(await failed("restored save", String(error)));
+    }
+    const diskAfterRestore = await readFile(quitFixture.stalledFile);
+    await check(
+      "restoring the directory lets the same buffer save",
+      diskAfterRestore.includes(stalledText),
+      `disk ${diskAfterRestore.includes(stalledText)}`,
+    );
+    // The next question starts from a quiet phase: close this one and survey again
+    // (the processes are still running, so the later steps see the same state).
+    run.app().cancelQuit();
+    await pause(150);
+    await waitUntil(
+      () => quit().phase === "idle",
+      "the cancelled stalled survey",
+    );
+    run.app().requestQuit();
+    await pause(150);
+    await waitUntil(() => quit().phase === "resolving", "the final survey");
+  }
 
   // 5. Confirmed quit: graceful termination, then a question about survivors.
   if (quit().phase !== "resolving") {
@@ -6416,6 +6820,267 @@ async function checkpointsScenario(run: ScenarioRun): Promise<unknown> {
   }
 }
 
+/**
+ * The crash-recovery row (#46 S2-25): launch 1 dirties buffers and waits until their recovery
+ * drafts are durable, then asks the harness to SIGKILL the app's process group. Launch 2 runs
+ * against the same disposable profile, asserts the offered draft carries exactly the last
+ * acknowledged text, and discards exactly that draft. The harness orchestrates the two launches
+ * (`run_linux_recovery` in scripts/app-lab/run.py); this driver only reports each phase.
+ */
+async function recoveryScenario(
+  run: ScenarioRun,
+): Promise<Record<string, unknown>> {
+  const config = run.scenario.recovery;
+  if (!config)
+    throw new Error(
+      "the recovery scenario needs its launch configuration (scripts/app-lab/run.py builds it)",
+    );
+  const steps: WorkflowStep[] = [];
+  const check = async (name: string, ok: boolean, detail: string) => {
+    steps.push({ name, ok, detail });
+    await run.log(`[recovery] ${ok ? "PASS" : "FAIL"} ${name}: ${detail}`);
+  };
+  const failed = async (name: string, detail: string) => {
+    await check(name, false, detail);
+    return `recovery step failed: ${name}: ${detail}`;
+  };
+  const drafts = async (): Promise<RecoveryRecord[]> => {
+    const raw = await invoke<string[]>("recovery_list").catch(() => []);
+    const records: RecoveryRecord[] = [];
+    for (const item of raw) {
+      const record = parseRecord(item);
+      if (record) records.push(record);
+    }
+    return records;
+  };
+  const recordFor = (records: RecoveryRecord[], path: string) =>
+    records.find((record) => record.path === path);
+  const editorText = () => {
+    for (const node of document.querySelectorAll(".cm-content")) {
+      if (node.closest('[aria-hidden="true"]') === null)
+        return node.textContent ?? "";
+    }
+    return "";
+  };
+  const readDiskText = async (path: string): Promise<string> => {
+    const result = await invoke<{ kind: string; content?: string }>(
+      "fs_read_file",
+      { path, workspace: { kind: "local" }, force: false },
+    ).catch((): { kind: string; content?: string } => ({ kind: "failed" }));
+    return result.kind === "text" ? (result.content ?? "") : "";
+  };
+  const open = async (path: string): Promise<number> => {
+    const baseLine = (await readDiskText(path)).split("\n")[0] ?? "";
+    const tabId = run.app().openFileTab(path, true);
+    await run.waitFor(
+      () => run.app().activeId === tabId && editorText().includes(baseLine),
+      `the editor for ${path.split("/").pop()}`,
+      30_000,
+    );
+    return tabId;
+  };
+  const banner = (path: string): HTMLElement | null => {
+    const name = path.split("/").pop() ?? path;
+    for (const span of document.querySelectorAll("span")) {
+      if (
+        (span.textContent ?? "").includes(`Recovered unsaved draft for ${name}`)
+      )
+        return span.parentElement;
+    }
+    return null;
+  };
+  const bannerButton = (
+    path: string,
+    label: string,
+  ): HTMLButtonElement | null => {
+    const root = banner(path);
+    if (!root) return null;
+    for (const node of root.querySelectorAll<HTMLButtonElement>("button")) {
+      if ((node.textContent ?? "").trim() === label) return node;
+    }
+    return null;
+  };
+
+  const first = await run.booted();
+  void first;
+  const fileName = config.file.split("/").pop() ?? config.file;
+  const otherName = config.otherFile.split("/").pop() ?? config.otherFile;
+
+  if (config.phase === "write") {
+    const fileTab = await open(config.file);
+    run.app().editEditor(fileTab, config.text);
+    const otherTab = await open(config.otherFile);
+    run.app().editEditor(otherTab, config.otherText);
+    await run.waitFor(
+      () =>
+        (run.app().readEditor(fileTab) ?? "").includes(config.text) &&
+        (run.app().readEditor(otherTab) ?? "").includes(config.otherText),
+      "the dirty recovery buffers",
+    );
+    const expectedText = run.app().readEditor(fileTab) ?? "";
+    const expectedOtherText = run.app().readEditor(otherTab) ?? "";
+    const deadline = performance.now() + 30_000;
+    let acknowledged: RecoveryRecord[] = [];
+    while (performance.now() < deadline) {
+      const records = await drafts();
+      const own = recordFor(records, config.file);
+      const other = recordFor(records, config.otherFile);
+      if (own?.text === expectedText && other?.text === expectedOtherText) {
+        acknowledged = [own, other];
+        break;
+      }
+      await pause(200);
+    }
+    if (acknowledged.length !== 2) {
+      throw new Error(
+        await failed(
+          "the recovery write is acknowledged before the crash",
+          `stored ${(await drafts()).map((record) => `${record.path.split("/").pop()}:${record.bufferRevision}`).join(",") || "none"}`,
+        ),
+      );
+    }
+    await check(
+      "the recovery write is acknowledged before the crash",
+      true,
+      `drafts ${acknowledged.map((record) => record.bufferId).join(",")}`,
+    );
+    await run.sync("recovery-acked", {
+      drafts: acknowledged.map((record) => ({
+        bufferId: record.bufferId,
+        path: record.path,
+        bufferRevision: record.bufferRevision,
+      })),
+      text: acknowledged[0].text,
+      otherText: acknowledged[1].text,
+    });
+    // Ask the harness (not the app) to force-terminate the process group. The reply is sent
+    // before the signal, so this request returns; the page then dies with the process.
+    await run.interfere({ action: "signal", target: "app", signal: "SIGKILL" });
+    await new Promise<void>(() => undefined);
+    return {};
+  }
+
+  // ------------------------------------------------------------- restore (after the crash)
+  const expectedText = config.expectedText ?? config.text;
+  const expectedOtherText = config.expectedOtherText ?? config.otherText;
+  const fileTab = await open(config.file);
+  const otherTab = await open(config.otherFile);
+  try {
+    await run.waitFor(
+      () => banner(config.file) !== null && banner(config.otherFile) !== null,
+      "the offered recovery drafts",
+      30_000,
+    );
+  } catch (error) {
+    throw new Error(
+      await failed(
+        "the recovered draft is offered",
+        `${String(error)}; banners ${fileName}=${banner(config.file) !== null},${otherName}=${banner(config.otherFile) !== null}`,
+      ),
+    );
+  }
+  const offered = await drafts();
+  const own = recordFor(offered, config.file);
+  const other = recordFor(offered, config.otherFile);
+  await check(
+    "the recovered draft is offered for the reopened file",
+    own !== undefined &&
+      other !== undefined &&
+      banner(config.file) !== null &&
+      run.app().tabs.some((tab) => tab.id === fileTab),
+    `offered ${offered.map((record) => record.path.split("/").pop()).join(",")}`,
+  );
+  await check(
+    "the offered draft carries the last acknowledged text",
+    own?.text === expectedText &&
+      other?.text === expectedOtherText &&
+      own.text.includes(config.text) &&
+      other.text.includes(config.otherText) &&
+      (config.expectedBufferIds ?? []).every((id) =>
+        offered.some((record) => record.bufferId === id),
+      ),
+    `own ${own?.text === expectedText}; other ${other?.text === expectedOtherText}; ids ${JSON.stringify(config.expectedBufferIds ?? [])}`,
+  );
+  if (own) {
+    const compare = bannerButton(config.file, "Compare");
+    compare?.click();
+    try {
+      await run.waitFor(
+        () => {
+          for (const node of document.querySelectorAll('[role="dialog"]'))
+            if ((node.textContent ?? "").includes(config.text)) return true;
+          return false;
+        },
+        "the draft comparison",
+        10_000,
+      );
+    } catch (error) {
+      throw new Error(await failed("draft comparison", String(error)));
+    }
+    for (const node of document.querySelectorAll<HTMLButtonElement>(
+      '[role="dialog"] button',
+    )) {
+      if ((node.textContent ?? "").trim() === "Close") node.click();
+    }
+  }
+  const diskBefore = await readDiskText(config.file);
+  const discard = bannerButton(config.file, "Discard");
+  await check(
+    "discarding the offered draft is reachable",
+    discard !== null,
+    `discard button ${discard !== null}`,
+  );
+  discard?.click();
+  try {
+    const discardDeadline = performance.now() + 20_000;
+    let settled = false;
+    while (performance.now() < discardDeadline) {
+      const records = await drafts();
+      if (
+        recordFor(records, config.file) === undefined &&
+        records.some((record) => record.path === config.otherFile)
+      ) {
+        settled = true;
+        break;
+      }
+      await pause(150);
+    }
+    if (!settled) throw new Error("the discarded draft is still stored");
+  } catch (error) {
+    throw new Error(
+      await failed("discarding the recovered draft", String(error)),
+    );
+  }
+  const remaining = await drafts();
+  const left = recordFor(remaining, config.otherFile);
+  await check(
+    "discarding removes exactly that draft",
+    recordFor(remaining, config.file) === undefined &&
+      left?.text === expectedOtherText &&
+      left?.bufferId === other?.bufferId &&
+      banner(config.file) === null &&
+      banner(config.otherFile) !== null,
+    `remaining ${remaining.map((record) => record.path.split("/").pop()).join(",") || "none"}`,
+  );
+  await check(
+    "the reopened tab stays open with its file untouched",
+    run.app().tabs.some((tab) => tab.id === fileTab) &&
+      run.app().tabs.some((tab) => tab.id === otherTab) &&
+      (await readDiskText(config.file)) === diskBefore,
+    `tabs ${run.app().tabs.length}; disk unchanged ${(await readDiskText(config.file)) === diskBefore}`,
+  );
+  await run.sync("recovery-restored", {
+    remaining: remaining.length,
+    discarded: own?.bufferId ?? null,
+  });
+
+  const pass = steps.every((step) => step.ok);
+  await run.log(
+    `[recovery] ${pass ? "PASS" : "FAIL"} summary: ${steps.filter((step) => !step.ok).length} failures of ${steps.length}`,
+  );
+  return { recovery: { pass, steps } };
+}
+
 const SCENARIOS: Record<
   BenchScenario["name"],
   (run: ScenarioRun) => Promise<unknown>
@@ -6432,6 +7097,7 @@ const SCENARIOS: Record<
   markdown: markdownScenario,
   spaces: spacesScenario,
   quit: quitScenario,
+  recovery: recoveryScenario,
   git: gitScenario,
   checkpoints: checkpointsScenario,
   worktree: worktreeScenario,

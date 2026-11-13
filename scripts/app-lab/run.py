@@ -38,6 +38,9 @@ Scenarios (`--scenario`):
   quit           Linux quit: the survey across Spaces, a repeated close that is not consent, cancel,
                  save-then-quit, graceful termination, the survivor prompt, a confirmed force, and a
                  reload that restores the layout without replaying commands (pass/fail in page.log)
+  recovery       Linux crash recovery: a dirty buffer's acknowledged draft, a harness SIGKILL of
+                 the app process group, then a relaunch that offers the draft, matches it to the
+                 last acknowledged text and discards exactly it (pass/fail in page.log)
   git            Linux destructive-Git seam: a dirty buffer blocks a panel discard, stale and
                  unacknowledged plans are refused, a confirmed discard still restores its file
   checkpoints    Linux manual-checkpoint seam: two same-named captures keep distinct identities,
@@ -52,11 +55,11 @@ Scenarios (`--scenario`):
                  is refused while it owns a checkpoint, an explicit cleanup unblocks it, and the
                  removal keeps the branch while revoking only the derived access
 
-Linux currently implements `workflow`, `spaces`, `quit`, `markdown`, `git`, `checkpoints`,
-`worktree`, `preview`, `images`, `resource`, `stress` and `startup` (WebKitGTK); the measured
-scenarios above refuse to run here because WebKitGTK exposes no occlusion signal, no composited
-layer tree and no native input injection (`resize`, `split-drag`, `occlusion`, `input`, `tabs`,
-`idle`, `agents-steady` and `fs-churn`). On Linux the app is
+Linux currently implements `workflow`, `spaces`, `quit`, `recovery`, `markdown`, `git`,
+`checkpoints`, `worktree`, `preview`, `images`, `resource`, `stress` and `startup` (WebKitGTK); the
+measured scenarios above refuse to run here because WebKitGTK exposes no occlusion signal, no
+composited layer tree and no native input injection (`resize`, `split-drag`, `occlusion`, `input`,
+`tabs`, `idle`, `agents-steady` and `fs-churn`). On Linux the app is
 built with `--no-bundle` into `<target>/<profile>/terax`.
 
 The app runs from an isolated bundle (an identifier inside the fork product namespace, its own
@@ -116,6 +119,7 @@ LINUX_SCENARIOS = (
     "workflow",
     "spaces",
     "quit",
+    "recovery",
     "markdown",
     "git",
     "checkpoints",
@@ -130,6 +134,8 @@ LINUX_SCENARIOS = (
 SCENARIOS = list(dict.fromkeys([*app_report.SCENARIOS, *LINUX_SCENARIOS]))
 IDENTIFIER = linux_profile.disposable_identifier("app-lab", "stable")
 PRODUCT_NAME = "Terax App Lab"
+# Bench-only native write delay for `workflow`'s stale-typing step (see save.rs).
+WORKFLOW_WRITE_DELAY_MS = 1500
 MAX_ATTEMPTS = 3
 LOCK_PATH = Path(tempfile.gettempdir()) / "terax-app-lab.lock"
 SCOPE = (
@@ -424,16 +430,36 @@ if (location.search.indexOf("redirect=1") !== -1) {
 """
 
 
-class ReportServer:
-    """Receives phase events. A handler thread blocks until the main thread has sampled."""
+INTERFERE_ACTIONS = ("write", "chmod", "signal")
+# A driver request is small (a fixture's text, a path, a signal name). Refuse anything larger
+# instead of reading an attacker-sized body into memory.
+INTERFERE_MAX_BODY = 1 << 20
+INTERFERE_MAX_WRITE = 256 * 1024
 
-    def __init__(self):
+
+class ReportServer:
+    """Receives phase events and performs harness-side interference.
+
+    The real-app recovery/conflict/quit rows need actions the application must not perform on
+    itself: an external write, a fixture mode change, and a forced crash. The driver asks this
+    harness process through `POST /interfere`; the handler executes it and replies with the
+    result. The endpoint is loopback-only and refuses every path outside the scenario workspace
+    (including a path reached through a symlink). A handler thread blocks until the main thread
+    has sampled an event.
+    """
+
+    def __init__(self, workspace: Path | None = None):
         self.events: queue.Queue = queue.Queue()
         self.log: list[str] = []
         self.fixture_loads = 0
         self.redirect_hits = 0
         self.pings = 0
         self.markdown_remote_hits = 0
+        # Harness-side actions, kept as evidence: a report can show the exact write, mode change
+        # or signal that produced a phase instead of inferring it from the page.
+        self.operations: list[dict] = []
+        self.app_pid: int | None = None
+        self.workspace = Path(workspace).resolve() if workspace is not None else None
         outer = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -487,6 +513,24 @@ class ReportServer:
 
             def do_POST(self):
                 body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                if self.path.split("?")[0] == "/interfere":
+                    if not outer.loopback(self.client_address[0]):
+                        self._send(403, b'{"ok": false, "error": "loopback only"}', "application/json")
+                        return
+                    if len(body) > INTERFERE_MAX_BODY:
+                        self._send(413, b'{"ok": false, "error": "request too large"}', "application/json")
+                        return
+                    try:
+                        request = json.loads(body)
+                    except ValueError:
+                        self._send(400, b'{"ok": false, "error": "invalid JSON"}', "application/json")
+                        return
+                    if not isinstance(request, dict):
+                        self._send(400, b'{"ok": false, "error": "invalid request"}', "application/json")
+                        return
+                    status, payload = outer.interfere(request)
+                    self._send(status, json.dumps(payload).encode(), "application/json")
+                    return
                 if self.path == "/log":  # page errors and console output, no sampling handshake
                     outer.log.append(body.decode("utf-8", "replace"))
                     self.send_response(204)
@@ -515,6 +559,88 @@ class ReportServer:
     @property
     def url(self) -> str:
         return f"http://127.0.0.1:{self.httpd.server_port}"
+
+    @staticmethod
+    def loopback(address: str) -> bool:
+        return address in ("127.0.0.1", "::1")
+
+    def _workspace_path(self, raw) -> Path:
+        """One path inside the scenario workspace, or a refusal.
+
+        `resolve()` follows every symlink (including a missing final component's parents), so a
+        link planted in the workspace cannot make the harness write outside it.
+        """
+        if self.workspace is None:
+            raise ValueError("no scenario workspace is attached to this report server")
+        if not isinstance(raw, str) or not raw:
+            raise ValueError("path is required")
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            raise ValueError("path must be absolute")
+        resolved = candidate.resolve()
+        try:
+            resolved.relative_to(self.workspace)
+        except ValueError:
+            raise ValueError(f"path is outside the scenario workspace: {raw}") from None
+        return resolved
+
+    def interfere(self, request: dict) -> tuple[int, dict]:
+        """Perform one harness-side action and return (HTTP status, reply)."""
+        action = request.get("action")
+        if action not in INTERFERE_ACTIONS:
+            return 400, {
+                "ok": False,
+                "error": f"action must be one of {', '.join(INTERFERE_ACTIONS)}",
+            }
+        try:
+            if action == "write":
+                path = self._workspace_path(request.get("path"))
+                content = request.get("content")
+                if not isinstance(content, str):
+                    raise ValueError("content must be a string")
+                encoded = content.encode("utf-8")
+                if len(encoded) > INTERFERE_MAX_WRITE:
+                    raise ValueError("content is larger than the interference write bound")
+                if path.is_dir():
+                    raise ValueError(f"path is a directory: {path}")
+                path.write_bytes(encoded)
+                result = {"ok": True, "action": "write", "path": str(path), "bytes": len(encoded)}
+            elif action == "chmod":
+                path = self._workspace_path(request.get("path"))
+                mode = request.get("mode")
+                if (
+                    not isinstance(mode, int)
+                    or isinstance(mode, bool)
+                    or not 0 <= mode <= 0o7777
+                ):
+                    raise ValueError("mode must be an integer permission bitset")
+                os.chmod(path, mode)
+                result = {"ok": True, "action": "chmod", "path": str(path), "mode": mode}
+            else:
+                if request.get("target") != "app":
+                    raise ValueError("only the app process group can be signalled")
+                name = request.get("signal")
+                if name not in ("SIGKILL", "SIGTERM"):
+                    raise ValueError("signal must be SIGKILL or SIGTERM")
+                if self.app_pid is None:
+                    raise ValueError("the app has not been launched by this server")
+                pid = self.app_pid
+                signum = getattr(signal, name)
+                # Reply first: the app's page is about to disappear with the process group, so
+                # the request that asked for the crash must not be the one that never returns.
+                threading.Timer(0.25, self._signal_group, args=(pid, signum)).start()
+                result = {"ok": True, "action": "signal", "pid": pid, "signal": name}
+        except (ValueError, OSError) as error:
+            return 400, {"ok": False, "error": str(error)}
+        self.operations.append(result)
+        return 200, result
+
+    @staticmethod
+    def _signal_group(pid: int, signum: int) -> None:
+        try:
+            os.killpg(pid, signum)
+        except ProcessLookupError:
+            pass
 
 
 def _terminate(signum, frame):  # run the cleanup in `run` (kill the app, remove the profile)
@@ -673,6 +799,10 @@ def host_timeout(args, scenario: dict) -> float:
         # Two Spaces, the survey, save-then-quit, a 2 s grace pass, the survivor
         # prompt and a reload pass with a fresh boot.
         return 900
+    if name == "recovery":
+        # Two launches of the real app, the second with a fresh boot; the first is
+        # killed after its draft is acknowledged, so there is no long idle tail.
+        return 600
     if name == "startup":
         return max(1, args.startup_repeats) * 150 + 120
     if name in ("resource", "stress"):
@@ -1756,6 +1886,8 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     """
     if args.scenario == "startup":
         return run_linux_startup(args, binary, source, output)
+    if args.scenario == "recovery":
+        return run_linux_recovery(args, binary, source, output)
     home = output / "home"
     linux_profile.prepare(home, output)
     # Coexistence: a synthetic installed upstream Terax owns state in this same profile. The
@@ -1801,9 +1933,25 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             workspace.joinpath("spaces-keep.txt").write_text(
                 "This file belongs to the project and must survive Space deletion.\n"
             )
+        if args.scenario == "workflow":
+            # The external writer and the stale-typing step both act on files inside the
+            # scenario workspace: that is the boundary `POST /interfere` enforces.
+            workspace.joinpath("workflow-conflict.txt").write_text(
+                "conflict fixture base line\nsecond line for compare\n"
+            )
+            workspace.joinpath("workflow-stale.txt").write_text(
+                "stale fixture base line\n"
+            )
         if args.scenario == "quit":
             workspace.joinpath("quit-notes.txt").write_text(
                 "quit-notes line, edited in the second Space before quitting.\n"
+            )
+            # A file in its own directory: making that directory read-only makes the
+            # app's atomic write (a temp file in the same directory) fail for real.
+            stalled = workspace / "quit-stalled"
+            stalled.mkdir(exist_ok=True)
+            (stalled / "notes.txt").write_text(
+                "quit-stalled base line, saved only after the directory is writable again.\n"
             )
     report_path = (args.report or output / "report.json").resolve()
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1822,7 +1970,20 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     timeout = host_timeout(args, scenario)
     load_average = [round(value, 2) for value in os.getloadavg()]
 
-    server = ReportServer()
+    server = ReportServer(workspace)
+    if args.scenario == "workflow":
+        # The bench build honours this only with the `bench` cargo feature; it holds a native
+        # write open so the stale-typing step can type while the save is genuinely in flight.
+        scenario["workflow"] = {
+            "conflictFile": str(workspace / "workflow-conflict.txt"),
+            "staleFile": str(workspace / "workflow-stale.txt"),
+            "writeDelayMs": WORKFLOW_WRITE_DELAY_MS,
+        }
+    if args.scenario == "quit":
+        scenario["quit"] = {
+            "stalledFile": str(workspace / "quit-stalled" / "notes.txt"),
+            "stalledDir": str(workspace / "quit-stalled"),
+        }
     if args.scenario == "markdown" and markdown_fixture is not None:
         remote_url = f"{server.url}/markdown-pixel.png"
         remote_doc = Path(markdown_fixture["remoteDoc"])
@@ -1838,6 +1999,8 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         "TERAX_BENCH_SCENARIO": json.dumps(scenario),
         "TERAX_BENCH_REPORT_URL": server.url,
     })
+    if args.scenario == "workflow":
+        env["TERAX_BENCH_WRITE_DELAY_MS"] = str(WORKFLOW_WRITE_DELAY_MS)
     linux_profile.preflight(args.identifier, env, output, require_isolated=True)
 
     revision = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"], text=True, capture_output=True)
@@ -1917,6 +2080,8 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     poller = linux_proc.Poller(args.poll_interval)
     poller.set_host(process.pid)
     poller.start()
+    # The interference endpoint may signal only the app this server launched.
+    server.app_pid = process.pid
     failed: BaseException | None = None
     workflow: dict = {}
     git_scenario: dict = {}
@@ -2444,6 +2609,283 @@ def run_linux_startup(args, binary: Path, source: Path, output: Path) -> int:
             [app_report.load(path) for path in args.compare], [manifest], args.compare_format
         ))
     print(f"\nSaved {report_path}")
+    if not manifest["isolation"]["upstreamStateUnchanged"]:
+        print(
+            "Run failed: the run changed upstream state: "
+            + "; ".join(manifest["isolation"]["upstreamStateChanges"]),
+            file=sys.stderr,
+        )
+        return 3
+    return 0
+
+
+def recovery_write_step(
+    acknowledged: dict, returncode: int | None, operations: list[dict]
+) -> dict:
+    """Launch 1 passes only when both drafts were acknowledged and SIGKILL ended the process."""
+    drafts = acknowledged.get("drafts") or []
+    signalled = any(
+        operation.get("action") == "signal" and operation.get("signal") == "SIGKILL"
+        for operation in operations
+    )
+    crashed = returncode == -signal.SIGKILL and signalled
+    return {
+        "name": "the harness killed the app after the acknowledged recovery write",
+        "ok": len(drafts) == 2 and crashed,
+        "detail": (
+            f"acknowledged {len(drafts)} draft(s); "
+            f"exit {returncode}; harness signal {signalled}"
+        ),
+    }
+
+
+def run_linux_recovery(args, binary: Path, source: Path, output: Path) -> int:
+    """Crash recovery across two launches of the real app (#46 S2-25).
+
+    Launch 1 dirties two buffers, waits until both recovery drafts are durably stored, and asks
+    the harness to SIGKILL the app's process group. Launch 2 starts against the same disposable
+    profile and workspace: the drafts must be offered, carry exactly the acknowledged text, and
+    discarding one must remove exactly that record. The profile is reused (never replaced) so
+    the draft survives the crash the way it does for a person.
+    """
+    home = output / "home"
+    linux_profile.prepare(home, output)
+    sentinels = namespace_sentinels.seed(home)
+    workspace = output / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    notes = workspace / "recovery-notes.txt"
+    other = workspace / "recovery-other.txt"
+    token = uuid.uuid4().hex[:10]
+    acknowledged_text = f"recovery draft {token}\nsecond line {token}\n"
+    acknowledged_other = f"other recovery draft {token}\n"
+    notes.write_text("recovery notes base line\n")
+    other.write_text("other notes base line\n")
+    report_path = (args.report or output / "report.json").resolve()
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    revision = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"], text=True, capture_output=True)
+    has_git = revision.returncode == 0 and (source / ".git").exists()
+    timeout = host_timeout(args, {"name": "recovery"})
+    steps: list[dict] = []
+    manifest = {
+        "schema": "terax-app-lab/1",
+        "scope": (
+            "Crash recovery of the real Linux/WebKitGTK application in a disposable profile: an "
+            "acknowledged editor draft is followed by a harness SIGKILL of the app's process "
+            "group, then a relaunch against the same profile that must offer that exact draft."
+        ),
+        "config": {
+            "scenario": "recovery", "label": args.label, "profile": args.profile, "window": args.window,
+            "scenarioVariant": {
+                "launches": 2,
+                "writeDelayMs": 0,
+                "acknowledgedText": acknowledged_text,
+                "workspace": str(workspace),
+            },
+            "pollIntervalS": args.poll_interval, "harness": harness_revision(),
+        },
+        "sourceRevision": revision.stdout.strip() if has_git else args.revision,
+        "sourceTree": str(source),
+        "platform": platform.platform(),
+        "environment": {**linux_profile.host_stack(), "toolchains": toolchains()},
+        "appBinarySha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+        "qualification": {"qualified": True, "failures": [], "advisories": []},
+        "warnings": [],
+        "samples": [],
+        "series": [],
+        "startup": [],
+        "workload": "two editor buffers, an acknowledged recovery draft, a forced crash and one relaunch",
+        "limitations": list(LIMITATIONS_LINUX),
+        "package": package_sizes(binary, output),
+        "recovery": {"launches": [], "steps": steps},
+    }
+    manifest["environment"]["loadAverageStart"] = [round(value, 2) for value in os.getloadavg()]
+    env = {**{key: value for key, value in os.environ.items() if not key.startswith(("TAURI_", "VITE_", "CARGO_"))}}
+    env.update(linux_profile.profile_env(home))
+    env.update(linux_profile.session_env())
+    manifest["isolation"] = isolation_report.block(
+        args.identifier, {**env, "TERAX_BENCH_ISOLATED": "1"}, home, sentinels, output
+    )
+    width, height = (float(value) for value in args.window.lower().split("x"))
+    acknowledged: dict = {}
+    try:
+        for launch, phase in ((1, "write"), (2, "restore")):
+            scenario = {
+                "name": "recovery",
+                "window": {"width": width, "height": height},
+                "cwds": {"shell": str(workspace)},
+                "localStorage": {"terax:updater:last-check": str(int(time.time() * 1000))},
+                "prefs": {"editorRecoveryDrafts": True},
+                "file": str(notes),
+                "fileText": "recovery notes base line",
+                "recovery": {
+                    "phase": phase,
+                    "file": str(notes),
+                    "otherFile": str(other),
+                    "text": acknowledged_text,
+                    "otherText": acknowledged_other,
+                },
+            }
+            if phase == "restore":
+                scenario["recovery"]["expectedBufferIds"] = acknowledged.get("bufferIds", [])
+                scenario["recovery"]["expectedText"] = acknowledged.get("text")
+                scenario["recovery"]["expectedOtherText"] = acknowledged.get("otherText")
+            server = ReportServer(workspace)
+            launch_env = {
+                **env,
+                "TERAX_BENCH_ISOLATED": "1",
+                "TERAX_BENCH_SCENARIO": json.dumps(scenario),
+                "TERAX_BENCH_REPORT_URL": server.url,
+            }
+            linux_profile.preflight(args.identifier, launch_env, output, require_isolated=True)
+            log = (output / f"app-{launch}.log").open("w")
+            spawned_wall = time.time()
+            process = subprocess.Popen(
+                [str(binary), str(workspace)], cwd=home, env=launch_env,
+                stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+            )
+            server.app_pid = process.pid
+            poller = linux_proc.Poller(args.poll_interval)
+            poller.set_host(process.pid)
+            poller.start()
+            started = time.monotonic()
+            result = {"launch": launch, "phase": phase, "spawnedWall": spawned_wall}
+            try:
+                while True:
+                    try:
+                        event, done, _reply = server.events.get(timeout=1)
+                    except queue.Empty:
+                        if process.poll() is not None:
+                            if phase == "write" and acknowledged:
+                                break  # the crash the scenario asked for
+                            raise RuntimeError(
+                                f"launch {launch} exited ({process.returncode}) before reporting; "
+                                f"see {output / f'app-{launch}.log'}"
+                            )
+                        if time.monotonic() - started > timeout:
+                            raise RuntimeError(f"launch {launch} did not finish within {timeout:.0f}s")
+                        continue
+                    current = event.get("phase")
+                    try:
+                        if "appIdentifier" not in manifest and isinstance(event.get("identifier"), str):
+                            manifest["appIdentifier"] = event["identifier"]
+                            manifest["appIdentifierInForkNamespace"] = event["identifier"].startswith(
+                                f"{linux_profile.PRODUCT_IDENTIFIER}."
+                            )
+                        if current == "error":
+                            raise RuntimeError(event)
+                        if current in ("recovery-acked", "done"):
+                            found = linux_proc.sample(process.pid)
+                            manifest["samples"].append({
+                                "phase": current,
+                                "launch": launch,
+                                "tMonoNs": found["tMonoNs"],
+                                "event": app_report.slim_event(event),
+                                "memory": found,
+                                "loadAverage": [round(value, 2) for value in os.getloadavg()],
+                            })
+                        if current == "recovery-acked":
+                            acknowledged = {
+                                "text": event.get("text"),
+                                "otherText": event.get("otherText"),
+                                "bufferIds": [entry.get("bufferId") for entry in event.get("drafts") or []],
+                                "drafts": event.get("drafts") or [],
+                            }
+                            result["acknowledged"] = acknowledged
+                        if current == "done":
+                            result["done"] = event.get("recovery") or {}
+                            break
+                    finally:
+                        done.set()
+            finally:
+                poller.stop()
+                for kill in (signal.SIGTERM, signal.SIGKILL):
+                    if process.poll() is not None:
+                        break
+                    try:
+                        os.killpg(process.pid, kill)
+                    except ProcessLookupError:
+                        break
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        pass
+                server.httpd.shutdown()
+                server.httpd.server_close()
+                log.close()
+                if server.log:
+                    (output / f"page-{launch}.log").write_text("\n".join(server.log))
+                manifest["series"] = poller.series
+            returncode = process.returncode
+            result["exitCode"] = returncode
+            result["signal"] = -returncode if returncode is not None and returncode < 0 else None
+            result["interference"] = server.operations
+            manifest["recovery"]["launches"].append(result)
+            if phase == "write":
+                step = recovery_write_step(acknowledged, returncode, server.operations)
+                steps.append(step)
+                if not step["ok"]:
+                    raise RuntimeError(
+                        f"launch 1 did not crash cleanly after recovery ack: {step['detail']}"
+                    )
+            else:
+                done_report = result.get("done") or {}
+                if not done_report:
+                    raise RuntimeError("launch 2 reported no recovery summary")
+                steps.extend(done_report.get("steps") or [])
+        unchanged = isolation_report.finish(manifest["isolation"], home, sentinels)
+        if unchanged:
+            manifest["qualification"]["qualified"] = False
+            manifest["qualification"]["failures"].append(
+                {"phase": "coexistence", "reasons": unchanged}
+            )
+    except BaseException as error:
+        manifest["incomplete"] = True
+        manifest["error"] = repr(error)
+        isolation_report.finish(manifest["isolation"], home, sentinels)
+        reasons = isolation_report.problems(manifest, output)
+        if reasons:
+            raise RuntimeError(
+                "refusing to write an incomplete report without isolation evidence: "
+                + "; ".join(reasons)
+            ) from error
+        report_path.write_text(app_report.dump(manifest))
+        linux_profile.cleanup(home, output)
+        raise
+    if manifest.get("appIdentifierInForkNamespace") is False:
+        manifest["qualification"]["advisories"].append(
+            f"the measured binary was compiled with the identifier "
+            f"{manifest.get('appIdentifier')!r}, which is outside the fork identifier namespace"
+        )
+    manifest["environment"]["loadAverageEnd"] = [round(value, 2) for value in os.getloadavg()]
+    passed = sum(1 for step in steps if step.get("ok"))
+    manifest["recovery"]["pass"] = bool(steps) and passed == len(steps)
+    manifest["qualification"]["recoveryPass"] = manifest["recovery"]["pass"]
+    if not manifest["recovery"]["pass"]:
+        manifest["qualification"]["qualified"] = False
+        manifest["qualification"]["failures"].append({
+            "phase": "recovery",
+            "reasons": ["the crash/recovery scenario did not pass"],
+        })
+    reasons = isolation_report.problems(manifest, output)
+    if reasons:
+        raise RuntimeError("refusing to write a report without isolation evidence: " + "; ".join(reasons))
+    report_path.write_text(app_report.dump(manifest))
+    linux_profile.cleanup(home, output)
+    for step in steps:
+        print(f"recovery {'PASS' if step.get('ok') else 'FAIL'} {step.get('name')}: {step.get('detail')}")
+    print(f"recovery {'PASS' if manifest['recovery']['pass'] else 'FAIL'}: {passed}/{len(steps)} steps")
+    print(
+        f"coexistence {'PASS' if manifest['isolation']['upstreamStateUnchanged'] else 'FAIL'}: "
+        f"{manifest['isolation']['upstreamSentinels']['files']} upstream files unchanged; "
+        f"descriptor {'published' if manifest['isolation']['controlDescriptorPublished'] else 'MISSING'}"
+    )
+    print(f"\nSaved {report_path}")
+    if args.scenario == "recovery" and not manifest["recovery"]["pass"]:
+        print(
+            "Run failed: the recovery scenario reported a failing step (see page logs).",
+            file=sys.stderr,
+        )
+        return 2
     if not manifest["isolation"]["upstreamStateUnchanged"]:
         print(
             "Run failed: the run changed upstream state: "
