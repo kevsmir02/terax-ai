@@ -28,6 +28,30 @@ _Avoid_: Backup, commit
 The set of workspace capabilities supported for a particular external agent, such as launching, process status, structured events, notifications, and control. Support for one capability does not imply support for the others.
 _Avoid_: Full support
 
+**Candidate**:
+A recorded revision and the artifacts built from it, proposed for validation and release. Calling something a candidate is not a support claim.
+_Avoid_: Release, beta
+
+**Stable release**:
+A published fork-owned version whose artifacts passed the release gate and whose resource and distribution evidence is recorded. It is not the same as a candidate, a merge or a successful build.
+_Avoid_: Build, nightly
+
+**Release gate**:
+The refusal-first check that decides whether a tag may produce a publishable artifact set: tag/version agreement, required CI, artifact identity and provisioned trust. Passing it is a precondition, never proof that the candidate was meant to ship.
+_Avoid_: Publish script
+
+**Publication identity**:
+The product name, release owner and update endpoint a release is published under. It is distinct from the build's application identifier and its filesystem namespace.
+_Avoid_: Branding, app id
+
+**Signing trust**:
+The independently recoverable key material and verification rule that decides whether an artifact is authentic. It is distinct from native package or repository trust, which is deferred.
+_Avoid_: Signature check, repository trust
+
+**Package-tool handoff**:
+The supported upgrade path: after the application is safely closed, it hands the approved package artifact to the user's package tool. It is not an in-application install, and it never restarts the application.
+_Avoid_: Auto-update, in-app install
+
 **Recovery draft**:
 A recoverable copy of a particular editor buffer's unsaved text, distinct from the current file on disk and from a Git checkpoint. Independent buffers for the same file can own separate drafts.
 _Avoid_: Persistent session, checkpoint

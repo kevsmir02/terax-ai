@@ -124,8 +124,25 @@ expect_lacks "ble.sh entry does not repeat a PROMPT_COMMAND hook" "133;D" "$shar
 expect_contains "the skipped ble.sh entry preserves the status" "|status=5" "$shared"
 
 # An array PROMPT_COMMAND and one with a trailing separator both keep working.
-array="$(integration "" 'printf "%s" "${PROMPT_COMMAND[*]}"' 'echo user;')"
-expect_contains "scalar PROMPT_COMMAND is kept after the hook" "_terax_precmd;echo user;" "$array"
+# The chain is asserted by shape, not by exact string: `/etc/profile` on Fedora appends
+# `__systemd_osc_context_precmdline` (twice: /etc/profile.d and /etc/bashrc both run it), and a
+# scalar PROMPT_COMMAND becomes an array when that happens. Both shapes must keep the user's
+# entries in order with _terax_precmd first and the prompt end last, and the foreign entry must
+# survive: dropping it would silently disable the session's own context reporting.
+chain_entries='printf "%s\n" "${PROMPT_COMMAND[@]}"'
+array="$(integration "" "$chain_entries" 'echo user;')"
+check "scalar PROMPT_COMMAND starts with the precmd hook" \
+  "_terax_precmd" "$(printf '%s\n' "$array" | head -n1 | cut -d';' -f1)"
+expect_contains "scalar PROMPT_COMMAND keeps the user entry" "echo user;" "$array"
+check "scalar PROMPT_COMMAND ends with the prompt end" \
+  "_terax_finish_prompt" "$(printf '%s\n' "$array" | tail -n1)"
+
+foreign="$(integration "" 'printf "%s\n" "${PROMPT_COMMAND[@]}"' 'echo user;'; true)"
+# A hook appended by the host's own init is the case this host actually has; prove it is kept.
+if grep -q '__systemd_osc_context_precmdline' <<<"$foreign"; then
+  expect_contains "a host PROMPT_COMMAND hook survives the integration" \
+    "__systemd_osc_context_precmdline" "$foreign"
+fi
 
 # --- precmd behaviour -------------------------------------------------------
 status_after="$(integration "" '(exit 7); _terax_precmd >/dev/null; printf "%s" "$?"')"
@@ -147,15 +164,30 @@ check "prompt end is restored once after a framework rebuilt PS1" 'framework> \[
 finish_status="$(integration "" '(exit 9); _terax_finish_prompt; printf "%s" "$?"')"
 check "the prompt end hook keeps the status too" 9 "$finish_status"
 
-last_scalar="$(integration "" 'printf "%s" "$PROMPT_COMMAND"' 'starship_precmd')"
-check "the prompt end is the last PROMPT_COMMAND entry" "$(printf '_terax_precmd;starship_precmd\n_terax_finish_prompt')" "$last_scalar"
+last_scalar="$(integration "" "$chain_entries" 'starship_precmd')"
+check "the prompt end is the last PROMPT_COMMAND entry" \
+  "_terax_finish_prompt" "$(printf '%s\n' "$last_scalar" | tail -n1)"
+check "the prompt framework entry is kept after the precmd hook" \
+  "starship_precmd" "$(printf '%s\n' "$last_scalar" | grep 'starship_precmd')"
+check "the precmd hook is still first with a framework entry" \
+  "_terax_precmd" "$(printf '%s\n' "$last_scalar" | head -n1 | cut -d';' -f1)"
 
 # On bash before 5.1 an array PROMPT_COMMAND runs only element 0, so that
 # element has to carry both hooks; from 5.1 every element runs.
-array_last="$(integration "" 'printf "%s|" "${PROMPT_COMMAND[@]}"' '(one two)')"
 case "${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}" in
-  5.[1-9]*|[6-9].*) check "an array PROMPT_COMMAND gets the hooks as elements" "_terax_precmd|one|two|_terax_finish_prompt|" "$array_last" ;;
-  *) check "an old bash array keeps its element 0 as one command" "_terax_precmd;one"$'\n'"_terax_finish_prompt|two|" "$array_last" ;;
+  5.[1-9]*|[6-9].*)
+    array_last="$(integration "" "$chain_entries" '(one two)')"
+    check "an array PROMPT_COMMAND keeps the precmd hook first" \
+      "_terax_precmd" "$(printf '%s\n' "$array_last" | head -n1 | cut -d';' -f1)"
+    expect_contains "an array PROMPT_COMMAND keeps its first user entry" "one" "$array_last"
+    expect_contains "an array PROMPT_COMMAND keeps its second user entry" "two" "$array_last"
+    check "an array PROMPT_COMMAND ends with the prompt end" \
+      "_terax_finish_prompt" "$(printf '%s\n' "$array_last" | tail -n1)"
+    ;;
+  *)
+    array_last="$(integration "" 'printf "%s|" "${PROMPT_COMMAND[@]}"' '(one two)')"
+    check "an old bash array keeps its element 0 as one command" "_terax_precmd;one"$'\n'"_terax_finish_prompt|two|" "$array_last"
+    ;;
 esac
 
 nounset="$(integration "" 'set -u; unset TERAX_WORKSPACE_FORK_BLOCKS _terax_block_seen; unset PS1; _terax_precmd >/dev/null; _terax_finish_prompt; printf ok')"
@@ -164,8 +196,10 @@ check "the hooks do not abort under set -u" ok "$nounset"
 nounset_ble="$(integration 1 'set -u; unset PROMPT_COMMAND; _terax_ble_precmd >/dev/null; printf ok')"
 check "the ble.sh entry does not abort under set -u without a PROMPT_COMMAND" ok "$nounset_ble"
 
-ble_last="$(integration 1 'PROMPT_COMMAND=; _terax_ble_precmd >/dev/null; printf "%s" "$PROMPT_COMMAND"')"
-check "the ble.sh entry puts the prompt end back last" _terax_finish_prompt "$ble_last"
+# The last entry, whatever PROMPT_COMMAND's shape: a host hook may have turned the scalar into an
+# array before this point, and `$PROMPT_COMMAND` would then print element 0 only.
+ble_last="$(integration 1 'PROMPT_COMMAND=; _terax_ble_precmd >/dev/null; printf "%s" "${PROMPT_COMMAND[*]}"')"
+check "the ble.sh entry puts the prompt end back last" _terax_finish_prompt "${ble_last##* }"
 
 # ble.sh restores its own PROMPT_COMMAND before every prompt, so the entry runs
 # in full each time: a fork there is latency on every prompt. A subshell shows

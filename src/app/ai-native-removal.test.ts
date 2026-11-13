@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -94,6 +94,12 @@ const RETAINED_NATIVE_ONLY: Record<string, string> = {
   pty_shell_name: "terminal shell detection contract",
   fs_list_files: "covered by src-tauri/tests/fs_search.rs",
   fs_glob: "covered by src-tauri/tests/fs_search.rs",
+  // No client invokes the one-shot grep: the command palette streams `fs_grep_interactive`. It
+  // stays registered as part of the retained grep contract and is exercised natively by
+  // src-tauri/tests/fs_search.rs. A consumer that needs a single result should use it; if none
+  // ever does, the registration (not the implementation) is what should go.
+  fs_grep:
+    "retained native contract; exercised by src-tauri/tests/fs_search.rs",
   wsl_default_distro: "WSL bridge contract on Windows",
 };
 
@@ -139,6 +145,14 @@ function relative(file: string): string {
 
 function rustFiles(): string[] {
   return [...filesUnder(rustSrc, /\.rs$/), ...filesUnder(rustCrates, /\.rs$/)];
+}
+
+/**
+ * The pattern that proves a caller: `invoke("name")`, `invoke<T>("name")`, or the same across a
+ * line break. The command names are snake_case identifiers, so they need no escaping.
+ */
+function invocationOf(name: string): RegExp {
+  return new RegExp(`\\binvoke[^(]*\\(\\s*["'\`]${name}["'\`]`);
 }
 
 /** Production client and runner sources: removal guards name what is gone. */
@@ -219,13 +233,16 @@ describe("removed built-in AI native commands", () => {
     expect(hits).toEqual([]);
   });
 
-  it("leaves no command in the table without a consumer or a stated reason", () => {
-    const corpus = clientFiles()
-      .map((file) => readFileSync(file, "utf8"))
-      .join("\n");
+  it("leaves no command in the table without a call site or a stated reason", () => {
+    // A substring match is satisfied by a command named in a comment, a doc string or a type
+    // declaration, so it cannot prove a caller. A consumer is an `invoke` of the command — with
+    // or without type arguments, and across a line break — and anything else has to state its
+    // reason in RETAINED_NATIVE_ONLY.
+    const sources = clientFiles().map((file) => readFileSync(file, "utf8"));
     const orphans = registeredCommands().filter(
       (name) =>
-        !corpus.includes(name) && RETAINED_NATIVE_ONLY[name] === undefined,
+        !sources.some((code) => invocationOf(name).test(code)) &&
+        RETAINED_NATIVE_ONLY[name] === undefined,
     );
     expect(orphans).toEqual([]);
   });

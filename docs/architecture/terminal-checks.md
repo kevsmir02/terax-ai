@@ -39,7 +39,7 @@ fails if any command in this inventory stops running in ordinary CI.
 | `cargo test --lib modules::pty` | 242 passed, 0 failed, 1 ignored |
 | zsh shell integration | exit 0 |
 | fish shell integration | exit 0 |
-| bash shell integration | **4 failures on this Fedora host** — see "Bash integration is not host-hermetic" below; green on the Ubuntu CI runner |
+| bash shell integration | exit 0 (36 assertions, including the host's own PROMPT_COMMAND hook — see "Bash integration with a host PROMPT_COMMAND hook" below) |
 | `pnpm soak:ghostty` | both artifacts, structure-of-arrays format: plateau growth 0 bytes, final linear memory 78,708,736 bytes, peak stack 35,200 and 35,184 bytes of the 96 KiB shadow stack (35.8%) |
 | `pnpm test:terminal-scaling` (WebGL) | DPR 1: 570,000 px, 1.25: 891,000 px, 1.5: 1,282,500 px, 2: 2,280,000 px; 0 differing pixels at both origins, max channel delta 0 |
 | `pnpm bench:ghostty` | 20 tasks across both artifacts |
@@ -49,23 +49,30 @@ The soak measurement is committed as `docs/architecture/terminal-linux-soak-2026
 is the baseline `pnpm ghostty:update` compares a new revision against, so the gate works without
 anyone remembering a flag.
 
-### Bash integration is not host-hermetic (recorded 2026-11-12, Fedora 44 KDE)
+The procedure is local, so CI does not run it. What CI does run (`repo-guards` →
+`scripts/tests/test_ghostty_update.py`) is the binding that a pull request cannot slip past: the
+pinned revision, the rebuild pin and the checked-in hashes must agree, the shipped `.wasm` files
+must match their recorded hashes, and the committed soak baseline must have measured those exact
+artifact hashes. A pin bump without re-recorded soak evidence fails there, before review.
 
-`bashrc.bash` emulates login-shell init, so it sources `/etc/profile` and `/etc/bashrc`. On this
-host `/etc/profile.d/80-systemd-osc-context.sh` appends `__systemd_osc_context_precmdline` to
-`PROMPT_COMMAND`, and four assertions in `bashrc.test.bash` compare the whole chain:
+### Bash integration with a host PROMPT_COMMAND hook (Fedora 44 KDE)
 
-- `scalar PROMPT_COMMAND is kept after the hook`
-- `the prompt end is the last PROMPT_COMMAND entry`
-- `an array PROMPT_COMMAND gets the hooks as elements`
-- `the ble.sh entry puts the prompt end back last`
+`bashrc.bash` emulates login-shell init, so it sources `/etc/profile` and `/etc/bashrc`. On Fedora
+`/etc/profile.d/80-systemd-osc-context.sh` appends `__systemd_osc_context_precmdline` to
+`PROMPT_COMMAND`, and both files run it, so the hook appears twice. A scalar `PROMPT_COMMAND`
+becomes an array when that happens, and `$PROMPT_COMMAND` then prints element 0 only.
 
-The check is identical at the pre-ticket commit `a657b3c`, so this ticket did not introduce it, and
-it passes on the `rust` job's `ubuntu-22.04` runner, whose `/etc/profile` installs no such hook.
-It is recorded rather than silenced: the primary validation target is Fedora 44 on Wayland, so the
-bash chain has to be correct with a system hook appended, and today that is unproven. Reproduce
-with `bash src-tauri/src/modules/pty/scripts/bashrc.test.bash`; the zsh and fish equivalents pass
-here.
+The integration was already correct in that environment; four assertions were not, because they
+compared the whole chain as one exact string and assumed a hermetic `/etc/profile`. They now assert
+the contract instead:
+
+- `_terax_precmd` is the first entry and the prompt end is the last, in both shapes;
+- the user's and the host's entries are preserved, in order;
+- a ble.sh that restores its own `PROMPT_COMMAND` still gets the prompt end back last.
+
+`bash src-tauri/src/modules/pty/scripts/bashrc.test.bash` exits 0 on this host (36 assertions,
+including a host-hook survival check that only runs when the host installs one). The zsh and fish
+equivalents pass here too.
 
 ## Checks that are still not Linux, and why
 

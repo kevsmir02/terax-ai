@@ -7,34 +7,44 @@ body:
       value: |
         Thanks for taking the time to report a bug. Please fill in the fields below — it makes triage much faster.
 
-        For **security issues**, do NOT open an issue. See [SECURITY.md](https://github.com/crynta/Terax-AI/blob/main/SECURITY.md).
+        This repository is an **unofficial Linux x86-64 fork** of Terax (upstream: `crynta/terax-ai`); it is not the upstream product. For **security issues**, do NOT open an issue. See [SECURITY.md](https://github.com/kevsmir02/terax-ai/blob/main/SECURITY.md).
 
   - type: input
     id: version
     attributes:
-      label: Terax version
-      description: From Settings → About, or the title bar.
-      placeholder: "0.5.9"
+      label: Version or commit
+      description: From Settings → About, or the commit you built from.
+      placeholder: "1.0.0, or 16ef644"
     validations:
       required: true
 
   - type: dropdown
-    id: os
+    id: artifact
     attributes:
-      label: Operating system
-      description: This fork builds and distributes Linux x86-64 only (ticket #34).
+      label: How are you running it?
+      description: This fork builds Linux x86-64 packages only (ticket #34).
       options:
-        - Linux (Fedora — primary target)
-        - Linux (Debian)
-        - Linux (other distribution)
+        - RPM package
+        - DEB package
+        - Arch recipe built locally (packaging/arch)
+        - Built from source
     validations:
       required: true
 
   - type: input
-    id: os-version
+    id: distro
     attributes:
-      label: OS version
-      placeholder: "Fedora 44 KDE Plasma / Debian 13"
+      label: Distribution and desktop
+      placeholder: "Fedora 44 KDE Plasma (Wayland) / Debian 13 GNOME (Wayland) / Arch (date)"
+    validations:
+      required: true
+
+  - type: input
+    id: webkitgtk
+    attributes:
+      label: WebKitGTK version
+      description: Run `pkg-config --modversion webkit2gtk-4.1` (or `webkit2gtk-4.0` if that is what your distribution ships).
+      placeholder: "2.48.0"
     validations:
       required: true
 
@@ -59,8 +69,8 @@ body:
       label: Steps to reproduce
       description: Numbered list of exact steps. The more specific, the faster we can help.
       placeholder: |
-        1. Open Terax
-        2. Click ...
+        1. Start the application from a terminal
+        2. Open ...
         3. ...
     validations:
       required: true
@@ -80,5 +90,5 @@ body:
       options:
         - label: I searched existing issues and didn't find a duplicate
           required: true
-        - label: I am running the latest version (or this happens on `main`)
+        - label: I am running the latest commit or the latest stable package
           required: false

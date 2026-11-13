@@ -89,6 +89,39 @@ class UpstreamPinTest(unittest.TestCase):
         self.assertEqual(result.status, "pass", result.detail)
 
 
+class RecordedBaselineBindingTest(unittest.TestCase):
+    """Recorded evidence must describe the artifact the repository ships.
+
+    `pnpm ghostty:update` is a local procedure: nothing in CI invokes it, so a pull request can
+    carry a new pin and new `.wasm` files while the recorded soak baseline still measured the old
+    bytes. This module runs in `repo-guards`, and these two assertions bind the evidence to the
+    artifact: re-record with `pnpm soak:ghostty` + `TERAX_SOAK_REPORT` (and the resource baseline
+    when it moved) or the guard fails.
+    """
+
+    def setUp(self) -> None:
+        self.update = load_module()
+
+    def test_the_recorded_soak_baseline_measured_the_shipped_artifacts(self) -> None:
+        pin = self.update.parse_upstream(self.update.UPSTREAM.read_text())
+        baseline = json.loads(self.update.RECORDED_SOAK_BASELINE.read_text())
+        measured = {report["artifact"]: report["sha256"] for report in baseline["reports"]}
+        self.assertEqual(
+            measured,
+            {
+                "ghostty-vt.wasm": pin["simd"]["sha256"],
+                "ghostty-vt-scalar.wasm": pin["scalar"]["sha256"],
+            },
+            "the recorded soak baseline no longer measures the shipped artifacts: re-record it "
+            "whenever the pin or the .wasm files change",
+        )
+
+    def test_the_recorded_baseline_covers_both_artifacts(self) -> None:
+        baseline = json.loads(self.update.RECORDED_SOAK_BASELINE.read_text())
+        stack = {report["artifact"] for report in baseline["stackReports"]}
+        self.assertEqual(stack, {"ghostty-vt.wasm", "ghostty-vt-scalar.wasm"})
+
+
 class ArtifactTest(unittest.TestCase):
     def setUp(self) -> None:
         self.update = load_module()
