@@ -36,6 +36,8 @@ import linux_profile  # noqa: E402  (the preflight the runners actually call)
 WORKFLOWS = REPO / ".github/workflows"
 CI = WORKFLOWS / "ci.yml"
 RELEASE = WORKFLOWS / "release.yml"
+RELEASE_GATE = REPO / "scripts/release_gate.py"
+RELEASE_CONTRACT = REPO / "src/modules/updater/releaseContract.json"
 LINUX_PACKAGES_DOC = REPO / "docs/architecture/linux-packages.md"
 SMOKE = WORKFLOWS / "linux-app-smoke.yml"
 TOOLCHAIN = REPO / "rust-toolchain.toml"
@@ -91,6 +93,26 @@ RESOLVING_CARGO = ("cargo check", "cargo clippy", "cargo nextest", "cargo test",
 
 def workflow_files() -> list[Path]:
     return sorted(WORKFLOWS.glob("*.yml")) + sorted(WORKFLOWS.glob("*.yaml"))
+
+
+# Actions that publish: they upload where users download, or create a release object. They are
+# exactly what must stay out of `release.yml` while the contract is provisional. A run-scoped
+# `actions/upload-artifact` is *not* one of them (it is build evidence on the run, not a
+# publication), and the release workflow is required to keep shipping its candidate that way.
+PUBLICATION_ACTIONS = (
+    "tauri-action",
+    "gh release",
+    "actions/upload-release-asset",
+    "actions/create-release",
+    "softprops/action-gh-release",
+    "release-drafter",
+    "pypi-publish",
+    "docker push",
+)
+
+
+def release_contract() -> dict:
+    return json.loads(text(RELEASE_CONTRACT))
 
 
 def text(path: Path) -> str:
@@ -438,34 +460,84 @@ class ReleaseWorkflowTest(unittest.TestCase):
         self.assertIn(f'"{packaging.RPM_ARCH}"', self.body, "the rpm must be checked as x86_64")
         self.assertIn("sha256sum", self.body, "staged artifacts keep their hashes")
 
-    def test_a_version_tag_cannot_start_the_workflow(self) -> None:
-        # A tag is the publication trigger the gate will own (#41). Taking it away is what makes
-        # the ungated path fail closed; re-adding it requires the tag/version + green-CI gate.
+    def test_a_version_tag_starts_the_workflow_only_through_the_gate(self) -> None:
+        # A `v*` tag now starts the workflow. That is safe for exactly one reason: the gate runs
+        # before the build and refuses everything while the release contract is provisional. The
+        # ordering below is the invariant, not the presence of a step name.
         triggers = self.body.split("jobs:", 1)[0]
-        self.assertIn("workflow_dispatch:", triggers, "a candidate is built on request")
-        self.assertNotIn("push:", triggers, "no push, and so no tag, may start this workflow")
-        self.assertNotIn("tags:", triggers)
-        self.assertNotIn("v*", triggers)
+        self.assertIn("workflow_dispatch:", triggers, "a candidate is also built on request")
+        self.assertIn("tags:", triggers, "a version tag must reach the gate, not be ignored")
+        self.assertIn("v*", triggers)
         self.assertNotIn("schedule:", triggers)
 
-    def test_nothing_in_the_workflow_creates_or_uploads_a_release(self) -> None:
+        steps = self.candidate_job()["steps"]
+        runs = [step.get("run", "") for step in steps]
+
+        def invokes(run: str, script: str) -> bool:
+            # The executed command, not a mention in a comment: `package-candidate/run.py` and
+            # `release_gate.py` are both described in the shell comments above their steps.
+            return any(line.strip().startswith(f"python3 {script}")
+                       for line in run.splitlines())
+
+        preconditions = [index for index, run in enumerate(runs)
+                         if invokes(run, "scripts/release_gate.py")
+                         and "--preconditions-only" in run]
+        build = [index for index, run in enumerate(runs)
+                 if invokes(run, "scripts/package-candidate/run.py")]
+        artifacts = [index for index, run in enumerate(runs)
+                     if invokes(run, "scripts/release_gate.py") and "--candidate" in run]
+        uploads = [index for index, step in enumerate(steps)
+                   if "actions/upload-artifact" in str(step.get("uses", ""))]
+        self.assertTrue(preconditions, "the gate must run before the build")
+        self.assertTrue(build, "the candidate build keeps its runner")
+        self.assertTrue(artifacts, "the staged set must be gated as well")
+        self.assertTrue(uploads, "the candidate set still leaves as a workflow artifact")
+        self.assertLess(preconditions[0], build[0],
+                        "a failed precondition must fail the job before any artifact exists")
+        self.assertLess(build[0], artifacts[0],
+                        "the artifact stage evaluates the set the build produced")
+        self.assertLess(artifacts[0], uploads[0])
+
+    def test_the_gate_reads_the_check_runs_of_the_tagged_commit(self) -> None:
+        # The gate cannot fetch anything itself (it has no network path), so the workflow must
+        # hand it the check runs for the commit the tag resolved to.
+        self.assertIn("check-runs", self.body)
+        self.assertIn("steps.target.outputs.commit", self.body)
+        self.assertIn("--ci-status", self.body)
+        self.assertRegex(self.body, r"(?m)^\s+timeout-minutes:\s*\d+",
+                         "a tag-triggered build needs a bounded timeout")
+
+    def test_publication_stays_impossible_while_the_contract_is_provisional(self) -> None:
+        # Derived from `src/modules/updater/releaseContract.json`: while the fork has not decided
+        # its publication identity and signing trust, the release workflow must have no way to
+        # publish. Flipping `provisional` to false is the deliberate change that relaxes this,
+        # and even then the gate has to remain the thing that decides.
+        contract = release_contract()
         code = workflow_code(RELEASE)
-        for forbidden in (
-            "gh release",
-            "tauri-action",
-            "tagName",
-            "releaseName",
-            "releaseBody",
-            "releaseDraft",
-            "prerelease",
-            "contents: write",
-        ):
+        permissions = yaml.safe_load(code).get("permissions") or {}
+        if contract.get("provisional") is not True:
+            self.assertIn("scripts/release_gate.py", code)
+            return
+        for forbidden in (*PUBLICATION_ACTIONS, "tagName", "releaseName", "releaseBody",
+                          "releaseDraft", "prerelease", "contents: write", "id-token: write",
+                          "secrets."):
             self.assertNotIn(
                 forbidden,
                 code,
-                f"release.yml must not contain {forbidden!r} while the publication gate (#41) "
-                "does not exist; a tag or dispatch would otherwise publish unchecked artifacts",
+                f"release.yml must not contain {forbidden!r} while "
+                "releaseContract.json is provisional: a tag or dispatch would otherwise publish "
+                "unchecked, untrusted artifacts",
             )
+        for name, granted in permissions.items():
+            self.assertNotIn("write", str(granted), f"release.yml grants {name}: write")
+
+    def test_the_gate_it_pins_exists_and_has_no_publish_path(self) -> None:
+        # The workflow names a script; a deleted script would leave a tag doing nothing at all.
+        self.assertTrue(RELEASE_GATE.is_file(), "release.yml calls scripts/release_gate.py")
+        source = text(RELEASE_GATE)
+        for publishing in (*PUBLICATION_ACTIONS, "requests.post", "urllib.request"):
+            self.assertNotIn(publishing, source,
+                             "the gate only decides; it must not be able to publish")
 
     def test_the_candidate_set_leaves_as_a_workflow_artifact(self) -> None:
         self.assertIn("actions/upload-artifact", self.body)

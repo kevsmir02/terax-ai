@@ -5,35 +5,76 @@ plus an authored Arch recipe, so the updater evaluation (#37) and graphical/pack
 (#44) have something concrete to install. A candidate is not a release and this document never
 claims package-manager or graphical validation.
 
-## What publishes today: nothing
+## What a version tag does: run the gate, publish nothing
 
-Publication is gated by ticket #40 (GitHub issue #41, "Gate tagged stable releases on checked
-immutable artifacts"), which is on an execution hold and needs #40's identity and signing trust
-first. Until then the half-built path fails closed:
+A `v<major>.<minor>.<patch>` tag now starts `.github/workflows/release.yml`. It does not publish,
+and this fork has never published. The tag starts a decision made by one script,
+`scripts/release_gate.py`, which has no publish path at all — it can only answer and print why:
 
-- `.github/workflows/release.yml` has **no tag trigger**. Pushing a `v*` tag builds nothing,
-  uploads nothing and creates no release. It runs only on `workflow_dispatch`, and a manual run
-  builds, verifies and hashes the x86-64 RPM/DEB set and attaches it to that workflow run as the
-  `linux-x86_64-packages` artifact.
-- A manual run builds **through `scripts/package-candidate/run.py`**, the same runner described
-  below, not with a bare `pnpm tauri build`: the base config carries upstream's product name,
-  binary name and descriptions, so only the generated overlay gives the artifact the candidate
-  identity (`Terax Workspace`, `/usr/bin/terax-workspace`, `/usr/bin/terax-workspace-cli`). The
-  artifact holds the two packages, their `SHA256SUMS` and the runner's `manifest.json`.
-- No job creates or uploads a GitHub release, and the workflow asks for `contents: read` only, so
-  there is no token with which a manual run could publish.
-- `scripts/tests/test_ci_workflows.py` fails if a tag trigger, `tauri-action` release inputs,
-  `gh release` or `contents: write` come back to the workflow without the #41 gate. It also fails
-  if the candidate job stops using the packaging runner, restates a name from the identity table, or
-  stops proving the staged deb installs the candidate binary instead of upstream's
-  `/usr/bin/terax`.
+| Precondition | Refusal codes |
+| --- | --- |
+| Tag agrees with the application version and is a stable tag | `tag-version-mismatch`, `prerelease-tag`, `application-version-disagreement` |
+| Every job `ci.yml` declares is green for *exactly* the tagged commit | `ci-evidence-missing`, `ci-commit-mismatch`, `ci-job-missing`, `ci-job-not-green` |
+| Publication identity and signing trust are decided | `publication-provisional`, `publication-endpoint-missing`, `publication-endpoint-upstream`, `signing-trust-missing`, `signing-input-missing` |
+| The staged set is the candidate built for that commit | `artifact-commit-mismatch`, `artifact-dirty-build`, `artifact-version-mismatch`, `artifact-missing`, `artifact-extra`, `artifact-checksum-mismatch`, `artifact-manifest-problem` |
 
-This is deliberate: the spec's "a version tag triggers stable release publication *subject to*
-passing checks and tag/application-version agreement" and "a tag alone is not successful
-validation" cannot be honoured by a workflow that publishes because a tag exists. When #41 is
-authorized it owns the tag/application-version comparison, the green-CI prerequisite, artifact
-authentication and the evidence gate; this document then gains a real publication section instead
-of this one.
+The gate runs twice in one job, and the order is the invariant:
+
+1. `--preconditions-only` runs **before** the build, so a tag or dispatch that fails the
+   tag/version comparison, the green-CI requirement or the publication-input check fails the job
+   **before any artifact exists**;
+2. `--candidate linux-packages` runs **after** staging and binds what would be published to an
+   immutable identity: the triggering commit, the tag, the version, the sha256 of every artifact
+   and in `SHA256SUMS`, and a digest over all of them. Missing, extra or substituted files are
+   refusals, not warnings. The schema and identity rules are the packaging runner's own
+   (`packaging.manifest_problems`), not a second copy.
+
+**Why it refuses today.** Publication identity and signing trust are undecided, so
+`src/modules/updater/releaseContract.json` stays `"provisional": true` (that file is the single
+source; the gate reads it and never restates the endpoint or key). The refusal names every missing
+input separately, and each names the ticket that supplies it:
+
+| Missing input | Supplied by |
+| --- | --- |
+| Release owner, public endpoint, final product identity | issue #40 (breakdown ticket 39, "Settle publication identity and provision independent trust") |
+| Fork signing key, its public trust root, offline recovery | issue #40 |
+| A candidate validated on Fedora, Debian and Arch | issue #44 |
+| A complete candidate with the retained workflows verified | issue #42 |
+| The first public stable release and its support claims | issue #45 |
+
+Until those land, the gate is the thing that keeps a tag from publishing: a refusal fails the job
+loudly instead of skipping publication, the workflow asks for `contents: read`/`checks: read`
+only, it contains no release-upload action and no signing secret, and the script has no code that
+could upload. `scripts/tests/test_ci_workflows.py` derives that rule from `releaseContract.json`,
+so flipping `provisional` to `false` is the deliberate, reviewed change that relaxes it — and even
+then the gate still refuses while the endpoint is a reserved placeholder, the trust root is
+unprovisioned or the signing input is absent.
+
+**Exercising it safely.** No tag and no public release are needed:
+
+```sh
+# 1. before a build: the tag/version, CI and publication-input preconditions
+python3 scripts/release_gate.py --tag v0.9.0 --commit "$(git rev-parse HEAD)" \
+  --ci-status ci-status.json --preconditions-only --dry-run
+
+# 2. over a local candidate set: the whole gate, including artifact identity
+python3 scripts/release_gate.py --tag v0.9.0 --commit "$(git rev-parse HEAD)" \
+  --ci-status ci-status.json --candidate dist-packages/<candidate> --dry-run \
+  --report gate-report.json
+
+# 3. the same thing in CI: dispatch the workflow with `dry_run: true`
+```
+
+`--dry-run` prints the decision (JSON on stdout, a human refusal list on stderr, a markdown table
+into `$GITHUB_STEP_SUMMARY`) and exits 0 even when it refuses; without it, a refusal exits 3 and
+fails the job. Neither mode publishes anything. The signing input is reported as present or
+missing and its value is never read into a log, report or summary.
+
+Validated here: the gate's refusals and the identity it binds, unit-tested with fixtures (matching
+tag, mismatched tag, prerelease tag, missing/extra/substituted artifact, wrong commit, missing CI
+job, non-green CI, missing signing input, unsettled/ settled contract) and pinned against the
+workflow by the guard test. **Not validated:** a real hosted run of the workflow itself (no
+tagged release has been run through GitHub Actions), and any publication — that is #45's job.
 
 Updates are never installed by the application. A user installs or upgrades the RPM/DEB with
 their package manager (`dnf`, `apt`); the application never downloads, installs or restarts
@@ -70,9 +111,10 @@ pnpm package:candidate:dry-run   # effective config + planned artifact names, no
 pnpm package:candidate           # build rpm+deb, write dist-packages/<pkg>-<ver>-<rev>/
 ```
 
-`.github/workflows/release.yml` runs `python3 scripts/package-candidate/run.py` on
-`workflow_dispatch`, so a candidate built in CI and a candidate built locally come from the same
-code path and carry the same identity.
+`.github/workflows/release.yml` runs `python3 scripts/package-candidate/run.py` — on a `v*` tag
+and on `workflow_dispatch` — so a candidate built in CI and a candidate built locally come from
+the same code path and carry the same identity. Either trigger still passes the publication gate
+above before anything is built.
 
 The runner (`scripts/package-candidate/run.py`) refuses to start when any of these is true:
 
@@ -146,6 +188,7 @@ environment that records package versions. The packaging runner writes a revisio
   non-live `.invalid` endpoint and no provisioned trust root — so it cannot query or install an
   upstream release. Candidates are built with `createUpdaterArtifacts=false`. Until #40/#41
   provision the real endpoint and key, no update can be verified and nothing may be published.
+  The tagged-release gate (`scripts/release_gate.py`) enforces that refusal; publishing is #45.
 - The deb `Maintainer` field is derived by the bundler from the Cargo authors (upstream credit),
   not from the candidate vendor; final maintainer identity belongs to #40.
 
@@ -153,5 +196,9 @@ environment that records package versions. The packaging runner writes a revisio
 
 - `scripts/tests/test_packaging.py` guards the identity, target set, dependency lists, manifest
   schema, deb reader (no `dpkg`) and Arch recipe alignment.
+- `scripts/tests/test_release_gate.py` exercises every refusal of the publication gate and the
+  identity it binds, with fixtures for a matching tag, a mismatched tag, a prerelease tag, a
+  missing/extra/substituted artifact, a wrong commit, missing and non-green CI, and the
+  provisional and settled release contract.
 - `scripts/packaging.py` holds the derivation, inspectors and manifest schema;
   `scripts/package-candidate/run.py` is the runner.
