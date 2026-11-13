@@ -55,7 +55,7 @@ build, sign the staged artifacts with the maintainer's minisign key, write the s
 and run the second gate stage, which binds the staged artifacts to the triggering commit, their
 sha256 and a signature that must verify under the committed public key.
 
-Ticket #40 settled the publication identity (`Codr`, `kevsmir02/terax-ai`, `https://github.com/kevsmir02/terax-ai/releases/latest/download/latest.json`) and provisioned the public trust root (`94097B75DB498B21`); the workflow still has no auto-publish code path, so a tagged run produces signed run artifacts and leaves human publication to #45. The one secret it reads is the release signing key, injected for the signer step only (`TERAX_RELEASE_SIGNING_KEY` and `TERAX_RELEASE_SIGNING_KEY_PASSPHRASE`); without it the signer refuses by name (`signing-key-missing`). `docs/architecture/linux-packages.md` carries the readiness table; trust, custody, verification and key replacement are in `docs/architecture/release-trust.md`:
+Ticket #40 settled the publication identity (`Codr`, `kevsmir02/terax-ai`, `https://github.com/kevsmir02/terax-ai/releases/latest/download/latest.json`) and provisioned the public trust root (`94097B75DB498B21`). Ticket #45 adds the gated tag-only `publish-release` job in `.github/workflows/release.yml`: `build-candidate` remains read-only (`contents: read`, `checks: read`) and holds the release signing key only in its signer step (`TERAX_RELEASE_SIGNING_KEY` and `TERAX_RELEASE_SIGNING_KEY_PASSPHRASE`, failing closed with `signing-key-missing` if absent), while `publish-release` runs only after both gates pass on a pushed `v*` tag (`scripts/release_verify.py` + `gh release create --verify-tag`). `docs/architecture/linux-packages.md` carries the readiness table; trust, custody, verification and key replacement are in `docs/architecture/release-trust.md`:
 
 | Missing input | Ticket |
 | --- | --- |
@@ -145,12 +145,14 @@ off; it falls back to `handoff-unavailable` and points at the main window's dial
 
 ## Not claimed
 
-- No hosted run of the release workflow or public release exists yet; first public publication and
-  hosted release-workflow execution belong to #45.
-- No RPM/DEB/Arch install, upgrade, signature rejection or package-lock behavior has been
-  validated. That needs the packaged-app seam with real artifacts on a disposable system (#44).
+- Hosted `v1.0.0` release-workflow execution and live `latest.json` endpoint verification are
+  recorded per tag run (#45); pre-tag repository checks do not prove a hosted release until that
+  run finishes and `scripts/release_verify.py --live-url` passes.
+- Debian 13 (`.deb` graphical WebKitGTK) and Arch (`makepkg`) install/upgrade runs were waived or
+  not executed (#44); Fedora 45 host RPM `dnf upgrade` across versions and package-lock/cancellation
+  behavior remain unverified.
 - The readiness check is unit- and component-tested, and discovery cryptographically verifies the
-  Ed25519 global signature, but a real package-tool run (hand off, run the command, start the new
-  binary) has not been observed against a published release yet.
+  Ed25519 global signature, but a real package-tool upgrade across published versions has not been
+  observed yet.
 - No privilege interval, in-app transaction or rollback exists, by decision rather than as an
   unfinished gap.

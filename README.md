@@ -12,7 +12,7 @@
 
   <p>
     <img src="https://img.shields.io/badge/platform-Linux%20x86_64-lightgrey" alt="platform" />
-    <img src="https://img.shields.io/badge/release-none%20published%20yet-lightgrey" alt="no release published yet" />
+    <a href="https://github.com/kevsmir02/terax-ai/releases/tag/v1.0.0"><img src="https://img.shields.io/badge/release-v1.0.0-blue" alt="release v1.0.0" /></a>
   </p>
 </div>
 
@@ -113,25 +113,61 @@ Codr (an unofficial Linux fork of Terax) is a lightweight open-source terminal-f
 ## Install
 
 This fork builds and distributes **Linux x86-64 only**: one RPM and one DEB per release, plus an
-authored (not yet built) Arch recipe in `packaging/arch`. **No release is published yet**: the first
-stable one is gated on artifact, resource and distribution evidence (issue #45), so until then build
-from source or use a locally built candidate package. Once it exists, the package will be on this
-repository's [Releases](https://github.com/kevsmir02/terax-ai/releases) page, installed with your
-distribution's package tool. Update discovery is provisioned with that channel: while it is live the
-app checks for a stable update and never downloads, installs or restarts itself — updates are
-installed with your package tool (pacman/AUR on Arch, apt/dnf for the DEB/RPM packages).
+authored (not built) Arch recipe (`packaging/arch/PKGBUILD`), published on this repository's
+[Releases](https://github.com/kevsmir02/terax-ai/releases) page (`v1.0.0` stable channel).
+Update discovery fetches `latest.json` from the fork's stable feed, verifies the minisign Ed25519
+global signature and key ID (`94097B75DB498B21`), and never downloads, installs or restarts
+itself: upgrades are handed to your package tool (`dnf`, `apt`, or `pacman`) after safe closure.
 
-### Linux notes
+### Linux routes and validation status
 
-- **Fedora (primary target):** `sudo dnf install ./codr-*.x86_64.rpm`. Fedora 44 KDE
-  Plasma on Wayland is the primary validation target for the application; the *packaged*
-  install/upgrade path is not validated yet (ticket #44).
-- **Debian:** `sudo apt install ./codr_*_amd64.deb`. Debian 13 still needs an actual
-  graphical WebKitGTK session before support is claimed (ticket #44).
-- **Arch / AUR:** `packaging/arch/PKGBUILD` builds the same source and version. It is **authored,
-  not built**: no `makepkg` run is recorded yet, so Arch support is a dated clean-environment
-  validation still to be done, not a claim.
+- **Fedora 45 KDE Wayland (primary validated target, #44):** `sudo dnf install ./codr-1.0.0-1.x86_64.rpm`.
+  The RPM candidate passed dependency resolution, isolated Wayland smoke, container `rpm` lifecycle
+  checks, and maintainer host install (`codr-1.0.0-1.x86_64`). Host-root `dnf upgrade` across
+  versions and package-lock/cancellation paths remain unverified.
+- **Debian / Ubuntu (waived, unverified):** `sudo apt install ./codr_*.deb`. Debian 13 graphical
+  WebKitGTK runtime validation was waived for personal-tool scope (#44), so no `.deb` install or
+  upgrade run is claimed.
+- **Arch Linux (authored, not built):** `packaging/arch/PKGBUILD` is signed and attached to releases,
+  but no `makepkg` or `pacman` run has been executed (`pacman -Syu` / `makepkg -si` remains an
+  unbuilt user-managed route, #44).
 - On Wayland with rendering glitches, try `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
+
+### Signature verification and recovery
+
+Download the artifact, its `.minisig` signature, and `SHA256SUMS` from the release, then verify
+before running `dnf` or `apt` (native DNF/APT repository GPG signing is deferred):
+
+```sh
+sha256sum -c SHA256SUMS
+minisign -Vm ./codr_1.0.0_amd64.deb -x ./codr_1.0.0_amd64.deb.minisig \
+  -P RWQhi0nbdXsJlFu9b48smjYdtZKzZ3An6rjhKRz+kdL0tG8f7DBJj8lL
+```
+
+- **Failed or cancelled package transaction:** Codr makes no rollback and cannot tell whether an
+  external `dnf`/`apt` run succeeded. Close Codr completely, re-run the package-manager command, and
+  confirm installed files with `rpm -q codr` or `dpkg -s codr`.
+- **Signing key custody and replacement:** see [release trust](docs/architecture/release-trust.md)
+  and [update handoff](docs/architecture/update-handoff.md) for offline key recovery and rotation.
+
+### Tested limits, capabilities, and exclusions
+
+This personal-use release claims no broad compatibility or production-readiness certification:
+
+- **Terminal and renderer:** WebKitGTK uses the Terax WebGL fallback (`scripts/terminal-visual`
+  scaling checked at DPR 1, 1.25, 1.5, and 2); Kitty graphics is incomplete and not advertised;
+  physical IME and OS clipboard round-trips remain manual checks.
+- **File, preview, and codec bounds:** text syntax highlighting turns off above 4 MiB (10 MiB soft
+  override, 50 MiB hard cap), images enforce a 64 MiB decoded cap and 192 MiB / 4-viewer budget,
+  PDF pages enforce a 32 MiB cap, and tested media containers (`WebM`, `Ogg`, `WAV`, `MP3`,
+  `FLAC`, `M4A`, `AAC`, `MP4`, `MOV`) reflect host WebKitGTK 2.54.2 GStreamer codecs only
+  ([resource limits](docs/architecture/resource-limits.md)).
+- **External agents:** launching, OSC 133 process status, opt-in hooks, and `terax open` control
+  are verified on synthetic fixtures only; no vendor CLI (`claude`, `codex`, `gemini`, `pi`,
+  `opencode`, `grok`, `antigravity`) has live turn or hook-trust certification
+  ([agent capabilities](docs/architecture/agent-capabilities.md)).
+- **Retained exclusions:** no built-in AI chat, API-key storage, telemetry, LSP, or in-app
+  updater; macOS, Windows, and WSL code paths remain inert upstream seams only.
 
 ### Platform support
 

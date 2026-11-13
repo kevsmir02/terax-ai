@@ -651,17 +651,43 @@ class ReleaseSigningWorkflowTest(unittest.TestCase):
             for name in secret_env_vars:
                 self.assertNotIn(name, env)
 
-    def test_release_workflow_stays_read_only_and_bounded_to_signing_secrets(self) -> None:
-        # Until #45 implements publication, release.yml must remain non-publishing regardless of
-        # contract provisional status.
+    def test_build_candidate_stays_read_only_and_publish_release_is_gated(self) -> None:
+        # Top-level permissions and build-candidate stay read-only so signing secrets never share
+        # a job with `contents: write`. Only `publish-release` (after `build-candidate` passes both
+        # gates) holds `contents: write` on pushed `v*` tags.
         permissions = self.workflow.get("permissions") or {}
+        for name, granted in permissions.items():
+            self.assertNotIn("write", str(granted), f"top-level release.yml grants {name}: write")
+        candidate_job = self.workflow["jobs"]["build-candidate"]
+        candidate_dump = yaml.safe_dump(candidate_job)
         for forbidden in (*PUBLICATION_ACTIONS, "tagName", "releaseName", "releaseBody",
                           "releaseDraft", "prerelease", "contents: write", "id-token: write"):
-            self.assertNotIn(forbidden, self.code)
-        for name, granted in permissions.items():
-            self.assertNotIn("write", str(granted), f"release.yml grants {name}: write")
+            self.assertNotIn(forbidden, candidate_dump)
         found = set(re.findall(r"secrets\.([A-Za-z0-9_]+)", self.code))
         self.assertEqual(found - set(RELEASE_SIGNING_SECRETS), set())
+
+        self.assertIn("publish-release", self.workflow["jobs"])
+        publish_job = self.workflow["jobs"]["publish-release"]
+        self.assertEqual(publish_job.get("needs"), "build-candidate")
+        condition = str(publish_job.get("if") or "")
+        self.assertIn("github.event_name == 'push'", condition)
+        self.assertIn("startsWith(github.ref, 'refs/tags/v')", condition)
+        self.assertEqual((publish_job.get("permissions") or {}).get("contents"), "write")
+        publish_dump = yaml.safe_dump(publish_job)
+        for secret_name in RELEASE_SIGNING_SECRETS:
+            self.assertNotIn(secret_name, publish_dump)
+        publish_runs = "\n".join(
+            step.get("run", "") for step in publish_job.get("steps", []) if "run" in step
+        )
+        self.assertIn("scripts/release_verify.py", publish_runs)
+        self.assertIn("sha256sum -c SHA256SUMS", publish_runs)
+        self.assertIn("gh release view", publish_runs)
+        self.assertIn("gh release create", publish_runs)
+        self.assertIn("--verify-tag", publish_runs)
+        self.assertLess(
+            publish_runs.index("scripts/release_verify.py"),
+            publish_runs.index("gh release create"),
+        )
 
     def test_the_signer_uses_the_release_secret_and_the_workflows_signer(self) -> None:
         step = self.signer_step()
@@ -813,11 +839,28 @@ class ReleaseSigningWorkflowTest(unittest.TestCase):
             base_commit = release_contract()["upstream"]["baseCommit"]
             self.assertIn(base_commit[:7], notes)
 
-    def test_the_signed_set_still_leaves_only_as_a_workflow_artifact(self) -> None:
+    def test_the_signed_set_uploads_as_artifacts_and_publishes_all_release_files(self) -> None:
         self.assertIn("name: linux-x86_64-packages", self.body)
+        self.assertIn("name: release-gate-reports", self.body)
         self.assertIn("linux-packages/", self.body)
+        candidate_dump = yaml.safe_dump(self.workflow["jobs"]["build-candidate"])
         for forbidden in PUBLICATION_ACTIONS:
-            self.assertNotIn(forbidden, self.code)
+            self.assertNotIn(forbidden, candidate_dump)
+        publish_runs = "\n".join(
+            step.get("run", "")
+            for step in self.workflow["jobs"]["publish-release"].get("steps", [])
+            if "run" in step
+        )
+        for expected_asset in (
+            "*.rpm",
+            "*.deb",
+            "PKGBUILD",
+            "*.minisig",
+            "SHA256SUMS",
+            "manifest.json",
+            "latest.json",
+        ):
+            self.assertIn(expected_asset, publish_runs)
 
 
 class DocumentationPlatformClaimTest(unittest.TestCase):

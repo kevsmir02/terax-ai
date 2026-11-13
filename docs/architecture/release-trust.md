@@ -48,13 +48,16 @@ around a build:
    `signing-passphrase-missing`) instead of skipping.
 4. **After signing** (`scripts/release_gate.py --candidate linux-packages`): verifies the manifest
    and every signature against the staged hashes and the triggering commit.
-5. **Upload**: the signed set leaves as a run-scoped workflow artifact.
+5. **Upload**: the signed set and gate reports leave as run-scoped workflow artifacts.
+6. **Publish** (`publish-release` job, pushed `v*` tags only): runs with `contents: write` and no
+   signing secrets, verifies `gate-artifacts.json` + `SHA256SUMS` + signatures via
+   `scripts/release_verify.py`, and creates the GitHub Release via `gh release create --verify-tag`
+   (refusing if the release already exists). `workflow_dispatch` never triggers `publish-release`.
 
-There is no publication code path in this repository: no release object, no upload-to-release
-action, and no write permission on PRs; release signing secrets (`TERAX_RELEASE_SIGNING_KEY` and
-`TERAX_RELEASE_SIGNING_KEY_PASSPHRASE`) are read only during the signer step once configured.
-Creating the draft release and a human publishing it belong to the release ticket (#45); the gate
-only decides.
+`scripts/release_gate.py` itself has no publish path; signing secrets (`TERAX_RELEASE_SIGNING_KEY`
+and `TERAX_RELEASE_SIGNING_KEY_PASSPHRASE`) are read only during the signer step in
+`build-candidate` and are never exposed to `publish-release`. Creating the `v1.0.0` release and
+verifying live discovery belong to #45.
 
 ## The signed set and the manifest
 
@@ -242,10 +245,11 @@ reports a signature failure, and the answer is a new signed release, not a bypas
   failing closed on any tamper; full payload BLAKE2b/Ed25519 verification happens in
   `scripts/release_gate.py` (and manually via `minisign -Vm`) because discovery never downloads
   installer bytes.
-- **A published release.** Ticket #40 settled identity (`Codr`, `kevsmir02/terax-ai`),
+- **Hosted tag execution and live discovery.** Ticket #40 settled identity (`Codr`, `kevsmir02/terax-ai`),
   committed the public trust root (`94097B75DB498B21`), and provisioned the GitHub Actions signing
   secrets. Ticket #41 completed the release gate, signing pipeline, and gate secret-presence wiring.
-  Nothing publishes yet: no hosted run of the release workflow exists yet (#45).
+  Ticket #45 wires tag-only GitHub Release publication (`publish-release`) and live verification of
+  `v1.0.0` once the tag runs on GitHub Actions.
 
 ## Gate refusals that stay active
 

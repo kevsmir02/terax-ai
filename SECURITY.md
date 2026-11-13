@@ -22,10 +22,9 @@ Include:
 
 ## Supported versions
 
-No stable release is published yet: the first one is gated on artifact, resource and distribution
-evidence (issue #45). Until it exists, only the current `main` tip is considered, and no release
-binary is supported for production use yet. Once a stable release exists, only the latest stable
-minor receives fixes.
+The first stable release line is `v1.0.0` (Linux x86-64 only). Security fixes target the latest
+published `1.0.x` release and `main`. No broad distribution compatibility or production-readiness
+certification is claimed.
 
 ## What is in scope
 
@@ -70,6 +69,7 @@ minor receives fixes.
   point of a terminal.
 - Local model endpoints (LM Studio, OpenAI-compatible servers) are trusted at the network level;
   only point the application at servers you control.
-- No release artifact has been validated on Fedora, Debian or Arch yet, and the packaged install path
-  is not validated on any distribution until issue #44 records it. Read the supported-matrix
-  statements in `README.md` before relying on a package.
+- Fedora 45 KDE Wayland is the only validated packaged target (`codr-1.0.0-1.x86_64.rpm`, #44).
+  Debian 13 (`.deb` graphical WebKitGTK) and Arch (`packaging/arch/PKGBUILD` `makepkg`) were
+  waived/not built, and host `dnf upgrade` across versions remains unverified. Read the
+  supported-matrix and tested-limit statements in `README.md` before relying on a package.

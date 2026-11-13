@@ -310,14 +310,16 @@ class SecurityPolicyCopyTest(unittest.TestCase):
             "SECURITY.md sends a reporter to an upstream route this fork does not own",
         )
 
-    def test_the_policy_records_the_provisioned_key_and_no_published_release(self) -> None:
+    def test_the_policy_records_the_provisioned_key_and_v1_release(self) -> None:
         body = SECURITY.read_text(encoding="utf-8")
         self.assertIn("94097B75DB498B21", body)
         self.assertIn(
             "sha256:a02fd6ac492d1f070919bde106c20c0a376fbcdb6db8bc4c17ca0efd68197487",
             body,
         )
-        self.assertIn("no stable release is published yet", body.lower())
+        self.assertIn("v1.0.0", body)
+        self.assertIn("Fedora 45", body)
+        self.assertNotIn("no stable release is published yet", body.lower())
 
     def test_the_policy_states_the_no_install_boundary(self) -> None:
         body = SECURITY.read_text(encoding="utf-8").lower()
@@ -371,15 +373,22 @@ class ReadmeBadgeCopyTest(unittest.TestCase):
             "releases, downloads, community or website",
         )
 
-    def test_the_readme_keeps_the_platform_badge_and_says_nothing_is_published(self) -> None:
+    def test_the_readme_keeps_the_platform_badge_and_announces_v1_release(self) -> None:
         body = (REPO / "README.md").read_text(encoding="utf-8")
         self.assertIn("platform-Linux%20x86_64", body)
-        self.assertIn("none%20published%20yet", body)
+        self.assertIn("release-v1.0.0", body)
+        self.assertNotIn("none%20published%20yet", body)
 
-    def test_the_install_section_names_this_repository_and_no_release_yet(self) -> None:
+    def test_the_install_section_names_this_repository_and_v1_release_scope(self) -> None:
         body = (REPO / "README.md").read_text(encoding="utf-8")
+        normalized = " ".join(body.lower().split())
         self.assertIn(f"github.com/{FORK_REPO}/releases", body)
-        self.assertIn("No release is published yet", body)
+        self.assertIn("v1.0.0", body)
+        self.assertIn("Fedora 45", body)
+        self.assertIn("minisign -Vm", body)
+        self.assertIn("never downloads, installs or restarts itself", normalized)
+        self.assertIn("no broad compatibility or production-readiness certification", normalized)
+        self.assertNotIn("No release is published yet", body)
 
 
 if __name__ == "__main__":

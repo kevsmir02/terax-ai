@@ -5,11 +5,11 @@ plus an authored Arch recipe, so the updater evaluation (#37) and graphical/pack
 (#44) have something concrete to install. A candidate is not a release and this document never
 claims package-manager or graphical validation.
 
-## What a version tag does: run the gate, publish nothing
+## What a version tag does: gate, sign, and publish
 
-A `v<major>.<minor>.<patch>` tag now starts `.github/workflows/release.yml`. It does not publish,
-and this fork has never published. The tag starts a decision made by one script,
-`scripts/release_gate.py`, which has no publish path at all — it can only answer and print why:
+A `v<major>.<minor>.<patch>` tag starts `.github/workflows/release.yml`. Its `build-candidate`
+job stays strictly read-only (`contents: read`, `checks: read`) and relies on `scripts/release_gate.py`,
+which has no publish path at all and can only decide and print why:
 
 | Precondition | Refusal codes |
 | --- | --- |
@@ -50,11 +50,15 @@ unexercised. No stable release is published yet:
 | Remaining gate | Owned by |
 | --- | --- |
 | RPM version upgrade/remove lifecycle and any unconfirmed physical IME/clipboard or live vendor CLI turn/hook checks | issue #44 (manual/maintainer) |
-| The first public stable release and its support claims | issue #45 |
+| Hosted `v1.0.0` tag workflow execution and live release discovery verification | issue #45 |
 
-The release workflow remains non-publishing (`contents: read`/`checks: read`, no release-upload
-action, and `scripts/release_gate.py` still refuses whenever CI evidence is missing, tags disagree,
-signatures fail verification under the committed key, or signing secrets are absent).
+In `.github/workflows/release.yml`, `build-candidate` keeps `contents: read` and `checks: read` and
+uploads `linux-x86_64-packages` plus `release-gate-reports`. Only on a pushed `v*` tag (never on
+`workflow_dispatch`) does the separate `publish-release` job (`contents: write`, no signing
+secrets) run `scripts/release_verify.py` + `sha256sum -c SHA256SUMS` and publish the GitHub
+Release via `gh release create --verify-tag`. `scripts/release_gate.py` still refuses whenever CI
+evidence is missing, tags disagree, signatures fail verification under the committed key, or
+signing secrets are absent.
 
 **Exercising it safely.** No tag and no public release are needed:
 
@@ -88,9 +92,10 @@ job, non-green CI, missing signing input, unsettled/settled contract, missing or
 `latest.json`, and signatures that are missing, from another key, over other bytes or bound to
 another version), plus the signer and the provisioning script. The verifier
 (`scripts/minisign.py`) is pinned against a signature produced by the real `tauri signer sign` and
-against RFC 8032's test vector, and the workflow order is pinned by the guard test. **Not
-validated:** a real hosted run of the workflow itself (no tagged release has been run through
-GitHub Actions yet), and any publication (that is #45's job).
+against RFC 8032's test vector, and the workflow order is pinned by `scripts/tests/test_ci_workflows.py`
+and `scripts/tests/test_release_verify.py`. Live hosted execution of `.github/workflows/release.yml`
+and live verification of `https://github.com/kevsmir02/terax-ai/releases/latest/download/latest.json`
+occur when tag `v1.0.0` is pushed (#45).
 
 Updates are never installed by the application. A user installs or upgrades the RPM/DEB with
 their package manager (`dnf`, `apt`); the application never downloads, installs or restarts

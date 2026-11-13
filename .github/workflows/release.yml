@@ -1,22 +1,18 @@
-name: Release gate
+name: Release gate and publication
 
-# A version tag is a claim, and this workflow exists to check it. It never publishes: the gate is
-# `scripts/release_gate.py`, which has no publish path and refuses unless
+# A version tag is a claim, and `build-candidate` verifies it before anything can publish:
+# `scripts/release_gate.py` refuses unless
 #
 #   * the tag agrees with the application version and is a stable `v<major>.<minor>.<patch>` tag,
 #   * every job `ci.yml` declares is green for exactly the tagged commit,
 #   * the candidate set was built from that same commit and hashes to its recorded checksums, and
-#   * publication identity and signing trust are decided.
+#   * publication identity and signing trust are decided and every signature verifies under the
+#     committed minisign public key.
 #
-# The publication identity (`Codr` / `kevsmir02/terax-ai`) and minisign public trust root
-# (`94097B75DB498B21`) are settled in `src/modules/updater/releaseContract.json`
-# (`"provisional": false`), while this workflow remains non-publishing: it stages and signs
-# artifacts and runs `scripts/release_gate.py`, which refuses whenever CI evidence, tags, signing
-# secrets, or signature verification against the committed public key are missing or mismatched.
-#
-# `workflow_dispatch` with `dry_run: true` is the safe exercise path: the whole gate - including
-# the artifact-identity stage - runs against the local candidate set and prints its decision,
-# while still uploading only a run-scoped workflow artifact.
+# `build-candidate` remains strictly read-only (`contents: read`, `checks: read`). Only when a real
+# `v*` tag push passes both gates without `--dry-run` does the separate `publish-release` job run
+# (`contents: write`, no signing secrets) to verify the gate report and checksums and create the
+# GitHub Release. `workflow_dispatch` never publishes.
 
 on:
   push:
@@ -43,9 +39,12 @@ jobs:
     # formats come from `bundle.targets` in `src-tauri/tauri.conf.json` (`rpm`, `deb`), and the
     # packaging runner builds exactly those two, so there is no AppImage, no macOS leg, no Windows
     # leg and no aarch64 leg to keep in step.
-    name: gate + candidate (linux x86-64, no publication)
+    name: gate + candidate (linux x86-64, read-only)
     runs-on: ubuntu-22.04
     timeout-minutes: 120
+    outputs:
+      tag: ${{ steps.target.outputs.tag }}
+      commit: ${{ steps.target.outputs.commit }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -267,8 +266,79 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: linux-x86_64-packages
+          path: linux-packages/
+          if-no-files-found: error
+
+      - name: Upload the release-gate reports
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-gate-reports
           path: |
-            linux-packages/
             ${{ runner.temp }}/gate-preconditions.json
             ${{ runner.temp }}/gate-artifacts.json
           if-no-files-found: error
+
+  publish-release:
+    name: publish release (linux x86-64)
+    needs: build-candidate
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.build-candidate.outputs.commit }}
+          persist-credentials: false
+
+      - name: Download gated candidate artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: linux-x86_64-packages
+          path: linux-packages
+
+      - name: Download release-gate decision reports
+        uses: actions/download-artifact@v7
+        with:
+          name: release-gate-reports
+          path: gate-reports
+
+      - name: Verify gate decision, checksums, and signatures before publication
+        run: |
+          set -euo pipefail
+          python3 scripts/release_verify.py \
+            --candidate linux-packages \
+            --gate-report gate-reports/gate-artifacts.json \
+            --tag "${{ needs.build-candidate.outputs.tag }}" \
+            --commit "${{ needs.build-candidate.outputs.commit }}" \
+            --notes-out "$RUNNER_TEMP/release-body.md"
+          (cd linux-packages && sha256sum -c SHA256SUMS)
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ needs.build-candidate.outputs.tag }}"
+          product="$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import packaging; print(packaging.candidate().product_name)')"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::error::release $tag already exists; refusing to overwrite an existing release"
+            exit 1
+          fi
+          files=(
+            linux-packages/*.rpm
+            linux-packages/*.deb
+            linux-packages/PKGBUILD
+            linux-packages/*.minisig
+            linux-packages/SHA256SUMS
+            linux-packages/manifest.json
+            linux-packages/latest.json
+          )
+          gh release create "$tag" \
+            --verify-tag \
+            --title "$product $tag" \
+            --notes-file "$RUNNER_TEMP/release-body.md" \
+            --latest \
+            "${files[@]}"

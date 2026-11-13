@@ -103,10 +103,10 @@ Terax adalah lingkungan pengembangan (ADE) ringan, sumber terbuka, berfokus pada
 Install the RPM (`sudo dnf install ./codr-*.x86_64.rpm`) or the DEB (`sudo apt
 install ./codr_*_amd64.deb`) from the
 [Releases](https://github.com/kevsmir02/terax-ai/releases/latest) page with your package manager.
-Fedora 44 KDE Plasma on Wayland is the primary validation target; Debian 13 still needs an
-actual graphical WebKitGTK session, and package install/upgrade validation is ticket #44.
-`packaging/arch/PKGBUILD` carries an Arch recipe that is authored but **not built**, so it is
-not a validated Arch claim. The application never downloads, installs or restarts itself.
+Fedora 45 KDE Plasma on Wayland is the validated target (#44); Debian 13 graphical WebKitGTK
+validation was waived for personal-tool scope and `packaging/arch/PKGBUILD` is authored and signed
+but **not built** (`makepkg` has not been run). The application never downloads, installs or
+restarts itself.
 
 On Wayland with rendering glitches, try `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
 
