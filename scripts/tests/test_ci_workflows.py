@@ -601,11 +601,15 @@ class DocumentationPlatformClaimTest(unittest.TestCase):
         # The bug-report dropdown and the PR checklist are where a user or contributor learns
         # which platforms are in scope, so they carry the same commitment as the README.
         bug_report = text(REPO / ".github/ISSUE_TEMPLATE/bug_report.yml")
-        options = [line.strip().lstrip("- ").strip() for line in bug_report.splitlines()
-                   if line.strip().startswith("- ") and "Linux" in line]
-        self.assertTrue(options, "the bug report must still offer the supported platforms")
+        # The form asks for the artifact (this fork ships packages, not platforms) and states the
+        # narrowed platform commitment in its own words; an OS dropdown would restate the same
+        # fact a second time and drift from it.
+        self.assertIn("Linux x86-64", bug_report)
+        for artifact in ("RPM package", "DEB package", "Arch recipe built locally"):
+            self.assertIn(artifact, bug_report)
         self.assertNotIn("Windows", bug_report)
         self.assertNotIn("macOS", bug_report)
+        self.assertNotIn("AppImage", bug_report)
         pull_request = text(REPO / ".github/PULL_REQUEST_TEMPLATE.md")
         self.assertNotIn("macOS / Linux / Windows", pull_request)
         self.assertIn("Linux x86-64 only", pull_request)

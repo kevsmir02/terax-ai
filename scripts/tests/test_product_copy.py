@@ -255,5 +255,132 @@ class DistroValidationReferenceTest(unittest.TestCase):
             )
 
 
+SECURITY = REPO / "SECURITY.md"
+ISSUE_TEMPLATES = REPO / ".github/ISSUE_TEMPLATE"
+FORK_REPO = "kevsmir02/terax-ai"
+
+# Hosts and counters that belong to the upstream project or its community. Naming upstream as the
+# upstream project is honest; sending a reader there for this fork's releases, security reports or
+# support is not. Matched against prose and YAML.
+UPSTREAM_ROUTES = (
+    re.compile(r"security@terax\.app", re.IGNORECASE),
+    re.compile(r"https?://terax\.app", re.IGNORECASE),
+    re.compile(r"discord\.gg", re.IGNORECASE),
+    re.compile(r"youtube\.com/@crynta", re.IGNORECASE),
+    re.compile(r"shields\.io/github/(v/release|downloads)/crynta/", re.IGNORECASE),
+    re.compile(r"crynta/terax-ai/releases", re.IGNORECASE),
+)
+
+
+def upstream_route_lines(body: str, name: str) -> list[str]:
+    found: list[str] = []
+    for number, line in enumerate(body.splitlines(), start=1):
+        if any(pattern.search(line) for pattern in UPSTREAM_ROUTES):
+            found.append(f"{name}:{number}: {line.strip()}")
+    return found
+
+
+class SecurityPolicyCopyTest(unittest.TestCase):
+    """`SECURITY.md` must describe this fork's own disclosure route and its real trust state.
+
+    Upstream's address accepted reports for a product this fork does not ship, and the inherited
+    claim "Signed releases. Updates are verified before they're applied." was false here: no signing
+    key is provisioned and the tagged-release gate refuses publication until one is. A security
+    policy that overstates either sends reporters to the wrong maintainer or promises a check that
+    does not run.
+    """
+
+    def test_the_policy_says_this_is_an_unofficial_candidate_build(self) -> None:
+        # Prose wraps: compare collapsed whitespace, or a reflow breaks the assertion.
+        body = " ".join(SECURITY.read_text(encoding="utf-8").lower().split())
+        self.assertIn("unofficial", body)
+        self.assertIn("not affiliated", body)
+        self.assertIn("candidate build", body)
+
+    def test_the_policy_routes_reports_to_this_repository(self) -> None:
+        body = SECURITY.read_text(encoding="utf-8")
+        self.assertIn(f"github.com/{FORK_REPO}/security/advisories/new", body)
+        self.assertIn("Report a vulnerability", body)
+
+    def test_the_policy_does_not_route_reports_upstream(self) -> None:
+        body = SECURITY.read_text(encoding="utf-8")
+        self.assertEqual(
+            upstream_route_lines(body, "SECURITY.md"),
+            [],
+            "SECURITY.md sends a reporter to an upstream route this fork does not own",
+        )
+
+    def test_the_policy_does_not_claim_signing_that_is_not_provisioned(self) -> None:
+        body = SECURITY.read_text(encoding="utf-8")
+        self.assertNotRegex(
+            body,
+            re.compile(r"signed releases?[^.]{0,40}verified", re.IGNORECASE),
+            "SECURITY.md claims releases are signed and verified; no key is provisioned",
+        )
+        self.assertIn("no key is provisioned", body.lower())
+
+    def test_the_policy_states_the_no_install_boundary(self) -> None:
+        body = SECURITY.read_text(encoding="utf-8").lower()
+        self.assertIn("never downloads, installs or restarts itself", body)
+        self.assertIn("handoff", body)
+
+
+class IssueTemplateCopyTest(unittest.TestCase):
+    """The templates ask for what this fork builds and routes security upstream-free."""
+
+    def templates(self) -> dict[str, str]:
+        return {
+            path.name: path.read_text(encoding="utf-8")
+            for path in sorted(ISSUE_TEMPLATES.glob("*.yml"))
+        }
+
+    def test_the_bug_form_asks_for_a_fork_package_and_platform(self) -> None:
+        body = self.templates()["bug_report.yml"].lower()
+        self.assertIn("rpm", body)
+        self.assertIn("deb", body)
+        self.assertIn("webkitgtk", body)
+        self.assertIn("distribution and desktop", body)
+
+    def test_no_template_lists_an_unsupported_platform_as_an_option(self) -> None:
+        for name, body in self.templates().items():
+            for foreign in ("macos", "windows", "appimage"):
+                self.assertNotIn(
+                    foreign,
+                    body.lower(),
+                    f"{name} still asks about {foreign}, which this fork does not build",
+                )
+
+    def test_no_template_routes_to_an_upstream_surface(self) -> None:
+        for name, body in self.templates().items():
+            self.assertEqual(
+                upstream_route_lines(body, name),
+                [],
+                f"{name} still points a reporter at an upstream surface",
+            )
+
+
+class ReadmeBadgeCopyTest(unittest.TestCase):
+    """The README's release/download counters must not read as this fork's numbers."""
+
+    def test_the_readme_carries_no_upstream_release_counter(self) -> None:
+        body = (REPO / "README.md").read_text(encoding="utf-8")
+        self.assertEqual(
+            upstream_route_lines(body, "README.md"),
+            [],
+            "README.md still shows an upstream counter or sends the reader to upstream's "
+            "releases, downloads, community or website",
+        )
+
+    def test_the_readme_keeps_the_platform_badge_and_says_nothing_is_published(self) -> None:
+        body = (REPO / "README.md").read_text(encoding="utf-8")
+        self.assertIn("platform-Linux%20x86_64", body)
+        self.assertIn("none%20published%20yet", body)
+
+    def test_the_install_section_names_this_repository_and_no_release_yet(self) -> None:
+        body = (REPO / "README.md").read_text(encoding="utf-8")
+        self.assertIn(f"github.com/{FORK_REPO}/releases", body)
+        self.assertIn("No release is published yet", body)
+
+
 if __name__ == "__main__":
     unittest.main()

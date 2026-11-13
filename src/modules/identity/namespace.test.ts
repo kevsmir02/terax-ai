@@ -15,7 +15,19 @@ interface NamespaceTable {
   appIdentifier: string;
   namespace: string;
   envPrefix: string;
-  upstream: { appIdentifier: string; namespace: string; envPrefix: string };
+  packaging: {
+    productName: string;
+    vendor: string;
+    packageName: string;
+    cliBinaryName: string;
+  };
+  upstream: {
+    appIdentifier: string;
+    namespace: string;
+    envPrefix: string;
+    productName: string;
+    publisher: string;
+  };
 }
 
 const table = readJson<NamespaceTable>("src/modules/identity/namespace.json");
@@ -29,6 +41,18 @@ describe("fork identity namespace", () => {
     );
     expect(table.namespace).not.toBe(table.upstream.namespace);
     expect(table.envPrefix).not.toBe(table.upstream.envPrefix);
+  });
+
+  it("does not adopt upstream's product or publisher name", () => {
+    // The package metadata is what a distribution index shows. Reading a value from the identity
+    // table is not enough if the value itself is upstream's: that is a silent upstream migration
+    // (issue #40, acceptance 2), not an import.
+    expect(table.packaging.productName).not.toBe(table.upstream.productName);
+    expect(table.packaging.vendor).not.toBe(table.upstream.publisher);
+    expect(table.packaging.packageName).toBe(table.namespace);
+    expect(table.packaging.cliBinaryName.startsWith(`${table.namespace}-`)).toBe(
+      true,
+    );
   });
 
   it("matches the Tauri config literal", () => {

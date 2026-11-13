@@ -1,22 +1,18 @@
 <div align="center">
-  <img src="public/logo.png" width="144" height="144" alt="Terax" />
-  <h1>Terax</h1>
+  <img src="public/logo.png" width="144" height="144" alt="Terax Workspace" />
+  <h1>Terax Workspace</h1>
 
-  <p><strong>Lightweight terminal-first workspace for external coding agents.</strong></p>
+  <p><strong>Unofficial Linux fork of Terax: a lightweight terminal-first workspace for external coding agents.</strong></p>
   <p>
-    <a href="https://terax.app">Website</a>
+    This repository is not affiliated with Crynta.
+    <a href="https://github.com/crynta/terax-ai">Upstream project</a>
     ·
-    <a href="https://terax.app/docs">Docs</a>
-    ·
-    <a href="https://github.com/crynta/Terax-website">Website's source code</a>
+    <a href="SECURITY.md">Security</a>
   </p>
 
   <p>
-    <img src="https://img.shields.io/github/v/release/crynta/terax-ai?label=version&color=blue" alt="version" />
-    <img src="https://img.shields.io/github/downloads/crynta/terax-ai/total?label=downloads&color=blue" alt="downloads" />
     <img src="https://img.shields.io/badge/platform-Linux%20x86_64-lightgrey" alt="platform" />
-    <a href="https://discord.gg/tyveTUyEp7"><img src="https://img.shields.io/badge/Discord-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
-    <a href="https://www.youtube.com/@crynta"><img src="https://img.shields.io/badge/Youtube-FF0000?logo=youtube&logoColor=white" alt="YouTube" /></a>
+    <img src="https://img.shields.io/badge/release-none%20published%20yet-lightgrey" alt="no release published yet" />
   </p>
 </div>
 
@@ -117,12 +113,13 @@ Terax is a lightweight open-source terminal-first development workspace built on
 ## Install
 
 This fork builds and distributes **Linux x86-64 only**: one RPM and one DEB per release, plus an
-authored (not yet built) Arch recipe in `packaging/arch`. Download the package from the
-[Releases](https://github.com/crynta/terax-ai/releases/latest) page (the upstream project's page
-until this fork publishes its own release channel) and install it with your distribution's package
-tool. The app checks for a stable update in the background and never downloads, installs or restarts
-itself: updates are installed with your package tool (pacman/AUR on Arch, apt/dnf for the DEB/RPM
-packages).
+authored (not yet built) Arch recipe in `packaging/arch`. **No release is published yet**: the first
+stable one is gated on artifact, resource and distribution evidence (issue #45), so until then build
+from source or use a locally built candidate package. Once it exists, the package will be on this
+repository's [Releases](https://github.com/kevsmir02/terax-ai/releases) page, installed with your
+distribution's package tool. Update discovery is provisioned with that channel: while it is live the
+app checks for a stable update and never downloads, installs or restarts itself — updates are
+installed with your package tool (pacman/AUR on Arch, apt/dnf for the DEB/RPM packages).
 
 ### Linux notes
 
