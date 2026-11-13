@@ -191,15 +191,13 @@ jobs:
       - name: Write the release notes from the tag
         run: |
           set -euo pipefail
-          # The tag annotation is the release note when it has one; the signer writes the same
-          # text into latest.json. Nothing here is a publication.
-          git tag -l --format='%(contents)' "${{ steps.target.outputs.tag }}" \
-            > "$RUNNER_TEMP/release-notes.md"
-          if [ ! -s "$RUNNER_TEMP/release-notes.md" ]; then
-            # No product name or identity here: `scripts/packaging.py` is the one source, and
-            # the signer fills its own note when the tag carries none.
-            printf 'Stable release %s.\n' "${{ steps.target.outputs.tag }}" \
-              > "$RUNNER_TEMP/release-notes.md"
+          # Only an annotated tag carries release notes of its own; a lightweight tag leaves the
+          # file empty so the signer's default_notes fallback supplies ADR 0010 disclosures.
+          tag="${{ steps.target.outputs.tag }}"
+          if [ "$(git cat-file -t "refs/tags/$tag")" = "tag" ]; then
+            git tag -l --format='%(contents)' "$tag" > "$RUNNER_TEMP/release-notes.md"
+          else
+            : > "$RUNNER_TEMP/release-notes.md"
           fi
 
       - name: Sign the staged artifacts with the release key

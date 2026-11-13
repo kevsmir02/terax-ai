@@ -48,6 +48,14 @@ const macrotask = () =>
     channel.port2.postMessage(0);
   });
 
+async function readDiskText(target: string): Promise<string> {
+  const result = await invoke<{ kind: string; content?: string }>(
+    "fs_read_file",
+    { path: target, workspace: { kind: "local" }, force: false },
+  ).catch((): { kind: string; content?: string } => ({ kind: "failed" }));
+  return result.kind === "text" ? (result.content ?? "") : "";
+}
+
 /**
  * Phases that deliberately leave the window hidden, minimized or behind another window.
  * Bringing it back first would erase the very state the phase exists to record (and on Linux
@@ -1513,13 +1521,6 @@ async function workflowScenario(
   //    save produces the reviewed conflict dialog.
   const workflow = scenario.workflow;
   if (workflow) {
-    const readDiskText = async (target: string): Promise<string> => {
-      const result = await invoke<{ kind: string; content?: string }>(
-        "fs_read_file",
-        { path: target, workspace: { kind: "local" }, force: false },
-      ).catch((): { kind: string; content?: string } => ({ kind: "failed" }));
-      return result.kind === "text" ? (result.content ?? "") : "";
-    };
     const bufferText = (tabId: number) => run.app().readEditor(tabId) ?? "";
     const dialogText = () =>
       Array.from(document.querySelectorAll('[role="dialog"]'))
@@ -6862,13 +6863,6 @@ async function recoveryScenario(
     }
     return "";
   };
-  const readDiskText = async (path: string): Promise<string> => {
-    const result = await invoke<{ kind: string; content?: string }>(
-      "fs_read_file",
-      { path, workspace: { kind: "local" }, force: false },
-    ).catch((): { kind: string; content?: string } => ({ kind: "failed" }));
-    return result.kind === "text" ? (result.content ?? "") : "";
-  };
   const open = async (path: string): Promise<number> => {
     const baseLine = (await readDiskText(path)).split("\n")[0] ?? "";
     const tabId = run.app().openFileTab(path, true);
@@ -7101,13 +7095,6 @@ async function candidateScenario(
   };
   const app = () => run.app();
   const bufferText = (tabId: number) => app().readEditor(tabId) ?? "";
-  const readDiskText = async (target: string): Promise<string> => {
-    const result = await invoke<{ kind: string; content?: string }>(
-      "fs_read_file",
-      { path: target, workspace: { kind: "local" }, force: false },
-    ).catch((): { kind: string; content?: string } => ({ kind: "failed" }));
-    return result.kind === "text" ? (result.content ?? "") : "";
-  };
 
   try {
     await run.booted();

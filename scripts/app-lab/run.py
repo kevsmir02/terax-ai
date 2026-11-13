@@ -513,14 +513,26 @@ class ReportServer:
                     self._send(404, b"not found", "text/plain")
 
             def do_POST(self):
-                body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
-                if self.path.split("?")[0] == "/interfere":
+                path = self.path.split("?")[0]
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    length = -1
+                if length < 0:
+                    self.close_connection = True
+                    self._send(400, b'{"ok": false, "error": "invalid Content-Length"}', "application/json")
+                    return
+                if path == "/interfere":
                     if not outer.loopback(self.client_address[0]):
+                        self.close_connection = True
                         self._send(403, b'{"ok": false, "error": "loopback only"}', "application/json")
                         return
-                    if len(body) > INTERFERE_MAX_BODY:
+                    if length > INTERFERE_MAX_BODY:
+                        self.close_connection = True
                         self._send(413, b'{"ok": false, "error": "request too large"}', "application/json")
                         return
+                body = self.rfile.read(length)
+                if path == "/interfere":
                     try:
                         request = json.loads(body)
                     except ValueError:

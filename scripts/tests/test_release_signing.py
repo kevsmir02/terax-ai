@@ -412,6 +412,40 @@ class SigningTest(unittest.TestCase):
             f"expected keyId refusal, got {problems}",
         )
 
+    def test_a_signature_without_version_in_trusted_comment_is_refused(self) -> None:
+        directory = self.tmp / "versionless-sig"
+        directory.mkdir()
+        identity = packaging.candidate()
+        for name, payload in (
+            (f"{identity.slug}-{VERSION}-1.x86_64.rpm", b"rpm"),
+            (f"{identity.slug}_{VERSION}_amd64.deb", b"deb"),
+            ("PKGBUILD", b"pkgname=terax-workspace\n"),
+        ):
+            (directory / name).write_bytes(payload)
+            envelope = minisign.sign_bytes(
+                self.key, payload,
+                f"timestamp:123\tfile:{name}",
+                prehashed=True,
+            )
+            (directory / f"{name}.minisig").write_text(envelope, encoding="utf-8")
+        with self.assertRaises(release_signing.SigningError) as caught:
+            release_signing.sign_candidate(
+                directory=directory, version=VERSION, tag=TAG, commit=COMMIT, notes="notes",
+                trusted=self.trusted, endpoint=ENDPOINT, from_signatures=True,
+            )
+        self.assertIn("version", str(caught.exception))
+        self.assertFalse((directory / "latest.json").exists())
+
+    def test_default_notes_include_adr_0010_disclosures_and_upstream_base(self) -> None:
+        notes = release_signing.default_notes(VERSION)
+        self.assertIn("unofficial", notes.lower())
+        self.assertIn("not affiliated", notes.lower())
+        self.assertIn("crynta", notes.lower())
+        contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
+        base_commit = (contract.get("upstream") or {}).get("baseCommit", "")
+        self.assertRegex(base_commit, r"^[0-9a-f]{40}$")
+        self.assertIn(base_commit[:7], notes)
+
     def test_show_key_id_works_standalone_without_signing_arguments(self) -> None:
         directory = signed_candidate(self.tmp / "show-key", self.key)
         result = self.run_signing("--show-key-id", str(directory / "PKGBUILD.minisig"))
