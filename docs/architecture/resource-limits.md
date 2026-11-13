@@ -10,7 +10,7 @@ track) states the intent, this record states the approved values.
 when choosing the "Balanced" option in issue **#4** (workspace ticket 03,
 "Approve initial document and decoded-resource limits"). The numbers are data in
 `src/modules/preview/lib/limits.ts`; this document explains them. Neither
-replaces an issue #42 decision about whole-application budgets.
+replaces an issue #43 decision about whole-application budgets.
 
 ## Evidence
 
@@ -268,7 +268,7 @@ Do not add one to the other, and do not derive one from the other.
 
 ## Deliberately not decided here
 
-- **Whole-application startup time and memory targets.** Issue #42 accepts
+- **Whole-application startup time and memory targets.** Issue #43 accepts
   those from measured final evidence. These viewer ceilings are not a startup
   budget, not a total-RSS target and not evidence that a lightweight release
   gate is met.
