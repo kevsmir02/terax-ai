@@ -110,7 +110,7 @@ rendered and stayed responsive in every phase.
 ### What was observed, per reader function
 
 Navigation, zoom, search and text selection all happen **inside WebKit's own viewer document**.
-This harness cannot drive them (WebKitGTK exposes no native input injection; that is ticket 32) and
+This harness cannot drive them (WebKitGTK exposes no native input injection) and
 the app page cannot read them. What *can* be asserted from the real app is the boundary:
 
 | function | what the app can observe | what was measured |

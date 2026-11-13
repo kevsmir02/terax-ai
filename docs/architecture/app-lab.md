@@ -219,8 +219,9 @@ frame's document really stopping rather than as an attribute change:
   skipped when no window could take focus;
 - `hide` unmaps the window: the frame unloads while `document.visibilityState` is not `visible`,
   and showing the window reloads it; `minimize` records whatever signal this desktop reports and
-  asserts only that the frame's state agrees with it (Wayland compositors need not report
-  iconification, and WebKitGTK exposes no occlusion state);
+  asserts the frame unloaded only when that signal says hidden. A compositor that never reports
+  iconification is recorded as `SKIP minimize`, not as a pass: the unmapped-window step above is
+  the exercised hidden case (WebKitGTK exposes no occlusion state either);
 - closing the tab releases the frame and the fixture server still answers.
 
 The step list and the observed signals (`blurExercised`, minimize `visibility`, `reportedHidden`)
@@ -475,4 +476,4 @@ macOS for the measured scenarios: one display (2048x1152 points at 100 Hz here),
 with default preferences (vibrancy off), no AI panel traffic, a synthetic agent instead of Codex.
 Footprint figures vary between runs because garbage collection timing decides when dead native
 objects are released; compare medians of repeats and prefer the timeline floor and the after-GC
-value. Linux has the `workflow`, `preview`, `images` and `media` acceptance scenarios plus the measured `resource`, `stress` and `startup` scenarios (WebKitGTK, Wayland): memory is Pss from `/proc`, workload processes are separate, and every report states its own `limitations` rather than claiming what was not sampled. The preview scenario also records what the platform cannot report: WebKitGTK has no occlusion state, so a preview covered by another window keeps running, and minimize follows the compositor. The media scenario records the decoder outcomes the webview reports; playback can only be started programmatically (muted) because WebKitGTK has no trusted input injection, and that limitation is named when it applies.
+value. Linux has the `workflow`, `preview`, `images` and `media` acceptance scenarios plus the measured `resource`, `stress` and `startup` scenarios (WebKitGTK, Wayland): memory is Pss from `/proc`, workload processes are separate, and every report states its own `limitations` rather than claiming what was not sampled. The preview scenario also records what the platform cannot report: WebKitGTK has no occlusion state, so a preview covered by another window keeps running, and a minimize the compositor never reports is recorded as skipped rather than as a pass. The media scenario records the decoder outcomes the webview reports; playback can only be started programmatically (muted) because WebKitGTK has no trusted input injection, and that limitation is named when it applies.

@@ -748,7 +748,8 @@ mod platform {
     //! WebKitGTK has no public API for the web/network/GPU process ids and no occlusion state,
     //! so the ids come from a `/proc` scan of this process's descendants and visibility is the
     //! window's own state. Focus cannot be forced on Wayland: activation is advisory there.
-    //! Input, live resize, layers and GC stay macOS-only (ticket 32).
+    //! Input, live resize, layers and GC need hooks WebKitGTK does not expose, so they stay
+    //! macOS-only.
 
     use super::*;
     use std::time::{Duration, Instant};
@@ -826,18 +827,18 @@ mod platform {
                 Ok(json!({"ok": state["windowVisible"], "mode": mode, "state": state}))
             }
             WindowAction::ResizeSteps { .. } => Err(
-                "stepped/live resize is macOS-only for now (ticket 32); window sizing is setSize"
+                "stepped/live resize needs a geometry hook WebKitGTK does not expose; window sizing is setSize"
                     .to_string(),
             ),
             WindowAction::Gc => {
-                Err("a forced full GC is not available on WebKitGTK (ticket 32)".to_string())
+                Err("a forced full GC is not available on WebKitGTK".to_string())
             }
             WindowAction::Layers => {
-                Err("the composited layer tree is macOS-only for now (ticket 32)".to_string())
+                Err("the composited layer tree is not available on WebKitGTK".to_string())
             }
             WindowAction::Memory => Ok(memory_report(std::process::id())),
             WindowAction::Key { .. } | WindowAction::Text { .. } => Err(
-                "native key/input-method events are macOS-only for now (ticket 32)".to_string(),
+                "native key/input-method events are not available on WebKitGTK".to_string(),
             ),
         }
     }

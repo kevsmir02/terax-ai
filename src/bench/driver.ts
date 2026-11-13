@@ -1875,9 +1875,10 @@ async function previewScenario(
       `instances ${instances().join(",")}`,
     );
 
-    // Minimize: whatever signal this desktop reports is what the lifecycle must follow. On
-    // Wayland the compositor does not report iconification to the client, so this records the
-    // observed case instead of assuming a minimize is visible to the application.
+    // Minimize: only the signal the application can actually observe is testable. On Wayland a
+    // compositor is not required to report iconification, so a window that stays "visible" to the
+    // webview proves nothing about hidden-tab unloading - the unmapped-window path above is the
+    // exercised hidden case. When the desktop *does* report it, the lifecycle must unload.
     const minimize = await run.native({ cmd: "hide", mode: "miniaturize" });
     await pause(2000);
     const minimized = {
@@ -1888,14 +1889,20 @@ async function previewScenario(
     };
     const signalReported = minimized.visibility !== "visible";
     await run.sync("preview-minimized", { minimize, minimized });
-    await check(
-      "minimize follows the reported signal",
-      minimized.frameLoaded !== signalReported,
-      `reportedHidden=${signalReported} visibility=${minimized.visibility} frameLoaded=${minimized.frameLoaded} miniaturized=${minimized.snapshot.miniaturized}`,
-    );
-    await run.log(
-      `[preview] SIGNAL minimize reported=${signalReported} (Wayland compositors do not report iconification; occlusion is not available on Linux either)`,
-    );
+    if (signalReported) {
+      await check(
+        "reported minimize unloads the frame",
+        !minimized.frameLoaded,
+        `visibility=${minimized.visibility} frameLoaded=${minimized.frameLoaded} miniaturized=${minimized.snapshot.miniaturized}`,
+      );
+    } else {
+      await run.log(
+        "[preview] SKIP minimize: the desktop never reported iconification " +
+          `(visibility=${minimized.visibility} miniaturized=${minimized.snapshot.miniaturized} ` +
+          `windowVisible=${minimized.snapshot.windowVisible}), so this branch proves nothing; ` +
+          "the unmapped-window check above is the exercised hidden case",
+      );
+    }
     const restored = await run.native({ cmd: "show", mode: "miniaturize" });
     try {
       await run.waitFor(
@@ -4953,7 +4960,7 @@ async function mediaScenario(
           name: "Start playback from the visible controls",
           detail:
             `the harness could not start playback programmatically (${message}); ` +
-            "WebKitGTK has no trusted input injection (ticket 32), so press play " +
+            "WebKitGTK has no trusted input injection, so press play " +
             "by hand and confirm audio/video advances, then switch tabs and " +
             "confirm it pauses without resuming on return.",
         });
