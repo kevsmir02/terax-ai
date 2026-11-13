@@ -17,17 +17,17 @@ The wire format is minisign's, not an invention:
 Both minisign algorithms are supported, because both appear in the ecosystem and the gate must
 not guess which one signed a release:
 
-- `Ed` — legacy: Ed25519 over the file bytes directly (the fork's committed discovery fixture).
-- `ED` — prehashed: plain Ed25519 over the 64-byte BLAKE2b-512 digest of the file. This is what
+- `Ed` (legacy): Ed25519 over the file bytes directly (the fork's committed discovery fixture).
+- `ED` (prehashed): plain Ed25519 over the 64-byte BLAKE2b-512 digest of the file. This is what
   `tauri signer sign` emits (verified against its output, see
-  `scripts/tests/test_minisign.py`), so it is the form a release carries. Note that this is
+  `scripts/tests/test_release_signing.py`), so it is the form a release carries. Note that this is
   minisign/libsodium's prehashed construction, not RFC 8032 `Ed25519ph`: there is no `dom2`
   domain-separation prefix. Implementing the RFC variant instead does not verify.
 
 The key id is stored little-endian and displayed reversed, as minisign does, e.g. binary
 `84 24 bb 29 c6 8e e4 d0` prints as `D0E48EC629BB2484`.
 
-`scripts/tests/test_minisign.py` verifies a signature produced by the real Tauri CLI, so this
+`scripts/tests/test_release_signing.py` verifies a signature produced by the real Tauri CLI, so this
 module is pinned to an independent implementation rather than to itself.
 """
 
@@ -299,8 +299,8 @@ def sign_bytes(key: KeyPair, data: bytes, comment: str, *,
                untrusted: str | None = None, prehashed: bool = False) -> str:
     """The four-line signature file text for `data`.
 
-    `prehashed=True` produces minisign's `ED` envelope — the form `tauri signer sign` emits and
-    therefore the form a release carries. The default `Ed` form is the legacy one and is what the
+    `prehashed=True` produces minisign's `ED` envelope (the form `tauri signer sign` emits and
+    therefore the form a release carries). The default `Ed` form is the legacy one and is what the
     committed discovery fixture uses.
     """
     signature = _sign_detached(key.seed, data, prehashed=prehashed)

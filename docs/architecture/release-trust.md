@@ -32,19 +32,19 @@ model were chosen rather than upstream's or a managed package repository.
 A `v<major>.<minor>.<patch>` tag starts `.github/workflows/release.yml`, which runs the gate twice
 around a build:
 
-1. **Before the build** — `scripts/release_gate.py --preconditions-only`: the tag agrees with the
+1. **Before the build** (`scripts/release_gate.py --preconditions-only`): the tag agrees with the
    application version and is stable, every job `ci.yml` declares is green for exactly the tagged
    commit, and publication identity plus signing trust are decided.
-2. **Build and stage** — `scripts/package-candidate/run.py` builds the RPM and DEB; the job stages
+2. **Build and stage** (`scripts/package-candidate/run.py`): builds the RPM and DEB; the job stages
    them, the packaging `manifest.json`, `SHA256SUMS` and the Arch-facing `PKGBUILD` in
    `linux-packages/`.
-3. **Sign** — `tauri signer sign` signs the exact staged bytes with the release key, and
+3. **Sign**: `tauri signer sign` signs the exact staged bytes with the release key, and
    `scripts/release_signing.py` writes one `<artifact>.minisig` per artifact plus `latest.json`.
    With no key in the environment the step refuses by name (`signing-key-missing` /
    `signing-passphrase-missing`) instead of skipping.
-4. **After signing** — `scripts/release_gate.py --candidate linux-packages` verifies the manifest
+4. **After signing** (`scripts/release_gate.py --candidate linux-packages`): verifies the manifest
    and every signature against the staged hashes and the triggering commit.
-5. **Upload** — the signed set leaves as a run-scoped workflow artifact.
+5. **Upload**: the signed set leaves as a run-scoped workflow artifact.
 
 There is no publication code path in this repository: no release object, no upload-to-release
 action, no write permission while the contract is provisional. Creating the draft release and a
@@ -107,7 +107,7 @@ The secret key is a **minisign** secret key file, passphrase-protected, generate
   `TERAX_RELEASE_SIGNING_KEY` and `TERAX_RELEASE_SIGNING_KEY_PASSPHRASE`, only for the signer step.
   `tauri signer sign` reads them; the key material is never echoed, never written into the
   checkout, and the workflow logs only the public key id and the artifact hashes;
-- only the **public** key, its key id and its fingerprint are committed — in
+- only the **public** key, its key id and its fingerprint are committed, in
   `releaseContract.json` (`trust.publicKey`, `trust.provisioned`) once provisioned. That file is the
   single source: the gate reads it, the signing script reads it and the application's contract reads
   it.
@@ -131,14 +131,14 @@ What it does and refuses:
 - **refuses** a destination inside the repository (`destination-inside-repository`);
 - **refuses** to overwrite an existing key (`key-already-exists`); there is no `--force`;
 - **refuses** when `minisign` is missing (`provisioning-tool-missing`);
-- prints only public material — public key file, key id, `sha256:` fingerprint — and never reads or
+- prints only public material (public key file, key id, `sha256:` fingerprint) and never reads or
   prints the secret.
 
 Then, as separate reviewed changes:
 
 1. Commit the trust root: in `src/modules/updater/releaseContract.json` set
    `trust.provisioned = true` and `trust.publicKey` to the public key (the base64 value on the line
-   after `untrusted comment:`, or base64 of the whole `.pub` file — both are accepted). Flipping
+   after `untrusted comment:`, or base64 of the whole `.pub` file; both are accepted). Flipping
    `provisional` to `false` belongs to the same change, together with the endpoint decision it
    stands for.
 2. Add the two repository secrets named above (release-time only).

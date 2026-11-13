@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Generate this fork's offline release-signing key (issue #40, breakdown ticket 39).
 
-Run by the maintainer, once, on a machine they control — never in CI and never in a container
-built from this repository:
+Run by the maintainer, once, on a machine they control (never in CI and never in a container
+built from this repository):
 
     python3 scripts/provision_signing_key.py --directory ~/.config/terax-workspace/release-keys
 
@@ -10,11 +10,11 @@ What it does:
 
 * generates a passphrase-protected minisign keypair with the `minisign` tool (`minisign -G`), so
   custody stays in the standard format the release workflow's signer already reads;
-* refuses to run when a key already exists at the destination — there is no `--force`, because
+* refuses to run when a key already exists at the destination (there is no `--force`, because
   replacing a release key is a documented incident procedure, not a flag
-  (`docs/architecture/release-trust.md`);
+  in `docs/architecture/release-trust.md`);
 * refuses a destination inside the repository, so the secret cannot be committed by accident;
-* prints the **public** key file, its key id and its fingerprint, and nothing else — the secret is
+* prints the **public** key file, its key id and its fingerprint, and nothing else; the secret is
   never read, printed, copied or written by this script.
 
 `--inspect` prints the same public details for an existing key file, which is what a reviewer
@@ -139,7 +139,7 @@ def provision(directory: Path, binary: str) -> int:
     print("     TERAX_RELEASE_SIGNING_KEY          = the base64 secret key file content")
     print("     TERAX_RELEASE_SIGNING_KEY_PASSPHRASE = its passphrase")
     print("  3. store an offline, encrypted copy of the secret key and record where it is in")
-    print("     docs/architecture/release-trust.md — never in this repository.")
+    print("     your password manager (never in this repository).")
     print("  4. delete any local plaintext copy that is not the custody copy.")
     return EXIT_OK
 

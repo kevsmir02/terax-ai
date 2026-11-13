@@ -237,7 +237,7 @@ def default_notes(version: str) -> str:
     # The product name comes from the shared identity table, not a second literal.
     product = packaging.candidate().product_name
     return (
-        f"{product} {version} — stable Linux release (RPM, DEB and the Arch recipe). "
+        f"{product} {version} - stable Linux release (RPM, DEB and the Arch recipe). "
         "Unofficial fork of Terax; not affiliated with Crynta."
     )
 
@@ -260,7 +260,14 @@ def build_manifest(
     `trusted=None` is the unprovisioned-trust-root case: the manifest records the key id that
     signed it and no fingerprint, and the gate refuses until the contract carries the public key.
     """
-    by_kind = {artifact.kind: artifact for artifact in artifacts}
+    by_kind: dict[str, Artifact] = {}
+    for artifact in artifacts:
+        if artifact.kind in by_kind:
+            raise SigningError(
+                f"multiple {artifact.kind} artifacts staged ({by_kind[artifact.kind].name} and "
+                f"{artifact.name}); expected exactly one per format"
+            )
+        by_kind[artifact.kind] = artifact
     missing = [kind for kind in TARGET_ARTIFACTS.values() if kind not in by_kind]
     if missing:
         raise SigningError(
@@ -344,14 +351,22 @@ def sign_candidate(
 ) -> dict:
     """Sign (or collect signatures for) every artifact and write `latest.json`.
 
-    Returns the manifest document that was written. Raises `SigningError` — never writes a
-    half-signed release — when the set is incomplete, a signature is missing, or a supplied
+    Returns the manifest document that was written. Raises `SigningError` (never writes a
+    half-signed release) when the set is incomplete, a signature is missing, or a supplied
     signature does not verify under the key it is supposed to belong to.
     """
     root = Path(directory)
     artifacts = staged_artifacts(root)
     if not artifacts:
         raise SigningError(f"{root} holds no rpm, deb or {ARCH_ARTIFACT} artifact to sign")
+    seen_kinds: dict[str, str] = {}
+    for artifact in artifacts:
+        if artifact.kind in seen_kinds:
+            raise SigningError(
+                f"multiple {artifact.kind} artifacts staged ({seen_kinds[artifact.kind]} and "
+                f"{artifact.name}); expected exactly one per format"
+            )
+        seen_kinds[artifact.kind] = artifact.name
 
     if key is not None:
         signer_key = minisign.TrustedKey(key.key_id, key.public_key)
@@ -367,21 +382,24 @@ def sign_candidate(
     signatures: dict[str, str] = {}
     observed_key_ids: set[str] = set()
     for artifact in artifacts:
-        if key is not None:
-            comment = minisign.trusted_comment(
-                file_name=artifact.name, version=version, timestamp=timestamp
-            )
-            text = minisign.sign_bytes(
-                key, artifact.path.read_bytes(), comment, prehashed=prehashed
-            )
-        else:
-            existing = read_existing_signature(root, artifact.name)
-            if existing is None:
-                raise SigningError(
-                    f"{artifact.name} has no signature: run `tauri signer sign` for it first"
+        try:
+            if key is not None:
+                comment = minisign.trusted_comment(
+                    file_name=artifact.name, version=version, timestamp=timestamp
                 )
-            text = existing
-        parsed = minisign.parse_signature(text)
+                text = minisign.sign_bytes(
+                    key, artifact.path.read_bytes(), comment, prehashed=prehashed
+                )
+            else:
+                existing = read_existing_signature(root, artifact.name)
+                if existing is None:
+                    raise SigningError(
+                        f"{artifact.name} has no signature: run `tauri signer sign` for it first"
+                    )
+                text = existing
+            parsed = minisign.parse_signature(text)
+        except minisign.MinisignError as error:
+            raise SigningError(f"{artifact.name}: {error}") from error
         observed_key_ids.add(parsed.key_id_text)
         signed_version = minisign.trusted_comment_version(parsed.trusted_comment)
         if signed_version is not None and signed_version != version:
@@ -503,8 +521,15 @@ def update_problems(
         )
         signing = {}
     announced_key_id = str(signing.get("keyId") or "")
-    if trusted is not None:
-        if announced_key_id and announced_key_id != trusted.key_id_text:
+    if announced_key_id == "":
+        problems.append(
+            (
+                "artifact-update-manifest-invalid",
+                "latest.json names no signing key, so no signature can be attributed",
+            )
+        )
+    elif trusted is not None:
+        if announced_key_id != trusted.key_id_text:
             problems.append(
                 (
                     "artifact-signature-key-mismatch",
@@ -520,13 +545,6 @@ def update_problems(
                     "latest.json's key fingerprint does not match the committed public key",
                 )
             )
-    elif announced_key_id == "":
-        problems.append(
-            (
-                "artifact-update-manifest-invalid",
-                "latest.json names no signing key, so no signature can be attributed",
-            )
-        )
 
     platforms = document.get("platforms")
     if not isinstance(platforms, dict) or not platforms:
@@ -773,8 +791,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"signing key id: {parsed.key_id_text}")
         return 0
 
-    contract = load_contract(Path(arguments.contract))
-    trusted = trusted_key_from_contract(contract)
+    try:
+        contract = load_contract(Path(arguments.contract))
+        trusted = trusted_key_from_contract(contract)
+    except (OSError, json.JSONDecodeError, minisign.MinisignError) as error:
+        print(f"refusing: contract-unreadable: {error}", file=sys.stderr)
+        return 3
     environment = dict(__import__("os").environ)
     key = None if arguments.from_signatures else signing_key_from_environment(environment)
     if not arguments.from_signatures and key is None:

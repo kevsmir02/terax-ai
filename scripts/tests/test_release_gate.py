@@ -585,6 +585,34 @@ class SignedUpdateManifestTest(GateTestCase):
             },
         )
 
+    def test_tampered_pkgbuild_with_updated_manifest_checksum_is_still_refused(self) -> None:
+        pkgbuild = self.candidate / "PKGBUILD"
+        tampered = b"pkgname=terax-workspace\n# tampered\n"
+        pkgbuild.write_bytes(tampered)
+        document = self.update_manifest()
+        document["platforms"]["linux-x86_64-arch"]["sha256"] = packaging.sha256_bytes(tampered)
+        document["platforms"]["linux-x86_64-arch"]["size"] = len(tampered)
+        self.write_update_manifest(document)
+        decision = self.decide(contract_path=self.settled())
+        self.assertFalse(decision.publishable)
+        self.assertIn("artifact-signature-invalid", codes(decision))
+
+    def test_a_corrupted_signature_blob_is_refused(self) -> None:
+        deb = next(self.candidate.glob("*.deb"))
+        sig_path = self.candidate / f"{deb.name}.minisig"
+        lines = sig_path.read_text(encoding="utf-8").splitlines()
+        raw = bytearray(__import__("base64").b64decode(lines[1]))
+        raw[-1] ^= 0x01
+        lines[1] = __import__("base64").b64encode(bytes(raw)).decode("ascii")
+        corrupted = "\n".join(lines) + "\n"
+        sig_path.write_text(corrupted, encoding="utf-8")
+        document = self.update_manifest()
+        document["platforms"]["linux-x86_64"]["signature"] = corrupted
+        self.write_update_manifest(document)
+        decision = self.decide(contract_path=self.settled())
+        self.assertFalse(decision.publishable)
+        self.assertIn("artifact-signature-invalid", codes(decision))
+
 
 class PublicationInputTest(GateTestCase):
     """Publication identity and signing trust are undecided (#40), so this must refuse loudly."""

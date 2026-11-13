@@ -2,10 +2,10 @@
 
 Two seams are exercised here, both without a network, a real key or a publication:
 
-* `scripts/minisign.py` — the envelope the release carries. `TauriFixtureTest` verifies a
+* `scripts/minisign.py`: the envelope the release carries. `TauriFixtureTest` verifies a
   signature produced by the real `tauri signer sign` (a committed literal, generated once from a
   throwaway key), so the implementation is pinned to an independent tool rather than to itself.
-* `scripts/release_signing.py` and `scripts/provision_signing_key.py` — producing the signed
+* `scripts/release_signing.py` and `scripts/provision_signing_key.py`: producing the signed
   artifact set and `latest.json`, and generating the offline key. Every key in these tests is
   generated inside the test with `minisign.generate_keypair()`, is never written into the
   repository and is discarded with the temporary directory.
@@ -360,6 +360,57 @@ class SigningTest(unittest.TestCase):
         signed_candidate(self.tmp / "isolation", fixture_key(5))
         after = {path for path in (REPO / "scripts").rglob("*") if path.is_file()}
         self.assertEqual(before, after)
+
+    def test_corrupt_existing_signature_is_refused_cleanly_by_cli(self) -> None:
+        directory = self.tmp / "corrupt-sig"
+        directory.mkdir()
+        identity = packaging.candidate()
+        for name, payload in (
+            (f"{identity.slug}-{VERSION}-1.x86_64.rpm", b"rpm"),
+            (f"{identity.slug}_{VERSION}_amd64.deb", b"deb"),
+            ("PKGBUILD", b"pkgname=terax-workspace\n"),
+        ):
+            (directory / name).write_bytes(payload)
+        (directory / "PKGBUILD.sig").write_text("not a valid minisign signature\n", encoding="utf-8")
+        result = self.run_signing(
+            "--candidate", str(directory), "--version", VERSION, "--tag", TAG,
+            "--commit", COMMIT, "--from-signatures",
+        )
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn("refusing:", result.stderr)
+        self.assertFalse((directory / "latest.json").exists())
+
+    def test_duplicate_artifact_format_is_refused(self) -> None:
+        directory = self.tmp / "duplicate-deb"
+        directory.mkdir()
+        identity = packaging.candidate()
+        for name, payload in (
+            (f"{identity.slug}-{VERSION}-1.x86_64.rpm", b"rpm"),
+            (f"{identity.slug}_{VERSION}_amd64.deb", b"deb-one"),
+            (f"{identity.slug}_{VERSION}_second.deb", b"deb-two"),
+            ("PKGBUILD", b"pkgname=terax-workspace\n"),
+        ):
+            (directory / name).write_bytes(payload)
+        with self.assertRaises(release_signing.SigningError) as caught:
+            release_signing.sign_candidate(
+                directory=directory, version=VERSION, tag=TAG, commit=COMMIT,
+                notes="notes", key=self.key, trusted=self.trusted, endpoint=ENDPOINT,
+            )
+        self.assertIn("deb", str(caught.exception))
+        self.assertFalse((directory / "latest.json").exists())
+
+    def test_missing_signing_key_id_in_manifest_is_rejected_with_trusted_key(self) -> None:
+        directory = signed_candidate(self.tmp / "missing-key-id", self.key)
+        document = json.loads((directory / "latest.json").read_text(encoding="utf-8"))
+        document["signing"]["keyId"] = ""
+        problems, _ = release_signing.update_problems(
+            document, directory=directory, version=VERSION, commit=COMMIT, trusted=self.trusted,
+        )
+        self.assertTrue(
+            any(code in ("artifact-update-manifest-invalid", "artifact-signature-key-mismatch")
+                for code, _ in problems),
+            f"expected keyId refusal, got {problems}",
+        )
 
 
 class ProvisioningTest(unittest.TestCase):

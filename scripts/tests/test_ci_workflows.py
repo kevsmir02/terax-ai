@@ -525,7 +525,7 @@ class ReleaseWorkflowTest(unittest.TestCase):
         # The one secret the workflow is allowed to read is the release signing key: it grants
         # authenticity, not publication, it is injected only for the signer step, and the gate
         # still refuses every release while the contract is provisional. Any other `secrets.`
-        # reference, any write permission and every publication action stay forbidden — and the
+        # reference, any write permission and every publication action stay forbidden, and the
         # secret may not be echoed (see `ReleaseSigningWorkflowTest`).
         contract = release_contract()
         code = workflow_code(RELEASE)

@@ -57,7 +57,7 @@ only, it contains no release-upload action, and the script has no code that coul
 secret the workflow reads is the release signing key, injected for the signer step only: it grants
 authenticity, not publication. `scripts/tests/test_ci_workflows.py` derives that rule from
 `releaseContract.json`, so flipping `provisional` to `false` is the deliberate, reviewed change that
-relaxes it — and even then the gate still refuses while the endpoint is a reserved placeholder, the
+relaxes it, and even then the gate still refuses while the endpoint is a reserved placeholder, the
 trust root is unprovisioned, the signing input is absent or a signature does not verify.
 
 **Exercising it safely.** No tag and no public release are needed:
@@ -95,7 +95,7 @@ another version), plus the signer and the provisioning script. The verifier
 against RFC 8032's test vector, and the workflow order is pinned by the guard test. **Not
 validated:** a real hosted run of the workflow itself (no tagged release has been run through
 GitHub Actions), signing with the maintainer's real key (none is provisioned), and any publication
-— that is #45's job.
+(that is #45's job).
 
 Updates are never installed by the application. A user installs or upgrades the RPM/DEB with
 their package manager (`dnf`, `apt`); the application never downloads, installs or restarts
@@ -196,7 +196,7 @@ CLI executes (`--help`) from the extracted deb; the licence resources are presen
 Not proven — recorded in `manifest.json` under `notValidated`: install/upgrade/remove with a real
 package manager, the graphical application started from a package on Fedora 44 KDE Wayland,
 Debian 13 WebKitGTK behaviour, dependency resolution by dnf/apt/pacman, native package/repository
-signature trust (the artifacts carry minisign signatures, which `dnf`/`apt` do not consume —
+signature trust (the artifacts carry minisign signatures, which `dnf`/`apt` do not consume; see
 [release trust](release-trust.md)), updater discovery and installation (#37), and coexistence with
 an installed upstream build. Package extraction is not runtime certification.
 
