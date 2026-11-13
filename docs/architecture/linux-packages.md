@@ -40,11 +40,12 @@ custody, key replacement and what is *not* promised.
 
 **Release gating status.** Publication identity, the independent minisign trust root (key ID
 `94097B75DB498B21`), the GitHub Actions signing secrets, complete candidate assembly (#42),
-and final whole-app resource budgets (#43) are settled. No stable release is published yet:
+final whole-app resource budgets (#43), and Fedora 45 KDE Wayland candidate validation (#44;
+Fedora 44, Debian 13, and Arch Linux explicitly waived by the primary user on 2026-11-13 as
+personal-tool extras) are settled. No stable release is published yet:
 
 | Remaining gate | Owned by |
 | --- | --- |
-| A candidate validated on Fedora, Debian and Arch | issue #44 |
 | The first public stable release and its support claims | issue #45 |
 
 The release workflow remains non-publishing (`contents: read`/`checks: read`, no release-upload
@@ -177,24 +178,25 @@ stage, exit code and the log tail. A missing directory is therefore not the fail
 
 ## Proven and not proven
 
-Proven by a run: both artifacts exist at the recorded revision and hash; the deb control fields
-(`Package`, `Version`, `Architecture`, `Depends`) and the rpm header agree with the candidate
-identity; the extracted payloads carry the same paths and hashes in both formats; the installed
-CLI executes (`--help`) from the extracted deb; the licence resources are present.
+Proven by candidate build and Fedora 45 validation (`82af7938d3df`, `dist-packages/codr-1.0.0-82af7938d3df/`):
 
-Not proven — recorded in `manifest.json` under `notValidated`: install/upgrade/remove with a real
-package manager, the graphical application started from a package on Fedora 44 KDE Wayland,
-Debian 13 WebKitGTK behaviour, dependency resolution by dnf/apt/pacman, native package/repository
-signature trust (the artifacts carry minisign signatures, which `dnf`/`apt` do not consume; see
-[release trust](release-trust.md)), updater discovery and installation (#37), and coexistence with
-an installed upstream build. Package extraction is not runtime certification.
+- Both artifacts built cleanly from clean revision `82af7938d3df`: `codr-1.0.0-1.x86_64.rpm` (`9,613,139` bytes, sha256 `d45e93355698b0c3a4869f47dda8d6b7d35064b6cc8a8152f375b60b363095e8`) and `codr_1.0.0_amd64.deb` (`9,611,640` bytes, sha256 `604bbad2792cb57eeb755c7ef552785166572650a53e6c3545204c65eef5aabc`), plus pinned `arch/PKGBUILD` and `SHA256SUMS`.
+- Deb control fields (`Package: codr`, `Version: 1.0.0`, `Architecture: amd64`, `Depends: libwebkit2gtk-4.1-0, libgtk-3-0`) and RPM headers agree with the candidate identity; both extracted payloads carry identical file paths and hashes (apart from the main binary's Tauri bundle-type marker); license resources are present.
+- Fedora 45 host RPM resolution (`scripts/package-candidate/validate_fedora.py`): all non-`rpmlib` RPM requirements (`webkit2gtk4.1`, `gtk3`, `libwebkit2gtk-4.1.so.0()(64bit)`, `libgtk-3.so.0()(64bit)`) resolve to installed Fedora 45 packages (`webkit2gtk4.1-2.54.2-1.fc45.x86_64`, `gtk3-3.24.52-6.fc45.x86_64`), `rpm -K` confirms `digests OK` (unsigned RPM, as native repo signing is deferred), and `rpm -ql terax` vs `rpm -qlp codr-1.0.0-1.x86_64.rpm` confirms 11/11 paths are disjoint from the installed `terax-0.9.0-1.x86_64` package.
+- Live Fedora 45 KDE Wayland packaged smoke (`validate_fedora.py`): extracted `/usr/bin/codr` launches in an isolated profile on `wayland-1`, publishes `$XDG_CACHE_HOME/codr/control.json`, spawns a PTY (`pty opened id=1`), responds to packaged `/usr/bin/codr-cli` (`identify`, `--version`, `ping`, `capabilities`, `open` at line 2) with exit 0 and `ok: true`, and leaves all seeded upstream `terax` sentinel files untouched (`sentinelProblems: []`).
+- Clean Fedora 45 container transaction check (`validate_fedora.py --container` on `registry.fedoraproject.org/fedora:45`): `dnf -y --disablerepo='*' install` refuses installation due to missing `webkit2gtk4.1` and `gtk3`, RPM 6 rejects unsigned `rpm -ivh --nodeps` (`does not verify: no signature`), and `rpm -ivh --nodeps --nosignature`, `codr-cli --version`, `rpm -Uvh --replacepkgs --nodeps --nosignature`, and `rpm -e codr` all succeed cleanly.
+- Real-app WebKitGTK acceptance on `82af7938d3df` (Fedora 45 KDE Wayland): `app-lab` `--scenario candidate` (`12/12`), `--scenario preview` (`44/44`, PDF reader + web preview teardown), `--scenario images` (`14/14`, PNG/JPEG/GIF/WebP/BMP/ICO/AVIF + refusals), and `--scenario media` (`24/24`, MP4/M4A/MOV/WebM/OGG/WAV/MP3/FLAC/AAC + unsupported refusal), all with `coexistence PASS`; `TERAX_VISUAL_SOFTWARE=1 TERAX_VISUAL_RENDERERS=webgl` scaling check passed at DPR 1, 1.25, 1.5, and 2 (`0` differing pixels); bash/zsh/fish shell integration tests passed on Fedora 45.
+
+Not proven or waived:
+
+- Fedora 44, Debian 13 (graphical WebKitGTK), and dated clean Arch (`makepkg`/`pacman`) were explicitly waived by the primary user on 2026-11-13 as personal-tool extras beyond Fedora 45; no `.deb` install or Arch build was executed here.
+- Host-root `sudo dnf install/upgrade/remove` of `codr-1.0.0-1.x86_64.rpm`, native DNF/APT repository GPG signing (artifacts use `.minisig` instead; see [release trust](release-trust.md)), updater discovery/handoff against a published release (#45), physical keyboard/IME/OS clipboard round-trip, and live vendor CLI turn/hook-trust certification remain unverified or manual checks.
 
 ## Arch recipe
 
 `packaging/arch/PKGBUILD` builds the same source revision and version (`pkgver` matches Tauri,
 package.json and Cargo.toml) and installs the same paths as the RPM/DEB candidates. It is
-**authored, not built**: this host has no `makepkg`, and the spec requires a dated clean Arch
-environment that records package versions. The packaging runner writes a revision-pinned copy
+**authored, not built**: this host has no `makepkg`, and Arch validation was waived for this personal tool. The packaging runner writes a revision-pinned copy
 (with the real source-archive hash) next to the artifacts.
 
 ## Known gaps
@@ -216,5 +218,9 @@ environment that records package versions. The packaging runner writes a revisio
   identity it binds, with fixtures for a matching tag, a mismatched tag, a prerelease tag, a
   missing/extra/substituted artifact, a wrong commit, missing and non-green CI, and the
   provisional and settled release contract.
+- `scripts/tests/test_validate_fedora.py` guards the Fedora 45 RPM dependency-resolution parser,
+  upstream path-disjointness check, signature parser, and CLI probe evaluator;
+  `scripts/package-candidate/validate_fedora.py` runs the live Fedora 45 RPM and Wayland graphical
+  smoke checks.
 - `scripts/packaging.py` holds the derivation, inspectors and manifest schema;
   `scripts/package-candidate/run.py` is the runner.

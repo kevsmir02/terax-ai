@@ -192,16 +192,17 @@ Unchanged and independent of the agent:
 - hook intent for aborted stops and interrupts;
 - caller-Space control routing (`resolveControlContext`).
 
+**Host CLI observations (Fedora 45, 2026-11-13, non-interactive checks only):**
+
+- Installed in user PATH: `claude` (`2.1.319 (Claude Code)`), `pi` (`1.5.0`), `opencode` (`opencode v2.2.7`).
+- `/home/loba/.local/bin/antigravity` resolves to `/home/loba/.local/opt/Antigravity/antigravity` (`v2.28.2`, desktop/IDE launcher, not a standalone terminal CLI).
+- Not installed on host: `codex`, `gemini`, `grok`.
+
 **Not verified here:**
 
-- any real installed OpenCode, Claude Code, Codex, Gemini CLI, Pi, Grok or
-  Antigravity CLI: binary name, flags, OSC/hook payloads per vendor version,
-  hook trust prompts, and whether the CLI ships separately from the GUI on
-  Fedora;
+- any live vendor turn, OSC/hook payload emission, or hook trust prompt activation for OpenCode, Claude Code, Codex, Gemini CLI, Pi, Grok, or Antigravity CLI;
 - that a real desktop notification appears in GNOME/KDE with the expected
   privacy (no body excerpt) and without taking focus;
-- the packaged-app acceptance seam (the app-lab runner is macOS-only today) and
-  any distribution-specific behavior;
 - Windows/WSL pane behavior for these agents.
 
 Those are release-validation and maintainer evidence, not claims of this work.
