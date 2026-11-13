@@ -416,12 +416,14 @@ backing size, so none is ever resized).
 
 ## Isolation
 
-The bundle is `Terax App Lab.app` with the identifier `app.crynta.terax.app-lab`, launched with
+The lab runs under a disposable identifier inside the fork identifier namespace
+(`<fork identifier>.app-lab-*`, derived from `src/modules/identity/namespace.json`), launched with
 its own `HOME` (so the control-server descriptor, shell-integration files and history never touch
-the real user's) and `TERAX_BENCH_ISOLATED=1`. The bench binary refuses to start under the product
-identifier or without that variable (`modules/bench.rs::guard`, unit tested), and the profile
-directories for the lab identifier are removed before and after every run. The user's running app
-is never touched. The shells are real login shells with an empty `HOME`; the agent is
+the real user's) and `TERAX_BENCH_ISOLATED=1`. The preflight (`scripts/linux_profile.py`) and the
+bench binary refuse the product identifier, upstream Terax's `app.crynta.terax.*` and anything
+outside the fork namespace, or a launch without that variable (`modules/bench.rs::guard`, unit
+tested), and the profile directories for the lab identifier are removed before and after every run.
+The user's running app is never touched. The shells are real login shells with an empty `HOME`; the agent is
 `scripts/app-lab/agent-sim.mjs`, an Ink-like program (12-line region erased and rewritten every 80
 ms, a spinner, 40 characters of token text every 50 ms, completed lines flushed into scrollback, a
 bordered tool block every 7 s, 300 lines of history).

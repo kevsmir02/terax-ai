@@ -99,9 +99,11 @@ branch protection until it has been observed green on a hosted runner. It runs t
 
 On failure — and on success, for the record — it uploads `report.json`, `page.log`, `app.log`,
 `build.log` and `openbox.log` as the `linux-app-smoke` artifact. Every launch uses
-`--identifier app.crynta.terax.app-lab-ci`, a private `HOME` and private `XDG_*` tree under the
-output directory, and the app-lab preflight plus the bench binary's own guard refuse anything else,
-so the job cannot touch a production profile even on a self-hosted machine with one installed.
+`--identifier dev.terax-workspace.fork.app-lab-ci` (a disposable profile under the fork identifier
+in `src/modules/identity/namespace.json`; upstream's `app.crynta.terax.*` is refused), a private
+`HOME` and private `XDG_*` tree under the output directory, and the app-lab preflight plus the
+bench binary's own guard refuse anything else, so the job cannot touch a production profile even
+on a self-hosted machine with one installed.
 Reproduce locally with `pnpm profile:app:linux` (needs a real Fedora Wayland session; see
 `docs/architecture/app-lab.md`).
 
