@@ -1,3 +1,8 @@
+<!-- fork-copy: upstream translation; the authoritative description of this build is ../../README.md -->
+
+> [!IMPORTANT]
+> Diese Übersetzung stammt aus dem Upstream-Terax. Dieser Fork hat die hier beschriebenen integrierten KI-Oberflächen entfernt (Chat, Autovervollständigung, KI-Änderungsprüfung, Anbieter- und API-Schlüssel-Einstellungen). [`README.md`](../../README.md) beschreibt den Build, den dieses Repository ausliefert.
+
 <div align="center">
   <img src="../../public/logo.png" width="144" height="144" alt="Terax" />
   <h1>Terax</h1>

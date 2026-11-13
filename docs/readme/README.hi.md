@@ -1,3 +1,8 @@
+<!-- fork-copy: upstream translation; the authoritative description of this build is ../../README.md -->
+
+> [!IMPORTANT]
+> यह अनुवाद अपस्ट्रीम Terax से लिया गया है। इस फ़ोर्क ने इसमें वर्णित अंतर्निहित AI सुविधाएँ हटा दी हैं (चैट, ऑटो-पूर्णता, AI द्वारा बदलाव समीक्षा, और प्रोवाइडर/API कुंजी सेटिंग्स)। [`README.md`](../../README.md) उस बिल्ड का वर्णन करता है जो यह रिपॉज़िटरी प्रकाशित करता है।
+
 <div align="center">
   <img src="../../public/logo.png" width="144" height="144" alt="Terax" />
   <h1>Terax</h1>

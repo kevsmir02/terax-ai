@@ -1,3 +1,8 @@
+<!-- fork-copy: upstream translation; the authoritative description of this build is ../../README.md -->
+
+> [!IMPORTANT]
+> Этот перевод взят из вышестоящего Terax. Этот форк удалил описанные здесь встроенные функции ИИ (чат, автодополнение, проверку изменений с помощью ИИ, а также настройки провайдера и ключей API). [`README.md`](../../README.md) описывает сборку, которую поставляет этот репозиторий.
+
 <div align="center">
   <img src="../../public/logo.png" width="144" height="144" alt="Terax" />
   <h1>Terax</h1>

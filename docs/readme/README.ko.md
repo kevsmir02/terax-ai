@@ -1,3 +1,8 @@
+<!-- fork-copy: upstream translation; the authoritative description of this build is ../../README.md -->
+
+> [!IMPORTANT]
+> 이 번역은 업스트림 Terax의 것입니다. 이 포크는 여기에서 설명하는 내장 AI 기능(채팅, 자동 완성, AI 변경 검토, 공급자 및 API 키 설정)을 제거했습니다. 이 저장소가 배포하는 빌드는 [`README.md`](../../README.md)에 설명되어 있습니다.
+
 <div align="center">
   <img src="../../public/logo.png" width="144" height="144" alt="Terax" />
   <h1>Terax</h1>

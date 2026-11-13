@@ -1,3 +1,8 @@
+<!-- fork-copy: upstream translation; the authoritative description of this build is ../../README.md -->
+
+> [!IMPORTANT]
+> To tłumaczenie pochodzi z upstreamowego Teraxa. Ten fork usunął opisane tutaj wbudowane funkcje AI (czat, autouzupełnianie, przegląd zmian przez AI oraz ustawienia dostawcy i kluczy API). [`README.md`](../../README.md) opisuje kompilację dostarczaną przez to repozytorium.
+
 <div align="center">
   <img src="../../public/logo.png" width="144" height="144" alt="Terax" />
   <h1>Terax</h1>
