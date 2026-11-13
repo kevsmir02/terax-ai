@@ -167,8 +167,10 @@ check "the prompt end hook keeps the status too" 9 "$finish_status"
 last_scalar="$(integration "" "$chain_entries" 'starship_precmd')"
 check "the prompt end is the last PROMPT_COMMAND entry" \
   "_terax_finish_prompt" "$(printf '%s\n' "$last_scalar" | tail -n1)"
-check "the prompt framework entry is kept after the precmd hook" \
-  "starship_precmd" "$(printf '%s\n' "$last_scalar" | grep 'starship_precmd')"
+# On a host with no system hook the framework entry shares one line with the precmd hook, so the
+# assertion is containment, not equality (the Ubuntu CI runner is that host).
+expect_contains "the prompt framework entry is kept after the precmd hook" \
+  "starship_precmd" "$last_scalar"
 check "the precmd hook is still first with a framework entry" \
   "_terax_precmd" "$(printf '%s\n' "$last_scalar" | head -n1 | cut -d';' -f1)"
 
