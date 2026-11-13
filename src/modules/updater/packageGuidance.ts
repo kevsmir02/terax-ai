@@ -1,3 +1,12 @@
+import namespace from "@/modules/identity/namespace.json";
+
+/** The installed package name this fork's candidate carries, from the shared identity table. */
+const PACKAGE_NAME = namespace.packaging.packageName;
+// Architectures `scripts/packaging.py` fixes for the candidate set; its own constants are the
+// source, and `packageGuidance.test.ts` compares these against them.
+const DEB_ARCH = "amd64";
+const RPM_ARCH = "x86_64";
+
 /**
  * Where an Arch user goes for an update.
  *
@@ -59,9 +68,12 @@ export function packageGuidanceFor(
 
   const shownVersion = version || "<version>";
   const debian = distro === "debian";
+  // The names Tauri's bundler emits for this fork's candidate (see
+  // docs/architecture/linux-packages.md): the rpm carries a release number the dialog cannot
+  // know, so it stays a placeholder rather than inventing one the reader cannot find.
   const artifact = debian
-    ? `./Terax_${shownVersion}_amd64.deb`
-    : `./Terax-${shownVersion}-1.x86_64.rpm`;
+    ? `./${PACKAGE_NAME}_${shownVersion}_${DEB_ARCH}.deb`
+    : `./${PACKAGE_NAME}-${shownVersion}-<release>.${RPM_ARCH}.rpm`;
   const tool = debian ? "apt" : "dnf";
   return {
     distro,

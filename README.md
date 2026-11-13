@@ -128,9 +128,9 @@ packages).
 
 - **Fedora (primary target):** `sudo dnf install ./terax-workspace-*.x86_64.rpm`. Fedora 44 KDE
   Plasma on Wayland is the primary validation target for the application; the *packaged*
-  install/upgrade path is not validated yet (ticket #43).
+  install/upgrade path is not validated yet (ticket #44).
 - **Debian:** `sudo apt install ./terax-workspace_*_amd64.deb`. Debian 13 still needs an actual
-  graphical WebKitGTK session before support is claimed (ticket #43).
+  graphical WebKitGTK session before support is claimed (ticket #44).
 - **Arch / AUR:** `packaging/arch/PKGBUILD` builds the same source and version. It is **authored,
   not built**: no `makepkg` run is recorded yet, so Arch support is a dated clean-environment
   validation still to be done, not a claim.
