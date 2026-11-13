@@ -627,18 +627,29 @@ class ReleaseSigningWorkflowTest(unittest.TestCase):
                         "latest.json describes signatures that already exist")
 
     def test_gate_steps_receive_signing_presence_without_secret_bytes(self) -> None:
+        job_env = self.workflow["jobs"]["build-candidate"].get("env") or {}
+        secret_env_vars = (
+            "TAURI_SIGNING_PRIVATE_KEY",
+            "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
+            *RELEASE_SIGNING_SECRETS,
+        )
+        for name in secret_env_vars:
+            self.assertNotIn(name, job_env)
+
         gate_steps = [
             step for step in self.steps()
             if "scripts/release_gate.py" in str(step.get("run", ""))
         ]
         self.assertEqual(len(gate_steps), 2)
+        expected_presence = (
+            f"${{{{ secrets.{RELEASE_SIGNING_SECRETS[0]} != '' && "
+            f"secrets.{RELEASE_SIGNING_SECRETS[1]} != '' }}}}"
+        )
         for step in gate_steps:
             env = step.get("env") or {}
-            presence = str(env.get("TERAX_RELEASE_SIGNING_KEY_PRESENT", ""))
-            for secret_name in RELEASE_SIGNING_SECRETS:
-                self.assertIn(f"secrets.{secret_name} != ''", presence)
-            self.assertNotIn("TAURI_SIGNING_PRIVATE_KEY", env)
-            self.assertNotIn("TAURI_SIGNING_PRIVATE_KEY_PASSWORD", env)
+            self.assertEqual(env.get("TERAX_RELEASE_SIGNING_KEY_PRESENT"), expected_presence)
+            for name in secret_env_vars:
+                self.assertNotIn(name, env)
 
     def test_release_workflow_stays_read_only_and_bounded_to_signing_secrets(self) -> None:
         # Until #45 implements publication, release.yml must remain non-publishing regardless of

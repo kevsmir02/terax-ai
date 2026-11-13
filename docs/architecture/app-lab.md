@@ -531,20 +531,20 @@ value. Linux has the `workflow`, `preview`, `images` and `media` acceptance scen
 
 ## Approved whole-application budgets (issue #43)
 
-Approved by the primary user on 2026-11-13 from matched `--stream-seconds 20` release measurements (`--profile release --features bench`) comparing the 2026-11-12 baseline (`c052524`) with the frozen `1.0.0` candidate (`be62762`, Fedora 44 KDE Wayland, all 4 runs `qualified: true, failures: []`, evidence at `personal/terax-baseline/evidence/2026-11-13/issue-43-budgets-matched/`):
+Approved by the primary user on 2026-11-13 from matched `--stream-seconds 20` release measurements (`--profile release --features bench`) comparing the 2026-11-12 baseline (`c052524`, Fedora Linux 44 KDE Wayland) with the frozen `1.0.0` candidate (`be62762`, Fedora Linux 45 KDE Plasma Wayland, WebKitGTK `2.54.2`, all 4 runs `qualified: true, failures: []`, evidence at `personal/terax-baseline/evidence/2026-11-13/issue-43-budgets-matched/`):
 
-| Budget | Approved Limit | Measured (`be62762`) | Baseline (`c052524`) |
+| Budget | Approved Limit | Measured Candidate | Baseline (`c052524`) |
 | --- | --- | --- | --- |
 | Idle app PSS (1 live shell) | `<= 350 MiB` | `310.29 MiB` / `311.11 MiB` | `340.43 MiB` / `341.21 MiB` |
 | Representative workload (2 Spaces, 4 panes, 2 agents, 4 files, 1 preview) app PSS p95 | `<= 450 MiB` | `416.92 MiB` (median p95) | `425.12 MiB` |
-| Stress workload (4 agents, 4 streams, 4 MiB file) peak app PSS | `<= 525 MiB` | `485.92 MiB` | `491.24 MiB` |
+| Stress workload (4 agents, 4 streams, 4 MiB file) peak app PSS | `<= 525 MiB` | `485.92 MiB` phase peak / `490.29 MiB` timeline max | `491.24 MiB` / `490.45 MiB` |
 | Timeline app CPU mean (representative / stress) | `<= 16%` / `<= 22%` of 1 core | `12.18%` / `16.10%` | `15.90%` / `21.36%` |
-| Startup `exec_to_boot_ms` (warm median / cold) | `<= 3,500 ms` / `<= 5,000 ms` | `3,215.50 ms` / `4,727.00 ms` (`startup`), `3,992.50 ms` (`resource` median) | `2,293.50 ms` / `4,235.00 ms`, `4,210.00 ms` |
-| Packaged `.rpm` / `.deb` artifact size | `<= 12 MiB` | `9,610,530 B` (~`9.17 MiB`) each | - |
-| Document ceilings | Per `src/modules/preview/lib/limits.ts` | `10 MiB` default / `50 MiB` override / `50 MiB` video | Same |
+| Startup `exec_to_boot_ms` (warm median / cold) | `<= 3,500 ms` / `<= 5,000 ms` | `3,215.50 ms` warm / `4,727.00 ms` (`startup`), `3,992.50 ms` (`resource`), `5,161.00 ms` (`stress` single cold run) | `2,293.50 ms` / `4,235.00 ms`, `4,210.00 ms`, `4,271.00 ms` |
+| Packaged `.rpm` / `.deb` artifact size | `<= 12 MiB` | `9,610,530 B` `.rpm` / `9,609,096 B` `.deb` (~`9.17 MiB` each; measured on `d50d089` package candidate, `be62762` lab runs used `--no-bundle`) | - |
+| Document ceilings | Per `src/modules/preview/lib/limits.ts` | `10 MiB` read / `50 MiB` override / `4 MiB` syntax / `64 MiB` image decode / `32 MiB` PDF page / `4` viewers (`192 MiB`) / `1` per-tab, `3` app-wide streamed media | Same |
 
 Notes and measured limitations:
 
-- **Warm startup delta (`+922.00 ms`, `2,293.50 -> 3,215.50 ms`)**: `nav_to_boot_ms` grew alongside WebKitGTK initialization and the `11,776,842 B` client bundle (`11,627,689 B` after `#40`) including the PDF reader while `dom_content_loaded` / `load` stayed ~100-110 ms. Cold startup in the single `stress` run reached `5,161.00 ms` (`+890.00 ms` vs `4,271.00 ms` baseline) before warm caching.
+- **Warm startup delta (`+922.00 ms`, `2,293.50 -> 3,215.50 ms`)**: `nav_to_boot_ms` grew alongside WebKitGTK initialization and the `11,776,596 B` client bundle (`11,627,689 B` after `#40`) including the PDF reader while `dom_content_loaded_ms` (`83-104 ms`) and `load_ms` (`93-115 ms`) stayed low. Cold startup in the single `stress` run reached `5,161.00 ms` (`+890.00 ms` vs `4,271.00 ms` baseline) before warm caching.
 - **Close-cycle retention**: `close.retained_vs_baseline_mib` was `+12.82 MiB` in representative and `+52.37 MiB` in stress after `large.txt` cycles.
-- **Host scope**: measured on a shared Fedora 44 KDE Wayland host (`wayland-1`) with no GPU process or bubblewrap sandbox spawned and a single stress run; packaged multi-distro acceptance lives in `#44`.
+- **Host & Wayland scope**: `c052524` ran on Fedora Linux 44 and `be62762` ran on Fedora Linux 45 (both shared KDE Wayland sessions with no GPU process or bubblewrap sandbox spawned); `resource` and `stress` runs logged advisory `focus is advisory on Wayland (the compositor decides): appActive=false` across phases, and `stress` is a single run. Packaged multi-distro acceptance lives in `#44`.

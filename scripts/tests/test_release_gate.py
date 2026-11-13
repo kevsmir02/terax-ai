@@ -775,12 +775,14 @@ class PublicationInputTest(GateTestCase):
     def test_the_workflow_presence_flag_satisfies_signing_input_without_secret_bytes(self) -> None:
         # The workflow gate steps evaluate secret presence via TERAX_RELEASE_SIGNING_KEY_PRESENT
         # so raw key material stays scoped exclusively to the signer step.
-        ok = self.decide(
-            contract_path=self.settled(),
-            environment={release_gate.SIGNING_INPUT_PRESENT_ENV: "true"},
-        )
-        self.assertNotIn("signing-input-missing", codes(ok))
-        self.assertTrue(ok.publishable)
+        for present in ("true", "1", "yes"):
+            with self.subTest(value=present):
+                ok = self.decide(
+                    contract_path=self.settled(),
+                    environment={release_gate.SIGNING_INPUT_PRESENT_ENV: present},
+                )
+                self.assertNotIn("signing-input-missing", codes(ok))
+                self.assertTrue(ok.publishable)
 
         for absent in ("false", "", "0"):
             with self.subTest(value=absent):
@@ -817,8 +819,8 @@ class CommandLineTest(GateTestCase):
 
     def run_gate(self, *arguments: str, env: dict | None = None) -> subprocess.CompletedProcess:
         command = [sys.executable, str(REPO / "scripts/release_gate.py"), *arguments]
-        environment = {key: value for key, value in os.environ.items()
-                       if key != release_gate.SIGNING_KEY_ENV}
+        excluded = {*release_gate.SIGNING_KEY_ENVS, release_gate.SIGNING_INPUT_PRESENT_ENV}
+        environment = {key: value for key, value in os.environ.items() if key not in excluded}
         environment.update(env or {})
         return subprocess.run(command, cwd=REPO, env=environment, capture_output=True, text=True)
 
