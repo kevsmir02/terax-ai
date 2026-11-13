@@ -285,6 +285,11 @@ def candidate_config() -> dict:
         "identifier": c.app_identifier,
         "version": c.version,
         "bundle": {
+            # The bundler's updater artifacts are an install-time payload for formats this fork
+            # does not ship (AppImage/NSIS/MSI), not this project's authenticity mechanism. The
+            # release pipeline signs the rpm/deb/PKGBUILD itself after the build
+            # (`scripts/release_signing.py`, `docs/architecture/release-trust.md`); nothing here
+            # enables a download or an install.
             "createUpdaterArtifacts": False,
             "publisher": c.vendor,
             "copyright": "Copyright 2026 Crynta and Terax Workspace contributors",
@@ -384,7 +389,16 @@ def config_problems(base: dict | None = None, overlay: dict | None = None) -> li
         if unsupported in (targets or []):
             found.append(f"bundle.targets contains unsupported format {unsupported!r}")
     if bundle.get("createUpdaterArtifacts") is not False:
-        found.append("bundle.createUpdaterArtifacts must be false: candidates are not signed updates")
+        # This switch is the bundler's, not the release's: enabling it produces updater archives
+        # for installer formats this fork does not distribute and implies an install affordance
+        # no capability grants. Authenticity comes from the post-build minisign step instead
+        # (`scripts/release_signing.py`), so turning this on would add a second, unchecked path
+        # while leaving the real one unverified.
+        found.append(
+            "bundle.createUpdaterArtifacts must stay false: the bundler's updater payloads are "
+            "not this fork's release artifacts, and release authenticity is the post-build "
+            "minisign step (scripts/release_signing.py)"
+        )
     if overlay.get("mainBinaryName") != c.package_name:
         found.append("the overlay must install the binary under the candidate package name")
     if overlay.get("productName") != c.product_name:

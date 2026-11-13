@@ -182,8 +182,67 @@ jobs:
           unpacked-deb/usr/bin/*-cli --help
           file unpacked-deb/usr/bin/*
           cp "$candidate/SHA256SUMS" "$candidate/manifest.json" linux-packages/
+          # The Arch-facing artifact travels with the release: the recipe is what an Arch user
+          # builds, and it is signed and announced like the packages.
+          cp "$candidate/arch/PKGBUILD" linux-packages/PKGBUILD
           (cd linux-packages && sha256sum -c SHA256SUMS)
           stat --printf='%n %s bytes\n' linux-packages/* >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Write the release notes from the tag
+        run: |
+          set -euo pipefail
+          # The tag annotation is the release note when it has one; the signer writes the same
+          # text into latest.json. Nothing here is a publication.
+          git tag -l --format='%(contents)' "${{ steps.target.outputs.tag }}" \
+            > "$RUNNER_TEMP/release-notes.md"
+          if [ ! -s "$RUNNER_TEMP/release-notes.md" ]; then
+            # No product name or identity here: `scripts/packaging.py` is the one source, and
+            # the signer fills its own note when the tag carries none.
+            printf 'Stable release %s.\n' "${{ steps.target.outputs.tag }}" \
+              > "$RUNNER_TEMP/release-notes.md"
+          fi
+
+      - name: Sign the staged artifacts with the release key
+        # Authenticity, added after staging and before the artifact gate. The key is the
+        # maintainer's passphrase-protected minisign secret, injected for this job only as a
+        # repository secret; it is never written to the checkout and never echoed. `tauri signer
+        # sign` signs the exact bytes that were staged, and `scripts/release_signing.py` then
+        # normalises those signatures and writes the stable `latest.json` the gate binds. If the
+        # secret is absent the job refuses by name and stops: an unsigned release is not a
+        # release, and nothing here can publish anyway.
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TERAX_RELEASE_SIGNING_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TERAX_RELEASE_SIGNING_KEY_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo "::error::signing-refused: signing-key-missing: no release signing key is provisioned for this repository (secret TERAX_RELEASE_SIGNING_KEY); nothing was signed and nothing is published [issue #40]"
+            exit 3
+          fi
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" ]; then
+            echo "::error::signing-refused: signing-passphrase-missing: the release signing key has no passphrase supplied (secret TERAX_RELEASE_SIGNING_KEY_PASSPHRASE); nothing was signed and nothing is published [issue #40]"
+            exit 3
+          fi
+          version="$(python3 -c 'import sys; sys.path.insert(0, "scripts"); import packaging; print(packaging.version())')"
+          for artifact in linux-packages/*.rpm linux-packages/*.deb linux-packages/PKGBUILD; do
+            test -s "$artifact"
+            # Shell tracing stays off on purpose: the command line carries no secret, but the
+            # environment does, and a trace is the one place it could leak.
+            node_modules/.bin/tauri signer sign --app-version "$version" "$artifact" > /dev/null
+          done
+          python3 scripts/release_signing.py \
+            --candidate linux-packages \
+            --version "$version" \
+            --tag "${{ steps.target.outputs.tag }}" \
+            --commit "${{ steps.target.outputs.commit }}" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
+            --from-signatures \
+            --step-summary "$GITHUB_STEP_SUMMARY"
+          # The only signing details that reach a log: which public key signed, and the hashes.
+          python3 scripts/release_signing.py --show-key-id linux-packages/PKGBUILD.minisig \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          sha256sum linux-packages/*.rpm linux-packages/*.deb linux-packages/PKGBUILD \
+            >> "$GITHUB_STEP_SUMMARY"
 
       - name: Release gate (immutable artifact identity)
         # The second half of the gate: the set that would be published must be the set built for

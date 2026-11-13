@@ -8,8 +8,17 @@ asks twice:
 
 1. `--preconditions-only`, before anything is built, so a tag or dispatch that fails the
    tag/version comparison or the green-CI requirement fails the job before an artifact exists;
-2. after the build, over the staged artifact set, so the candidate is bound to an immutable
-   identity (triggering commit + per-artifact sha256) before anything could be published.
+2. after the build and signing, over the staged artifact set, so the candidate is bound to an
+   immutable identity (triggering commit + per-artifact sha256) **and** every announced artifact
+   carries a minisign signature that verifies under the committed trust root before anything
+   could be published.
+
+Artifact authenticity is verified here, not asserted: `latest.json` must announce the triggering
+commit and the application version, every target must point at a staged artifact whose bytes hash
+to the announced sha256, that artifact's signature must verify under
+`releaseContract.json`'s `trust.publicKey`, and the published `<artifact>.minisig` must be the same
+signature. A missing manifest, a missing signature, a signature from another key, a signature over
+other bytes and a staged artifact nobody announced are all refusals.
 
 Publication inputs — release owner/URL and signing trust — are not decided yet (they are the
 trust/identity ticket's job, breakdown ticket 39 = GitHub issue #40). While
@@ -37,17 +46,30 @@ from urllib.parse import urlsplit
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
+import minisign  # noqa: E402
 import packaging  # noqa: E402
+import release_signing  # noqa: E402
 
 CI_WORKFLOW = REPO_ROOT / ".github/workflows/ci.yml"
 RELEASE_CONTRACT = packaging.RELEASE_CONTRACT
-# The one environment variable that could carry fork signing material. The gate reads its
-# presence only; the value never enters a message, a report or the step summary.
+# The environment variables that could carry fork signing material. Only presence is ever read;
+# the value never enters a message, a report or the step summary. `TERAX_RELEASE_SIGNING_KEY` is
+# the offline/emergency fixture form, `TAURI_SIGNING_PRIVATE_KEY` is what the release workflow
+# injects for `tauri signer sign`.
 SIGNING_KEY_ENV = "TERAX_RELEASE_SIGNING_KEY"
+SIGNING_KEY_ENVS = release_signing.SIGNING_KEY_ENVS
 # Release tags are `v<major>.<minor>.<patch>` here; the fork publishes stable only.
 TAG_PATTERN = re.compile(r"^v(?P<version>\d+\.\d+\.\d+)$")
 PRERELEASE_PATTERN = re.compile(r"^v\d+\.\d+\.\d+-[0-9A-Za-z.]+$")
 STABLE_CHANNEL = "stable"
+# The staged set also holds the update manifest, the Arch-facing recipe and one signature file per
+# signed artifact. Nothing else belongs in it.
+EXTRA_STAGED_FILES = (
+    "manifest.json",
+    "SHA256SUMS",
+    release_signing.MANIFEST_NAME,
+    release_signing.ARCH_ARTIFACT,
+)
 EXIT_OK = 0
 EXIT_USAGE = 2
 EXIT_REFUSED = 3
@@ -379,14 +401,20 @@ def _publication_refusals(contract_path: Path, environment: dict) -> list[Refusa
             )
         )
 
-    signing_input = str(environment.get(SIGNING_KEY_ENV) or "")
-    if not signing_input.strip():
+    signing_input = next(
+        (
+            name for name in SIGNING_KEY_ENVS
+            if str(environment.get(name) or "").strip() != ""
+        ),
+        "",
+    )
+    if signing_input == "":
         refusals.append(
             Refusal(
                 "signing-input-missing",
-                f"the signing input {SIGNING_KEY_ENV} is not present in the environment; it is a "
-                "fork-owned secret provisioned outside the repository, never in it (its value is "
-                "never read into a message, report or log)",
+                f"no signing input is present in the environment ({' or '.join(SIGNING_KEY_ENVS)}); "
+                "it is a fork-owned secret provisioned outside the repository, never in it (its "
+                "value is never read into a message, report or log)",
                 ticket or None,
             )
         )
@@ -482,7 +510,9 @@ def _artifact_refusals(
     }
     expected.pop("", None)
     present = _staged_files(root)
-    allowed = set(expected) | {"manifest.json", "SHA256SUMS"}
+    signed = set(expected) | {release_signing.ARCH_ARTIFACT}
+    allowed = signed | set(EXTRA_STAGED_FILES)
+    allowed |= {f"{name}{release_signing.SIGNATURE_SUFFIX}" for name in signed}
 
     measured: dict[str, str] = {}
     for name in sorted(allowed):
@@ -494,8 +524,9 @@ def _artifact_refusals(
         refusals.append(
             Refusal(
                 "artifact-extra",
-                f"the candidate set contains {name!r}, which no manifest entry or checksum "
-                "listing accounts for: the published set is exactly the recorded artifacts",
+                f"the candidate set contains {name!r}, which no manifest entry, signature file "
+                "or update manifest accounts for: the published set is exactly the recorded, "
+                "signed artifacts",
             )
         )
     for name, artifact in sorted(expected.items()):
@@ -526,6 +557,61 @@ def _artifact_refusals(
     return refusals, measured
 
 
+def _signed_artifact_refusals(
+    candidate: Path, commit: str, version: str | None, contract_path: Path
+) -> tuple[list[Refusal], dict[str, str]]:
+    """The update manifest and the signatures over the staged bytes.
+
+    This is the half that makes authenticity a decision rather than a claim: `latest.json` must
+    name this commit and version, and every announced artifact's signature must verify under the
+    trust root the contract commits to.
+    """
+    root = Path(candidate)
+    manifest_path = root / release_signing.MANIFEST_NAME
+    if not manifest_path.is_file():
+        return [
+            Refusal(
+                "artifact-update-manifest-missing",
+                f"{root.name}/{release_signing.MANIFEST_NAME} is absent: it is the signed "
+                "release's announcement of version, commit, artifact urls, sha256 and signatures",
+            )
+        ], {}
+    try:
+        document = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        return [
+            Refusal(
+                "artifact-update-manifest-invalid",
+                f"{manifest_path.name} is not JSON: {error}",
+            )
+        ], {}
+
+    try:
+        contract = json.loads(Path(contract_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return [
+            Refusal(
+                "artifact-signing-trust-unreadable",
+                f"the release contract cannot be read ({error}), so no signature can be checked "
+                "against a trust root: refusing rather than trusting",
+            )
+        ], {}
+    try:
+        trusted = release_signing.trusted_key_from_contract(contract)
+    except minisign.MinisignError as error:
+        return [
+            Refusal(
+                "artifact-signing-trust-unreadable",
+                f"the contract's trust.publicKey is not a usable minisign public key: {error}",
+            )
+        ], {}
+
+    problems, bound = release_signing.update_problems(
+        document, directory=root, version=version, commit=commit, trusted=trusted
+    )
+    return [Refusal(code, message) for code, message in problems], bound
+
+
 def decide(
     *,
     tag: str,
@@ -552,8 +638,16 @@ def decide(
 
     artifacts: dict[str, str] = {}
     if require_artifacts:
-        artifact_refusals, artifacts = _artifact_refusals(candidate, commit, version)
+        artifact_refusals, measured = _artifact_refusals(candidate, commit, version)
         refusals.extend(artifact_refusals)
+        signing_refusals, bound = _signed_artifact_refusals(
+            Path(candidate) if candidate is not None else Path("."), commit, version,
+            contract_path,
+        )
+        refusals.extend(signing_refusals)
+        # The identity is the signed set when the update manifest accounts for it: that is
+        # exactly what would be published.
+        artifacts = bound or measured
 
     return Decision(
         publishable=not refusals,
