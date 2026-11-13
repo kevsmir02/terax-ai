@@ -117,6 +117,7 @@ SYSTEM = platform.system()
 # input hook.
 LINUX_SCENARIOS = (
     "workflow",
+    "candidate",
     "spaces",
     "quit",
     "recovery",
@@ -1120,6 +1121,64 @@ def prepare_git_fixture(workspace: Path) -> dict:
     }
 
 
+def prepare_candidate_fixture(workspace: Path) -> dict:
+    """A scratch repository with a local bare remote, markdown, CSV/TSV and a multi-hunk diff.
+
+    Used by the combined `candidate` scenario (#42) to exercise the end-to-end retained workflow
+    (launch agent, switch Spaces, block mode, edit text + CSV/TSV, Markdown + web preview,
+    status/diff/hunk-stage/branch/commit/log/push) without touching any real repo or network.
+    """
+    remote = workspace / "candidate-origin.git"
+    repo = workspace / "candidate-repo"
+    shutil.rmtree(remote, ignore_errors=True)
+    shutil.rmtree(repo, ignore_errors=True)
+    remote.mkdir(parents=True, exist_ok=True)
+    repo.mkdir(parents=True, exist_ok=True)
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Terax App Lab",
+        "GIT_AUTHOR_EMAIL": "app-lab@example.invalid",
+        "GIT_COMMITTER_NAME": "Terax App Lab",
+        "GIT_COMMITTER_EMAIL": "app-lab@example.invalid",
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
+    subprocess.run(["git", "init", "--bare", "-q", "-b", "main"], cwd=remote, env=env, check=True)
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, env=env, check=True)
+    subprocess.run(["git", "config", "user.name", "Terax App Lab"], cwd=repo, env=env, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "app-lab@example.invalid"], cwd=repo, env=env, check=True
+    )
+    subprocess.run(["git", "remote", "add", "origin", str(remote)], cwd=repo, env=env, check=True)
+
+    notes = repo / "notes.md"
+    csv_file = repo / "data.csv"
+    tsv_file = repo / "data.tsv"
+    multi_file = repo / "multi.txt"
+    notes.write_text("# Candidate notes\n\nInitial line.\n", encoding="utf-8")
+    csv_file.write_text("name,role\nalice,engineer\n", encoding="utf-8")
+    tsv_file.write_text("name\trole\nbob\treviewer\n", encoding="utf-8")
+    lines = [f"line {i}" for i in range(1, 26)]
+    multi_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    subprocess.run(["git", "add", "-A"], cwd=repo, env=env, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "initial candidate fixture"], cwd=repo, env=env, check=True
+    )
+    subprocess.run(["git", "push", "-q", "-u", "origin", "main"], cwd=repo, env=env, check=True)
+
+    lines[1] = "line 2 edited hunk one"
+    lines[22] = "line 23 edited hunk two"
+    multi_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return {
+        "repo": str(repo),
+        "remote": str(remote),
+        "notesMd": str(notes),
+        "csvFile": str(csv_file),
+        "tsvFile": str(tsv_file),
+        "multiFile": str(multi_file),
+    }
+
+
 def prepare_worktree_fixture(workspace: Path) -> dict:
     """A scratch repository plus the target paths each refusal uses.
 
@@ -1348,6 +1407,7 @@ def scenario_json_linux(
     media: dict | None = None,
     git_fixture: dict | None = None,
     worktree_fixture: dict | None = None,
+    candidate_fixture: dict | None = None,
 ) -> dict:
     """The scenario as the driver receives it (Linux; no synthetic agent)."""
     local: dict[str, str | None] = {}
@@ -1400,6 +1460,14 @@ def scenario_json_linux(
         scenario.update({"git": git_fixture})
     if args.scenario == "worktree" and worktree_fixture:
         scenario.update({"worktree": worktree_fixture})
+    if args.scenario == "candidate" and candidate_fixture:
+        node = shutil.which("node")
+        if not node:
+            raise SystemExit("node is required for the agent fixture")
+        scenario.update({
+            "agentCommand": f"exec {node} {HERE / 'agent-sim.mjs'}",
+            "candidate": candidate_fixture,
+        })
     if args.scenario in ("resource", "stress") and fixtures:
         node = shutil.which("node")
         if not node:
@@ -1903,6 +1971,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
     media_fixtures = None
     git_fixture = None
     worktree_fixture = None
+    candidate_fixture = None
     file = None
     first_line = ""
     if args.scenario == "markdown":
@@ -1924,6 +1993,8 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         git_fixture = prepare_checkpoint_fixture(workspace)
     elif args.scenario == "worktree":
         worktree_fixture = prepare_worktree_fixture(workspace)
+    elif args.scenario == "candidate":
+        candidate_fixture = prepare_candidate_fixture(workspace)
     else:
         token = uuid.uuid4().hex[:10]
         first_line = f"workflow-file {token}"
@@ -1966,6 +2037,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         media_fixtures,
         git_fixture,
         worktree_fixture,
+        candidate_fixture,
     )
     timeout = host_timeout(args, scenario)
     load_average = [round(value, 2) for value in os.getloadavg()]
@@ -2322,7 +2394,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
         linux_profile.cleanup(home, output)
     if failed is not None:
         raise failed
-    if args.scenario in ("workflow", "spaces", "quit", "preview"):
+    if args.scenario in ("workflow", "candidate", "spaces", "quit", "preview"):
         steps = workflow.get("steps") or []
         passed = sum(1 for step in steps if step.get("ok"))
         print(f"{args.scenario} {'PASS' if workflow.get('pass') else 'FAIL'}: {passed}/{len(steps)} steps")
@@ -2387,7 +2459,7 @@ def run_linux(args, binary: Path, source: Path, output: Path) -> int:
             [app_report.load(path) for path in args.compare], [manifest], args.compare_format
         ))
     print(f"\nSaved {report_path}")
-    if args.scenario in ("workflow", "spaces", "quit", "preview") and not workflow.get("pass"):
+    if args.scenario in ("workflow", "candidate", "spaces", "quit", "preview") and not workflow.get("pass"):
         print(
             f"Run failed: the {args.scenario} scenario reported a failing step (see page.log).",
             file=sys.stderr,

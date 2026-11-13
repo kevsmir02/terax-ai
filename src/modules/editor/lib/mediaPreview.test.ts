@@ -24,9 +24,11 @@ describe("mediaPreviewKind", () => {
     expect(mediaPreviewKind("doc.pdf")).toBe("pdf");
   });
 
-  it("returns null for text files", () => {
+  it("returns null for text files including csv and tsv", () => {
     expect(mediaPreviewKind("readme.md")).toBeNull();
     expect(mediaPreviewKind("script.ts")).toBeNull();
     expect(mediaPreviewKind("config.json")).toBeNull();
+    expect(mediaPreviewKind("data.csv")).toBeNull();
+    expect(mediaPreviewKind("data.tsv")).toBeNull();
   });
 });

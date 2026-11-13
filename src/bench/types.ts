@@ -153,6 +153,7 @@ export type BenchScenario = {
     | "fs-churn"
     | "input"
     | "workflow"
+    | "candidate"
     | "markdown"
     | "spaces"
     | "git"
@@ -178,6 +179,15 @@ export type BenchScenario = {
   durationS?: number;
   warmupS?: number;
   hiddenAgents?: number;
+  /** candidate: isolated repo with local bare remote, markdown, CSV/TSV and multi-hunk file. */
+  candidate?: {
+    repo: string;
+    remote: string;
+    notesMd: string;
+    csvFile: string;
+    tsvFile: string;
+    multiFile: string;
+  };
   /** git/checkpoints: an isolated scratch repository the scenario mutates and inspects. */
   git?: {
     repo: string;

@@ -7081,6 +7081,337 @@ async function recoveryScenario(
   return { recovery: { pass, steps } };
 }
 
+async function candidateScenario(
+  run: ScenarioRun,
+): Promise<Record<string, unknown>> {
+  const fixture = run.scenario.candidate;
+  if (!fixture) {
+    throw new Error(
+      "the candidate scenario needs its scratch fixture (scripts/app-lab/run.py creates it)",
+    );
+  }
+  const steps: WorkflowStep[] = [];
+  const check = async (name: string, ok: boolean, detail: string) => {
+    steps.push({ name, ok, detail });
+    await run.log(`[candidate] ${ok ? "PASS" : "FAIL"} ${name}: ${detail}`);
+  };
+  const failed = async (name: string, detail: string) => {
+    await check(name, false, detail);
+    return `candidate step failed: ${name}: ${detail}`;
+  };
+  const app = () => run.app();
+  const bufferText = (tabId: number) => app().readEditor(tabId) ?? "";
+  const readDiskText = async (target: string): Promise<string> => {
+    const result = await invoke<{ kind: string; content?: string }>(
+      "fs_read_file",
+      { path: target, workspace: { kind: "local" }, force: false },
+    ).catch((): { kind: string; content?: string } => ({ kind: "failed" }));
+    return result.kind === "text" ? (result.content ?? "") : "";
+  };
+
+  try {
+    await run.booted();
+    const repoSpace = app().createSpace("Candidate Repo", fixture.repo);
+    const secondSpace = app().createSpace("Secondary Space", fixture.repo);
+    app().newTabInSpace(repoSpace, fixture.repo);
+    app().newTabInSpace(secondSpace, fixture.repo);
+    await run.switchSpace(repoSpace);
+    await invoke("workspace_authorize", {
+      path: fixture.repo,
+      workspace: { kind: "local" },
+    });
+
+    // 1. Launch an agent in the repo Space and switch Spaces back and forth.
+    const agentGroup = app().newAgentGroupTab(
+      fixture.repo,
+      "candidate agent",
+      1,
+    );
+    await run.waitFor(
+      () => app().tabs.some((tab) => tab.id === agentGroup.tabId),
+      "candidate agent tab",
+    );
+    await run.startAgent(agentGroup.leafIds[0], "--seed 42");
+    await run.sync("candidate-agent", {
+      spaceId: repoSpace,
+      agentTabId: agentGroup.tabId,
+    });
+    await run.switchSpace(secondSpace);
+    await pause(400);
+    const switchedAway = app().activeSpaceId === secondSpace;
+    await run.switchSpace(repoSpace);
+    await pause(400);
+    const agentBuffer = app().readBuffer(agentGroup.leafIds[0], 60) ?? "";
+    await check(
+      "launch agent and switch Space",
+      switchedAway &&
+        app().activeSpaceId === repoSpace &&
+        agentBuffer.includes("Thinking"),
+      `switchedAway=${switchedAway} activeSpace=${app().activeSpaceId === repoSpace}`,
+    );
+
+    // 2. Block terminal mode runs a real shell command.
+    const blockTab = await run.newShellTab(true);
+    const blockMarker = `CANDIDATE-BLOCK-${Date.now().toString(36)}`;
+    writeToSession(blockTab.leafId, `printf '%s\\n' '${blockMarker}'\r`);
+    await run.waitFor(
+      () =>
+        (app().readBuffer(blockTab.leafId, 100) ?? "")
+          .split("\n")
+          .some((line) => line.trim() === blockMarker),
+      "block terminal echo",
+      20_000,
+    );
+    await check(
+      "block terminal mode echo",
+      true,
+      `tab ${blockTab.tabId} leaf ${blockTab.leafId}`,
+    );
+
+    // 3. Edit Markdown, verify TSV opens as text, and edit+save CSV as text.
+    const notesTab = app().openFileTab(fixture.notesMd, true, repoSpace);
+    await run.waitFor(
+      () =>
+        app().activeId === notesTab &&
+        bufferText(notesTab).includes("Initial line."),
+      "notes.md in editor",
+    );
+    const editedNote = "Edited in candidate workflow.";
+    app().editEditor(notesTab, `\n${editedNote}\n`);
+    const notesSaved = await app().saveEditor(notesTab);
+    await check(
+      "edit and save Markdown file",
+      notesSaved && (await readDiskText(fixture.notesMd)).includes(editedNote),
+      `saved=${notesSaved}`,
+    );
+
+    const tsvTab = app().openFileTab(fixture.tsvFile, true, repoSpace);
+    await run.waitFor(
+      () => app().activeId === tsvTab && bufferText(tsvTab).includes("bob"),
+      "data.tsv as editable text",
+    );
+    await check(
+      "TSV opens as editable text",
+      bufferText(tsvTab).includes("reviewer"),
+      "CodeMirror buffer loaded",
+    );
+
+    const csvTab = app().openFileTab(fixture.csvFile, true, repoSpace);
+    await run.waitFor(
+      () =>
+        app().activeId === csvTab &&
+        bufferText(csvTab).includes("alice,engineer"),
+      "data.csv as editable text",
+    );
+    app().editEditor(csvTab, "carol,qa\n");
+    const csvSaved = await app().saveEditor(csvTab);
+    await check(
+      "CSV opens and saves as editable text",
+      csvSaved && (await readDiskText(fixture.csvFile)).includes("carol,qa"),
+      `saved=${csvSaved}`,
+    );
+
+    // 4. Markdown preview reflects the saved edit, and web preview stays isolated.
+    const mdTab = app().openMarkdownTab(fixture.notesMd);
+    await run.waitFor(
+      () =>
+        app().activeId === mdTab && visibleMarkdownText().includes(editedNote),
+      "Markdown preview text",
+      20_000,
+    );
+    await check("Markdown preview", true, `tab ${mdTab}`);
+
+    const messages: PreviewFixtureMessage[] = [];
+    const onMessage = (event: MessageEvent) => {
+      const data = event.data as PreviewFixtureMessage | null;
+      if (data?.source === "terax-preview-fixture") messages.push(data);
+    };
+    window.addEventListener("message", onMessage);
+    try {
+      const previewTab = app().openPreview(run.url("/preview-fixture"));
+      await run.waitFor(
+        () =>
+          app().activeId === previewTab &&
+          messages.some((message) => message.kind === "beat"),
+        "web preview fixture beat",
+        30_000,
+      );
+      const beat = messages[messages.length - 1];
+      await check(
+        "web preview sandbox isolation",
+        Boolean(beat && !beat.native.tauri && !beat.native.internals),
+        `tab ${previewTab} tauri=${beat?.native.tauri}`,
+      );
+    } finally {
+      window.removeEventListener("message", onMessage);
+    }
+
+    // 5. Git review, partial hunk staging, unstage/stage, branch, commit, history and push.
+    const resolved = await invoke<{ repoRoot: string; branch: string } | null>(
+      "git_resolve_repo",
+      { cwd: fixture.repo, workspace: { kind: "local" } },
+    );
+    const statusBefore = await invoke<{
+      changedFiles: Array<{
+        path: string;
+        staged: boolean;
+        unstaged: boolean;
+      }>;
+    }>("git_status", { repoRoot: fixture.repo, workspace: { kind: "local" } });
+    const changedPaths = new Set(statusBefore.changedFiles.map((f) => f.path));
+    await check(
+      "Git status and resolve",
+      Boolean(resolved && resolved.branch === "main") &&
+        changedPaths.has("notes.md") &&
+        changedPaths.has("data.csv") &&
+        changedPaths.has("multi.txt"),
+      `branch=${resolved?.branch ?? "none"} changed=${[...changedPaths].sort().join(",")}`,
+    );
+
+    const diffSummary = await invoke<{
+      files: Array<{ path: string; hunks?: number }>;
+    }>("git_diff_summary", {
+      repoRoot: fixture.repo,
+      scope: { kind: "unstaged" },
+      workspace: { kind: "local" },
+    });
+    const fileDiff = await invoke<{
+      hunks: Array<{ id: string }>;
+    }>("git_diff_file", {
+      repoRoot: fixture.repo,
+      scope: { kind: "unstaged" },
+      path: "multi.txt",
+      oldPath: null,
+      includeContents: true,
+      workspace: { kind: "local" },
+    });
+    await check(
+      "Git diff summary and multi-hunk file diff",
+      diffSummary.files.some((f) => f.path === "multi.txt") &&
+        fileDiff.hunks.length >= 2,
+      `hunks=${fileDiff.hunks.length}`,
+    );
+
+    const hunkApply = await invoke<{ applied: boolean }>("git_apply_hunks", {
+      repoRoot: fixture.repo,
+      request: {
+        scope: { kind: "unstaged" },
+        path: "multi.txt",
+        oldPath: null,
+        mode: "stage",
+        selection: { kind: "hunks", items: [{ id: fileDiff.hunks[0].id }] },
+      },
+      workspace: { kind: "local" },
+    });
+    const afterHunkStatus = await invoke<{
+      changedFiles: Array<{
+        path: string;
+        staged: boolean;
+        unstaged: boolean;
+      }>;
+    }>("git_status", { repoRoot: fixture.repo, workspace: { kind: "local" } });
+    const multiEntry = afterHunkStatus.changedFiles.find(
+      (f) => f.path === "multi.txt",
+    );
+    await check(
+      "Git hunk-level stage",
+      hunkApply.applied &&
+        Boolean(multiEntry?.staged) &&
+        Boolean(multiEntry?.unstaged),
+      `applied=${hunkApply.applied} staged=${multiEntry?.staged} unstaged=${multiEntry?.unstaged}`,
+    );
+
+    await invoke("git_unstage", {
+      repoRoot: fixture.repo,
+      paths: ["multi.txt"],
+      workspace: { kind: "local" },
+    });
+    await invoke("git_stage", {
+      repoRoot: fixture.repo,
+      paths: ["notes.md", "data.csv", "multi.txt"],
+      workspace: { kind: "local" },
+    });
+    await invoke("git_branch_create", {
+      repoRoot: fixture.repo,
+      name: "feature/candidate-check",
+      base: null,
+      workspace: { kind: "local" },
+    });
+    await invoke("git_checkout_branch", {
+      repoRoot: fixture.repo,
+      branch: "feature/candidate-check",
+      workspace: { kind: "local" },
+    });
+    const branches = await invoke<{
+      branches: Array<{ name: string; isHead: boolean }>;
+    }>("git_list_branches", {
+      repoRoot: fixture.repo,
+      workspace: { kind: "local" },
+    });
+    const currentBranch = branches.branches.find((b) => b.isHead)?.name;
+    await check(
+      "Git branch create and checkout",
+      currentBranch === "feature/candidate-check",
+      `current=${currentBranch ?? "none"}`,
+    );
+
+    const commitResult = await invoke<{ commitSha: string; summary: string }>(
+      "git_commit",
+      {
+        repoRoot: fixture.repo,
+        message: "candidate: verify full workflow",
+        workspace: { kind: "local" },
+      },
+    );
+    const logEntries = await invoke<Array<{ sha: string; subject: string }>>(
+      "git_log",
+      {
+        repoRoot: fixture.repo,
+        limit: 5,
+        beforeSha: null,
+        workspace: { kind: "local" },
+      },
+    );
+    const commitFiles = await invoke<Array<{ path: string }>>(
+      "git_commit_files",
+      {
+        repoRoot: fixture.repo,
+        sha: commitResult.commitSha,
+        workspace: { kind: "local" },
+      },
+    );
+    const pushResult = await invoke<{ pushed: boolean; branch: string | null }>(
+      "git_push",
+      {
+        repoRoot: fixture.repo,
+        setUpstream: true,
+        workspace: { kind: "local" },
+      },
+    );
+    await check(
+      "Git commit, history and explicit push",
+      Boolean(commitResult.commitSha) &&
+        logEntries[0]?.sha === commitResult.commitSha &&
+        commitFiles.some((f) => f.path === "notes.md") &&
+        pushResult.pushed,
+      `sha=${commitResult.commitSha.slice(0, 8)} files=${commitFiles.length} pushed=${pushResult.pushed}`,
+    );
+
+    await run.sync("candidate-complete", {
+      commitSha: commitResult.commitSha,
+      steps: steps.length,
+    });
+  } catch (error) {
+    throw new Error(await failed("scenario completed", String(error)));
+  }
+
+  const pass = steps.every((step) => step.ok);
+  await run.log(
+    `[candidate] ${pass ? "PASS" : "FAIL"} summary: ${steps.filter((step) => !step.ok).length} failures of ${steps.length}`,
+  );
+  return { workflow: { pass, steps } };
+}
+
 const SCENARIOS: Record<
   BenchScenario["name"],
   (run: ScenarioRun) => Promise<unknown>
@@ -7094,6 +7425,7 @@ const SCENARIOS: Record<
   "fs-churn": fsChurnScenario,
   input: inputScenario,
   workflow: workflowScenario,
+  candidate: candidateScenario,
   markdown: markdownScenario,
   spaces: spacesScenario,
   quit: quitScenario,
