@@ -1575,6 +1575,12 @@ export default function App() {
               editEditor={(tabId, text) =>
                 editorRefs.current.get(tabId)?.insertText(text)
               }
+              saveEditor={(tabId) =>
+                editorRefs.current.get(tabId)?.save() ?? Promise.resolve(false)
+              }
+              readEditor={(tabId) =>
+                editorRefs.current.get(tabId)?.readText() ?? null
+              }
               requestQuit={requestQuit}
               cancelQuit={cancelQuit}
               confirmQuit={confirmQuit}

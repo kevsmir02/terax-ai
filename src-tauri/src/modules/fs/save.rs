@@ -45,6 +45,34 @@ fn save_lock() -> std::sync::MutexGuard<'static, ()> {
     SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Bench-only write delay (`TERAX_BENCH_WRITE_DELAY_MS`).
+///
+/// The app-lab stale-typing step has to type while a native write is genuinely in flight. Waiting
+/// for a slow disk is not deterministic, so the bench build honours this variable; without the
+/// `bench` feature the function is empty and the variable does nothing, so a shipped build has no
+/// runtime knob. The value is bounded so a stray environment cannot hang the app.
+#[cfg(feature = "bench")]
+fn bench_write_delay() {
+    if let Ok(raw) = std::env::var("TERAX_BENCH_WRITE_DELAY_MS") {
+        let millis = bench_delay_ms(Some(raw.as_str()));
+        if millis > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(millis));
+        }
+    }
+}
+
+#[cfg(not(feature = "bench"))]
+fn bench_write_delay() {}
+
+/// Parse and bound the bench delay; `None`, a non-number and `0` mean no delay.
+#[cfg(feature = "bench")]
+fn bench_delay_ms(raw: Option<&str>) -> u64 {
+    const MAX_BENCH_DELAY_MS: u64 = 10_000;
+    raw.and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|value| value.min(MAX_BENCH_DELAY_MS))
+        .unwrap_or(0)
+}
+
 /// Content digest + size + file identity. Comparable, never interpreted by the
 /// frontend; it is passed back verbatim on save.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -274,6 +302,9 @@ pub fn save(
     // baseline cannot interleave.
     let _guard = save_lock();
 
+    // Bench-only: hold the write open so the app-lab can type during it.
+    bench_write_delay();
+
     if let Some(expected) = expected {
         match current_revision(target) {
             CurrentState::Present(current) => check_expected(&current, expected)?,
@@ -480,5 +511,20 @@ mod tests {
         assert_eq!(std::fs::read(&target).unwrap(), b"payload");
         // The pre-staged symlink target must not have been written through.
         assert_eq!(std::fs::read(&outside).unwrap(), b"untouched");
+    }
+
+    /// The app-lab stale-typing step relies on a bounded, opt-in delay. Garbage or an unset
+    /// variable must mean "no delay", or a release build would inherit a runtime knob it does
+    /// not have.
+    #[cfg(feature = "bench")]
+    #[test]
+    fn bench_delay_is_bounded_and_ignores_garbage() {
+        assert_eq!(bench_delay_ms(None), 0);
+        assert_eq!(bench_delay_ms(Some("")), 0);
+        assert_eq!(bench_delay_ms(Some("nope")), 0);
+        assert_eq!(bench_delay_ms(Some("0")), 0);
+        assert_eq!(bench_delay_ms(Some("800")), 800);
+        assert_eq!(bench_delay_ms(Some(" 1200 ")), 1200);
+        assert_eq!(bench_delay_ms(Some("999999")), 10_000);
     }
 }

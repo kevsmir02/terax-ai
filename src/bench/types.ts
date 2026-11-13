@@ -53,8 +53,12 @@ export type BenchAppApi = {
     closeSaveState: "idle" | "saving" | "incomplete";
     spaceDeleteIncomplete: boolean;
   };
-  /** Inserts text through the editor's real editing path (dirty buffer, drafts, saves). */
+  /** Insert text through the editor's real editing path (dirty buffer, drafts, saves). */
   editEditor: (tabId: number, text: string) => void;
+  /** Persist one editor buffer; false when the write was incomplete, failed or conflicted. */
+  saveEditor: (tabId: number) => Promise<boolean>;
+  /** One editor buffer's text, read from CodeMirror (a modal dialog hides it from the DOM). */
+  readEditor: (tabId: number) => string | null;
   /** Shows the Source Control panel so its real destructive-action guard mounts. */
   openSourceControl: () => void;
   /** Opens the Source Control panel's worktree dialog (the app's own state). */
@@ -160,6 +164,7 @@ export type BenchScenario = {
     | "resource"
     | "stress"
     | "quit"
+    | "recovery"
     | "startup";
   /** tabs: "2" (shell + agent) or "4" (shell, agent, agent+shell split, shell). */
   variant?: string;
@@ -231,13 +236,39 @@ export type BenchScenario = {
   /** Patch WebGPU/DOM prototypes with lifecycle counters (src/bench/gpuCounters.ts). */
   instrument?: boolean;
   /** Application preferences to set through the app's own store before the scenario starts. */
-  prefs?: { windowVibrancy?: boolean };
+  prefs?: { windowVibrancy?: boolean; editorRecoveryDrafts?: boolean };
   /** localStorage entries to set (null removes) before the application starts. */
   localStorage?: Record<string, string | null>;
   /** workflow: absolute path of the temp file the scenario opens and asserts. */
   file?: string;
   /** workflow: the file's distinctive first line, asserted in the rendered editor. */
   fileText?: string;
+  /** workflow: the external-writer and stale-typing fixtures (inside the scenario workspace). */
+  workflow?: {
+    /** A file the harness rewrites from outside the app while the buffer is dirty. */
+    conflictFile: string;
+    /** A file whose save the driver stalls so it can type during the write. */
+    staleFile: string;
+    /** Bench-only native write delay (`TERAX_BENCH_WRITE_DELAY_MS`), in milliseconds. */
+    writeDelayMs?: number;
+  };
+  /** quit: a file inside a directory the harness makes unwritable to force a failed save. */
+  quit?: { stalledFile: string; stalledDir: string };
+  /**
+   * recovery: one launch of the crash-recovery row. `write` dirties buffers and asks the harness
+   * to SIGKILL the app once the drafts are durably acknowledged; `restore` runs after the crash
+   * with the same profile and workspace.
+   */
+  recovery?: {
+    phase: "write" | "restore";
+    file: string;
+    otherFile: string;
+    /** write: the text to type. restore: the text the first launch acknowledged. */
+    text: string;
+    otherText: string;
+    /** restore: the buffer ids the first launch reported durable. */
+    expectedBufferIds?: string[];
+  };
   /** markdown: documents and assets the scenario drives through the real preview. */
   markdown?: {
     /** The configured Space project root (the app's launch directory). */

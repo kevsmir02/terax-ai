@@ -65,6 +65,11 @@ python3 scripts/app-lab/run.py --scenario worktree --profile debug \
 python3 scripts/app-lab/run.py --scenario quit --profile debug \
     --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-quit
 
+# the crash-recovery seam (acknowledged draft, harness SIGKILL of the process
+# group, relaunch against the same profile, offered draft, exact discard)
+python3 scripts/app-lab/run.py --scenario recovery --profile debug \
+    --target-dir /tmp/terax-lab-target --output /tmp/terax-lab-run-recovery
+
 # the image seam (real decode per format, oversized/corrupt refusal, hidden-tab and
 # close-cycle release of decoded viewers and grants)
 python3 scripts/app-lab/run.py --scenario images --profile debug \
@@ -141,9 +146,28 @@ tree.
 marker is echoed back and asserted to appear exactly once; a second terminal tab opens; the first
 tab's active pane splits and the new leaf gets a live session; the app switches away and back with
 the marker still in scrollback; a temp file opens through the app's own tab planner (`openFileTab`)
-and the editor's rendered text is asserted. Each step emits `[workflow] PASS|FAIL …` to
-`page.log`; the structured summary (`token`, `pass`, `steps`) rides the final `done` sync, the
-report stores it under `workflow`, and the runner exits 2 when any step failed.
+and the editor's rendered text is asserted. On Linux the workflow then drives the two save
+conflicts that used to be unit-only evidence (ticket #46): an **external writer** rewrites
+`workflow-conflict.txt` from the harness while the buffer is dirty, and the app's save must show
+the conflict dialog with both versions, compare, Save As, reload and overwrite; overwriting is
+bound to the reviewed revision, so a second external change refuses the click and re-reviews
+instead of clobbering it; an unreadable target (mode 000 through the harness) leaves overwrite
+disabled; reload adopts the disk text. Then **stale typing** opens `workflow-stale.txt`, starts a
+save-and-close while the bench build holds the native write open (`TERAX_BENCH_WRITE_DELAY_MS`),
+types again, and asserts the tab stays open with the newer text and that only the stale snapshot
+reached the disk. Each step emits `[workflow] PASS|FAIL …` to `page.log`; the structured summary
+(`token`, `pass`, `steps`) rides the final `done` sync, the report stores it under `workflow`, and
+the runner exits 2 when any step failed.
+
+**Harness interference** (`POST /interfere`, `ReportServer`): the external write, the mode change
+and the crash are actions the application must not perform on itself, so the driver asks the
+orchestrator's own process over the loopback report server. Actions are `write` (path + content),
+`chmod` (path + permission bits) and `signal` (`target: "app"`, `SIGKILL`/`SIGTERM`); every path
+must resolve inside the scenario workspace (a symlink escape is refused), the endpoint answers
+loopback clients only, and `signal` only accepts the pid the server launched, which it kills as a
+process group. Accepted actions are stored in the report's `recovery.launches[].interference` (or
+the run's log) so a phase can be tied to the exact write or signal that produced it.
+`scripts/tests/test_app_lab_interfere.py` covers the accepted actions and every refusal.
 
 **The Markdown preview** (`--scenario markdown`) drives the real preview against fixtures the runner
 writes: a document inside the Space root, an outside document, a symlink escape, a remote pixel the
@@ -195,6 +219,30 @@ Spaces and editor tabs came back, the marker still has one line — no command w
 quiet restored application closes without a question. The runner exits 2 when any step failed.
 A full process relaunch needs two profiles; the reload exercises the same restore path, and the
 difference is stated rather than papered over.
+
+After the two buffers are saved, the quit scenario makes the **native write fail** for a third
+one: the harness chmods `quit-stalled/` read-only (the atomic writer needs a temp file in that
+directory, so this is a real `EACCES`), and `Save All & Quit` must report `note: save-incomplete`
+and keep the buffer instead of closing; the file on disk is unchanged. Restoring the directory and
+saving again writes the text, so the failure is attributed to the write, not to the scenario.
+
+**Crash recovery** (`--scenario recovery`, ticket #46): two launches of the real app against one
+disposable profile, orchestrated like `--scenario startup` but with a different driver phase per
+launch (`run.py` `run_linux_recovery`). Launch 1 (`phase: "write"`) edits two files through
+CodeMirror and waits until `recovery_list` holds both drafts with exactly that text; only then does
+it ask `POST /interfere` for `SIGKILL` of the app's process group. The harness records the exit
+status and the request (a genuine signal death, not a graceful teardown), then starts launch 2
+(`phase: "restore"`) on the same profile and workspace. The driver opens the same files, asserts
+the "Recovered unsaved draft for …" banner is offered for each, that the stored record's text and
+buffer id are the ones launch 1 acknowledged, that Compare shows that text, and that Discard
+removes exactly that record while the sibling draft and both tabs stay. `report.json` carries
+`recovery.launches` (acknowledgement, exit code/signal, interference operations) and
+`recovery.steps`; every step is printed as a `recovery PASS|FAIL …` line and the runner exits 2 on
+failure. The Settings → Editor stored-drafts list is a separate application window, so the driver
+exercises the same `discardDraft` operation through the banner; the settings list itself remains a
+named manual check. The bench-only write delay (`TERAX_BENCH_WRITE_DELAY_MS`, honoured only with
+the `bench` cargo feature, unset in a release build) is used by the stale-typing step and does not
+exist as a product preference.
 
 **The preview** (`previewScenario`): a preview tab opens through the app's own planner
 (`openPreviewTab`) at `/preview-fixture?redirect=1`, which the orchestrator serves. The fixture page
@@ -377,13 +425,14 @@ not.
 | `agents-steady` | 1 visible plus 6 hidden agent tabs for 60 s |
 | `idle` | one idle shell for 30 s |
 | `input` | real key events and input-method calls into a raw-mode PTY reader; pass/fail lines in `page.log` (no measurements) |
-| `workflow` (Linux) | acceptance workflow: shell spawn, exact echo, new tab, split, switch back, open a file and assert its rendered text; now sampled like the measured scenarios |
+| `workflow` (Linux) | acceptance workflow: shell spawn, exact echo, new tab, split, switch back, open a file and assert its rendered text; the external-writer conflict (reviewed overwrite, invalidation, unreadable target, reload) and stale typing during a pending save; sampled like the measured scenarios |
 | `images` (Linux) | image seam: representative committed containers decode in the real WebKitGTK, oversized/corrupt are refused, hidden tabs release, close cycles leave no decoded viewers or grants |
 | `media` (Linux) | media seam: real container/codec outcomes from the element, ranged delivery and seeking, hidden pause without auto-resume, unsupported/corrupt/mismatch/interrupted inputs, close releases elements, playback slots and grants |
 | `spaces` (Linux) | Space lifecycle: one checkout shared by two Spaces and its rendered indication, a switch that keeps hidden terminal output flowing while presentation stops, the running-process and unsaved-buffer close guards, and Space deletion that resolves dirty buffers/processes, leaves the project directory intact, and cancel leaving everything as it was |
 | `resource` (Linux) | idle terminal for `--idle-seconds` (5), then 2 Spaces, 4 terminal panes, `--agents` (2) busy synthetic agents, several text files, one active local preview; `--streams` (2) streaming panes for `--stream-seconds`, `--close-cycles` editor open/close cycles, `--cycles` hide/show cycles, then +10/+30 s settle |
 | `stress` (Linux) | the same shape with 4 agents, 4 streaming panes and the 4 MiB close-cycle file; a separate, clearly described workload |
 | `startup` (Linux) | boot only; `--startup-repeats` (3) launches — the first cold (fresh profile), the rest warm (same profile) |
+| `recovery` (Linux) | crash recovery: two dirty buffers, acknowledged recovery drafts, a harness SIGKILL, then one relaunch that offers the drafts, matches the acknowledged text and discards exactly one |
 
 Options that matter: `--window WxH` (default 1280x820 points), `--cwd-shell` / `--cwd-agent`
 (different directories make the explorer and git panel follow the switch), `--vibrancy on|off`,

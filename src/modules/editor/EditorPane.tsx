@@ -83,6 +83,8 @@ export type EditorPaneHandle = {
   redo: () => void;
   /** Insert text at the current selection (the app-lab uses the real editing path). */
   insertText: (text: string) => void;
+  /** The buffer's text, independent of render/aria-hidden state (no modal can hide it). */
+  readText: () => string;
   /** Persist the buffer (format-on-save + write). True only when complete: no newer edits, conflict or failure. */
   save: () => Promise<boolean>;
   /** True while the buffer has text newer than its last persisted baseline. */
@@ -512,6 +514,7 @@ export const EditorPane = memo(
           view.dispatch(view.state.replaceSelection(text));
           view.focus();
         },
+        readText: () => cmRef.current?.view?.state.doc.toString() ?? "",
         save: () => performSaveRef.current(),
         isDirty: () => isDirtyRef.current(),
         releaseRecovery,
