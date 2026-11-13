@@ -12,7 +12,7 @@ import type { UpdaterState } from "./updateState";
 export interface CopySummary {
   title: string;
   detail: string;
-  action: "check" | "request-update" | "dismiss" | null;
+  action: "check" | "request-update" | "request-handoff" | "dismiss" | null;
 }
 
 export function trustNote(release: AvailableRelease): string {
@@ -108,7 +108,48 @@ export function checkSummary(state: UpdaterState): CopySummary {
         detail: `${state.detail} Nothing was downloaded, and no package transaction ran.`,
         action: "dismiss",
       };
+    case "handoff-checking":
+      return {
+        title: "Checking that nothing is in the way…",
+        detail:
+          "Terax is reading the live state right now: unsaved editor buffers, processes " +
+          "your terminals started, and agents that are still working. It does not save, " +
+          "close, stop or interrupt anything.",
+        action: null,
+      };
+    case "handoff-blocked":
+      return {
+        title: `Not handed off — v${state.release.version} waits on your work`,
+        detail: state.summary,
+        action: "request-handoff",
+      };
+    case "handed-off":
+      return {
+        title: `Handed off: Terax v${state.release.version}`,
+        detail:
+          "Terax gave you the artifact and the command below and stopped there. It did " +
+          "not download, install or verify anything, and it cannot confirm the result: " +
+          "your package tool owns the transaction.",
+        action: "dismiss",
+      };
     default:
       return { title: "", detail: "", action: null };
   }
+}
+
+/**
+ * What the app cannot promise about the transaction the person is about to run.
+ *
+ * Cancellation, package locks and a failed transaction are the package tool's
+ * outcomes, not the app's: there is no rollback to offer and no way to observe the
+ * result, so the copy names the recovery path and says exactly what is unknown.
+ */
+export function handoffRecoveryNote(): string {
+  return (
+    "If your package tool is cancelled, fails, or reports that the package database is " +
+    "locked: nothing is rolled back by Terax. It is safe to close Terax first, wait for " +
+    "the running package operation to finish (or remove the stale lock your tool names), " +
+    "then run the command again. Terax cannot tell you whether the transaction finished " +
+    "and never relaunches itself."
+  );
 }

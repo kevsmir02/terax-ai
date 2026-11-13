@@ -116,7 +116,11 @@ import {
   WindowActivityBridge,
   WindowVibrancyBridge,
 } from "@/modules/theme";
-import { UpdaterDialog } from "@/modules/updater";
+import {
+  collectHandoffWork,
+  type HandoffHazard,
+  UpdaterDialog,
+} from "@/modules/updater";
 import {
   useWorkspaceEnvStore,
   type WorkspaceEnv,
@@ -1132,6 +1136,58 @@ export default function App() {
 
   const onActivateAgent = activateAgentTarget;
 
+  /**
+   * The handoff's readiness evidence, read live at the moment the person approves
+   * an update: the editor handles' own dirty answers, a probe per terminal leaf and
+   * the agent phases the terminals reported. Nothing is cached between reads, so a
+   * buffer that goes dirty (or an agent that starts) after the approval is seen by
+   * the re-read that happens right before the handoff.
+   */
+  const readHandoffWork = useCallback(
+    () =>
+      collectHandoffWork({
+        tabs: tabsRef.current,
+        isTabDirty,
+        probeProcess: (leafId: number) => leafHasForegroundProcess(leafId),
+        ptyIdForLeaf,
+        agentPhase: (ptyId: number) =>
+          useAgentActivityStore.getState().phases[ptyId],
+        agentName: (ptyId: number) =>
+          useAgentActivityStore.getState().agents[ptyId],
+      }),
+    [isTabDirty],
+  );
+
+  /**
+   * "Review the work" only focuses what the check named. It never saves, closes or
+   * interrupts anything: finishing or closing the work is the person's decision.
+   */
+  const reviewHandoffWork = useCallback(
+    (hazards: readonly HandoffHazard[]) => {
+      const first = hazards[0];
+      if (!first) return;
+      if (first.kind === "buffer") {
+        const space = tabsRef.current.find(
+          (t) => t.id === first.tabId,
+        )?.spaceId;
+        if (space && space !== useSpaces.getState().activeId) {
+          useSpaces.getState().setActive(space);
+        }
+        setActiveId(first.tabId);
+        return;
+      }
+      if (first.kind === "agent") {
+        activateAgentTarget(first.tabId, first.leafId);
+        return;
+      }
+      const tab = tabsRef.current.find(
+        (t) => t.kind === "terminal" && hasLeaf(t.paneTree, first.leafId),
+      );
+      if (tab) activateAgentTarget(tab.id, first.leafId);
+    },
+    [activateAgentTarget, setActiveId],
+  );
+
   const handleLeafExit = useCallback(
     (leafId: number, _code: number) => {
       const all = tabsRef.current;
@@ -1810,7 +1866,10 @@ export default function App() {
             onCreated={(path) => openFileTab(path)}
           />
 
-          <UpdaterDialog />
+          <UpdaterDialog
+            readHandoffWork={readHandoffWork}
+            reviewHandoffWork={reviewHandoffWork}
+          />
 
           <CloseDialogs
             tabs={tabs}

@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { useUpdater } from "@/modules/updater";
+import { canRequestHandoff } from "@/modules/updater/updateState";
 import { GithubIcon, Globe02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { getIdentifier, getName, getVersion } from "@tauri-apps/api/app";
@@ -25,10 +26,11 @@ export function AboutSection() {
   const [name, setName] = useState("Terax");
   const [identifier, setIdentifier] = useState("");
   const [build, setBuild] = useState("");
-  const { state, check, requestUpdate } = useUpdater({ autoCheck: false });
+  const { state, check, requestHandoff } = useUpdater({ autoCheck: false });
   const checking = state.kind === "checking";
-  const available = state.kind === "update-available";
-  const handedOff = state.kind === "handoff-unavailable";
+  const available = canRequestHandoff(state);
+  const handedOff =
+    state.kind === "handoff-unavailable" || state.kind === "handed-off";
   const checkLabel = checking
     ? "Checking…"
     : available
@@ -41,7 +43,7 @@ export function AboutSection() {
             ? "Check failed — retry"
             : "Check for updates";
   const onUpdateClick = () => {
-    if (available) void requestUpdate();
+    if (available) void requestHandoff();
     else void check({ manual: true });
   };
 
@@ -153,8 +155,15 @@ export function AboutSection() {
             {state.failure.reason}: {state.failure.detail}
           </p>
         )}
-        {handedOff && (
+        {state.kind === "handoff-unavailable" && (
           <p className="text-[11px] text-muted-foreground">{state.detail}</p>
+        )}
+        {state.kind === "handed-off" && (
+          <p className="text-[11px] text-muted-foreground">
+            Handed off: Terax did not download, install or verify anything, and
+            it cannot confirm the result. Run the package tool from your
+            terminal.
+          </p>
         )}
       </div>
     </div>
