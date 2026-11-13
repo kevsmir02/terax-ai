@@ -50,9 +50,9 @@ describe("fork identity namespace", () => {
     expect(table.packaging.productName).not.toBe(table.upstream.productName);
     expect(table.packaging.vendor).not.toBe(table.upstream.publisher);
     expect(table.packaging.packageName).toBe(table.namespace);
-    expect(table.packaging.cliBinaryName.startsWith(`${table.namespace}-`)).toBe(
-      true,
-    );
+    expect(
+      table.packaging.cliBinaryName.startsWith(`${table.namespace}-`),
+    ).toBe(true);
   });
 
   it("matches the Tauri config literal", () => {

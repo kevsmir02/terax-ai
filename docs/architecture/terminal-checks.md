@@ -49,6 +49,12 @@ The soak measurement is committed as `docs/architecture/terminal-linux-soak-2026
 is the baseline `pnpm ghostty:update` compares a new revision against, so the gate works without
 anyone remembering a flag.
 
+The procedure is local, so CI does not run it. What CI does run (`repo-guards` →
+`scripts/tests/test_ghostty_update.py`) is the binding that a pull request cannot slip past: the
+pinned revision, the rebuild pin and the checked-in hashes must agree, the shipped `.wasm` files
+must match their recorded hashes, and the committed soak baseline must have measured those exact
+artifact hashes. A pin bump without re-recorded soak evidence fails there, before review.
+
 ### Bash integration with a host PROMPT_COMMAND hook (Fedora 44 KDE)
 
 `bashrc.bash` emulates login-shell init, so it sources `/etc/profile` and `/etc/bashrc`. On Fedora

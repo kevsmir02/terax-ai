@@ -127,6 +127,7 @@
     "@vitejs/plugin-react": "^6.1.1",
     "@webgpu/types": "^0.1.74",
     "babel-plugin-react-compiler": "^1.0.0",
+    "jsdom": "^31.0.0",
     "knip": "^6.38.0",
     "playwright": "1.62.1",
     "pngjs": "7.0.0",
