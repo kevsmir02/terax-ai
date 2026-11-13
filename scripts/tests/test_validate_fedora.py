@@ -18,10 +18,12 @@ def load_module():
     return module
 
 
+MOD = load_module()
+
+
 class RpmRequiresResolutionTest(unittest.TestCase):
     def test_satisfies_host_packages_and_rpmlib_and_flags_missing(self) -> None:
-        mod = load_module()
-        resolved = mod.parse_rpm_requires_resolution(
+        resolved = MOD.parse_rpm_requires_resolution(
             [
                 ("webkit2gtk4.1", "webkit2gtk4.1-2.54.2-1.fc45.x86_64"),
                 ("gtk3", "gtk3-3.24.52-6.fc45.x86_64"),
@@ -49,8 +51,7 @@ class RpmRequiresResolutionTest(unittest.TestCase):
         self.assertEqual(resolved["missing"], [])
 
     def test_reports_missing_non_rpmlib_dependency(self) -> None:
-        mod = load_module()
-        resolved = mod.parse_rpm_requires_resolution(
+        resolved = MOD.parse_rpm_requires_resolution(
             [("libmissing.so.1()(64bit)", "no package provides libmissing.so.1()(64bit)")]
         )
         self.assertFalse(resolved["ok"])
@@ -59,8 +60,7 @@ class RpmRequiresResolutionTest(unittest.TestCase):
 
 class PackagePathDisjointnessTest(unittest.TestCase):
     def test_detects_disjoint_codr_and_terax_paths(self) -> None:
-        mod = load_module()
-        result = mod.check_package_path_disjointness(
+        result = MOD.check_package_path_disjointness(
             ["/usr/bin/codr", "/usr/bin/codr-cli", "/usr/share/applications/Codr.desktop"],
             ["/usr/bin/terax", "/usr/bin/terax-cli", "/usr/share/applications/Terax.desktop"],
         )
@@ -70,8 +70,7 @@ class PackagePathDisjointnessTest(unittest.TestCase):
         self.assertEqual(result["upstreamCount"], 3)
 
     def test_reports_overlapping_paths(self) -> None:
-        mod = load_module()
-        result = mod.check_package_path_disjointness(
+        result = MOD.check_package_path_disjointness(
             ["/usr/bin/codr", "/usr/bin/terax-cli"],
             ["/usr/bin/terax", "/usr/bin/terax-cli"],
         )
@@ -81,16 +80,14 @@ class PackagePathDisjointnessTest(unittest.TestCase):
 
 class RpmSignatureCheckTest(unittest.TestCase):
     def test_parses_unsigned_rpm_with_valid_digests(self) -> None:
-        mod = load_module()
-        parsed = mod.parse_rpm_signature_check(
+        parsed = MOD.parse_rpm_signature_check(
             "/tmp/codr-1.0.0-1.x86_64.rpm: digests SIGNATURES NOT OK"
         )
         self.assertTrue(parsed["digestsOk"])
         self.assertFalse(parsed["signed"])
 
     def test_parses_signed_rpm_with_valid_digests(self) -> None:
-        mod = load_module()
-        parsed = mod.parse_rpm_signature_check(
+        parsed = MOD.parse_rpm_signature_check(
             "/tmp/codr-1.0.0-1.x86_64.rpm: digests signatures OK"
         )
         self.assertTrue(parsed["digestsOk"])
@@ -99,8 +96,8 @@ class RpmSignatureCheckTest(unittest.TestCase):
 
 class CliProbeEvaluationTest(unittest.TestCase):
     def test_all_probes_pass_when_exit_zero_and_json_ok(self) -> None:
-        mod = load_module()
-        result = mod.evaluate_cli_probes(
+        # `codr-cli --version` emits the Cargo package string (`terax 1.0.0`) by design.
+        result = MOD.evaluate_cli_probes(
             [
                 {"args": ["--version"], "exitCode": 0, "stdout": "terax 1.0.0\n", "stderr": ""},
                 {
@@ -115,8 +112,7 @@ class CliProbeEvaluationTest(unittest.TestCase):
         self.assertEqual(result["failures"], [])
 
     def test_flags_nonzero_or_json_error(self) -> None:
-        mod = load_module()
-        result = mod.evaluate_cli_probes(
+        result = MOD.evaluate_cli_probes(
             [
                 {
                     "args": ["identify", "--json"],

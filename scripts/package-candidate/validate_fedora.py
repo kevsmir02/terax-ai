@@ -104,13 +104,20 @@ def _run_capture(command: list[str], **kwargs) -> subprocess.CompletedProcess[st
     return subprocess.run(command, capture_output=True, text=True, **kwargs)
 
 
+def _cli_probe(cli_bin: Path, args: list[str], env: dict[str, str]) -> dict:
+    res = _run_capture([str(cli_bin), *args], env=env, timeout=10)
+    return {
+        "args": args,
+        "exitCode": res.returncode,
+        "stdout": res.stdout,
+        "stderr": res.stderr,
+    }
+
+
 def inspect_host_rpm(rpm_path: Path) -> dict:
-    requires_out = _run_capture(["rpm", "-qp", "--requires", str(rpm_path)], check=True).stdout
+    meta = packaging.rpm_metadata(rpm_path)
     pairs: list[tuple[str, str]] = []
-    for req in requires_out.splitlines():
-        req = req.strip()
-        if not req:
-            continue
+    for req in meta["requires"]:
         provider = _run_capture(["rpm", "-q", "--whatprovides", req]).stdout
         pairs.append((req, provider))
     resolution = parse_rpm_requires_resolution(pairs)
@@ -119,9 +126,10 @@ def inspect_host_rpm(rpm_path: Path) -> dict:
     signature = parse_rpm_signature_check(sig_proc.stdout + sig_proc.stderr)
 
     cand_files = _run_capture(["rpm", "-qlp", str(rpm_path)], check=True).stdout.splitlines()
-    upstream_installed = _run_capture(["rpm", "-q", "terax"]).returncode == 0
+    upstream_pkg = linux_profile.UPSTREAM_NAMESPACE
+    upstream_installed = _run_capture(["rpm", "-q", upstream_pkg]).returncode == 0
     upstream_files = (
-        _run_capture(["rpm", "-ql", "terax"], check=True).stdout.splitlines()
+        _run_capture(["rpm", "-ql", upstream_pkg], check=True).stdout.splitlines()
         if upstream_installed
         else []
     )
@@ -137,13 +145,14 @@ def inspect_host_rpm(rpm_path: Path) -> dict:
 
 
 def run_packaged_graphical_smoke(rpm_path: Path, timeout_s: float = 25.0) -> dict:
-    """Launch the extracted `/usr/bin/codr` on Wayland under an isolated profile."""
-    with tempfile.TemporaryDirectory(prefix="codr-fedora-smoke-") as tmp_str:
+    """Launch the extracted candidate GUI binary on Wayland under an isolated profile."""
+    cand = packaging.candidate()
+    with tempfile.TemporaryDirectory(prefix=f"{cand.package_name}-fedora-smoke-") as tmp_str:
         tmp = Path(tmp_str)
         pkg_root = tmp / "pkgroot"
         packaging.extract_rpm(rpm_path, pkg_root)
-        codr_bin = pkg_root / "usr" / "bin" / "codr"
-        cli_bin = pkg_root / "usr" / "bin" / "codr-cli"
+        app_bin = pkg_root / "usr" / "bin" / cand.package_name
+        cli_bin = pkg_root / "usr" / "bin" / cand.cli_binary_name
 
         workspace = tmp / "workspace"
         workspace.mkdir(parents=True, exist_ok=True)
@@ -156,20 +165,20 @@ def run_packaged_graphical_smoke(rpm_path: Path, timeout_s: float = 25.0) -> dic
         sentinels = namespace_sentinels.seed(home)
 
         proc = subprocess.Popen(
-            [str(codr_bin)],
+            [str(app_bin)],
             cwd=str(workspace),
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
         )
-        control_path = Path(env["XDG_CACHE_HOME"]) / "codr" / "control.json"
+        control_path = Path(env["XDG_CACHE_HOME"]) / cand.namespace / "control.json"
         deadline = time.monotonic() + timeout_s
         try:
             while time.monotonic() < deadline:
                 if proc.poll() is not None:
                     out = proc.stdout.read() if proc.stdout else ""
-                    raise RuntimeError(f"codr exited early ({proc.returncode}): {out}")
+                    raise RuntimeError(f"{cand.package_name} exited early ({proc.returncode}): {out}")
                 if control_path.is_file():
                     break
                 time.sleep(0.1)
@@ -178,18 +187,12 @@ def run_packaged_graphical_smoke(rpm_path: Path, timeout_s: float = 25.0) -> dic
 
             identify_probe: dict | None = None
             while time.monotonic() < deadline:
-                res = _run_capture([str(cli_bin), "identify", "--json"], env=env, timeout=10)
-                identify_probe = {
-                    "args": ["identify", "--json"],
-                    "exitCode": res.returncode,
-                    "stdout": res.stdout,
-                    "stderr": res.stderr,
-                }
-                if res.returncode == 0:
+                identify_probe = _cli_probe(cli_bin, ["identify", "--json"], env)
+                if identify_probe["exitCode"] == 0:
                     break
                 time.sleep(0.2)
             if identify_probe is None or identify_probe["exitCode"] != 0:
-                raise TimeoutError(f"codr frontend did not become ready: {identify_probe}")
+                raise TimeoutError(f"frontend did not become ready: {identify_probe}")
 
             probes = [identify_probe]
             for args in (
@@ -198,15 +201,7 @@ def run_packaged_graphical_smoke(rpm_path: Path, timeout_s: float = 25.0) -> dic
                 ["capabilities", "--json"],
                 ["open", str(sample_file), "--line", "2", "--json"],
             ):
-                res = _run_capture([str(cli_bin), *args], env=env, timeout=10)
-                probes.append(
-                    {
-                        "args": args,
-                        "exitCode": res.returncode,
-                        "stdout": res.stdout,
-                        "stderr": res.stderr,
-                    }
-                )
+                probes.append(_cli_probe(cli_bin, args, env))
             time.sleep(1.0)
         finally:
             if proc.poll() is None:
@@ -216,27 +211,37 @@ def run_packaged_graphical_smoke(rpm_path: Path, timeout_s: float = 25.0) -> dic
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait(timeout=5)
-        output_tail = (proc.stdout.read() if proc.stdout else "").splitlines()[-20:]
+        raw_output = proc.stdout.read() if proc.stdout else ""
+        output_tail = raw_output.splitlines()[-20:]
+        pty_opened = "pty opened" in raw_output
         sentinel_problems = namespace_sentinels.verify(home, sentinels)
-        fstate = namespace_sentinels.fork_state(home)
+        fork_state = namespace_sentinels.fork_state(home)
         probe_eval = evaluate_cli_probes(probes)
         return {
-            "ok": probe_eval["ok"] and len(sentinel_problems) == 0,
+            "ok": probe_eval["ok"] and pty_opened and len(sentinel_problems) == 0,
+            "ptyOpened": pty_opened,
             "probes": probe_eval,
             "probeDetails": probes,
             "sentinelProblems": sentinel_problems,
-            "forkState": fstate,
+            "forkState": fork_state,
             "outputTail": output_tail,
         }
 
 
 def run_fedora_container_dnf(candidate_dir: Path, rpm_name: str) -> dict:
     """Exercise RPM dependency/signature refusal, install, reinstall, and removal in Fedora 45."""
+    cand = packaging.candidate()
+    pkg = cand.package_name
+    cli_bin = cand.cli_binary_name
     script = f"""
 set -euo pipefail
 echo "=== dnf dependency enforcement refusal ==="
 if dnf -y --disablerepo='*' install /pkg/{rpm_name}; then
   echo "UNEXPECTED: dnf installed without webkit2gtk4.1/gtk3"
+  exit 1
+fi
+if rpm -q {pkg} >/dev/null 2>&1; then
+  echo "UNEXPECTED: rpmdb dirty after failed dnf transaction"
   exit 1
 fi
 echo "EXPECTED_DEP_REFUSAL"
@@ -245,15 +250,19 @@ if rpm -ivh --nodeps /pkg/{rpm_name}; then
   echo "UNEXPECTED: rpm 6 installed unsigned package without --nosignature"
   exit 1
 fi
+if rpm -q {pkg} >/dev/null 2>&1; then
+  echo "UNEXPECTED: rpmdb dirty after failed rpm signature check"
+  exit 1
+fi
 echo "EXPECTED_SIG_REFUSAL"
-echo "=== rpm install/upgrade/remove (--nosignature --nodeps) ==="
+echo "=== rpm install/reinstall/remove (--nosignature --nodeps) ==="
 rpm -ivh --nodeps --nosignature /pkg/{rpm_name}
-rpm -q codr
-codr-cli --version
+rpm -q {pkg}
+{cli_bin} --version
 rpm -Uvh --replacepkgs --nodeps --nosignature /pkg/{rpm_name}
-rpm -e codr
-if rpm -q codr >/dev/null 2>&1; then
-  echo "UNEXPECTED: codr still installed after remove"
+rpm -e {pkg}
+if rpm -q {pkg} >/dev/null 2>&1; then
+  echo "UNEXPECTED: {pkg} still installed after remove"
   exit 1
 fi
 echo "REMOVED_CLEANLY"

@@ -195,7 +195,7 @@ Unchanged and independent of the agent:
 **Host CLI observations (Fedora 45, 2026-11-13, non-interactive checks only):**
 
 - Installed in user PATH: `claude` (`2.1.319 (Claude Code)`), `pi` (`1.5.0`), `opencode` (`opencode v2.2.7`).
-- `/home/loba/.local/bin/antigravity` resolves to `/home/loba/.local/opt/Antigravity/antigravity` (`v2.28.2`, desktop/IDE launcher, not a standalone terminal CLI).
+- `$HOME/.local/bin/antigravity` resolves to `$HOME/.local/opt/Antigravity/antigravity` (`v2.28.2`, desktop/IDE launcher, not a standalone terminal CLI).
 - Not installed on host: `codex`, `gemini`, `grok`.
 
 **Not verified here:**

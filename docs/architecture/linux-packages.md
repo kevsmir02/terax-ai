@@ -40,12 +40,15 @@ custody, key replacement and what is *not* promised.
 
 **Release gating status.** Publication identity, the independent minisign trust root (key ID
 `94097B75DB498B21`), the GitHub Actions signing secrets, complete candidate assembly (#42),
-final whole-app resource budgets (#43), and Fedora 45 KDE Wayland candidate validation (#44;
-Fedora 44, Debian 13, and Arch Linux explicitly waived by the primary user on 2026-11-13 as
-personal-tool extras) are settled. No stable release is published yet:
+and final whole-app resource budgets (#43) are settled. Fedora 45 KDE Wayland automated
+smoke and container checks (#44; Fedora 44, Debian 13, and Arch Linux explicitly waived by
+the primary user on 2026-11-13 as personal-tool extras) recorded host/Wayland evidence, while
+manual host `sudo dnf` lifecycle and human input/vendor checks remain open. No stable release
+is published yet:
 
 | Remaining gate | Owned by |
 | --- | --- |
+| Host `sudo dnf install/upgrade/remove` of the signed/installed RPM, physical keyboard/IME/clipboard round-trip, and live vendor CLI turn/hook-trust checks | issue #44 (manual/maintainer) |
 | The first public stable release and its support claims | issue #45 |
 
 The release workflow remains non-publishing (`contents: read`/`checks: read`, no release-upload
@@ -182,15 +185,15 @@ Proven by candidate build and Fedora 45 validation (`82af7938d3df`, `dist-packag
 
 - Both artifacts built cleanly from clean revision `82af7938d3df`: `codr-1.0.0-1.x86_64.rpm` (`9,613,139` bytes, sha256 `d45e93355698b0c3a4869f47dda8d6b7d35064b6cc8a8152f375b60b363095e8`) and `codr_1.0.0_amd64.deb` (`9,611,640` bytes, sha256 `604bbad2792cb57eeb755c7ef552785166572650a53e6c3545204c65eef5aabc`), plus pinned `arch/PKGBUILD` and `SHA256SUMS`.
 - Deb control fields (`Package: codr`, `Version: 1.0.0`, `Architecture: amd64`, `Depends: libwebkit2gtk-4.1-0, libgtk-3-0`) and RPM headers agree with the candidate identity; both extracted payloads carry identical file paths and hashes (apart from the main binary's Tauri bundle-type marker); license resources are present.
-- Fedora 45 host RPM resolution (`scripts/package-candidate/validate_fedora.py`): all non-`rpmlib` RPM requirements (`webkit2gtk4.1`, `gtk3`, `libwebkit2gtk-4.1.so.0()(64bit)`, `libgtk-3.so.0()(64bit)`) resolve to installed Fedora 45 packages (`webkit2gtk4.1-2.54.2-1.fc45.x86_64`, `gtk3-3.24.52-6.fc45.x86_64`), `rpm -K` confirms `digests OK` (unsigned RPM, as native repo signing is deferred), and `rpm -ql terax` vs `rpm -qlp codr-1.0.0-1.x86_64.rpm` confirms 11/11 paths are disjoint from the installed `terax-0.9.0-1.x86_64` package.
-- Live Fedora 45 KDE Wayland packaged smoke (`validate_fedora.py`): extracted `/usr/bin/codr` launches in an isolated profile on `wayland-1`, publishes `$XDG_CACHE_HOME/codr/control.json`, spawns a PTY (`pty opened id=1`), responds to packaged `/usr/bin/codr-cli` (`identify`, `--version`, `ping`, `capabilities`, `open` at line 2) with exit 0 and `ok: true`, and leaves all seeded upstream `terax` sentinel files untouched (`sentinelProblems: []`).
-- Clean Fedora 45 container transaction check (`validate_fedora.py --container` on `registry.fedoraproject.org/fedora:45`): `dnf -y --disablerepo='*' install` refuses installation due to missing `webkit2gtk4.1` and `gtk3`, RPM 6 rejects unsigned `rpm -ivh --nodeps` (`does not verify: no signature`), and `rpm -ivh --nodeps --nosignature`, `codr-cli --version`, `rpm -Uvh --replacepkgs --nodeps --nosignature`, and `rpm -e codr` all succeed cleanly.
-- Real-app WebKitGTK acceptance on `82af7938d3df` (Fedora 45 KDE Wayland): `app-lab` `--scenario candidate` (`12/12`), `--scenario preview` (`44/44`, PDF reader + web preview teardown), `--scenario images` (`14/14`, PNG/JPEG/GIF/WebP/BMP/ICO/AVIF + refusals), and `--scenario media` (`24/24`, MP4/M4A/MOV/WebM/OGG/WAV/MP3/FLAC/AAC + unsupported refusal), all with `coexistence PASS`; `TERAX_VISUAL_SOFTWARE=1 TERAX_VISUAL_RENDERERS=webgl` scaling check passed at DPR 1, 1.25, 1.5, and 2 (`0` differing pixels); bash/zsh/fish shell integration tests passed on Fedora 45.
+- Fedora 45 host RPM resolution (`scripts/package-candidate/validate_fedora.py`): all non-`rpmlib` RPM requirements (`webkit2gtk4.1`, `gtk3`, `libwebkit2gtk-4.1.so.0()(64bit)`, `libgtk-3.so.0()(64bit)`) resolve to installed Fedora 45 packages (`webkit2gtk4.1-2.54.2-1.fc45.x86_64`, `gtk3-3.24.52-6.fc45.x86_64`), `rpm -K` confirms `digests OK` (unsigned RPM, as native repo signing is deferred), and `rpm -ql terax` vs `rpm -qlp codr-1.0.0-1.x86_64.rpm` confirmed 11/11 paths were disjoint from `terax-0.9.0-1.x86_64` when that upstream package was installed on the host.
+- Live Fedora 45 KDE Wayland packaged smoke (`validate_fedora.py`): extracted `/usr/bin/codr` launches in an isolated profile on `wayland-1`, publishes `$XDG_CACHE_HOME/codr/control.json`, spawns a PTY (`ptyOpened: true`, `pty opened id=1`), responds to packaged `/usr/bin/codr-cli` (`identify`, `--version`, `ping`, `capabilities`, `open` at line 2) with exit 0 and `ok: true`, and leaves all seeded upstream `terax` sentinel files untouched (`sentinelProblems: []`). Because this extracts the RPM rather than installing via `dnf`, it does not prove package-manager scriptlet/desktop-database installation.
+- Clean Fedora 45 container transaction check (`validate_fedora.py --container` on `registry.fedoraproject.org/fedora:45`): `dnf -y --disablerepo='*' install` refuses installation due to missing `webkit2gtk4.1` and `gtk3` leaving rpmdb clean, RPM 6 rejects unsigned `rpm -ivh --nodeps` (`does not verify: no signature`) leaving rpmdb clean, and `rpm -ivh --nodeps --nosignature`, `codr-cli --version`, `rpm -Uvh --replacepkgs --nodeps --nosignature` (reinstall, not a version upgrade), and `rpm -e codr` all succeed cleanly.
+- Real-app and visual checks at `82af7938d3df` (Fedora 45 KDE Wayland): `app-lab` bench build scenarios `--scenario candidate` (`12/12`), `--scenario preview` (`44/44`, PDF reader + web preview teardown), `--scenario images` (`14/14`, PNG/JPEG/GIF/WebP/BMP/ICO/AVIF + refusals), and `--scenario media` (`24/24`, MP4/M4A/MOV/WebM/OGG/WAV/MP3/FLAC/AAC + unsupported refusal), all with `coexistence PASS`; `TERAX_VISUAL_SOFTWARE=1 TERAX_VISUAL_RENDERERS=webgl` scaling check (`scripts/terminal-visual`) passed at DPR 1, 1.25, 1.5, and 2 (`0` differing pixels); bash/zsh/fish shell integration tests passed on Fedora 45.
 
 Not proven or waived:
 
 - Fedora 44, Debian 13 (graphical WebKitGTK), and dated clean Arch (`makepkg`/`pacman`) were explicitly waived by the primary user on 2026-11-13 as personal-tool extras beyond Fedora 45; no `.deb` install or Arch build was executed here.
-- Host-root `sudo dnf install/upgrade/remove` of `codr-1.0.0-1.x86_64.rpm`, native DNF/APT repository GPG signing (artifacts use `.minisig` instead; see [release trust](release-trust.md)), updater discovery/handoff against a published release (#45), physical keyboard/IME/OS clipboard round-trip, and live vendor CLI turn/hook-trust certification remain unverified or manual checks.
+- Host-root `sudo dnf install/upgrade/remove` of `codr-1.0.0-1.x86_64.rpm` (with real dependencies, real version upgrade rather than `--replacepkgs`, lock/cancellation handling, and installed desktop/CLI launch), native DNF/APT repository GPG signing (artifacts use `.minisig` instead; see [release trust](release-trust.md)), updater discovery/handoff against a published release (#45), physical keyboard/IME/OS clipboard round-trip, and live vendor CLI turn/hook-trust certification remain unverified or manual checks.
 
 ## Arch recipe
 
