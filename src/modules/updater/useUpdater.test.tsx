@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useUpdater } from "./useUpdater";
 
 vi.mock("@tauri-apps/api/app", () => ({
-  getVersion: vi.fn(async () => "1.0.0"),
+  getVersion: vi.fn(async () => "0.1.0"),
 }));
 
 vi.mock("@tauri-apps/plugin-os", () => ({
@@ -21,7 +21,7 @@ const currentManifest = JSON.parse(
     "utf8",
   ),
 ) as Record<string, unknown>;
-currentManifest.version = "1.0.0";
+currentManifest.version = "0.1.0";
 
 describe("useUpdater Tauri transport wiring", () => {
   let container: HTMLDivElement;
@@ -84,7 +84,7 @@ describe("useUpdater Tauri transport wiring", () => {
     ]);
     expect(latestState).toMatchObject({
       kind: "up-to-date",
-      latestVersion: "1.0.0",
+      latestVersion: "0.1.0",
     });
   });
 
@@ -179,7 +179,7 @@ describe("useUpdater Tauri transport wiring", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(updaterRef.current?.state).toMatchObject({
       kind: "up-to-date",
-      latestVersion: "1.0.0",
+      latestVersion: "0.1.0",
     });
   });
 });

@@ -21,7 +21,7 @@ release and hands the upgrade transaction to the user's package tool (`update-ha
 | Bundle / app identifier | `io.github.kevsmir02.codr` | `src/modules/identity/namespace.json`, `src-tauri/tauri.conf.json` |
 | Release owner / repository | `kevsmir02/terax-ai` | `releaseContract.json` (`endpoints`, ADR 0010) |
 | Update endpoint | `https://github.com/kevsmir02/terax-ai/releases/latest/download/latest.json` | `releaseContract.json` |
-| First stable line | `1.0.0` | `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` |
+| First stable line | `0.1.0` | `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` |
 | Signing algorithm | minisign (Ed25519), envelope `Ed` or prehashed `ED` | this document |
 | Trust root key id | `94097B75DB498B21` | `releaseContract.json` (`trust.keyId`) |
 | Trust root fingerprint | `sha256:a02fd6ac492d1f070919bde106c20c0a376fbcdb6db8bc4c17ca0efd68197487` | `releaseContract.json` (`trust.fingerprint`) |
@@ -56,7 +56,7 @@ around a build:
 
 `scripts/release_gate.py` itself has no publish path; signing secrets (`TERAX_RELEASE_SIGNING_KEY`
 and `TERAX_RELEASE_SIGNING_KEY_PASSPHRASE`) are read only during the signer step in
-`build-candidate` and are never exposed to `publish-release`. Creating the `v1.0.0` release and
+`build-candidate` and are never exposed to `publish-release`. Creating the `v0.1.0` release and
 verifying live discovery belong to #45.
 
 ## The signed set and the manifest
@@ -65,11 +65,11 @@ verifying live discovery belong to #45.
 
 ```json
 {
-  "version": "1.0.0",
+  "version": "0.1.0",
   "channel": "stable",
   "notes": "…",
   "pub_date": "2026-11-13T00:00:00Z",
-  "tag": "v1.0.0",
+  "tag": "v0.1.0",
   "commit": "<40-hex triggering commit>",
   "signing": { "keyId": "94097B75DB498B21", "fingerprint": "sha256:a02fd6ac492d1f070919bde106c20c0a376fbcdb6db8bc4c17ca0efd68197487", "algorithm": "minisign" },
   "platforms": {
@@ -165,7 +165,7 @@ fingerprint, which is what a reviewer compares against the committed value.
 A user, or a reviewer, verifies a downloaded artifact with the committed public key:
 
 ```sh
-minisign -Vm codr_1.0.0_amd64.deb -p codr-release.pub
+minisign -Vm codr_0.1.0_amd64.deb -p codr-release.pub
 # or, from the manifest's signature text:
 minisign -Vm PKGBUILD -x PKGBUILD.minisig -P <base64 public key>
 ```
@@ -249,7 +249,7 @@ reports a signature failure, and the answer is a new signed release, not a bypas
   committed the public trust root (`94097B75DB498B21`), and provisioned the GitHub Actions signing
   secrets. Ticket #41 completed the release gate, signing pipeline, and gate secret-presence wiring.
   Ticket #45 wires tag-only GitHub Release publication (`publish-release`) and live verification of
-  `v1.0.0` once the tag runs on GitHub Actions.
+  `v0.1.0` once the tag runs on GitHub Actions.
 
 ## Gate refusals that stay active
 

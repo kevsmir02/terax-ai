@@ -156,7 +156,7 @@ off; it falls back to `handoff-unavailable` and points at the main window's dial
 
 ## Not claimed
 
-- Hosted `v1.0.0` release-workflow execution and live `latest.json` endpoint verification are
+- Hosted `v0.1.0` release-workflow execution and live `latest.json` endpoint verification are
   recorded per tag run (#45); pre-tag repository checks do not prove a hosted release until that
   run finishes and `scripts/release_verify.py --live-url` passes.
 - Debian 13 (`.deb` graphical WebKitGTK) and Arch (`makepkg`) install/upgrade runs were waived or
