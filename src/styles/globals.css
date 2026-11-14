@@ -208,29 +208,10 @@
   --editor-font-size: 13px;
 }
 
-/* Floating-pane chrome. `--frame` is the canvas the panes sit on (header,
- * status bar, gutters); a pane keeps `--background` so the terminal canvas and the
- * pane surface stay the same color. Both are derived from tokens every theme
- * already declares, so built-in and user themes get the separation for free. */
+/* Outer shell frame token. `--frame` paints the outer shell (header, sidebar,
+ * status bar), while Content stage keeps opaque `--background`. */
 :root {
   --frame: color-mix(in oklab, var(--card) 97%, var(--foreground) 3%);
-  --pane-radius: calc(var(--radius) * 1.4);
-  --pane-shadow: none;
-}
-.dark {
-  --pane-shadow: inset 0 1px 0 oklch(1 0 0 / 0.035);
-}
-
-/* No drop shadow: panes meet the header and the status bar flush, so the only
- * gutter is horizontal and anything cast downward would be clipped anyway
- * (react-resizable-panels clips panel content at the panel box). Separation
- * comes from the border plus the frame/pane tone step. */
-.terax-pane {
-  border-radius: var(--pane-radius);
-  border: 1px solid var(--border);
-  background: var(--background);
-  box-shadow: var(--pane-shadow);
-  overflow: hidden;
 }
 
 /* Window vibrancy (macOS NSVisualEffectView / Windows Mica). Only the frame

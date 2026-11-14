@@ -797,7 +797,7 @@ export const SourceControlPanel = memo(function SourceControlPanel({
   return (
     <TooltipProvider delayDuration={800} skipDelayDuration={300}>
       <aside className="flex h-full min-w-0 flex-col [contain:layout_style]">
-        <header className="flex shrink-0 items-center justify-between gap-2 border-b border-border/50 px-3 pb-2.5 pt-3">
+        <header className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 pb-2.5 pt-3">
           <div className="flex min-w-0 items-center gap-1.5">
             <BranchDropdown
               repoRoot={
@@ -922,7 +922,7 @@ export const SourceControlPanel = memo(function SourceControlPanel({
           <button
             type="button"
             onClick={() => onOpenGitGraph()}
-            className="group flex shrink-0 cursor-pointer items-center gap-2 border-b border-border/40 px-3 py-2 text-left text-muted-foreground transition-colors hover:bg-foreground/[0.04] hover:text-foreground"
+            className="group flex shrink-0 cursor-pointer items-center gap-2 border-b border-border px-3 py-2 text-left text-muted-foreground transition-colors hover:bg-foreground/[0.04] hover:text-foreground"
           >
             <HugeiconsIcon
               icon={GitBranchIcon}
@@ -965,7 +965,7 @@ export const SourceControlPanel = memo(function SourceControlPanel({
 
         {panelState === "ready" && scm.status ? (
           <>
-            <div className="relative shrink-0 space-y-2 border-b border-border/40 bg-gradient-to-b from-card/65 to-card/30 px-2.5 pb-2.5 pt-2.5">
+            <div className="relative shrink-0 space-y-2 border-b border-border bg-gradient-to-b from-card/65 to-card/30 px-2.5 pb-2.5 pt-2.5">
               <div
                 className={cn(
                   "relative rounded-lg border bg-background/95 shadow-sm transition-colors",

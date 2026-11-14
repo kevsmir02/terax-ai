@@ -113,7 +113,7 @@ export function Header({
     <div
       ref={rootRef}
       data-tauri-drag-region
-      className={`flex h-10 shrink-0 items-center gap-2 select-none ${
+      className={`flex h-10 shrink-0 items-center gap-2 border-b border-border select-none ${
         IS_MAC ? "pr-2 pl-20" : "pr-0 pl-2"
       }`}
     >
@@ -198,7 +198,7 @@ export function Header({
 
       {USE_CUSTOM_WINDOW_CONTROLS && (
         <>
-          <span className="ml-1 h-5 w-px shrink-0 bg-border/60" />
+          <span className="ml-1 h-5 w-px shrink-0 bg-border" />
           <WindowControls />
         </>
       )}

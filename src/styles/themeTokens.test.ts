@@ -174,4 +174,17 @@ describe("default theme tokens and tonal hierarchy", () => {
     expect(vibrancyCss).not.toContain("--terminal-background:");
     expect(vibrancyCss).not.toContain("--terminal-header:");
   });
+
+  it("removes floating .terax-pane chrome while keeping --frame and borderless outer window rules", () => {
+    expect(css).not.toMatch(/\.terax-pane(?![a-zA-Z0-9_-])/);
+    expect(css).not.toContain("--pane-radius");
+    expect(css).not.toContain("--pane-shadow");
+    expect(css).toContain("--frame:");
+    expect(css).toMatch(
+      /html\[data-chrome="borderless"\]\s+#root[\s\S]*border-radius:\s*12px/,
+    );
+    expect(css).toMatch(
+      /html\[data-chrome="borderless"\]\s+#root[\s\S]*border:\s*1px solid var\(--border\)/,
+    );
+  });
 });
