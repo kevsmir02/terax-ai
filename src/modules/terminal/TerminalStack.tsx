@@ -1,3 +1,4 @@
+import type { AccountIsolationMode } from "@/modules/spaces/lib/isolation";
 import type { Tab } from "@/modules/tabs";
 import type { TerminalSearchController } from "@/modules/terminal/search/TerminalSearchController";
 import { useEffect, useMemo, useRef } from "react";
@@ -9,6 +10,7 @@ import type { TerminalPaneHandle } from "./TerminalPane";
 type Props = {
   tabs: Tab[];
   activeId: number;
+  spaceIsolations: Readonly<Record<string, AccountIsolationMode>>;
   home?: string | null;
   /** Register/unregister handle by leaf id (not tab id). */
   registerHandle: (leafId: number, handle: TerminalPaneHandle | null) => void;
@@ -29,6 +31,7 @@ type Bundle = {
 export function TerminalStack({
   tabs,
   activeId,
+  spaceIsolations,
   home,
   registerHandle,
   onSearchReady,
@@ -108,6 +111,8 @@ export function TerminalStack({
           >
             <PaneTreeView
               node={t.paneTree}
+              spaceId={t.spaceId}
+              expectedIsolation={spaceIsolations[t.spaceId]}
               tabVisible={tabVisible}
               activeLeafId={t.activeLeafId}
               blocks={t.blocks ?? false}

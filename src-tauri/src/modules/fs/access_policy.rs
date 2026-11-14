@@ -20,7 +20,7 @@ struct PathPolicy {
     protected_dirs: Vec<String>,
 }
 
-pub(super) fn readable(path: &Path) -> Result<(), String> {
+pub(crate) fn readable(path: &Path) -> Result<(), String> {
     // This fork's control directory holds a live credential, and so does the upstream
     // application's: both are refused, which keeps the denylist in sync with whatever
     // name the identity table gives the fork (see `modules::identity`).
@@ -199,6 +199,9 @@ mod tests {
             "/home/me/.cache/terax/control.json",
             "C:/Users/me/AppData/Local/terax/control.json",
             "//wsl.localhost/Ubuntu/home/me/.ssh/id_rsa",
+            "/home/me/.local/share/codr/space-profiles/sp-a/opencode/data/opencode/opencode.db",
+            "/home/me/.local/share/opencode/auth.json",
+            "/home/me/.config/opencode/service.json",
         ] {
             assert!(readable(Path::new(path)).is_err(), "{path}");
         }

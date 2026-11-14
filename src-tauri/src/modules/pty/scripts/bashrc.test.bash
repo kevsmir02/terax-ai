@@ -274,4 +274,225 @@ a="${result#A=}"; a="${a%% *}"
 after="${result##*AFTER=}"
 check "every prompt of a PS1-rebuilding framework ends with the prompt end after its text" 1 "$([ "$a" -ge 3 ] && [ "$after" -ge 3 ] && echo 1 || echo "$result")"
 
+space_isolation_pty() {
+  local mode="$1"
+  local tmp
+  tmp="$(mktemp -d)"
+  local home="$tmp/home"
+  local shim_dir="$tmp/spaces/sp-1/bin"
+  local ctrl_dir="$tmp/ctrl/bin"
+  local claude_dir="$tmp/spaces/sp-1/claude"
+  local opc_cfg="$tmp/spaces/sp-1/opencode/config"
+  local opc_data="$tmp/spaces/sp-1/opencode/data"
+  local opc_state="$tmp/spaces/sp-1/opencode/state"
+  local opc_cache="$tmp/spaces/sp-1/opencode/cache"
+  local xdg_cfg="$tmp/xdg/config"
+  local xdg_data="$tmp/xdg/data"
+  local xdg_state="$tmp/xdg/state"
+  local xdg_cache="$tmp/xdg/cache"
+  mkdir -p "$home/.local/bin" "$home/.opencode/bin" "$shim_dir" "$ctrl_dir" "$claude_dir" \
+           "$opc_cfg" "$opc_data" "$opc_state" "$opc_cache" \
+           "$xdg_cfg" "$xdg_data" "$xdg_state" "$xdg_cache"
+
+  cat > "$shim_dir/opencode" <<SH
+#!/bin/sh
+set -eu
+SHIM_DIR='$shim_dir'
+real_opencode=""
+old_ifs="\${IFS-}"
+IFS=":"
+for dir in \${PATH-}; do
+  [ -n "\$dir" ] || continue
+  [ "\$dir" = "\$SHIM_DIR" ] && continue
+  if [ -f "\$dir/opencode" ] && [ -x "\$dir/opencode" ]; then
+    real_opencode="\$dir/opencode"
+    break
+  fi
+done
+IFS="\$old_ifs"
+[ -n "\$real_opencode" ] || exit 127
+export XDG_DATA_HOME='$opc_data'
+export XDG_STATE_HOME='$opc_state'
+export XDG_CACHE_HOME='$opc_cache'
+export OPENCODE_CONFIG_DIR='$opc_cfg'
+exec "\$real_opencode" --standalone "\$@"
+SH
+  cat > "$home/.opencode/bin/opencode" <<'SH'
+#!/bin/sh
+printf 'OPENCODE_EXEC:ARGS=%s|DATA=%s|STATE=%s|CACHE=%s|CFG=%s\n' "$*" "${XDG_DATA_HOME-UNSET}" "${XDG_STATE_HOME-UNSET}" "${XDG_CACHE_HOME-UNSET}" "${OPENCODE_CONFIG_DIR-UNSET}"
+SH
+  cat > "$ctrl_dir/terax" <<'SH'
+#!/bin/sh
+echo "CTRL_TERAX"
+SH
+  cat > "$home/.local/bin/terax" <<'SH'
+#!/bin/sh
+echo "HOST_TERAX"
+SH
+  chmod 700 "$shim_dir/opencode"
+  chmod 755 "$home/.opencode/bin/opencode" "$ctrl_dir/terax" "$home/.local/bin/terax"
+
+  for agent in agy codex gemini grok antigravity; do
+    cat > "$shim_dir/$agent" <<SH
+#!/bin/sh
+printf 'terax: %s is blocked in this isolated Space: Account isolation is unsupported for %s.\\n' "$agent" "$agent" >&2
+exit 126
+SH
+    upper="$(printf '%s' "$agent" | tr '[:lower:]' '[:upper:]')"
+    cat > "$home/.local/bin/$agent" <<SH
+#!/bin/sh
+echo "HOST_${upper}"
+SH
+    chmod 700 "$shim_dir/$agent"
+    chmod 755 "$home/.local/bin/$agent"
+  done
+
+  cat > "$home/.bash_profile" <<'RC'
+export PATH="$HOME/.local/bin:$PATH"
+export OPENAI_API_KEY="sk-openai-profile-leak"
+RC
+
+  cat > "$home/.bashrc" <<'RC'
+PS1='iso> '
+export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$PATH"
+export OPENAI_API_KEY="sk-openai-rc-leak"
+export OPENCODE_API_KEY="sk-opencode-rc-leak"
+export GEMINI_API_KEY="AIzaRcLeak123456"
+export OPENCODE_CONFIG_DIR="$HOME/.config/opencode-rc-override"
+RC
+  if [ "$mode" = "isolated" ] || [ "$mode" = "default" ]; then
+    printf 'export ANTHROPIC_API_KEY="sk-ant-rc-leak"\n' >> "$home/.bashrc"
+  fi
+
+  python3 - "$rcfile" "$mode" "$tmp" "$home" "$shim_dir" "$ctrl_dir" "$claude_dir" \
+    "$xdg_cfg" "$xdg_data" "$xdg_state" "$xdg_cache" <<'PY'
+import os, pty, select, sys, time
+
+rcfile, mode, tmp, home, shim_dir, ctrl_dir, claude_dir, xdg_cfg, xdg_data, xdg_state, xdg_cache = sys.argv[1:12]
+
+env = os.environ.copy()
+for k in [
+    "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENCODE_API_KEY", "GEMINI_API_KEY",
+    "CODR_SPACE_SHIM_DIR", "CODR_SPACE_ENV_OVERRIDE_KEYS", "CODR_CONTROL_BIN_DIR",
+    "CLAUDE_CONFIG_DIR", "__CODR_HOOKS_LOADED",
+]:
+    env.pop(k, None)
+
+env["HOME"] = home
+env["XDG_CONFIG_HOME"] = xdg_cfg
+env["XDG_DATA_HOME"] = xdg_data
+env["XDG_STATE_HOME"] = xdg_state
+env["XDG_CACHE_HOME"] = xdg_cache
+env["CODR_TERMINAL"] = "1"
+env["CODR_CONTROL_BIN_DIR"] = ctrl_dir
+
+if mode in ("isolated", "override"):
+    env["CODR_SPACE_SHIM_DIR"] = shim_dir
+    env["CLAUDE_CONFIG_DIR"] = claude_dir
+    env["PATH"] = f"{shim_dir}:{ctrl_dir}:/usr/bin:/bin"
+    if mode == "override":
+        env["ANTHROPIC_API_KEY"] = "sk-ant-space-override"
+        env["CODR_SPACE_ENV_OVERRIDE_KEYS"] = "ANTHROPIC_API_KEY"
+else:
+    env["PATH"] = f"{ctrl_dir}:/usr/bin:/bin"
+
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvpe("bash", ["bash", "--rcfile", rcfile, "-i"], env)
+
+out = b""
+def drain(seconds):
+    global out
+    end = time.time() + seconds
+    while time.time() < end:
+        if select.select([fd], [], [], 0.1)[0]:
+            try:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    return
+                out += chunk
+            except OSError:
+                return
+
+drain(1.0)
+probe = "\n".join([
+    'printf "PROBE:OC=%s|TX=%s|ANT=%s|OAI=%s|OPC=%s|GEM=%s|HOME=%s|XCFG=%s|XDATA=%s|XSTATE=%s|XCACHE=%s|OPCCFG=%s|CLAUDE=%s|SHIM=%s\\n" '
+    '"$(command -v opencode)" "$(command -v terax)" '
+    '"${ANTHROPIC_API_KEY-UNSET}" "${OPENAI_API_KEY-UNSET}" "${OPENCODE_API_KEY-UNSET}" "${GEMINI_API_KEY-UNSET}" '
+    '"$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" "${OPENCODE_CONFIG_DIR-UNSET}" "${CLAUDE_CONFIG_DIR-UNSET}" "${CODR_SPACE_SHIM_DIR-UNSET}"',
+    'opencode run main-turn',
+    'printf "AFTER_OC:XDATA=%s|XSTATE=%s|XCACHE=%s|OPCCFG=%s\\n" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" "${OPENCODE_CONFIG_DIR-UNSET}"',
+    """sh -c 'printf "CHILD_SH:OC=%s|OAI=%s|CLAUDE=%s\\n" "$(command -v opencode)" "${OPENAI_API_KEY-UNSET}" "${CLAUDE_CONFIG_DIR-UNSET}"; opencode run sub-turn'""",
+    """bash -c 'printf "CHILD_BASH:OC=%s|ANT=%s|SHIM=%s\\n" "$(command -v opencode)" "${ANTHROPIC_API_KEY-UNSET}" "${CODR_SPACE_SHIM_DIR-UNSET}"'""",
+    """( printf 'SUBSHELL:OC=%s|GEM=%s\\n' "$(command -v opencode)" "${GEMINI_API_KEY-UNSET}" )""",
+    'for a in agy codex gemini grok antigravity; do p="$(command -v "$a")"; err="$("$a" 2>&1)"; rc=$?; printf "DIR_BLK_%s=%s:%s:%s\\n" "$a" "$p" "$rc" "${err#*: }"; done',
+    """sh -c 'for a in agy codex gemini grok antigravity; do p="$(command -v "$a")"; err="$("$a" 2>&1)"; rc=$?; printf "SH_BLK_%s=%s:%s:%s\\n" "$a" "$p" "$rc" "${err#*: }"; done'""",
+    """bash -c 'for a in agy codex gemini grok antigravity; do p="$(command -v "$a")"; err="$("$a" 2>&1)"; rc=$?; printf "BASH_BLK_%s=%s:%s:%s\\n" "$a" "$p" "$rc" "${err#*: }"; done'""",
+    """( for a in agy codex gemini grok antigravity; do p="$(command -v "$a")"; err="$("$a" 2>&1)"; rc=$?; printf "SUB_BLK_%s=%s:%s:%s\\n" "$a" "$p" "$rc" "${err#*: }"; done )""",
+    """python3 -c 'import shutil, subprocess; [print(f"PY_BLK_{a}={shutil.which(a)}:{r.returncode}:{(r.stderr or r.stdout).strip()}") for a in ("agy","codex","gemini","grok","antigravity") for r in [subprocess.run([a], capture_output=True, text=True)]]'""",
+    "exit",
+    "",
+])
+os.write(fd, probe.encode())
+drain(2.5)
+os.close(fd)
+os.waitpid(pid, 0)
+print(out.decode("utf-8", "replace"))
+PY
+  rm -rf "$tmp"
+}
+
+bash_iso_out="$(space_isolation_pty isolated)"
+expect_contains "bash isolated: opencode path uses /spaces/sp-1/bin/opencode" "/spaces/sp-1/bin/opencode|" "$bash_iso_out"
+expect_contains "bash isolated: control terax stays ahead of ~/.local/bin" "/ctrl/bin/terax|" "$bash_iso_out"
+expect_contains "bash isolated: all 4 ambient keys are scrubbed" "|ANT=UNSET|OAI=UNSET|OPC=UNSET|GEM=UNSET|" "$bash_iso_out"
+expect_contains "bash isolated: host HOME stays intact" "/home|XCFG=" "$bash_iso_out"
+expect_contains "bash isolated: host XDG paths and unset OPENCODE_CONFIG_DIR stay intact" "/xdg/config|XDATA=" "$bash_iso_out"
+expect_contains "bash isolated: dotfile OPENCODE_CONFIG_DIR is scrubbed on shell" "|OPCCFG=UNSET|CLAUDE=" "$bash_iso_out"
+expect_contains "bash isolated: opencode shim passes --standalone and Space-scoped XDG/OPENCODE_CONFIG_DIR" "OPENCODE_EXEC:ARGS=--standalone run main-turn|" "$bash_iso_out"
+expect_contains "bash isolated: opencode shim scopes DATA/STATE/CACHE/CFG to Space" "/spaces/sp-1/opencode/data|STATE=" "$bash_iso_out"
+expect_contains "bash isolated: shell XDG_DATA_HOME remains host path after opencode exits" "AFTER_OC:XDATA=" "$bash_iso_out"
+expect_contains "bash isolated: nested sh inherits shim, scrubbed keys, and claude dir" "/spaces/sp-1/bin/opencode|OAI=UNSET|CLAUDE=" "$bash_iso_out"
+expect_contains "bash isolated: nested sh opencode invocation uses Space shim and --standalone" "OPENCODE_EXEC:ARGS=--standalone run sub-turn|" "$bash_iso_out"
+expect_contains "bash isolated: nested bash -c inherits shim and scrubbed ANTHROPIC_API_KEY" "/spaces/sp-1/bin/opencode|ANT=UNSET|SHIM=" "$bash_iso_out"
+for leaked in sk-ant-rc-leak sk-openai-profile-leak sk-openai-rc-leak sk-opencode-rc-leak AIzaRcLeak123456; do
+  if printf '%s' "$bash_iso_out" | grep -Fq "$leaked"; then
+    failures=$((failures + 1))
+    printf 'FAIL bash isolated: leaked ambient secret pattern %s\n' "$leaked"
+  fi
+done
+
+for agent in agy codex gemini grok antigravity; do
+  expect_contains "bash isolated: direct $agent uses blocking Space shim and exits 126" "/spaces/sp-1/bin/$agent:126:" "$bash_iso_out"
+  expect_contains "bash isolated: sh -c $agent uses blocking Space shim" "SH_BLK_${agent}=" "$bash_iso_out"
+  expect_contains "bash isolated: bash -c $agent uses blocking Space shim" "BASH_BLK_${agent}=" "$bash_iso_out"
+  expect_contains "bash isolated: subshell $agent uses blocking Space shim" "SUB_BLK_${agent}=" "$bash_iso_out"
+  expect_contains "bash isolated: tool subprocess $agent uses blocking Space shim" "PY_BLK_${agent}=" "$bash_iso_out"
+  upper="$(printf '%s' "$agent" | tr '[:lower:]' '[:upper:]')"
+  if printf '%s' "$bash_iso_out" | grep -Fq "HOST_${upper}"; then
+    failures=$((failures + 1))
+    printf 'FAIL bash isolated: delegated to host HOST_%s\n' "$upper"
+  fi
+done
+expect_contains "bash isolated: blocked shims print unsupported error" "Account isolation is unsupported for antigravity." "$bash_iso_out"
+for ctx in SH_BLK BASH_BLK SUB_BLK PY_BLK; do
+  for agent in agy codex gemini grok antigravity; do
+    if ! printf '%s' "$bash_iso_out" | grep -Eq "${ctx}_${agent}=.*/spaces/sp-1/bin/${agent}:126:.*Account isolation is unsupported for ${agent}"; then
+      failures=$((failures + 1))
+      printf 'FAIL bash isolated: %s %s did not resolve to Space shim and exit non-zero\n' "$ctx" "$agent"
+    fi
+  done
+done
+
+bash_ovr_out="$(space_isolation_pty override)"
+expect_contains "bash override: explicit ANTHROPIC_API_KEY override survives while others scrub" "|ANT=sk-ant-space-override|OAI=UNSET|OPC=UNSET|GEM=UNSET|" "$bash_ovr_out"
+
+bash_def_out="$(space_isolation_pty default)"
+expect_contains "bash default: user dotfile PATH and ambient key are left alone" "/.opencode/bin/opencode|" "$bash_def_out"
+expect_contains "bash default: dotfile ANTHROPIC_API_KEY stays set in default mode" "|ANT=sk-ant-rc-leak|" "$bash_def_out"
+for agent in agy codex gemini grok antigravity; do
+  upper="$(printf '%s' "$agent" | tr '[:lower:]' '[:upper:]')"
+  expect_contains "bash default: $agent resolves to ~/.local/bin in default mode" "/home/.local/bin/$agent:0:HOST_${upper}" "$bash_def_out"
+done
+
 exit $((failures > 0))

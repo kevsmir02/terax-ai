@@ -4,6 +4,7 @@ import { LOCAL_WORKSPACE } from "@/modules/workspace";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { evaluateIsolationToggleGuard } from "./lib/isolation";
 import { useSpaces } from "./lib/useSpaces";
 import { SpaceSwitcher } from "./SpaceSwitcher";
 
@@ -46,6 +47,7 @@ describe("SpaceSwitcher", () => {
           name: "Alpha",
           root: "/work/terax",
           env: LOCAL_WORKSPACE,
+          accountIsolation: "default",
           createdAt: 1,
           updatedAt: 1,
         },
@@ -54,6 +56,7 @@ describe("SpaceSwitcher", () => {
           name: "Beta",
           root: "/work/terax",
           env: LOCAL_WORKSPACE,
+          accountIsolation: "default",
           createdAt: 2,
           updatedAt: 2,
         },
@@ -138,5 +141,360 @@ describe("SpaceSwitcher", () => {
     expect((tabSubtitle?.className ?? "").split(/\s+/)).not.toContain(
       "text-muted-foreground/55",
     );
+  });
+
+  it("supports creating an isolated Space and gates isolation toggling on active terminals", async () => {
+    useSpaces.getState().hydrate(
+      [
+        {
+          id: "space-1",
+          name: "Alpha",
+          root: "/work/terax",
+          env: LOCAL_WORKSPACE,
+          accountIsolation: "default",
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        {
+          id: "space-2",
+          name: "Client",
+          root: "/work/client",
+          env: LOCAL_WORKSPACE,
+          accountIsolation: "isolated",
+          createdAt: 2,
+          updatedAt: 2,
+        },
+      ],
+      "space-1",
+    );
+
+    const onNewIsolatedSpace = vi.fn();
+    const onToggleSpaceIsolation = vi.fn(async () => {});
+    const canToggleSpaceIsolation = vi.fn((spaceId: string) =>
+      spaceId === "space-1"
+        ? {
+            allowed: false as const,
+            reason:
+              "Close active terminals in this Space before switching Account isolation.",
+          }
+        : { allowed: true as const },
+    );
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    act(() => {
+      root?.render(
+        <SpaceSwitcher
+          open
+          onOpenChange={vi.fn()}
+          tabs={[makeTab(1, "space-1", "/work/terax")]}
+          onNewSpace={vi.fn()}
+          onNewIsolatedSpace={onNewIsolatedSpace}
+          onToggleSpaceIsolation={onToggleSpaceIsolation}
+          canToggleSpaceIsolation={canToggleSpaceIsolation}
+          onDeleteSpace={vi.fn()}
+          onNewTabInSpace={vi.fn()}
+          onJumpTab={vi.fn()}
+          onCloseTab={vi.fn()}
+          onMoveTabToSpace={vi.fn()}
+          onReorderTab={vi.fn()}
+          onReorderSpaces={vi.fn()}
+        />,
+      );
+    });
+
+    const popover = document.body.querySelector<HTMLElement>(
+      '[data-slot="popover-content"]',
+    );
+    expect(popover).not.toBeNull();
+
+    // Isolated Space displays clear indicator badge.
+    const isolatedRow = popover?.querySelector<HTMLElement>(
+      '[data-space-id="space-2"]',
+    );
+    expect(
+      isolatedRow?.querySelector('[data-space-isolation="isolated"]'),
+    ).not.toBeNull();
+
+    // Active Space with open active terminals shows disabled toggle and clear blocked reason.
+    const blockedToggle = popover?.querySelector<HTMLButtonElement>(
+      '[data-isolation-toggle="space-1"]',
+    );
+    expect(blockedToggle?.disabled).toBe(true);
+    expect(
+      popover?.querySelector('[data-isolation-blocked="space-1"]')?.textContent,
+    ).toContain("Close active terminals");
+
+    // Expand space-2 (no active terminals) and toggle back cleanly.
+    const expandBtn = isolatedRow?.querySelector<HTMLButtonElement>(
+      'button[aria-label="Expand"]',
+    );
+    act(() => {
+      expandBtn?.click();
+    });
+
+    const allowedToggle = popover?.querySelector<HTMLButtonElement>(
+      '[data-isolation-toggle="space-2"]',
+    );
+    expect(allowedToggle?.disabled).toBe(false);
+    await act(async () => {
+      allowedToggle?.click();
+    });
+    expect(onToggleSpaceIsolation).toHaveBeenCalledWith("space-2", "default");
+
+    const newIsolatedBtn = popover?.querySelector<HTMLButtonElement>(
+      "[data-new-isolated-space]",
+    );
+    expect(newIsolatedBtn).not.toBeNull();
+    act(() => {
+      newIsolatedBtn?.click();
+    });
+    expect(onNewIsolatedSpace).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows retained-profiles badge, Clear private accounts button, redacted cleanupError, and Retry actions", () => {
+    const onClearPrivateAccounts = vi.fn();
+    const onRetrySpaceCleanup = vi.fn();
+
+    useSpaces.getState().hydrate(
+      [
+        {
+          id: "space-1",
+          name: "Alpha",
+          root: "/work/alpha",
+          env: LOCAL_WORKSPACE,
+          accountIsolation: "default",
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        {
+          id: "space-2",
+          name: "Beta",
+          root: "/work/beta",
+          env: LOCAL_WORKSPACE,
+          accountIsolation: "isolated",
+          createdAt: 2,
+          updatedAt: 2,
+        },
+      ],
+      "space-1",
+      undefined,
+      {
+        "space-1": {
+          hasRetainedProfiles: true,
+          cleanupError: "PermissionDenied: [path]",
+        },
+        "space-2": {
+          hasRetainedProfiles: true,
+        },
+      },
+      {
+        "space-deleted": {
+          hasRetainedProfiles: true,
+          cleanupError: "ResourceBusy: [path]",
+        },
+      },
+    );
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    act(() => {
+      root?.render(
+        <SpaceSwitcher
+          open
+          onOpenChange={vi.fn()}
+          tabs={[]}
+          onNewSpace={vi.fn()}
+          onDeleteSpace={vi.fn()}
+          onNewTabInSpace={vi.fn()}
+          onJumpTab={vi.fn()}
+          onCloseTab={vi.fn()}
+          onMoveTabToSpace={vi.fn()}
+          onReorderTab={vi.fn()}
+          onReorderSpaces={vi.fn()}
+          onClearPrivateAccounts={onClearPrivateAccounts}
+          onRetrySpaceCleanup={onRetrySpaceCleanup}
+        />,
+      );
+    });
+
+    const trigger = container.querySelector<HTMLButtonElement>(
+      'button[title^="Spaces"]',
+    );
+    expect(
+      trigger?.querySelector('[data-retained-profiles="space-1"]'),
+    ).not.toBeNull();
+
+    const popover = document.body.querySelector<HTMLElement>(
+      '[data-slot="popover-content"]',
+    );
+    expect(popover).not.toBeNull();
+
+    const alphaRow = popover?.querySelector<HTMLElement>(
+      '[data-space-id="space-1"]',
+    );
+    expect(
+      alphaRow?.querySelector('[data-retained-profiles="space-1"]'),
+    ).not.toBeNull();
+
+    const clearBtn = popover?.querySelector<HTMLButtonElement>(
+      '[data-clear-private-accounts="space-1"]',
+    );
+    expect(clearBtn).not.toBeNull();
+    act(() => {
+      clearBtn?.click();
+    });
+    expect(onClearPrivateAccounts).toHaveBeenCalledWith("space-1");
+
+    const errorEl = popover?.querySelector('[data-cleanup-error="space-1"]');
+    expect(errorEl?.textContent).toContain("PermissionDenied: [path]");
+    const retryBtn = popover?.querySelector<HTMLButtonElement>(
+      '[data-cleanup-retry="space-1"]',
+    );
+    expect(retryBtn).not.toBeNull();
+    act(() => {
+      retryBtn?.click();
+    });
+    expect(onRetrySpaceCleanup).toHaveBeenCalledWith("space-1");
+
+    const orphanRetry = popover?.querySelector<HTMLButtonElement>(
+      '[data-cleanup-retry="space-deleted"]',
+    );
+    expect(
+      popover?.querySelector('[data-cleanup-error="space-deleted"]')
+        ?.textContent,
+    ).toContain("ResourceBusy: [path]");
+    act(() => {
+      orphanRetry?.click();
+    });
+    expect(onRetrySpaceCleanup).toHaveBeenCalledWith("space-deleted");
+  });
+
+  it("allows guarded isolation toggle with active terminals, shows pre-login OAuth guidance, and details shared-root boundaries", async () => {
+    useSpaces.getState().hydrate(
+      [
+        {
+          id: "space-1",
+          name: "Alpha",
+          root: "/work/terax",
+          env: LOCAL_WORKSPACE,
+          accountIsolation: "default",
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        {
+          id: "space-2",
+          name: "Client",
+          root: "/work/terax",
+          env: LOCAL_WORKSPACE,
+          accountIsolation: "isolated",
+          createdAt: 2,
+          updatedAt: 2,
+        },
+      ],
+      "space-1",
+    );
+
+    const tabs = [makeTab(1, "space-1", "/work/terax")];
+    const onToggleSpaceIsolation = vi.fn(async () => {});
+    const canToggleSpaceIsolation = vi.fn((spaceId: string) =>
+      evaluateIsolationToggleGuard(
+        spaceId,
+        tabs.map((t) => ({
+          id: t.id,
+          spaceId: t.spaceId,
+          kind: t.kind,
+          cold: t.cold,
+          leafIds: t.kind === "terminal" ? [t.activeLeafId] : [],
+        })),
+        (leafId) => leafId === 10,
+      ),
+    );
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    act(() => {
+      root?.render(
+        <SpaceSwitcher
+          open
+          onOpenChange={vi.fn()}
+          tabs={tabs}
+          onNewSpace={vi.fn()}
+          onNewIsolatedSpace={vi.fn()}
+          onToggleSpaceIsolation={onToggleSpaceIsolation}
+          canToggleSpaceIsolation={canToggleSpaceIsolation}
+          onDeleteSpace={vi.fn()}
+          onNewTabInSpace={vi.fn()}
+          onJumpTab={vi.fn()}
+          onCloseTab={vi.fn()}
+          onMoveTabToSpace={vi.fn()}
+          onReorderTab={vi.fn()}
+          onReorderSpaces={vi.fn()}
+        />,
+      );
+    });
+
+    const popover = document.body.querySelector<HTMLElement>(
+      '[data-slot="popover-content"]',
+    );
+    expect(popover).not.toBeNull();
+
+    // Active Space with open terminals keeps toggle enabled and displays restart hint.
+    const activeToggle = popover?.querySelector<HTMLButtonElement>(
+      '[data-isolation-toggle="space-1"]',
+    );
+    expect(activeToggle?.disabled).toBe(false);
+    expect(
+      popover?.querySelector('[data-isolation-confirm-hint="space-1"]')
+        ?.textContent,
+    ).toContain("restarts active terminal Panes");
+
+    await act(async () => {
+      activeToggle?.click();
+    });
+    expect(onToggleSpaceIsolation).toHaveBeenCalledWith("space-1", "isolated");
+
+    // Expand isolated Space to inspect pre-login OAuth guidance.
+    const isolatedRow = popover?.querySelector<HTMLElement>(
+      '[data-space-id="space-2"]',
+    );
+    const expandBtn = isolatedRow?.querySelector<HTMLButtonElement>(
+      'button[aria-label="Expand"]',
+    );
+    act(() => {
+      expandBtn?.click();
+    });
+
+    const oauthGuidance = popover?.querySelector<HTMLElement>(
+      '[data-oauth-guidance="space-2"]',
+    );
+    expect(oauthGuidance).not.toBeNull();
+    expect(oauthGuidance?.textContent).toContain("$BROWSER");
+    expect(oauthGuidance?.textContent).toContain("xdg-open");
+    expect(oauthGuidance?.textContent).toContain("auto-consent");
+    expect(oauthGuidance?.textContent).toContain("1455");
+    expect(oauthGuidance?.textContent).toContain("manual URL paste");
+
+    // Shared-root note and badge explicitly state repo configs, tools, and MCP/memory stay shared.
+    const sharedNote =
+      popover?.querySelector<HTMLElement>("[data-shared-note]");
+    expect(sharedNote?.textContent).toContain(".mcp.json");
+    expect(sharedNote?.textContent).toContain(".claude/");
+    expect(sharedNote?.textContent).toContain("Git");
+    expect(sharedNote?.textContent).toContain("SSH");
+    expect(sharedNote?.textContent).toContain("cloud CLIs");
+    expect(sharedNote?.textContent).toContain("Engram");
+    expect(sharedNote?.textContent).toContain("CodeGraph");
+    expect(sharedNote?.textContent).toContain("pi-lens");
+
+    const badge = isolatedRow?.querySelector<HTMLElement>("[data-shared-root]");
+    expect(badge?.getAttribute("title")).toContain("Engram");
+    expect(badge?.getAttribute("title")).toContain("pi-lens");
   });
 });

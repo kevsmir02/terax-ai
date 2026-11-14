@@ -4,7 +4,6 @@ import {
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import { Toaster } from "@/components/ui/sonner";
-import { toast } from "sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { consumeLaunchFiles, getLaunchDir } from "@/lib/launchDir";
 import { IS_MAC } from "@/lib/platform";
@@ -18,7 +17,6 @@ import {
   nextAttentionTarget,
   resolveAgentLaunchCommand,
 } from "@/modules/agents";
-import { native } from "@/modules/workspace/native";
 import {
   CommandPalette,
   createCommandItems,
@@ -45,8 +43,8 @@ import { setCodeBlockRunner } from "@/modules/markdown/lib/codeBlockRunner";
 import type { PreviewPaneHandle } from "@/modules/preview";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { usePreferencesBootstrap } from "@/modules/settings/usePreferencesBootstrap";
 import { setShowHidden } from "@/modules/settings/store";
+import { usePreferencesBootstrap } from "@/modules/settings/usePreferencesBootstrap";
 import {
   type ShortcutHandlers,
   type ShortcutId,
@@ -60,29 +58,29 @@ import {
   SidebarRail,
   useSidebarPanel,
 } from "@/modules/sidebar";
-import { checkpointBridge } from "@/modules/source-control/checkpointBridge";
-import { destructiveGitBridge } from "@/modules/source-control/destructiveGitBridge";
 import {
   type DestructiveGitSupport,
   SourceControlPanel,
   useRepositoryTargeting,
   useSourceControlContext,
 } from "@/modules/source-control";
+import { checkpointBridge } from "@/modules/source-control/checkpointBridge";
+import { destructiveGitBridge } from "@/modules/source-control/destructiveGitBridge";
 import {
+  type AccountIsolationMode,
+  evaluateIsolationToggleGuard,
+  preflightAgentLaunch,
   SpaceSwitcher,
   useSpacePersistence,
   useSpaces,
   useSpacesBoot,
+  waitForSpaceIsolationSync,
 } from "@/modules/spaces";
 import { normalizeSpaceRoot } from "@/modules/spaces/lib/sharedRoots";
-import { worktreeSpaceName } from "@/modules/worktrees/lib/createWorktree";
-import { worktreeBridge } from "@/modules/worktrees/worktreeBridge";
-import type { WorktreeRemovalTarget } from "@/modules/worktrees/WorktreeRemoveDialog";
-import { worktreeRemovalBridge } from "@/modules/worktrees/worktreeRemovalBridge";
 import { StatusBar } from "@/modules/statusbar";
 import {
-  TabSwitcherHud,
   type CloseTabsPlan,
+  TabSwitcherHud,
   useTabSwitcher,
   useTabs,
   useWindowTitle,
@@ -95,6 +93,7 @@ import {
   findLeafCwd,
   hasLeaf,
   isTerminalSurfaceTarget,
+  leafCwd,
   leafHasForegroundProcess,
   leafIds,
   navigateFocusedBlocks,
@@ -106,9 +105,9 @@ import {
   whenSessionReady,
   writeToSession,
 } from "@/modules/terminal";
-import type { TerminalSearchController } from "@/modules/terminal/search/TerminalSearchController";
 import { bindTerminalWindowFocus } from "@/modules/terminal/ghostty/renderScheduling";
 import { subscribeWindowPresentation } from "@/modules/terminal/ghostty/windowPresentation";
+import type { TerminalSearchController } from "@/modules/terminal/search/TerminalSearchController";
 import {
   LivePageResizeBridge,
   ThemeProvider,
@@ -126,6 +125,11 @@ import {
   type WorkspaceEnv,
   workspaceScopeKey,
 } from "@/modules/workspace";
+import { native } from "@/modules/workspace/native";
+import { worktreeSpaceName } from "@/modules/worktrees/lib/createWorktree";
+import type { WorktreeRemovalTarget } from "@/modules/worktrees/WorktreeRemoveDialog";
+import { worktreeBridge } from "@/modules/worktrees/worktreeBridge";
+import { worktreeRemovalBridge } from "@/modules/worktrees/worktreeRemovalBridge";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -138,17 +142,24 @@ import {
   useRef,
   useState,
 } from "react";
+import { toast } from "sonner";
 import { CloseDialogs } from "./components/CloseDialogs";
 import { QuitDialog } from "./components/QuitDialog";
+import { SpaceIsolationDialogs } from "./components/SpaceIsolationDialogs";
 import { WorkspaceSurface } from "./components/WorkspaceSurface";
-import { useQuitGuard } from "./hooks/useQuitGuard";
+import {
+  type ClearPrivateAccountsTransaction,
+  spaceHazardSnapshot,
+} from "./hooks/spaceDeleteGuards";
 import {
   hasOpenPathTab,
   renamedPath,
   spacesEmptiedByTabs,
 } from "./hooks/tabCloseGuards";
-import { useTabCloseGuards } from "./hooks/useTabCloseGuards";
+import { useQuitGuard } from "./hooks/useQuitGuard";
 import { useSpaceDeleteGuard } from "./hooks/useSpaceDeleteGuard";
+import { useSpaceIsolationGuards } from "./hooks/useSpaceIsolationGuards";
+import { useTabCloseGuards } from "./hooks/useTabCloseGuards";
 import { useWorkspaceSwitcher } from "./hooks/useWorkspaceSwitcher";
 
 // Real-application benchmark driver (scripts/app-lab). `__TERAX_BENCH__` is the literal `false`
@@ -168,8 +179,11 @@ export default function App() {
     moveTabToSpace,
     reorderTab,
     reorderTabByGap,
+    restartSpaceTerminals,
+    recreateTerminalInSpace,
     newTabInSpace,
     removeTabsForSpace,
+    removeTerminalTabsForSpace,
     markBooted,
     setActiveSpaceForNewTabs,
     newTab,
@@ -260,6 +274,7 @@ export default function App() {
   // Space identity by name only: agent notifications carry the Space's own
   // name, never a path, cwd or open file.
   const spaceList = useSpaces((s) => s.spaces);
+  const spaceRuntimeById = useSpaces((s) => s.runtimeById);
   const spaceNames = useMemo(
     () => Object.fromEntries(spaceList.map((space) => [space.id, space.name])),
     [spaceList],
@@ -268,6 +283,13 @@ export default function App() {
   // project root, not to a terminal's current directory.
   const spaceRoots = useMemo(
     () => Object.fromEntries(spaceList.map((space) => [space.id, space.root])),
+    [spaceList],
+  );
+  const spaceIsolations = useMemo(
+    () =>
+      Object.fromEntries(
+        spaceList.map((space) => [space.id, space.accountIsolation]),
+      ),
     [spaceList],
   );
   const activeSpaceIdRef = useRef(activeSpaceId);
@@ -668,9 +690,29 @@ export default function App() {
   }, [newBlockTab, inheritedCwdForNewTab]);
 
   const launchAgentGroup = useCallback(
-    (request: AgentLaunchRequest) => {
-      const command = resolveAgentLaunchCommand(request.agent, request.command);
-      if (!command.ok) return;
+    async (request: AgentLaunchRequest): Promise<boolean> => {
+      const spaceId = useSpaces.getState().activeId ?? DEFAULT_SPACE_ID;
+      const expectedIsolation =
+        useSpaces.getState().spaces.find((s) => s.id === spaceId)
+          ?.accountIsolation ?? "default";
+      const command = resolveAgentLaunchCommand(
+        request.agent,
+        request.command,
+        expectedIsolation,
+      );
+      if (!command.ok) return false;
+      if (expectedIsolation === "isolated") {
+        try {
+          await preflightAgentLaunch(spaceId, expectedIsolation, request.agent);
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          toast.error("Agent launch blocked in isolated Space", {
+            description: message,
+          });
+          throw error;
+        }
+      }
       const launcher = findAgentLauncher(request.agent);
       const title =
         request.instances === 1
@@ -695,6 +737,7 @@ export default function App() {
           }
         })();
       }
+      return true;
     },
     [inheritedCwdForNewTab, newAgentGroupTab],
   );
@@ -1245,18 +1288,22 @@ export default function App() {
 
   const activeCwd = activeTerminalLeafCwd;
 
-  const handleNewSpace = useCallback(() => {
-    const { spaces, create, setActive } = useSpaces.getState();
-    const meta = create({
-      name: `Space ${spaces.length + 1}`,
-      root: activeCwd ?? home ?? null,
-      env: workspaceEnv,
-    });
-    setActiveSpaceForNewTabs(meta.id);
-    newTab(activeCwd ?? undefined);
-    setActive(meta.id);
-    return meta.id;
-  }, [activeCwd, home, workspaceEnv, newTab, setActiveSpaceForNewTabs]);
+  const handleNewSpace = useCallback(
+    (accountIsolation: AccountIsolationMode = "default") => {
+      const { spaces, create, setActive } = useSpaces.getState();
+      const meta = create({
+        name: `Space ${spaces.length + 1}`,
+        root: activeCwd ?? home ?? null,
+        env: workspaceEnv,
+        accountIsolation,
+      });
+      setActiveSpaceForNewTabs(meta.id);
+      newTab(activeCwd ?? undefined);
+      setActive(meta.id);
+      return meta.id;
+    },
+    [activeCwd, home, workspaceEnv, newTab, setActiveSpaceForNewTabs],
+  );
 
   /**
    * A worktree gets a Space of its own. Existing Spaces keep their tabs and
@@ -1288,16 +1335,100 @@ export default function App() {
   );
 
   const commitDeleteSpace = useCallback(
-    (id: string) => {
-      const nextSpaceId = useSpaces.getState().remove(id);
+    async (id: string) => {
+      const paneIds = spaceHazardSnapshot(tabsRef.current, id).leafIds;
+      const nextSpaceId = useSpaces.getState().remove(id, paneIds);
       if (!nextSpaceId) return;
       const root = useSpaces
         .getState()
         .spaces.find((s) => s.id === nextSpaceId)?.root;
+      await waitForSpaceIsolationSync(id);
       removeTabsForSpace(id, nextSpaceId, root ?? undefined);
     },
     [removeTabsForSpace],
   );
+
+  const [pendingClearPrivateAccounts, setPendingClearPrivateAccounts] =
+    useState<ClearPrivateAccountsTransaction | null>(null);
+  const [clearPrivateAccountsBusy, setClearPrivateAccountsBusy] =
+    useState(false);
+  const [retryingCleanupId, setRetryingCleanupId] = useState<string | null>(
+    null,
+  );
+
+  const requestClearPrivateAccounts = useCallback(async (spaceId: string) => {
+    const space = useSpaces.getState().spaces.find((s) => s.id === spaceId);
+    if (!space) return;
+    setSwitcherOpen(false);
+    const terminalCount = tabsRef.current.filter(
+      (t) => t.spaceId === spaceId && t.kind === "terminal",
+    ).length;
+    const { leafIds: spaceLeafIds } = spaceHazardSnapshot(
+      tabsRef.current,
+      spaceId,
+    );
+    const busyChecks = await Promise.all(
+      spaceLeafIds.map(async (lid) => {
+        try {
+          return (await leafHasForegroundProcess(lid)) ? lid : null;
+        } catch {
+          return lid;
+        }
+      }),
+    );
+    const busyLeafIds = busyChecks.filter((id): id is number => id !== null);
+    setPendingClearPrivateAccounts({
+      spaceId,
+      spaceName: space.name,
+      terminalCount,
+      busyLeafIds,
+    });
+  }, []);
+
+  const confirmClearPrivateAccounts = useCallback(async () => {
+    const tx = pendingClearPrivateAccounts;
+    if (!tx || clearPrivateAccountsBusy) return;
+    setClearPrivateAccountsBusy(true);
+    try {
+      const paneIds = spaceHazardSnapshot(tabsRef.current, tx.spaceId).leafIds;
+      const spaceRoot = useSpaces
+        .getState()
+        .spaces.find((s) => s.id === tx.spaceId)?.root;
+      const status = await useSpaces
+        .getState()
+        .clearPrivateAccounts(tx.spaceId, paneIds);
+      removeTerminalTabsForSpace(tx.spaceId, spaceRoot ?? undefined);
+      setPendingClearPrivateAccounts(null);
+      if (status.cleanupError) {
+        toast.error(status.cleanupError);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      toast.error(`Clear private accounts failed: ${message}`);
+      setPendingClearPrivateAccounts(null);
+    } finally {
+      setClearPrivateAccountsBusy(false);
+    }
+  }, [
+    clearPrivateAccountsBusy,
+    pendingClearPrivateAccounts,
+    removeTerminalTabsForSpace,
+  ]);
+
+  const handleRetrySpaceCleanup = useCallback(async (spaceId: string) => {
+    setRetryingCleanupId(spaceId);
+    try {
+      const status = await useSpaces.getState().retryCleanup(spaceId);
+      if (status.cleanupError) {
+        toast.error(status.cleanupError);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      toast.error(`Profile cleanup retry failed: ${message}`);
+    } finally {
+      setRetryingCleanupId((cur) => (cur === spaceId ? null : cur));
+    }
+  }, []);
 
   const prepareDiscard = useCallback((id: number): (() => void) | null => {
     const handle = editorRefs.current.get(id);
@@ -1320,23 +1451,77 @@ export default function App() {
     prepareDiscard,
   });
 
-  const handleMoveTab = useCallback(
-    (tabId: number, targetSpaceId: string) => {
-      if (moveTabToSpace(tabId, targetSpaceId)) {
-        useSpaces.getState().setActive(targetSpaceId);
+  const {
+    pendingIsolationToggle,
+    isolationToggleBusy,
+    isolationToggleError,
+    isolationSaveIncomplete,
+    requestSpaceIsolationToggle,
+    confirmSpaceIsolationToggle,
+    saveAndToggleSpaceIsolation,
+    cancelSpaceIsolationToggle,
+    pendingCrossSpaceMove,
+    crossSpaceMoveBusy,
+    requestMoveTabToSpace,
+    requestReorderTabAcrossSpaces,
+    confirmCrossSpaceMove,
+    cancelCrossSpaceMove,
+  } = useSpaceIsolationGuards({
+    tabs,
+    spaces: spaceList,
+    isTabDirty,
+    saveTab,
+    applyIsolationMode: (spaceId, nextMode) =>
+      useSpaces.getState().setAccountIsolation(spaceId, nextMode),
+    restartSpaceTerminals: (spaceId) =>
+      restartSpaceTerminals(
+        spaceId,
+        (leafId, fallback) => leafCwd(leafId) ?? fallback,
+        (leafId) => ptyIdForLeaf(leafId) !== null,
+      ),
+    moveLive: (action) => {
+      if (action.kind === "move") {
+        if (moveTabToSpace(action.tabId, action.targetSpaceId)) {
+          useSpaces.getState().setActive(action.targetSpaceId);
+        }
+        return;
+      }
+      if (reorderTab(action.tabId, action.targetTabId, action.edge)) {
+        const target = tabsRef.current.find((x) => x.id === action.targetTabId);
+        if (target) useSpaces.getState().setActive(target.spaceId);
       }
     },
-    [moveTabToSpace],
+    recreateInTarget: (action, targetSpaceId) => {
+      const targetRoot =
+        useSpaces.getState().spaces.find((s) => s.id === targetSpaceId)?.root ??
+        undefined;
+      const outcome = recreateTerminalInSpace(
+        action.tabId,
+        targetSpaceId,
+        targetRoot,
+        action.kind === "reorder"
+          ? { targetTabId: action.targetTabId, edge: action.edge }
+          : undefined,
+      );
+      if (outcome.shouldSwitchSpace) {
+        useSpaces.getState().setActive(targetSpaceId);
+      }
+      return outcome.disposeLeafIds;
+    },
+  });
+
+  const handleMoveTab = useCallback(
+    (tabId: number, targetSpaceId: string) => {
+      void requestMoveTabToSpace(tabId, targetSpaceId);
+    },
+    [requestMoveTabToSpace],
   );
 
   const handleReorderTab = useCallback(
     (tabId: number, targetTabId: number, edge: "top" | "bottom") => {
-      if (reorderTab(tabId, targetTabId, edge)) {
-        const target = tabsRef.current.find((x) => x.id === targetTabId);
-        if (target) useSpaces.getState().setActive(target.spaceId);
-      }
+      void requestReorderTabAcrossSpaces(tabId, targetTabId, edge);
     },
-    [reorderTab],
+    [requestReorderTabAcrossSpaces],
   );
 
   const handleNewTabInSpace = useCallback(
@@ -1360,12 +1545,43 @@ export default function App() {
     [setActiveId],
   );
 
+  const canToggleSpaceIsolation = useCallback(
+    (spaceId: string) => {
+      return evaluateIsolationToggleGuard(
+        spaceId,
+        tabsRef.current.map((tab) => ({
+          id: tab.id,
+          spaceId: tab.spaceId,
+          kind: tab.kind,
+          cold: tab.cold,
+          dirty: tab.kind === "editor" && isTabDirty(tab.id),
+          leafIds: tab.kind === "terminal" ? leafIds(tab.paneTree) : [],
+        })),
+        (leafId) => ptyIdForLeaf(leafId) !== null,
+        isTabDirty,
+      );
+    },
+    [isTabDirty],
+  );
+
+  const handleToggleSpaceIsolation = useCallback(
+    (spaceId: string, nextMode: AccountIsolationMode) =>
+      requestSpaceIsolationToggle(spaceId, nextMode),
+    [requestSpaceIsolationToggle],
+  );
+
   const spaceSwitcher = (
     <SpaceSwitcher
       open={switcherOpen}
       onOpenChange={setSwitcherOpen}
       tabs={tabs}
       onNewSpace={() => void handleNewSpace()}
+      onNewIsolatedSpace={() => void handleNewSpace("isolated")}
+      canToggleSpaceIsolation={canToggleSpaceIsolation}
+      onToggleSpaceIsolation={handleToggleSpaceIsolation}
+      onClearPrivateAccounts={(id) => void requestClearPrivateAccounts(id)}
+      onRetrySpaceCleanup={(id) => void handleRetrySpaceCleanup(id)}
+      retryingCleanupId={retryingCleanupId}
       onDeleteSpace={requestSpaceDelete}
       onNewTabInSpace={handleNewTabInSpace}
       onJumpTab={jumpToTab}
@@ -1790,6 +2006,7 @@ export default function App() {
                     activeTab={activeTab}
                     activeSpaceId={activeSpaceId ?? DEFAULT_SPACE_ID}
                     spaceRoots={spaceRoots}
+                    spaceIsolations={spaceIsolations}
                     home={home}
                     subscribeWindowPresentation={subscribeWindowPresentation}
                     registerTerminalHandle={registerTerminalHandle}
@@ -1888,11 +2105,47 @@ export default function App() {
               spaceList.find((s) => s.id === pendingSpaceDelete?.spaceId)
                 ?.name ?? "this Space"
             }
+            spaceProfileContext={
+              pendingSpaceDelete
+                ? {
+                    accountIsolation:
+                      spaceList.find((s) => s.id === pendingSpaceDelete.spaceId)
+                        ?.accountIsolation ?? "default",
+                    hasRetainedProfiles:
+                      spaceRuntimeById[pendingSpaceDelete.spaceId]
+                        ?.hasRetainedProfiles ?? false,
+                  }
+                : undefined
+            }
             spaceDeleteSaving={spaceDeleteSaving}
             spaceDeleteIncomplete={spaceDeleteIncomplete}
             onCancelSpaceDelete={cancelSpaceDelete}
             onConfirmSpaceDelete={() => void confirmSpaceDelete()}
             onSaveAndDeleteSpace={() => void saveAndDeleteSpace()}
+            pendingClearPrivateAccounts={pendingClearPrivateAccounts}
+            clearPrivateAccountsBusy={clearPrivateAccountsBusy}
+            onCancelClearPrivateAccounts={() =>
+              setPendingClearPrivateAccounts(null)
+            }
+            onConfirmClearPrivateAccounts={() =>
+              void confirmClearPrivateAccounts()
+            }
+          />
+
+          <SpaceIsolationDialogs
+            tabs={tabs}
+            spaces={spaceList}
+            pendingIsolationToggle={pendingIsolationToggle}
+            isolationToggleBusy={isolationToggleBusy}
+            isolationToggleError={isolationToggleError}
+            isolationSaveIncomplete={isolationSaveIncomplete}
+            onConfirmIsolationToggle={() => void confirmSpaceIsolationToggle()}
+            onSaveAndToggleIsolation={() => void saveAndToggleSpaceIsolation()}
+            onCancelIsolationToggle={cancelSpaceIsolationToggle}
+            pendingCrossSpaceMove={pendingCrossSpaceMove}
+            crossSpaceMoveBusy={crossSpaceMoveBusy}
+            onConfirmCrossSpaceMove={() => void confirmCrossSpaceMove()}
+            onCancelCrossSpaceMove={cancelCrossSpaceMove}
           />
 
           <QuitDialog

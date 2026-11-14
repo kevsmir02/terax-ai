@@ -1,8 +1,12 @@
+import type { AccountIsolationMode } from "@/modules/spaces/lib/isolation";
 import type { PaneNode } from "@/modules/terminal";
 import {
   ANTIGRAVITY_GUI_REFUSAL,
   classifyAntigravityCommand,
 } from "./launchTarget";
+
+export const UNSUPPORTED_ISOLATED_AGENT_REASON =
+  "Account isolation is not supported yet.";
 
 export const AGENT_LAUNCHERS = [
   {
@@ -10,36 +14,42 @@ export const AGENT_LAUNCHERS = [
     label: "Claude",
     defaultCommand: "claude",
     supportsHooks: true,
+    supportsAccountIsolation: true,
   },
   {
     id: "codex",
     label: "Codex",
     defaultCommand: "codex",
     supportsHooks: true,
+    supportsAccountIsolation: false,
   },
   {
     id: "gemini",
     label: "Gemini",
     defaultCommand: "gemini",
     supportsHooks: true,
+    supportsAccountIsolation: false,
   },
   {
     id: "pi",
     label: "Pi",
     defaultCommand: "pi",
     supportsHooks: true,
+    supportsAccountIsolation: true,
   },
   {
     id: "opencode",
     label: "OpenCode",
     defaultCommand: "opencode",
     supportsHooks: false,
+    supportsAccountIsolation: true,
   },
   {
     id: "grok",
     label: "Grok",
     defaultCommand: "grok",
     supportsHooks: false,
+    supportsAccountIsolation: false,
   },
   {
     // The terminal CLI of Antigravity, which is a separate product from its
@@ -47,8 +57,9 @@ export const AGENT_LAUNCHERS = [
     // GUI (see `launchTarget.ts`).
     id: "antigravity",
     label: "Antigravity CLI",
-    defaultCommand: "antigravity",
+    defaultCommand: "agy",
     supportsHooks: false,
+    supportsAccountIsolation: false,
   },
 ] as const;
 
@@ -103,7 +114,7 @@ export function normalizeAgentLaunchCommands(
       : {};
   return Object.fromEntries(
     AGENT_LAUNCHERS.map((agent) => {
-      const result = validateAgentLaunchCommand(stored[agent.id]);
+      const result = resolveAgentLaunchCommand(agent.id, stored[agent.id]);
       return [
         agent.id,
         result.ok ? result.command : agent.defaultCommand,
@@ -125,7 +136,15 @@ export type AgentLaunchResolution =
 export function resolveAgentLaunchCommand(
   agent: AgentLauncherId,
   value: unknown,
+  accountIsolation: AccountIsolationMode = "default",
 ): AgentLaunchResolution {
+  const disabledReason = getAgentIsolationDisabledReason(
+    agent,
+    accountIsolation,
+  );
+  if (disabledReason) {
+    return { ok: false, error: disabledReason };
+  }
   const result = validateAgentLaunchCommand(value);
   if (!result.ok) return result;
   if (
@@ -139,6 +158,31 @@ export function resolveAgentLaunchCommand(
 
 export function findAgentLauncher(id: AgentLauncherId) {
   return AGENT_LAUNCHERS.find((agent) => agent.id === id) ?? AGENT_LAUNCHERS[0];
+}
+
+export function isAgentSupportedInSpace(
+  id: AgentLauncherId,
+  accountIsolation: AccountIsolationMode = "default",
+): boolean {
+  if (accountIsolation !== "isolated") return true;
+  const launcher = AGENT_LAUNCHERS.find((agent) => agent.id === id);
+  return launcher?.supportsAccountIsolation === true;
+}
+
+export function getAgentIsolationDisabledReason(
+  id: AgentLauncherId,
+  accountIsolation: AccountIsolationMode = "default",
+): string | null {
+  if (isAgentSupportedInSpace(id, accountIsolation)) return null;
+  const launcher = AGENT_LAUNCHERS.find((agent) => agent.id === id);
+  if (!launcher) {
+    return `${UNSUPPORTED_ISOLATED_AGENT_REASON.slice(0, -1)} for ${String(id)}.`;
+  }
+  const name =
+    id === "antigravity"
+      ? `${launcher.label} (${launcher.defaultCommand})`
+      : launcher.label;
+  return `${UNSUPPORTED_ISOLATED_AGENT_REASON.slice(0, -1)} for ${name}.`;
 }
 
 export type AgentPanePlan = {

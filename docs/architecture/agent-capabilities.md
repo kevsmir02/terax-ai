@@ -38,7 +38,7 @@ single line of at most 256 characters, and persisted per agent.
 | Pi | `pi` | `pi` | |
 | OpenCode | `opencode` | `opencode` | |
 | Grok | `grok` | `grok` | |
-| Antigravity CLI | `antigravity` | `antigravity` | Desktop app refused, see below |
+| Antigravity CLI | `antigravity` | `agy` | Desktop app refused, see below |
 
 The launcher also creates pane layouts for one to four instances in the current
 Space's directory. That layout and the configured command are the whole launch
@@ -47,23 +47,24 @@ contract: no agent is auto-restarted after a layout restore.
 ### Antigravity CLI is not its desktop app
 
 Antigravity ships a desktop application and a terminal CLI as separate entry
-points. Terax can own a terminal pane, so it launches the CLI and never embeds,
-drives or claims to control the GUI:
+points. Terax can own a terminal pane, so it launches the CLI (`agy`) and never
+embeds, drives or claims to control the GUI:
 
 - `src/modules/agents/lib/launchTarget.ts` classifies the configured command. A
-  desktop-app shape (`antigravity-desktop`, `antigravity-gui`, an `.app` bundle,
-  a `.desktop` file, or an `open -a` / `xdg-open` / `gio open` / `gtk-launch` /
-  `flatpak run` / `snap run` launcher) is **refused with an explanation**, not
-  launched and mislabelled. The refusal is shown in the launcher panel and the
-  launch callback re-checks it.
+  desktop-app shape (`antigravity`, `antigravity.exe`, `antigravity-desktop`,
+  `antigravity-gui`, an `.app` bundle, a `.desktop` file, or an `open -a` /
+  `xdg-open` / `gio open` / `gtk-launch` / `flatpak run` / `snap run` launcher)
+  is **refused with an explanation**, not launched and mislabelled. The refusal
+  is shown in the launcher panel and the launch callback re-checks it.
 - The detector applies the same distinction when it decides whether a pane is
-  running an agent: a GUI command line never arms the `antigravity` CLI, even
-  though its name would otherwise match as a dash-suffixed alias.
+  running an agent: standalone `agy` (and `agy-*` aliases) arms the canonical
+  `antigravity` agent integration, while desktop `antigravity` and GUI launcher
+  commands never arm it.
 - UI copy says "Antigravity CLI" wherever the agent is named.
 
 The classification is a command-shape heuristic. It is deterministic and tested,
 but it is not vendor certification: it does not prove which binary a user's
-`antigravity` resolves to.
+`agy` resolves to.
 
 ## Process status versus agent events
 

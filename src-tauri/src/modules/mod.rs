@@ -15,6 +15,8 @@ pub mod pty;
 pub mod recovery;
 pub mod runtime;
 pub mod shell;
+pub mod space_isolation;
+pub mod space_profile;
 pub mod updater;
 pub mod vibrancy;
 pub mod webview_origin;

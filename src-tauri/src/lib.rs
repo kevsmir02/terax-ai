@@ -3,7 +3,8 @@ pub mod modules;
 #[cfg(target_os = "macos")]
 use modules::app_menu;
 use modules::{
-    agent, control, fs, git, history, pty, recovery, shell, updater, vibrancy, workspace,
+    agent, control, fs, git, history, pty, recovery, shell, space_isolation, updater, vibrancy,
+    workspace,
 };
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -219,7 +220,9 @@ pub fn run() {
         .register_asynchronous_uri_scheme_protocol("asset", fs::assets::serve)
         .on_page_load(|webview, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
-                if let Some(grants) = webview.try_state::<fs::assets::AssetGrants>() { grants.revoke_owner(webview.label()); }
+                if let Some(grants) = webview.try_state::<fs::assets::AssetGrants>() {
+                    grants.revoke_owner(webview.label());
+                }
                 if let Some(state) = webview.try_state::<pty::PtyState>() {
                     state.reset_webview(webview.label());
                 }
@@ -232,17 +235,34 @@ pub fn run() {
                 }
             }
         })
-        .setup(move |_app| {
+        .setup(move |app| {
             #[cfg(feature = "bench")]
-            modules::bench::guard(_app.handle())?;
+            modules::bench::guard(app.handle())?;
             #[cfg(target_os = "macos")]
-            modules::window_presentation::macos::install(_app.handle());
-            if let Err(error) = control::start(_app.handle().clone(), control_for_setup.clone()) {
+            modules::window_presentation::macos::install(app.handle());
+            match app
+                .path()
+                .app_data_dir()
+                .map(|dir| dir.join("space-isolation").join("manifest.json"))
+            {
+                Ok(manifest_path) => {
+                    if let Err(error) = app
+                        .state::<space_isolation::SpaceIsolationRegistry>()
+                        .initialize(manifest_path, space_isolation::default_profiles_dir())
+                    {
+                        log::warn!("space isolation registry failed closed on startup: {error}");
+                    }
+                }
+                Err(error) => {
+                    log::warn!("could not resolve app data directory for space isolation: {error}");
+                }
+            }
+            if let Err(error) = control::start(app.handle().clone(), control_for_setup.clone()) {
                 log::warn!("could not start Terax control server: {error}");
             }
             #[cfg(target_os = "macos")]
-            if let Some(main) = _app.get_webview_window("main") {
-                let handle = _app.handle().clone();
+            if let Some(main) = app.get_webview_window("main") {
+                let handle = app.handle().clone();
                 main.on_window_event(move |event| {
                     // CloseRequested can be cancelled by the frontend guard.
                     if matches!(event, WindowEvent::Destroyed) {
@@ -255,6 +275,7 @@ pub fn run() {
             Ok(())
         })
         .manage(pty::PtyState::default())
+        .manage(space_isolation::SpaceIsolationRegistry::default())
         .manage(modules::window_presentation::WindowPresentationState::default())
         .manage(control_state)
         .manage(fs::watch::FsWatchState::default())
@@ -401,6 +422,13 @@ pub fn run() {
             recovery::recovery_remove,
             recovery::recovery_usage,
             recovery::recovery_location,
+            space_isolation::space_isolation_sync,
+            space_isolation::space_isolation_register,
+            space_isolation::space_isolation_set_mode,
+            space_isolation::space_isolation_remove,
+            space_isolation::space_isolation_clear_profiles,
+            space_isolation::space_isolation_retry_cleanup,
+            space_isolation::space_isolation_preflight_agent,
             updater::updater_fetch_manifest,
             #[cfg(feature = "bench")]
             modules::bench::bench_config,
@@ -422,7 +450,9 @@ pub fn run() {
                     event: tauri::WindowEvent::Destroyed,
                     ..
                 } => {
-                    if let Some(grants) = app.try_state::<fs::assets::AssetGrants>() { grants.revoke_owner(&label); }
+                    if let Some(grants) = app.try_state::<fs::assets::AssetGrants>() {
+                        grants.revoke_owner(&label);
+                    }
                     if let Some(state) = app.try_state::<pty::PtyState>() {
                         state.destroy_webview(&label);
                     }

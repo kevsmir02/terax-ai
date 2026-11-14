@@ -6,10 +6,13 @@ import {
   createAgentPanePlan,
   DEFAULT_AGENT_LAUNCH_COMMANDS,
   findAgentLauncher,
+  getAgentIsolationDisabledReason,
+  isAgentSupportedInSpace,
   normalizeAgentLaunchCommands,
   resolveAgentLaunchCommand,
   validateAgentLaunchCommand,
   type AgentInstanceCount,
+  type AgentLauncherId,
 } from "./launcher";
 
 function allocator(start = 1) {
@@ -59,8 +62,28 @@ describe("agent launch commands", () => {
       pi: "pi --provider local",
       opencode: "opencode",
       grok: "grok",
-      antigravity: "antigravity",
+      antigravity: "agy",
     });
+  });
+
+  it("normalizes legacy desktop antigravity defaults to agy while preserving custom CLI commands", () => {
+    expect(
+      normalizeAgentLaunchCommands({
+        antigravity: "antigravity",
+      }).antigravity,
+    ).toBe("agy");
+
+    expect(
+      normalizeAgentLaunchCommands({
+        antigravity: "antigravity-desktop --new-window",
+      }).antigravity,
+    ).toBe("agy");
+
+    expect(
+      normalizeAgentLaunchCommands({
+        antigravity: "  agy --model gemini  ",
+      }).antigravity,
+    ).toBe("agy --model gemini");
   });
 });
 
@@ -71,32 +94,57 @@ describe("Antigravity CLI versus its desktop app", () => {
     expect(launcher).toMatchObject({
       id: "antigravity",
       label: "Antigravity CLI",
-      defaultCommand: "antigravity",
+      defaultCommand: "agy",
       supportsHooks: false,
     });
   });
 
   it("launches the terminal CLI, with aliases and flags", () => {
-    expect(resolveAgentLaunchCommand("antigravity", " ag --model x ")).toEqual({
-      ok: true,
-      command: "ag --model x",
-    });
+    for (const cli of [
+      " agy ",
+      " agy --model x ",
+      "/usr/local/bin/agy",
+      "~/.local/bin/agy chat",
+      "/opt/antigravity/agy --fast",
+      " ag --model x ",
+    ]) {
+      expect(resolveAgentLaunchCommand("antigravity", cli)).toEqual({
+        ok: true,
+        command: cli.trim(),
+      });
+    }
   });
 
   it("refuses desktop-app commands instead of pretending to control the GUI", () => {
     for (const gui of [
+      "antigravity",
+      "antigravity --new-window",
+      "/usr/local/bin/antigravity",
+      "~/.local/bin/antigravity chat",
+      "antigravity.exe",
+      '"C:\\Program Files\\Antigravity\\antigravity.exe"',
+      "env FOO=1 antigravity",
       "antigravity-desktop",
       "antigravity-gui --new-window",
       "open -a Antigravity",
       "open -n -a Antigravity /workspace",
       "xdg-open /usr/share/applications/antigravity.desktop",
+      "/usr/bin/xdg-open /usr/share/applications/antigravity.desktop",
       "/Applications/Antigravity.app/Contents/MacOS/Antigravity",
+      "/Applications/Antigravity.app/Contents/MacOS/agy",
       "gio open antigravity.desktop",
+      "gtk-launch antigravity",
+      "gtk-launch agy",
+      "flatpak run com.antigravity.App",
+      "snap run antigravity",
     ]) {
       const result = resolveAgentLaunchCommand("antigravity", gui);
 
-      expect(result).toMatchObject({ ok: false });
-      if (!result.ok) expect(result.error).toMatch(/terminal CLI/);
+      expect(result, gui).toMatchObject({ ok: false });
+      if (!result.ok) {
+        expect(result.error).toMatch(/terminal CLI/);
+        expect(result.error).toMatch(/`agy`/);
+      }
     }
   });
 
@@ -114,6 +162,65 @@ describe("Antigravity CLI versus its desktop app", () => {
     expect(resolveAgentLaunchCommand("antigravity", "a\nb")).toMatchObject({
       ok: false,
     });
+  });
+});
+
+describe("Account isolation support in v1 Spaces", () => {
+  const supportedInIsolated: AgentLauncherId[] = ["claude", "pi", "opencode"];
+  const unsupportedInIsolated: AgentLauncherId[] = [
+    "codex",
+    "gemini",
+    "grok",
+    "antigravity",
+  ];
+
+  it("marks only claude, pi, and opencode as supporting Account isolation in v1", () => {
+    for (const id of supportedInIsolated) {
+      expect(findAgentLauncher(id).supportsAccountIsolation).toBe(true);
+      expect(isAgentSupportedInSpace(id, "default")).toBe(true);
+      expect(isAgentSupportedInSpace(id, "isolated")).toBe(true);
+      expect(getAgentIsolationDisabledReason(id, "isolated")).toBeNull();
+    }
+
+    for (const id of unsupportedInIsolated) {
+      expect(findAgentLauncher(id).supportsAccountIsolation).toBe(false);
+      expect(isAgentSupportedInSpace(id, "default")).toBe(true);
+      expect(isAgentSupportedInSpace(id, "isolated")).toBe(false);
+      expect(getAgentIsolationDisabledReason(id, "default")).toBeNull();
+      expect(getAgentIsolationDisabledReason(id, "isolated")).toMatch(
+        /Account isolation is not supported yet/,
+      );
+    }
+  });
+
+  it("refuses resolving launch commands for unsupported agents inside isolated Spaces", () => {
+    for (const id of supportedInIsolated) {
+      const cmd = DEFAULT_AGENT_LAUNCH_COMMANDS[id];
+      expect(resolveAgentLaunchCommand(id, cmd, "isolated")).toEqual({
+        ok: true,
+        command: cmd,
+      });
+    }
+
+    for (const id of unsupportedInIsolated) {
+      const cmd = DEFAULT_AGENT_LAUNCH_COMMANDS[id];
+      const res = resolveAgentLaunchCommand(id, cmd, "isolated");
+      expect(res, id).toMatchObject({ ok: false });
+      if (!res.ok) {
+        expect(res.error).toMatch(/Account isolation is not supported yet/);
+      }
+    }
+  });
+
+  it("fails closed if an unrecognized or alias id like agy is passed programmatically in isolated mode", () => {
+    const unknownId = "agy" as AgentLauncherId;
+    expect(isAgentSupportedInSpace(unknownId, "isolated")).toBe(false);
+    expect(getAgentIsolationDisabledReason(unknownId, "isolated")).toMatch(
+      /Account isolation is not supported yet/,
+    );
+    expect(resolveAgentLaunchCommand(unknownId, "agy", "isolated")).toMatchObject(
+      { ok: false },
+    );
   });
 });
 

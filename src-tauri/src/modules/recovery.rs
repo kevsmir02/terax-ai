@@ -126,6 +126,8 @@ pub struct Location {
 struct RecordEnvelope {
     buffer_id: String,
     buffer_revision: u64,
+    #[serde(default)]
+    path: String,
 }
 
 #[derive(Deserialize)]
@@ -191,6 +193,18 @@ impl Store {
         if envelope.buffer_revision == 0 {
             return Err(StoreError::Failed {
                 message: "invalid recovery buffer revision".into(),
+            });
+        }
+        if !envelope.path.is_empty()
+            && crate::modules::fs::access_policy::readable(Path::new(&envelope.path)).is_err()
+        {
+            return Err(StoreError::Failed {
+                message: "refused recovery draft for protected or secret path".into(),
+            });
+        }
+        if crate::modules::space_isolation::contains_secret_payload(record_json) {
+            return Err(StoreError::Failed {
+                message: "refused recovery draft containing credential or auth payload".into(),
             });
         }
 
@@ -751,5 +765,53 @@ mod tests {
         let removed = store.remove("buf-garbage", 0).unwrap();
         assert!(removed.removed);
         assert_eq!(store.list().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn protected_paths_and_auth_secret_payloads_never_persist_in_recovery_drafts() {
+        let (_dir, store) = store();
+
+        for protected_path in [
+            "/home/me/.local/share/codr/space-profiles/sp-a/claude/.credentials.json",
+            "/home/me/.local/share/codr/space-profiles/sp-a/opencode/data/opencode/opencode.db",
+            "/home/me/.local/share/opencode/auth.json",
+            "/home/me/.config/opencode/service.json",
+        ] {
+            let protected = serde_json::json!({
+                "version": 1,
+                "bufferId": "buf-secret-path",
+                "spaceId": "sp-a",
+                "path": protected_path,
+                "fileIdentity": "1-1",
+                "bufferRevision": 1,
+                "diskRevision": null,
+                "text": "{}",
+                "bytes": 2,
+                "updatedAt": 1,
+            })
+            .to_string();
+            assert!(
+                matches!(store.put(&protected), Err(StoreError::Failed { .. })),
+                "expected protected path {protected_path} to be refused"
+            );
+        }
+
+        for secret_text in [
+            r#"{"claudeAiOauth":{"accessToken":"tok-abc"}}"#,
+            "ANTHROPIC_API_KEY=sk-ant-secretvalue12345678",
+            "OPENCODE_API_KEY=sk-opencode-secretvalue12345678",
+        ] {
+            let err = store
+                .put(&record("buf-secret-payload", 1, secret_text))
+                .unwrap_err();
+            match err {
+                StoreError::Failed { message } => {
+                    assert!(!message.contains("sk-ant-"));
+                    assert!(!message.contains("tok-abc"));
+                }
+                other => panic!("expected Failed, got {other:?}"),
+            }
+        }
+        assert!(store.list().unwrap().is_empty());
     }
 }

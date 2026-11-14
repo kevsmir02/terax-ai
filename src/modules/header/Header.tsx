@@ -34,7 +34,9 @@ type Props = {
   onNewPreview: () => void;
   onNewEditor: () => void;
   onNewGitGraph: () => void;
-  onLaunchAgents: (request: AgentLaunchRequest) => void;
+  onLaunchAgents: (
+    request: AgentLaunchRequest,
+  ) => void | Promise<void> | Promise<boolean>;
   onClose: (id: number) => void;
   /** Chrome-style: close every tab to the right of the given tab. */
   onCloseTabsToRight: (id: number) => void;

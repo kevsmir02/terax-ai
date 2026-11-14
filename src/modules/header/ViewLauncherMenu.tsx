@@ -31,7 +31,9 @@ type Props = {
   onNewPreview: () => void;
   onNewEditor: () => void;
   onNewGitGraph: () => void;
-  onLaunchAgents: (request: AgentLaunchRequest) => void;
+  onLaunchAgents: (
+    request: AgentLaunchRequest,
+  ) => void | Promise<void> | Promise<boolean>;
 };
 
 export function ViewLauncherMenu({
@@ -172,9 +174,12 @@ export function ViewLauncherMenu({
       >
         <AgentLauncherPanel
           onBack={backToMenu}
-          onLaunch={(request) => {
-            setLauncherOpen(false);
-            onLaunchAgents(request);
+          onLaunch={async (request) => {
+            const outcome = await onLaunchAgents(request);
+            if (outcome !== false) {
+              setLauncherOpen(false);
+            }
+            return outcome !== false;
           }}
         />
       </PopoverContent>

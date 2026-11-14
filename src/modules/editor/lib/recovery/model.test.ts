@@ -91,6 +91,9 @@ describe("sensitive-path exclusion", () => {
       "/home/me/.ssh/config",
       "/home/me/deploy/id_rsa",
       "/home/me/secrets/service-account.json",
+      "/home/me/.claude/settings.json",
+      "/home/me/.claude.json",
+      "/home/me/.local/share/codr/space-profiles/sp-a/claude/.credentials.json",
     ]) {
       const verdict = isRecordablePath(path);
       expect(verdict.recordable, path).toBe(false);

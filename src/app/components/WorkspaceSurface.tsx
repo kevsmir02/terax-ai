@@ -26,6 +26,7 @@ type Props = {
    * a mutable terminal cwd.
    */
   spaceRoots: Readonly<Record<string, string | null>>;
+  spaceIsolations: TerminalStackProps["spaceIsolations"];
   home?: string | null;
   /** Shared native window-presentation feed (occlusion/sleep), optional. */
   subscribeWindowPresentation?: PresentationSubscription;
@@ -65,6 +66,7 @@ export function WorkspaceSurface({
   activeTab,
   activeSpaceId,
   spaceRoots,
+  spaceIsolations,
   home,
   subscribeWindowPresentation,
   registerTerminalHandle,
@@ -111,6 +113,7 @@ export function WorkspaceSurface({
             <TerminalStack
               tabs={tabs}
               activeId={activeId}
+              spaceIsolations={spaceIsolations}
               home={home}
               registerHandle={registerTerminalHandle}
               onSearchReady={onSearchReady}

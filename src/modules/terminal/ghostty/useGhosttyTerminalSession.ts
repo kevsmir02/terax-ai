@@ -1,13 +1,3 @@
-import { loadSessionRenderer } from "@/modules/terminal/ghostty/loadSessionRenderer";
-import { currentWorkspaceEnv, workspaceScopeKey } from "@/modules/workspace";
-import { useSpaces } from "@/modules/spaces/lib/useSpaces";
-import {
-  ensureGhosttyBlocks,
-  ghosttyBlocks,
-  disposeGhosttyBlocks,
-} from "@/modules/terminal/ghostty/ghosttyBlockSessions";
-import { initializeSessionGeneration as startSessionInitialization } from "@/modules/terminal/ghostty/sessionInitialization";
-import { replaceSessionSurface } from "@/modules/terminal/ghostty/replaceSessionSurface";
 import {
   ensureMonoFontsLoaded,
   resolveFontFamily,
@@ -15,11 +5,23 @@ import {
   symbolFontEpoch,
 } from "@/lib/fonts";
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import type { AccountIsolationMode } from "@/modules/spaces/lib/isolation";
+import { useSpaces } from "@/modules/spaces/lib/useSpaces";
 import type { TerminalBackendKind } from "@/modules/terminal/backend/contracts";
+import {
+  disposeGhosttyBlocks,
+  ensureGhosttyBlocks,
+  ghosttyBlocks,
+} from "@/modules/terminal/ghostty/ghosttyBlockSessions";
+import { loadSessionRenderer } from "@/modules/terminal/ghostty/loadSessionRenderer";
+import { replaceSessionSurface } from "@/modules/terminal/ghostty/replaceSessionSurface";
+import { initializeSessionGeneration as startSessionInitialization } from "@/modules/terminal/ghostty/sessionInitialization";
+import { LatestClipboardWrite } from "@/modules/terminal/lib/LatestClipboardWrite";
 import { setLeafPresentation } from "@/modules/terminal/lib/ptyPresentation";
 import { PtyResizeDelivery } from "@/modules/terminal/lib/ptyResizeDelivery";
 import { useTerminalFont } from "@/modules/terminal/lib/useTerminalFont";
 import type { TerminalSearchController } from "@/modules/terminal/search/TerminalSearchController";
+import { currentWorkspaceEnv, workspaceScopeKey } from "@/modules/workspace";
 import { invoke } from "@tauri-apps/api/core";
 import {
   useCallback,
@@ -32,7 +34,6 @@ import {
 import { isAgentActivePty } from "../lib/agentActivity";
 import { openPty, type PtySession } from "../lib/pty-bridge";
 import { writeTerminalClipboard } from "../lib/terminalClipboard";
-import { LatestClipboardWrite } from "@/modules/terminal/lib/LatestClipboardWrite";
 import { GhosttySemanticEventRouter } from "./core/GhosttySemanticEventRouter";
 import { getGhosttyCoreRuntime } from "./GhosttyCoreRuntime";
 import type { GhosttyTerminalModelApi } from "./GhosttyTerminalModel";
@@ -78,6 +79,8 @@ type Callbacks = {
 
 type GhosttySession = {
   readonly leafId: number;
+  spaceId: string;
+  expectedIsolation?: AccountIsolationMode;
   readonly backend: GhosttyBackend;
   initialCwd: string | undefined;
   lastCwd: string | null;
@@ -127,6 +130,8 @@ const oscClipboard = new LatestClipboardWrite(writeTerminalClipboard);
 
 type Options = {
   leafId: number;
+  spaceId: string;
+  expectedIsolation?: AccountIsolationMode;
   backend: GhosttyBackend;
   container: React.RefObject<HTMLDivElement | null>;
   visible: boolean;
@@ -140,6 +145,8 @@ type Options = {
 
 export function useGhosttyTerminalSession({
   leafId,
+  spaceId,
+  expectedIsolation,
   backend,
   container,
   visible,
@@ -174,6 +181,10 @@ export function useGhosttyTerminalSession({
   const callbackRef = useRef({ onSearchReady, onExit, onCwd });
   callbackRef.current = { onSearchReady, onExit, onCwd };
   const initialCwdRef = useRef(initialCwd);
+  const spaceIdRef = useRef(spaceId);
+  spaceIdRef.current = spaceId;
+  const expectedIsolationRef = useRef(expectedIsolation);
+  expectedIsolationRef.current = expectedIsolation;
 
   useEffect(() => {
     const session = ensureSession(
@@ -181,6 +192,8 @@ export function useGhosttyTerminalSession({
       backend,
       initialCwdRef.current,
       fontRef.current,
+      spaceIdRef.current,
+      expectedIsolationRef.current,
     );
     if (blocks) ensureGhosttyBlocks(leafId);
     const node = container.current;
@@ -216,7 +229,14 @@ export function useGhosttyTerminalSession({
   }, [leafId, backend, font]);
 
   useEffect(() => {
-    const session = ensureSession(leafId, backend, initialCwdRef.current);
+    const session = ensureSession(
+      leafId,
+      backend,
+      initialCwdRef.current,
+      undefined,
+      spaceIdRef.current,
+      expectedIsolationRef.current,
+    );
     session.visible = visible;
     session.focused = focused;
     if (!visible || !focused) session.cancelFocusRetry?.();
@@ -519,6 +539,8 @@ function ensureSession(
   backend: GhosttyBackend,
   initialCwd?: string,
   font?: TerminalFontSpec,
+  spaceId = "",
+  expectedIsolation?: AccountIsolationMode,
 ): GhosttySession {
   const existing = sessions.get(leafId);
   if (existing) {
@@ -526,6 +548,10 @@ function ensureSession(
       throw new Error(
         `Ghostty backend changed for live leaf ${leafId}; reload is required`,
       );
+    }
+    if (!existing.pty && !existing.initializing) {
+      if (spaceId) existing.spaceId = spaceId;
+      existing.expectedIsolation = expectedIsolation;
     }
     return existing;
   }
@@ -537,6 +563,8 @@ function ensureSession(
   });
   const session: GhosttySession = {
     leafId,
+    spaceId,
+    expectedIsolation,
     backend,
     initialCwd,
     lastCwd: null,
@@ -856,6 +884,10 @@ async function initializeSessionGeneration(
     preferences.terminalShell || undefined,
     session.leafId,
     theme,
+    {
+      spaceId: session.spaceId,
+      expectedIsolation: session.expectedIsolation,
+    },
   );
   if (session.disposed || generation !== session.generation) {
     await pty.close();

@@ -24,6 +24,50 @@ if [ -z "${__CODR_HOOKS_LOADED-}" ]; then
   # on reload, guard with a flag.
   [ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc"
 
+  _terax_space_key_preserved() {
+    case ",${CODR_SPACE_ENV_OVERRIDE_KEYS-}," in
+      *,"$1",*) return 0 ;;
+      *) return 1 ;;
+    esac
+  }
+
+  _terax_prepend_path_dedup() {
+    local dir="$1"
+    [ -n "$dir" ] || return 0
+    local new_path="" part="" rem="${PATH-}"
+    while [ -n "$rem" ]; do
+      case "$rem" in
+        *:*)
+          part="${rem%%:*}"
+          rem="${rem#*:}"
+          ;;
+        *)
+          part="$rem"
+          rem=""
+          ;;
+      esac
+      if [ -n "$part" ] && [ "$part" != "$dir" ]; then
+        new_path="${new_path:+$new_path:}$part"
+      fi
+    done
+    export PATH="${dir}${new_path:+:$new_path}"
+  }
+
+  _terax_enforce_space_isolation() {
+    [ -n "${CODR_SPACE_SHIM_DIR-}" ] || return 0
+    local key
+    for key in ANTHROPIC_API_KEY OPENAI_API_KEY OPENCODE_API_KEY GEMINI_API_KEY; do
+      _terax_space_key_preserved "$key" || unset "$key" 2>/dev/null || true
+    done
+    unset OPENCODE_CONFIG_DIR 2>/dev/null || true
+    if [ -n "${CODR_CONTROL_BIN_DIR-}" ]; then
+      _terax_prepend_path_dedup "$CODR_CONTROL_BIN_DIR"
+    fi
+    _terax_prepend_path_dedup "$CODR_SPACE_SHIM_DIR"
+  }
+
+  _terax_enforce_space_isolation
+
   _terax_prompt_end='\[\e]133;B\e\\\]'
   if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ] \
      || { [ "${BASH_VERSINFO[0]:-0}" -eq 4 ] && [ "${BASH_VERSINFO[1]:-0}" -lt 4 ]; }; then

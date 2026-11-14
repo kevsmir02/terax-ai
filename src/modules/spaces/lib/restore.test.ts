@@ -15,6 +15,7 @@ function space(id: string, name: string, root: string | null): SpaceMeta {
     name,
     root,
     env: { kind: "local" },
+    accountIsolation: "default",
     createdAt: 0,
     updatedAt: 0,
   };
@@ -160,5 +161,45 @@ describe("space restoration", () => {
   it("falls back to the first Space when the saved active one is gone", () => {
     const restored = plan("deleted-space");
     expect(restored.activeSpaceId).toBe("a");
+  });
+
+  it("restores parallel isolated Spaces with independent layout bindings intact", () => {
+    const isoSpaces: SpaceMeta[] = [
+      { ...space("iso-1", "Work", "/work/repo"), accountIsolation: "isolated" },
+      {
+        ...space("iso-2", "Personal", "/work/repo"),
+        accountIsolation: "isolated",
+      },
+    ];
+    const isoStates = new Map<string, SpaceState>([
+      [
+        "iso-1",
+        state([
+          { kind: "terminal", tree: { kind: "leaf", cwd: "/work/repo" } },
+        ]),
+      ],
+      [
+        "iso-2",
+        state([
+          { kind: "terminal", tree: { kind: "leaf", cwd: "/work/repo" } },
+        ]),
+      ],
+    ]);
+    const restored = planSpaceRestore({
+      spaces: isoSpaces,
+      states: isoStates,
+      activeId: "iso-1",
+      env: { kind: "local" },
+      restoredHome: "/home/lab",
+      launchCwd: "/work/repo",
+      home: "/home/lab",
+      allocId: counter(400),
+    });
+    expect(restored).not.toBeNull();
+    expect(restored?.activeSpaceId).toBe("iso-1");
+    expect(restored?.tabs.map((t) => [t.spaceId, t.kind, t.cold])).toEqual([
+      ["iso-1", "terminal", true],
+      ["iso-2", "terminal", true],
+    ]);
   });
 });

@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -59,6 +59,8 @@ pub struct Session {
     pub shell_program: String,
     /// Frontend pane (leaf) this terminal belongs to, when it reported one.
     pub pane_id: Option<u32>,
+    /// Space identifier this terminal was opened in, when known.
+    pub space_id: Option<String>,
     /// Agent state shared with the control server's structured hooks.
     pub link: Arc<AgentLink>,
     /// Label of the webview that opened this PTY and receives its output.
@@ -73,6 +75,7 @@ pub struct Session {
     colors: Arc<ColorState>,
     // Set only after output drains, so registration cannot reap a live queue.
     pub(super) finished: Arc<AtomicBool>,
+    pub(super) child_exited: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl Drop for Session {
@@ -107,6 +110,11 @@ impl Session {
         self.output.close();
         #[cfg(unix)]
         self.reader_control.cancel();
+    }
+
+    #[cfg(test)]
+    pub(super) fn has_child_exited(&self) -> bool {
+        *self.child_exited.0.lock().unwrap()
     }
 
     /// Installs the theme colour queries are answered from. A program that
@@ -226,6 +234,7 @@ pub(super) struct Host {
     /// Bell and OSC notifications from programs that are not known agents.
     pub notify: Arc<dyn Fn(TerminalNotificationEvent) + Send + Sync>,
     pub pane_id: Option<u32>,
+    pub space_id: Option<String>,
     pub link: Arc<AgentLink>,
     /// Runs on the waiter thread once the exit frame was delivered.
     pub reap: Box<dyn FnOnce() + Send>,
@@ -247,8 +256,10 @@ pub fn spawn(
     blocks: bool,
     shell: Option<String>,
     control: Option<crate::modules::control::ShellControlEnv>,
+    isolated: Option<crate::modules::space_profile::IsolatedProfileEnv>,
     colors: Option<TerminalColors>,
     pane_id: Option<u32>,
+    space_id: Option<String>,
 ) -> Result<Arc<Session>, String> {
     let emitter = app.clone();
     let notifier = app.clone();
@@ -265,6 +276,7 @@ pub fn spawn(
                 let _ = notifier.emit(NOTIFICATION_EVENT, notification);
             }),
             pane_id,
+            space_id,
             link: AgentLink::new(),
             reap: Box::new(move || {
                 if let Some(state) = app.try_state::<super::PtyState>() {
@@ -281,7 +293,7 @@ pub fn spawn(
             pixel_width: 0,
             pixel_height: 0,
         },
-        move || shell_init::build_command(cwd, workspace, blocks, shell, control),
+        move || shell_init::build_command(cwd, workspace, blocks, shell, control, isolated),
     )
 }
 
@@ -301,6 +313,7 @@ pub(super) fn spawn_with(
         signal,
         notify,
         pane_id,
+        space_id,
         link,
         reap,
         colors,
@@ -340,6 +353,7 @@ pub(super) fn spawn_with(
     };
 
     let finished = Arc::new(AtomicBool::new(false));
+    let child_exited = Arc::new((Mutex::new(false), Condvar::new()));
     let output = Arc::new(OutputQueue::new(Some(hub.wake())));
     let (input, mut input_rx) = mpsc::channel::<InputMessage>(INPUT_QUEUE);
     let color_state = Arc::new(ColorState::new(colors));
@@ -366,6 +380,7 @@ pub(super) fn spawn_with(
         shell_pid,
         shell_program,
         pane_id,
+        space_id,
         link: link.clone(),
         owner,
         killer: Mutex::new(killer),
@@ -374,6 +389,7 @@ pub(super) fn spawn_with(
         output: output.clone(),
         colors: color_state.clone(),
         finished: finished.clone(),
+        child_exited: child_exited.clone(),
     });
 
     // The writer thread owns the PTY input: one ordered queue for keystrokes,
@@ -482,6 +498,7 @@ pub(super) fn spawn_with(
 
     let output_e = output;
     let finished_w = finished;
+    let child_exited_w = child_exited;
     #[cfg(windows)]
     let master_e = session.master.clone();
     thread::Builder::new()
@@ -495,6 +512,11 @@ pub(super) fn spawn_with(
                     -1
                 }
             };
+            {
+                let (lock, cvar) = &*child_exited_w;
+                *lock.lock().unwrap() = true;
+                cvar.notify_all();
+            }
             // Arm before ConPTY close and the join: both can depend on credit.
             output_e.begin_exit(EXIT_ACK_TIMEOUT);
             #[cfg(unix)]
@@ -658,6 +680,7 @@ mod tests {
                 signal: Arc::new(|_| {}),
                 notify: Arc::new(|_| {}),
                 pane_id: None,
+                space_id: None,
                 link: AgentLink::new(),
                 reap: Box::new(move || {
                     let _ = reaped.send(());
