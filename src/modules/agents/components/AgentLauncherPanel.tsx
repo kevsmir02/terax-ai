@@ -24,7 +24,9 @@ import { useEffect, useRef, useState } from "react";
 
 type Props = {
   onBack: () => void;
-  onLaunch: (request: AgentLaunchRequest) => void;
+  onLaunch: (
+    request: AgentLaunchRequest,
+  ) => void | Promise<void> | Promise<boolean>;
 };
 
 const INSTANCE_COUNTS: AgentInstanceCount[] = [1, 2, 3, 4];
@@ -35,6 +37,8 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
   const [agentId, setAgentId] = useState<AgentLauncherId>("claude");
   const [instances, setInstances] = useState<AgentInstanceCount>(2);
   const [drafts, setDrafts] = useState<AgentLaunchCommands>(storedCommands);
+  const [launching, setLaunching] = useState(false);
+  const [launchError, setLaunchError] = useState<string | null>(null);
   const hydratedRef = useRef(hydrated);
   const persistedRef = useRef(storedCommands);
   const command = drafts[agentId];
@@ -75,6 +79,7 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
 
   const selectAgent = (id: AgentLauncherId) => {
     persist(agentId, command);
+    setLaunchError(null);
     setAgentId(id);
   };
 
@@ -84,17 +89,32 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
       [agentId]: DEFAULT_AGENT_LAUNCH_COMMANDS[agentId],
     };
     setDrafts(next);
+    setLaunchError(null);
     save(next);
   };
 
-  const submit = () => {
+  const submit = async () => {
+    if (launching) return;
     const next = persist(agentId, command);
     if (!next) return;
-    onLaunch({
-      agent: agentId,
-      command: next[agentId],
-      instances,
-    });
+    setLaunchError(null);
+    setLaunching(true);
+    try {
+      const outcome = await onLaunch({
+        agent: agentId,
+        command: next[agentId],
+        instances,
+      });
+      if (outcome === false) {
+        setLaunchError(
+          "Agent launch blocked by Space Account isolation preflight.",
+        );
+      }
+    } catch (error) {
+      setLaunchError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLaunching(false);
+    }
   };
 
   return (
@@ -215,12 +235,13 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
           autoCapitalize="off"
           autoCorrect="off"
           aria-invalid={!validation.ok}
-          onChange={(event) =>
+          onChange={(event) => {
+            setLaunchError(null);
             setDrafts((current) => ({
               ...current,
               [agentId]: event.target.value,
-            }))
-          }
+            }));
+          }}
           onBlur={() => persist(agentId, command)}
           className="h-8 rounded-xl bg-input/40 px-2.5 font-mono text-xs"
           placeholder={launcher.defaultCommand}
@@ -239,14 +260,26 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
         </div>
       </div>
 
+      {launchError && (
+        <div
+          data-agent-launch-error
+          role="alert"
+          className="mb-2 rounded-lg border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-[11px] leading-snug text-destructive"
+        >
+          {launchError}
+        </div>
+      )}
+
       <Button
         type="submit"
         size="sm"
         className="mt-1 w-full rounded-xl"
-        disabled={!hydrated || !validation.ok}
+        disabled={!hydrated || !validation.ok || launching}
       >
         <HugeiconsIcon icon={PlayIcon} size={13} strokeWidth={2} />
-        Launch {instances} {instances === 1 ? "agent" : "agents"}
+        {launching
+          ? "Checking Space profile..."
+          : `Launch ${instances} ${instances === 1 ? "agent" : "agents"}`}
       </Button>
     </form>
   );

@@ -424,6 +424,7 @@ pub fn run() {
             space_isolation::space_isolation_register,
             space_isolation::space_isolation_set_mode,
             space_isolation::space_isolation_remove,
+            space_isolation::space_isolation_preflight_agent,
             updater::updater_fetch_manifest,
             #[cfg(feature = "bench")]
             modules::bench::bench_config,

@@ -1,0 +1,991 @@
+//! Provisioning and fail-closed preflight for Space Agent profiles.
+//!
+//! Each isolated Space owns `<profiles_root>/<space_id>/` (`0700`) containing a
+//! `bin/` shim directory and tool-specific profile subdirectories such as
+//! `claude/` (`CLAUDE_CONFIG_DIR`). Non-secret shared resources are selectively
+//! symlinked from host `~/.claude/*`, while credentials, sessions, caches, and
+//! mutable JSON state stay strictly Space-private.
+
+use serde_json::{Map, Value};
+use std::ffi::{OsStr, OsString};
+use std::fs::{self, DirBuilder};
+use std::io::{ErrorKind, Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::{symlink, DirBuilderExt, PermissionsExt};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+use tempfile::{NamedTempFile, TempDir};
+
+use crate::modules::space_isolation::{sanitize_error_message, validate_space_id};
+
+pub const CLAUDE_SHARED_ENTRIES: &[&str] = &["CLAUDE.md", "skills", "agents", "plugins"];
+pub const CLAUDE_PRIVATE_ENTRIES: &[&str] = &[
+    ".credentials.json",
+    ".claude.json",
+    "settings.json",
+    "projects",
+    "sessions",
+    "transcripts",
+    "backups",
+    "cache",
+    "statsig",
+];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProfileEnvironment {
+    pub profiles_root: PathBuf,
+    pub host_home: Option<PathBuf>,
+    pub path_env: Option<OsString>,
+}
+
+impl ProfileEnvironment {
+    pub fn from_host(profiles_root: PathBuf) -> Self {
+        Self {
+            profiles_root,
+            host_home: dirs::home_dir(),
+            path_env: std::env::var_os("PATH"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IsolatedProfileEnv {
+    pub space_dir: PathBuf,
+    pub shim_dir: PathBuf,
+    pub claude_config_dir: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaudeProfilePaths {
+    pub space_dir: PathBuf,
+    pub shim_dir: PathBuf,
+    pub claude_dir: PathBuf,
+    pub settings_path: PathBuf,
+    pub state_path: PathBuf,
+}
+
+impl ClaudeProfilePaths {
+    pub fn for_space(profiles_root: &Path, space_id: &str) -> Result<Self, String> {
+        validate_space_id(space_id)?;
+        let space_dir = profiles_root.join(space_id);
+        let shim_dir = space_dir.join("bin");
+        let claude_dir = space_dir.join("claude");
+        let settings_path = claude_dir.join("settings.json");
+        let state_path = claude_dir.join(".claude.json");
+        Ok(Self {
+            space_dir,
+            shim_dir,
+            claude_dir,
+            settings_path,
+            state_path,
+        })
+    }
+}
+
+/// Pure sanitizer that seeds non-secret Claude settings on profile creation.
+/// Strips env overrides, hooks, credential helpers, and secret-shaped keys/values
+/// so host auth material is never imported into an isolated Space profile.
+pub fn seed_claude_settings_json(host_settings_raw: Option<&str>) -> String {
+    let Some(raw) = host_settings_raw else {
+        return "{}\n".to_string();
+    };
+    let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(raw) else {
+        return "{}\n".to_string();
+    };
+    let sanitized = sanitize_settings_object(&obj, true);
+    match serde_json::to_string_pretty(&Value::Object(sanitized)) {
+        Ok(mut text) => {
+            text.push('\n');
+            text
+        }
+        Err(_) => "{}\n".to_string(),
+    }
+}
+
+fn sanitize_settings_object(obj: &Map<String, Value>, top_level: bool) -> Map<String, Value> {
+    let mut out = Map::new();
+    for (key, value) in obj {
+        if is_disallowed_settings_key(key, top_level) {
+            continue;
+        }
+        match value {
+            Value::String(s) if looks_like_secret_value(s) => continue,
+            Value::Object(nested) => {
+                out.insert(
+                    key.clone(),
+                    Value::Object(sanitize_settings_object(nested, false)),
+                );
+            }
+            _ => {
+                out.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    out
+}
+
+fn is_disallowed_settings_key(key: &str, top_level: bool) -> bool {
+    let lower = key.to_ascii_lowercase();
+    if top_level && matches!(lower.as_str(), "env" | "hooks") {
+        return true;
+    }
+    if matches!(
+        lower.as_str(),
+        "apikeyhelper"
+            | "awsauthrefresh"
+            | "awscredentialexport"
+            | "otelheadershelper"
+            | "oauth"
+            | "oauthaccount"
+            | "credentials"
+            | "credential"
+            | "accesstoken"
+            | "refreshtoken"
+            | "sessionkey"
+    ) {
+        return true;
+    }
+    lower.contains("secret")
+        || lower.contains("token")
+        || lower.contains("password")
+        || lower.contains("credential")
+        || lower.contains("api_key")
+        || lower.contains("apikey")
+        || lower.contains("auth")
+}
+
+fn looks_like_secret_value(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.starts_with("sk-")
+        || trimmed.starts_with("ghp_")
+        || trimmed.starts_with("github_pat_")
+        || trimmed.starts_with("xoxb-")
+        || trimmed.starts_with("xoxp_")
+        || trimmed.starts_with("AIza")
+        || trimmed.starts_with("AKIA")
+        || trimmed.to_ascii_lowercase().starts_with("bearer ")
+}
+
+const CLAUDE_CLI_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+pub fn verify_claude_cli_compatible(
+    path_env: Option<&OsStr>,
+    shim_dir: &Path,
+    require_present: bool,
+) -> Result<Option<PathBuf>, String> {
+    let Some(bin_path) = resolve_claude_binary(path_env, shim_dir) else {
+        if require_present {
+            return Err(
+                "Claude CLI ('claude') was not found on PATH; install Claude Code before launching an isolated Claude session"
+                    .to_string(),
+            );
+        }
+        return Ok(None);
+    };
+
+    let probe_root = TempDir::new().map_err(|e| {
+        format!(
+            "Failed to create temporary Claude CLI preflight directory: {}",
+            sanitize_io_err(&e)
+        )
+    })?;
+    let probe_home = probe_root.path().join("home");
+    let probe_claude = probe_root.path().join("claude");
+    create_private_dir_0700(&probe_home, "Claude preflight probe home")?;
+    create_private_dir_0700(&probe_claude, "Claude preflight probe config")?;
+
+    let mut cmd = Command::new(&bin_path);
+    cmd.env_clear();
+    if let Some(path) = path_env {
+        cmd.env("PATH", path);
+    }
+    #[cfg(windows)]
+    for key in ["SYSTEMROOT", "SystemRoot", "COMSPEC", "ComSpec", "PATHEXT"] {
+        if let Some(val) = std::env::var_os(key) {
+            cmd.env(key, val);
+        }
+    }
+    cmd.env("HOME", &probe_home);
+    #[cfg(windows)]
+    cmd.env("USERPROFILE", &probe_home);
+    cmd.env("CLAUDE_CONFIG_DIR", &probe_claude);
+    cmd.args(["auth", "status", "--json"]);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    crate::modules::proc::hide_console(&mut cmd);
+
+    let mut child = cmd.spawn().map_err(|e| {
+        format!(
+            "Failed to invoke Claude CLI compatibility preflight: {}",
+            sanitize_io_err(&e)
+        )
+    })?;
+
+    let deadline = Instant::now() + CLAUDE_CLI_PROBE_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(
+                        "Claude CLI compatibility preflight timed out; verify 'claude auth status --json' works before launching an isolated Space"
+                            .to_string(),
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(err) => {
+                return Err(format!(
+                    "Claude CLI compatibility preflight failed: {}",
+                    sanitize_io_err(&err)
+                ));
+            }
+        }
+    };
+
+    let mut stdout_buf = Vec::new();
+    if let Some(mut stdout) = child.stdout.take() {
+        let _ = stdout.read_to_end(&mut stdout_buf);
+    }
+    // `claude auth status --json` exits 1 when logged out while still returning status JSON.
+    let code = status.code();
+    if !matches!(code, Some(0) | Some(1)) {
+        return Err(
+            "Installed Claude CLI failed 'auth status --json'; update Claude Code to a version supporting CLAUDE_CONFIG_DIR before launching isolated Spaces"
+                .to_string(),
+        );
+    }
+
+    let stdout_str = String::from_utf8(stdout_buf).map_err(|_| {
+        "Installed Claude CLI emitted invalid UTF-8 during compatibility preflight; refusing isolated launch"
+            .to_string()
+    })?;
+    let parsed: Value = serde_json::from_str(stdout_str.trim()).map_err(|_| {
+        "Installed Claude CLI did not return valid JSON from 'auth status --json'; update Claude Code before launching isolated Spaces"
+            .to_string()
+    })?;
+
+    let expected_canon = fs::canonicalize(&probe_claude).unwrap_or_else(|_| probe_claude.clone());
+    let reported_dir = parsed
+        .get("configDirectory")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            "Installed Claude CLI status output omitted 'configDirectory'; update Claude Code before launching isolated Spaces"
+                .to_string()
+        })?;
+    let reported_path = Path::new(reported_dir);
+    let reported_canon =
+        fs::canonicalize(reported_path).unwrap_or_else(|_| reported_path.to_path_buf());
+    if reported_canon != expected_canon {
+        return Err(
+            "Installed Claude CLI did not honor CLAUDE_CONFIG_DIR; update Claude Code before launching isolated Spaces to avoid host credential fallback"
+                .to_string(),
+        );
+    }
+    if let Some(projects_dir) = parsed.get("projectsDirectory").and_then(|v| v.as_str()) {
+        let projects_path = Path::new(projects_dir);
+        let projects_canon =
+            fs::canonicalize(projects_path).unwrap_or_else(|_| projects_path.to_path_buf());
+        if !projects_canon.starts_with(&expected_canon) {
+            return Err(
+                "Installed Claude CLI projectsDirectory escaped CLAUDE_CONFIG_DIR; refusing isolated launch"
+                    .to_string(),
+            );
+        }
+    }
+
+    Ok(Some(bin_path))
+}
+
+fn resolve_claude_binary(path_env: Option<&OsStr>, shim_dir: &Path) -> Option<PathBuf> {
+    let raw_path = path_env?;
+    let shim_canon = fs::canonicalize(shim_dir).ok();
+    #[cfg(windows)]
+    let candidates = ["claude.exe", "claude.cmd", "claude"];
+    #[cfg(not(windows))]
+    let candidates = ["claude"];
+
+    for dir in std::env::split_paths(raw_path) {
+        if dir == shim_dir {
+            continue;
+        }
+        if let Some(ref sc) = shim_canon {
+            if fs::canonicalize(&dir).ok().as_ref() == Some(sc) {
+                continue;
+            }
+        }
+        for name in candidates {
+            let candidate = dir.join(name);
+            if is_executable_file(&candidate) {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(meta) = fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        (meta.permissions().mode() & 0o111) != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+pub fn provision_and_verify_claude_profile(
+    env: &ProfileEnvironment,
+    space_id: &str,
+) -> Result<ClaudeProfilePaths, String> {
+    let paths = ClaudeProfilePaths::for_space(&env.profiles_root, space_id)?;
+
+    ensure_profiles_root(&env.profiles_root)?;
+    ensure_strict_private_dir(&paths.space_dir, "Space profile root")?;
+    ensure_strict_private_dir(&paths.shim_dir, "Space shim directory")?;
+    ensure_strict_private_dir(&paths.claude_dir, "Space Claude config directory")?;
+
+    let host_claude_dir = env.host_home.as_ref().map(|h| h.join(".claude"));
+    for entry in CLAUDE_SHARED_ENTRIES {
+        sync_and_verify_shared_entry(
+            &paths.space_dir,
+            &paths.claude_dir,
+            host_claude_dir.as_deref(),
+            entry,
+        )?;
+    }
+
+    verify_no_private_symlinks(&paths.claude_dir)?;
+
+    let host_settings_raw = host_claude_dir
+        .as_deref()
+        .and_then(|dir| read_regular_file_if_present(&dir.join("settings.json")));
+    let seeded_settings = seed_claude_settings_json(host_settings_raw.as_deref());
+    ensure_private_file_if_missing(
+        &paths.settings_path,
+        seeded_settings.as_bytes(),
+        "Space Claude settings.json",
+    )?;
+    ensure_private_file_if_missing(&paths.state_path, b"{}\n", "Space Claude .claude.json")?;
+
+    Ok(paths)
+}
+
+fn ensure_profiles_root(root: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(root) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() || !meta.is_dir() {
+                return Err(
+                    "Space profiles root must be a real directory, not a symlink; refusing host fallback"
+                        .to_string(),
+                );
+            }
+            #[cfg(unix)]
+            if (meta.permissions().mode() & 0o022) != 0 {
+                return Err(
+                    "Space profiles root has group or world write permissions; refusing isolated launch"
+                        .to_string(),
+                );
+            }
+            Ok(())
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            if let Some(parent) = root.parent() {
+                fs::create_dir_all(parent).map_err(|e| {
+                    format!(
+                        "Failed to create Space profiles parent directory: {}",
+                        sanitize_io_err(&e)
+                    )
+                })?;
+            }
+            create_private_dir_0700(root, "Space profiles root")
+        }
+        Err(err) => Err(format!(
+            "Failed to inspect Space profiles root: {}",
+            sanitize_io_err(&err)
+        )),
+    }
+}
+
+fn ensure_strict_private_dir(path: &Path, label: &str) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() || !meta.is_dir() {
+                return Err(format!(
+                    "{label} must be a private directory, not a symlink; refusing launch"
+                ));
+            }
+            #[cfg(unix)]
+            {
+                let mode = meta.permissions().mode() & 0o777;
+                if mode != 0o700 {
+                    return Err(format!(
+                        "{label} permissions must be 0700 (found {:04o}); refusing isolated launch",
+                        mode
+                    ));
+                }
+            }
+            Ok(())
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => create_private_dir_0700(path, label),
+        Err(err) => Err(format!(
+            "Failed to inspect {label}: {}",
+            sanitize_io_err(&err)
+        )),
+    }
+}
+
+fn create_private_dir_0700(path: &Path, label: &str) -> Result<(), String> {
+    let mut builder = DirBuilder::new();
+    #[cfg(unix)]
+    builder.mode(0o700);
+    match builder.create(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == ErrorKind::AlreadyExists => {
+            // Re-validate so a concurrent creator or pre-planted symlink cannot bypass 0700.
+            return ensure_strict_private_dir(path, label);
+        }
+        Err(err) => {
+            return Err(format!(
+                "Failed to create {label}: {}",
+                sanitize_io_err(&err)
+            ));
+        }
+    }
+    #[cfg(unix)]
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|e| {
+        format!(
+            "Failed to enforce 0700 permissions on {label}: {}",
+            sanitize_io_err(&e)
+        )
+    })?;
+    Ok(())
+}
+
+fn sync_and_verify_shared_entry(
+    space_dir: &Path,
+    space_claude_dir: &Path,
+    host_claude_dir: Option<&Path>,
+    entry: &str,
+) -> Result<(), String> {
+    let link_path = space_claude_dir.join(entry);
+    let expected_target = host_claude_dir.map(|dir| dir.join(entry));
+    let resolved_host = match expected_target.as_deref() {
+        Some(target) => validate_host_shared_target(space_dir, target, entry)?,
+        None => HostTargetState::Missing,
+    };
+
+    match fs::symlink_metadata(&link_path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            let actual_target = fs::read_link(&link_path).map_err(|e| {
+                format!(
+                    "Failed to inspect shared Claude entry '{entry}': {}",
+                    sanitize_io_err(&e)
+                )
+            })?;
+            let Some(expected) = expected_target.as_deref() else {
+                return Err(format!(
+                    "Shared Claude entry '{entry}' is symlinked without a host target; refusing launch"
+                ));
+            };
+            if actual_target != expected {
+                return Err(format!(
+                    "Shared Claude entry '{entry}' points to an unexpected target; refusing isolated launch"
+                ));
+            }
+            if !matches!(resolved_host, HostTargetState::Valid) {
+                return Err(format!(
+                    "Shared Claude entry '{entry}' symlink target is missing or unreadable; fix or remove broken link before launch"
+                ));
+            }
+            Ok(())
+        }
+        Ok(_) => Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            if matches!(resolved_host, HostTargetState::Valid) {
+                if let Some(target) = expected_target.as_deref() {
+                    create_shared_symlink(&link_path, target, entry)?;
+                }
+            }
+            Ok(())
+        }
+        Err(err) => Err(format!(
+            "Failed to inspect Space Claude entry '{entry}': {}",
+            sanitize_io_err(&err)
+        )),
+    }
+}
+
+enum HostTargetState {
+    Missing,
+    Valid,
+}
+
+fn validate_host_shared_target(
+    space_dir: &Path,
+    target: &Path,
+    entry: &str,
+) -> Result<HostTargetState, String> {
+    match fs::symlink_metadata(target) {
+        Ok(_) => match fs::canonicalize(target) {
+            Ok(canon) => {
+                let space_canon = fs::canonicalize(space_dir).unwrap_or_else(|_| space_dir.to_path_buf());
+                if canon == space_canon || canon.starts_with(&space_canon) || canon.starts_with(space_dir) {
+                    return Err(format!(
+                        "Shared Claude entry '{entry}' resolves back inside this Space profile; refusing symlink cycle"
+                    ));
+                }
+                Ok(HostTargetState::Valid)
+            }
+            Err(err) if err.kind() == ErrorKind::NotFound => Ok(HostTargetState::Missing),
+            Err(err) => Err(format!(
+                "Shared Claude entry '{entry}' failed symlink resolution (possible cycle or permission issue): {}",
+                sanitize_io_err(&err)
+            )),
+        },
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(HostTargetState::Missing),
+        Err(err) => Err(format!(
+            "Failed to inspect host Claude entry '{entry}': {}",
+            sanitize_io_err(&err)
+        )),
+    }
+}
+
+#[cfg(unix)]
+fn create_shared_symlink(link_path: &Path, target: &Path, entry: &str) -> Result<(), String> {
+    symlink(target, link_path).map_err(|e| {
+        format!(
+            "Failed to symlink shared Claude entry '{entry}': {}",
+            sanitize_io_err(&e)
+        )
+    })
+}
+
+#[cfg(not(unix))]
+fn create_shared_symlink(link_path: &Path, target: &Path, entry: &str) -> Result<(), String> {
+    let meta = fs::metadata(target).map_err(|e| {
+        format!(
+            "Failed to inspect host Claude entry '{entry}': {}",
+            sanitize_io_err(&e)
+        )
+    })?;
+    let res = if meta.is_dir() {
+        std::os::windows::fs::symlink_dir(target, link_path)
+    } else {
+        std::os::windows::fs::symlink_file(target, link_path)
+    };
+    res.map_err(|e| {
+        format!(
+            "Failed to symlink shared Claude entry '{entry}': {}",
+            sanitize_io_err(&e)
+        )
+    })
+}
+
+fn verify_no_private_symlinks(claude_dir: &Path) -> Result<(), String> {
+    for entry in CLAUDE_PRIVATE_ENTRIES {
+        let candidate = claude_dir.join(entry);
+        match fs::symlink_metadata(&candidate) {
+            Ok(meta) => {
+                if meta.file_type().is_symlink() {
+                    return Err(format!(
+                        "Private Space Claude entry '{entry}' cannot be a symlink; refusing host fallback"
+                    ));
+                }
+            }
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(format!(
+                    "Failed to inspect private Space Claude entry '{entry}': {}",
+                    sanitize_io_err(&err)
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn read_regular_file_if_present(path: &Path) -> Option<String> {
+    let meta = fs::metadata(path).ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    fs::read_to_string(path).ok()
+}
+
+fn ensure_private_file_if_missing(path: &Path, bytes: &[u8], label: &str) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() || !meta.is_file() {
+                return Err(format!(
+                    "{label} must be a private regular file, not a symlink; refusing launch"
+                ));
+            }
+            Ok(())
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            let parent = path
+                .parent()
+                .ok_or_else(|| format!("Invalid path for {label}"))?;
+            let mut tmp = NamedTempFile::new_in(parent)
+                .map_err(|e| format!("Failed to stage {label}: {}", sanitize_io_err(&e)))?;
+            #[cfg(unix)]
+            fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o600)).map_err(|e| {
+                format!(
+                    "Failed to secure permissions for {label}: {}",
+                    sanitize_io_err(&e)
+                )
+            })?;
+            tmp.write_all(bytes)
+                .and_then(|()| tmp.as_file().sync_all())
+                .map_err(|e| format!("Failed to write {label}: {}", sanitize_io_err(&e)))?;
+            match tmp.persist_noclobber(path) {
+                Ok(_) => Ok(()),
+                Err(err) if err.error.kind() == ErrorKind::AlreadyExists => {
+                    let meta = fs::symlink_metadata(path).map_err(|e| {
+                        format!("Failed to inspect {label}: {}", sanitize_io_err(&e))
+                    })?;
+                    if meta.file_type().is_symlink() || !meta.is_file() {
+                        return Err(format!(
+                            "{label} must be a private regular file, not a symlink; refusing launch"
+                        ));
+                    }
+                    Ok(())
+                }
+                Err(err) => Err(format!(
+                    "Failed to persist {label}: {}",
+                    sanitize_io_err(&err.error)
+                )),
+            }
+        }
+        Err(err) => Err(format!(
+            "Failed to inspect {label}: {}",
+            sanitize_io_err(&err)
+        )),
+    }
+}
+
+fn sanitize_io_err(err: &std::io::Error) -> String {
+    sanitize_error_message(&err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn test_env(temp: &TempDir) -> ProfileEnvironment {
+        ProfileEnvironment {
+            profiles_root: temp.path().join("xdg_data/codr/space-profiles"),
+            host_home: Some(temp.path().join("host_home")),
+            path_env: None,
+        }
+    }
+
+    #[test]
+    fn seed_settings_strips_secrets_env_and_hooks_while_preserving_non_secret_defaults() {
+        let raw = r#"{
+            "theme": "dark",
+            "model": "sonnet",
+            "enabledPlugins": { "foo@bar": true },
+            "keybindings": { "submit": "enter" },
+            "env": { "ANTHROPIC_API_KEY": "sk-ant-secret-123" },
+            "hooks": { "PreToolUse": [{ "matcher": "*", "hooks": [] }] },
+            "apiKeyHelper": "/usr/local/bin/get-key",
+            "oauthAccount": { "email": "user@example.com" },
+            "customNested": {
+                "keepMe": "yes",
+                "authToken": "tok-123",
+                "inlineKey": "sk-ant-inline-456"
+            }
+        }"#;
+
+        let seeded = seed_claude_settings_json(Some(raw));
+        let parsed: Value = serde_json::from_str(&seeded).unwrap();
+        let obj = parsed.as_object().unwrap();
+
+        assert_eq!(obj.get("theme"), Some(&Value::String("dark".to_string())));
+        assert_eq!(obj.get("model"), Some(&Value::String("sonnet".to_string())));
+        assert!(obj.contains_key("enabledPlugins"));
+        assert!(obj.contains_key("keybindings"));
+        assert!(!obj.contains_key("env"));
+        assert!(!obj.contains_key("hooks"));
+        assert!(!obj.contains_key("apiKeyHelper"));
+        assert!(!obj.contains_key("oauthAccount"));
+
+        let nested = obj.get("customNested").unwrap().as_object().unwrap();
+        assert_eq!(
+            nested.get("keepMe"),
+            Some(&Value::String("yes".to_string()))
+        );
+        assert!(!nested.contains_key("authToken"));
+        assert!(!nested.contains_key("inlineKey"));
+        assert!(!seeded.contains("sk-ant-"));
+        assert!(!seeded.contains("get-key"));
+    }
+
+    #[test]
+    fn provision_creates_private_0700_dirs_and_fresh_non_secret_claude_files() {
+        let temp = TempDir::new().unwrap();
+        let env = test_env(&temp);
+        let host_home = env.host_home.as_ref().unwrap();
+        let host_claude = host_home.join(".claude");
+        fs::create_dir_all(host_claude.join("skills/my-skill")).unwrap();
+        fs::create_dir_all(host_claude.join("agents")).unwrap();
+        fs::write(host_claude.join("CLAUDE.md"), "# User instructions").unwrap();
+        fs::write(
+            host_claude.join("settings.json"),
+            r#"{"theme":"light","env":{"ANTHROPIC_API_KEY":"sk-ant-host"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            host_claude.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"secret-host-token"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            host_home.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"host-acct"},"numStartups":42}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(host_claude.join("projects/host-proj")).unwrap();
+
+        let paths = provision_and_verify_claude_profile(&env, "sp-alpha").unwrap();
+
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                fs::symlink_metadata(&paths.space_dir)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::symlink_metadata(&paths.shim_dir)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::symlink_metadata(&paths.claude_dir)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::symlink_metadata(&paths.settings_path)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+            assert_eq!(
+                fs::symlink_metadata(&paths.state_path)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+
+        // Shared non-secret entries are symlinked to host ~/.claude/* when present,
+        // and missing host entries (plugins) are gracefully omitted.
+        assert_eq!(
+            fs::read_link(paths.claude_dir.join("CLAUDE.md")).unwrap(),
+            host_claude.join("CLAUDE.md")
+        );
+        assert_eq!(
+            fs::read_link(paths.claude_dir.join("skills")).unwrap(),
+            host_claude.join("skills")
+        );
+        assert_eq!(
+            fs::read_link(paths.claude_dir.join("agents")).unwrap(),
+            host_claude.join("agents")
+        );
+        assert!(fs::symlink_metadata(paths.claude_dir.join("plugins")).is_err());
+
+        // Settings seeded without secrets and not symlinked.
+        assert!(!fs::symlink_metadata(&paths.settings_path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let space_settings = fs::read_to_string(&paths.settings_path).unwrap();
+        assert!(space_settings.contains("light"));
+        assert!(!space_settings.contains("sk-ant-host"));
+
+        // Fresh .claude.json never copies host ~/.claude.json.
+        assert!(!fs::symlink_metadata(&paths.state_path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let space_state = fs::read_to_string(&paths.state_path).unwrap();
+        assert_eq!(space_state.trim(), "{}");
+        assert!(!space_state.contains("host-acct"));
+
+        // Credentials and projects stay private (never copied or symlinked from host).
+        assert!(!paths.claude_dir.join(".credentials.json").exists());
+        assert!(!paths.claude_dir.join("projects").exists());
+
+        // Re-running provisioning does not overwrite existing Space mutable settings/state.
+        fs::write(&paths.settings_path, "{\"theme\":\"space-custom\"}\n").unwrap();
+        fs::write(&paths.state_path, "{\"numStartups\":7}\n").unwrap();
+        provision_and_verify_claude_profile(&env, "sp-alpha").unwrap();
+        assert_eq!(
+            fs::read_to_string(&paths.settings_path).unwrap(),
+            "{\"theme\":\"space-custom\"}\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&paths.state_path).unwrap(),
+            "{\"numStartups\":7}\n"
+        );
+    }
+
+    #[test]
+    fn provision_fails_closed_on_symlinked_profile_dirs_bad_perms_poisoned_symlinks_and_cycles() {
+        let temp = TempDir::new().unwrap();
+        let env = test_env(&temp);
+        let host_claude = env.host_home.as_ref().unwrap().join(".claude");
+        fs::create_dir_all(host_claude.join("skills")).unwrap();
+
+        // 1. Symlinked space dir fails closed.
+        let decoys = temp.path().join("decoy");
+        fs::create_dir_all(&decoys).unwrap();
+        fs::create_dir_all(&env.profiles_root).unwrap();
+        #[cfg(unix)]
+        symlink(&decoys, env.profiles_root.join("sp-sym")).unwrap();
+        assert!(provision_and_verify_claude_profile(&env, "sp-sym").is_err());
+
+        // 2. Permissive (0755) private directory fails closed.
+        let paths = provision_and_verify_claude_profile(&env, "sp-perms").unwrap();
+        #[cfg(unix)]
+        {
+            fs::set_permissions(&paths.claude_dir, fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(provision_and_verify_claude_profile(&env, "sp-perms").is_err());
+            fs::set_permissions(&paths.claude_dir, fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(provision_and_verify_claude_profile(&env, "sp-perms").is_ok());
+        }
+
+        // 3. Poisoned shared symlink target fails closed.
+        #[cfg(unix)]
+        {
+            let evil_target = temp.path().join("evil-skills");
+            fs::create_dir_all(&evil_target).unwrap();
+            fs::remove_file(paths.claude_dir.join("skills")).unwrap();
+            symlink(&evil_target, paths.claude_dir.join("skills")).unwrap();
+            assert!(provision_and_verify_claude_profile(&env, "sp-perms").is_err());
+
+            // 4. Symlinked private file (.credentials.json) fails closed.
+            fs::remove_file(paths.claude_dir.join("skills")).unwrap();
+            symlink(host_claude.join("skills"), paths.claude_dir.join("skills")).unwrap();
+            symlink(
+                temp.path().join("host-creds.json"),
+                paths.claude_dir.join(".credentials.json"),
+            )
+            .unwrap();
+            assert!(provision_and_verify_claude_profile(&env, "sp-perms").is_err());
+        }
+
+        // 5. Symlink cycle on host shared entry fails closed without looping.
+        #[cfg(unix)]
+        {
+            let cycle_env = ProfileEnvironment {
+                profiles_root: temp.path().join("xdg_data/codr/space-profiles"),
+                host_home: Some(temp.path().join("cycle_home")),
+                path_env: None,
+            };
+            let cycle_claude = cycle_env.host_home.as_ref().unwrap().join(".claude");
+            fs::create_dir_all(&cycle_claude).unwrap();
+            symlink(cycle_claude.join("agents"), cycle_claude.join("skills")).unwrap();
+            symlink(cycle_claude.join("skills"), cycle_claude.join("agents")).unwrap();
+            assert!(provision_and_verify_claude_profile(&cycle_env, "sp-cycle").is_err());
+        }
+    }
+
+    #[cfg(unix)]
+    fn write_exec_script(dir: &Path, name: &str, body: &str) -> PathBuf {
+        let path = dir.join(name);
+        fs::write(&path, body).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[test]
+    fn verify_claude_cli_checks_missing_compatible_and_incompatible_binaries() {
+        let temp = TempDir::new().unwrap();
+        let shim_dir = temp.path().join("space/bin");
+        fs::create_dir_all(&shim_dir).unwrap();
+        let empty_bin = temp.path().join("empty-bin");
+        fs::create_dir_all(&empty_bin).unwrap();
+
+        // Missing binary: optional for generic terminal preflight, required for Claude launcher.
+        assert_eq!(
+            verify_claude_cli_compatible(Some(empty_bin.as_os_str()), &shim_dir, false).unwrap(),
+            None
+        );
+        let missing_err =
+            verify_claude_cli_compatible(Some(empty_bin.as_os_str()), &shim_dir, true).unwrap_err();
+        assert!(
+            missing_err.contains("Claude CLI"),
+            "unexpected error: {missing_err}"
+        );
+
+        #[cfg(unix)]
+        {
+            // Compatible binary honoring CLAUDE_CONFIG_DIR (even exit 1 when logged out).
+            let ok_bin = temp.path().join("ok-bin");
+            fs::create_dir_all(&ok_bin).unwrap();
+            let ok_claude = write_exec_script(
+                &ok_bin,
+                "claude",
+                "#!/bin/sh\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then\n  printf '{\"loggedIn\":false,\"configDirectory\":\"%s\",\"projectsDirectory\":\"%s/projects\"}\\n' \"$CLAUDE_CONFIG_DIR\" \"$CLAUDE_CONFIG_DIR\"\n  exit 1\nfi\nexit 2\n",
+            );
+            let ok_path = std::env::join_paths([shim_dir.as_path(), ok_bin.as_path()]).unwrap();
+            let resolved =
+                verify_claude_cli_compatible(Some(ok_path.as_os_str()), &shim_dir, true).unwrap();
+            assert_eq!(resolved.as_deref(), Some(ok_claude.as_path()));
+
+            // Incompatible binary ignoring CLAUDE_CONFIG_DIR and falling back to HOME/.claude.
+            let bad_bin = temp.path().join("bad-bin");
+            fs::create_dir_all(&bad_bin).unwrap();
+            write_exec_script(
+                &bad_bin,
+                "claude",
+                "#!/bin/sh\nprintf '{\"loggedIn\":true,\"configDirectory\":\"%s/.claude\"}\\n' \"$HOME\"\nexit 0\n",
+            );
+            let compat_err =
+                verify_claude_cli_compatible(Some(bad_bin.as_os_str()), &shim_dir, false)
+                    .unwrap_err();
+            assert!(
+                compat_err.contains("CLAUDE_CONFIG_DIR"),
+                "unexpected error: {compat_err}"
+            );
+
+            // Incompatible binary rejecting `auth status`.
+            let old_bin = temp.path().join("old-bin");
+            fs::create_dir_all(&old_bin).unwrap();
+            write_exec_script(&old_bin, "claude", "#!/bin/sh\nexit 2\n");
+            assert!(
+                verify_claude_cli_compatible(Some(old_bin.as_os_str()), &shim_dir, false).is_err()
+            );
+        }
+    }
+}

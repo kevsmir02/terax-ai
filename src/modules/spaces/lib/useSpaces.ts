@@ -1,6 +1,6 @@
-import { create } from "zustand";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { parseWorkspaceScopeKey, type WorkspaceEnv } from "@/modules/workspace";
+import { create } from "zustand";
 import {
   registerSpaceIsolation,
   removeSpaceIsolation,
@@ -22,6 +22,7 @@ type CreateInput = {
   name: string;
   root: string | null;
   env?: WorkspaceEnv;
+  accountIsolation?: AccountIsolationMode;
 };
 
 type State = {
@@ -43,7 +44,10 @@ type State = {
   rename: (id: string, name: string) => void;
   setEnv: (id: string, env: WorkspaceEnv) => void;
   setColor: (id: string, color: number | undefined) => void;
-  setAccountIsolation: (id: string, mode: AccountIsolationMode) => Promise<void>;
+  setAccountIsolation: (
+    id: string,
+    mode: AccountIsolationMode,
+  ) => Promise<void>;
   setRuntimeStatus: (
     id: string,
     status: SpaceRuntimeStatus | undefined,
@@ -60,12 +64,7 @@ export const useSpaces = create<State>((set, get) => ({
   initialActiveIndex: {},
   runtimeById: {},
 
-  hydrate: (
-    spaces,
-    activeId,
-    initialActiveIndex = {},
-    runtimeById = {},
-  ) => {
+  hydrate: (spaces, activeId, initialActiveIndex = {}, runtimeById = {}) => {
     set({
       spaces,
       activeId,
@@ -86,7 +85,7 @@ export const useSpaces = create<State>((set, get) => ({
         parseWorkspaceScopeKey(
           usePreferencesStore.getState().defaultWorkspaceEnv,
         ),
-      accountIsolation: "default",
+      accountIsolation: input.accountIsolation ?? "default",
       createdAt: now,
       updatedAt: now,
     };
@@ -138,7 +137,11 @@ export const useSpaces = create<State>((set, get) => ({
     const status = await setSpaceIsolationMode(id, mode);
     const spaces = get().spaces.map((s) =>
       s.id === id
-        ? { ...s, accountIsolation: status.accountIsolation, updatedAt: Date.now() }
+        ? {
+            ...s,
+            accountIsolation: status.accountIsolation,
+            updatedAt: Date.now(),
+          }
         : s,
     );
     const runtimeById = {

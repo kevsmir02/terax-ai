@@ -122,6 +122,19 @@ export function removeSpaceIsolation(spaceId: string): Promise<void> {
   );
 }
 
+export async function preflightAgentLaunch(
+  spaceId: string,
+  expectedIsolation: AccountIsolationMode,
+  agentId: string,
+): Promise<void> {
+  await waitForSpaceIsolationSync(spaceId);
+  await invoke<void>("space_isolation_preflight_agent", {
+    spaceId,
+    expectedIsolation,
+    agentId,
+  });
+}
+
 export async function waitForSpaceIsolationSync(
   spaceId?: string,
 ): Promise<void> {

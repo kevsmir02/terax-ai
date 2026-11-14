@@ -119,3 +119,35 @@ export function duplicateSpaceOrganization(
     ...(state !== undefined && { state: duplicateSpaceState(state) }),
   };
 }
+
+export type IsolationToggleGuard =
+  | { allowed: true }
+  | { allowed: false; reason: string };
+
+export type ToggleTerminalCandidate = {
+  spaceId: string;
+  kind: string;
+  cold?: boolean;
+  leafIds: number[];
+};
+
+export function evaluateIsolationToggleGuard(
+  spaceId: string,
+  tabs: readonly ToggleTerminalCandidate[],
+  hasLivePty: (leafId: number) => boolean,
+): IsolationToggleGuard {
+  const hasActiveTerminal = tabs.some(
+    (tab) =>
+      tab.spaceId === spaceId &&
+      tab.kind === "terminal" &&
+      (!tab.cold || tab.leafIds.some((id) => hasLivePty(id))),
+  );
+  if (hasActiveTerminal) {
+    return {
+      allowed: false,
+      reason:
+        "Close active terminals in this Space before switching Account isolation.",
+    };
+  }
+  return { allowed: true };
+}

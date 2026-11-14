@@ -4,7 +4,6 @@ import {
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import { Toaster } from "@/components/ui/sonner";
-import { toast } from "sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { consumeLaunchFiles, getLaunchDir } from "@/lib/launchDir";
 import { IS_MAC } from "@/lib/platform";
@@ -18,7 +17,6 @@ import {
   nextAttentionTarget,
   resolveAgentLaunchCommand,
 } from "@/modules/agents";
-import { native } from "@/modules/workspace/native";
 import {
   CommandPalette,
   createCommandItems,
@@ -45,8 +43,8 @@ import { setCodeBlockRunner } from "@/modules/markdown/lib/codeBlockRunner";
 import type { PreviewPaneHandle } from "@/modules/preview";
 import { openSettingsWindow } from "@/modules/settings/openSettingsWindow";
 import { usePreferencesStore } from "@/modules/settings/preferences";
-import { usePreferencesBootstrap } from "@/modules/settings/usePreferencesBootstrap";
 import { setShowHidden } from "@/modules/settings/store";
+import { usePreferencesBootstrap } from "@/modules/settings/usePreferencesBootstrap";
 import {
   type ShortcutHandlers,
   type ShortcutId,
@@ -60,29 +58,28 @@ import {
   SidebarRail,
   useSidebarPanel,
 } from "@/modules/sidebar";
-import { checkpointBridge } from "@/modules/source-control/checkpointBridge";
-import { destructiveGitBridge } from "@/modules/source-control/destructiveGitBridge";
 import {
   type DestructiveGitSupport,
   SourceControlPanel,
   useRepositoryTargeting,
   useSourceControlContext,
 } from "@/modules/source-control";
+import { checkpointBridge } from "@/modules/source-control/checkpointBridge";
+import { destructiveGitBridge } from "@/modules/source-control/destructiveGitBridge";
 import {
+  type AccountIsolationMode,
+  evaluateIsolationToggleGuard,
+  preflightAgentLaunch,
   SpaceSwitcher,
   useSpacePersistence,
   useSpaces,
   useSpacesBoot,
 } from "@/modules/spaces";
 import { normalizeSpaceRoot } from "@/modules/spaces/lib/sharedRoots";
-import { worktreeSpaceName } from "@/modules/worktrees/lib/createWorktree";
-import { worktreeBridge } from "@/modules/worktrees/worktreeBridge";
-import type { WorktreeRemovalTarget } from "@/modules/worktrees/WorktreeRemoveDialog";
-import { worktreeRemovalBridge } from "@/modules/worktrees/worktreeRemovalBridge";
 import { StatusBar } from "@/modules/statusbar";
 import {
-  TabSwitcherHud,
   type CloseTabsPlan,
+  TabSwitcherHud,
   useTabSwitcher,
   useTabs,
   useWindowTitle,
@@ -106,9 +103,9 @@ import {
   whenSessionReady,
   writeToSession,
 } from "@/modules/terminal";
-import type { TerminalSearchController } from "@/modules/terminal/search/TerminalSearchController";
 import { bindTerminalWindowFocus } from "@/modules/terminal/ghostty/renderScheduling";
 import { subscribeWindowPresentation } from "@/modules/terminal/ghostty/windowPresentation";
+import type { TerminalSearchController } from "@/modules/terminal/search/TerminalSearchController";
 import {
   LivePageResizeBridge,
   ThemeProvider,
@@ -126,6 +123,11 @@ import {
   type WorkspaceEnv,
   workspaceScopeKey,
 } from "@/modules/workspace";
+import { native } from "@/modules/workspace/native";
+import { worktreeSpaceName } from "@/modules/worktrees/lib/createWorktree";
+import type { WorktreeRemovalTarget } from "@/modules/worktrees/WorktreeRemoveDialog";
+import { worktreeBridge } from "@/modules/worktrees/worktreeBridge";
+import { worktreeRemovalBridge } from "@/modules/worktrees/worktreeRemovalBridge";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -138,17 +140,18 @@ import {
   useRef,
   useState,
 } from "react";
+import { toast } from "sonner";
 import { CloseDialogs } from "./components/CloseDialogs";
 import { QuitDialog } from "./components/QuitDialog";
 import { WorkspaceSurface } from "./components/WorkspaceSurface";
-import { useQuitGuard } from "./hooks/useQuitGuard";
 import {
   hasOpenPathTab,
   renamedPath,
   spacesEmptiedByTabs,
 } from "./hooks/tabCloseGuards";
-import { useTabCloseGuards } from "./hooks/useTabCloseGuards";
+import { useQuitGuard } from "./hooks/useQuitGuard";
 import { useSpaceDeleteGuard } from "./hooks/useSpaceDeleteGuard";
+import { useTabCloseGuards } from "./hooks/useTabCloseGuards";
 import { useWorkspaceSwitcher } from "./hooks/useWorkspaceSwitcher";
 
 // Real-application benchmark driver (scripts/app-lab). `__TERAX_BENCH__` is the literal `false`
@@ -675,9 +678,25 @@ export default function App() {
   }, [newBlockTab, inheritedCwdForNewTab]);
 
   const launchAgentGroup = useCallback(
-    (request: AgentLaunchRequest) => {
+    async (request: AgentLaunchRequest): Promise<boolean> => {
       const command = resolveAgentLaunchCommand(request.agent, request.command);
-      if (!command.ok) return;
+      if (!command.ok) return false;
+      const spaceId = useSpaces.getState().activeId ?? DEFAULT_SPACE_ID;
+      const expectedIsolation =
+        useSpaces.getState().spaces.find((s) => s.id === spaceId)
+          ?.accountIsolation ?? "default";
+      if (expectedIsolation === "isolated") {
+        try {
+          await preflightAgentLaunch(spaceId, expectedIsolation, request.agent);
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          toast.error("Agent launch blocked in isolated Space", {
+            description: message,
+          });
+          throw error;
+        }
+      }
       const launcher = findAgentLauncher(request.agent);
       const title =
         request.instances === 1
@@ -702,6 +721,7 @@ export default function App() {
           }
         })();
       }
+      return true;
     },
     [inheritedCwdForNewTab, newAgentGroupTab],
   );
@@ -1252,18 +1272,22 @@ export default function App() {
 
   const activeCwd = activeTerminalLeafCwd;
 
-  const handleNewSpace = useCallback(() => {
-    const { spaces, create, setActive } = useSpaces.getState();
-    const meta = create({
-      name: `Space ${spaces.length + 1}`,
-      root: activeCwd ?? home ?? null,
-      env: workspaceEnv,
-    });
-    setActiveSpaceForNewTabs(meta.id);
-    newTab(activeCwd ?? undefined);
-    setActive(meta.id);
-    return meta.id;
-  }, [activeCwd, home, workspaceEnv, newTab, setActiveSpaceForNewTabs]);
+  const handleNewSpace = useCallback(
+    (accountIsolation: AccountIsolationMode = "default") => {
+      const { spaces, create, setActive } = useSpaces.getState();
+      const meta = create({
+        name: `Space ${spaces.length + 1}`,
+        root: activeCwd ?? home ?? null,
+        env: workspaceEnv,
+        accountIsolation,
+      });
+      setActiveSpaceForNewTabs(meta.id);
+      newTab(activeCwd ?? undefined);
+      setActive(meta.id);
+      return meta.id;
+    },
+    [activeCwd, home, workspaceEnv, newTab, setActiveSpaceForNewTabs],
+  );
 
   /**
    * A worktree gets a Space of its own. Existing Spaces keep their tabs and
@@ -1367,12 +1391,39 @@ export default function App() {
     [setActiveId],
   );
 
+  const canToggleSpaceIsolation = useCallback((spaceId: string) => {
+    return evaluateIsolationToggleGuard(
+      spaceId,
+      tabsRef.current.map((tab) => ({
+        spaceId: tab.spaceId,
+        kind: tab.kind,
+        cold: tab.cold,
+        leafIds: tab.kind === "terminal" ? leafIds(tab.paneTree) : [],
+      })),
+      (leafId) => ptyIdForLeaf(leafId) !== null,
+    );
+  }, []);
+
+  const handleToggleSpaceIsolation = useCallback(
+    async (spaceId: string, nextMode: AccountIsolationMode) => {
+      const guard = canToggleSpaceIsolation(spaceId);
+      if (!guard.allowed) {
+        throw new Error(guard.reason);
+      }
+      await useSpaces.getState().setAccountIsolation(spaceId, nextMode);
+    },
+    [canToggleSpaceIsolation],
+  );
+
   const spaceSwitcher = (
     <SpaceSwitcher
       open={switcherOpen}
       onOpenChange={setSwitcherOpen}
       tabs={tabs}
       onNewSpace={() => void handleNewSpace()}
+      onNewIsolatedSpace={() => void handleNewSpace("isolated")}
+      canToggleSpaceIsolation={canToggleSpaceIsolation}
+      onToggleSpaceIsolation={handleToggleSpaceIsolation}
       onDeleteSpace={requestSpaceDelete}
       onNewTabInSpace={handleNewTabInSpace}
       onJumpTab={jumpToTab}

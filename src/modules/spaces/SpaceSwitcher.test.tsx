@@ -141,4 +141,115 @@ describe("SpaceSwitcher", () => {
       "text-muted-foreground/55",
     );
   });
+
+  it("supports creating an isolated Space and gates isolation toggling on active terminals", async () => {
+    useSpaces.getState().hydrate(
+      [
+        {
+          id: "space-1",
+          name: "Alpha",
+          root: "/work/terax",
+          env: LOCAL_WORKSPACE,
+          accountIsolation: "default",
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        {
+          id: "space-2",
+          name: "Client",
+          root: "/work/client",
+          env: LOCAL_WORKSPACE,
+          accountIsolation: "isolated",
+          createdAt: 2,
+          updatedAt: 2,
+        },
+      ],
+      "space-1",
+    );
+
+    const onNewIsolatedSpace = vi.fn();
+    const onToggleSpaceIsolation = vi.fn(async () => {});
+    const canToggleSpaceIsolation = vi.fn((spaceId: string) =>
+      spaceId === "space-1"
+        ? {
+            allowed: false as const,
+            reason:
+              "Close active terminals in this Space before switching Account isolation.",
+          }
+        : { allowed: true as const },
+    );
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    act(() => {
+      root?.render(
+        <SpaceSwitcher
+          open
+          onOpenChange={vi.fn()}
+          tabs={[makeTab(1, "space-1", "/work/terax")]}
+          onNewSpace={vi.fn()}
+          onNewIsolatedSpace={onNewIsolatedSpace}
+          onToggleSpaceIsolation={onToggleSpaceIsolation}
+          canToggleSpaceIsolation={canToggleSpaceIsolation}
+          onDeleteSpace={vi.fn()}
+          onNewTabInSpace={vi.fn()}
+          onJumpTab={vi.fn()}
+          onCloseTab={vi.fn()}
+          onMoveTabToSpace={vi.fn()}
+          onReorderTab={vi.fn()}
+          onReorderSpaces={vi.fn()}
+        />,
+      );
+    });
+
+    const popover = document.body.querySelector<HTMLElement>(
+      '[data-slot="popover-content"]',
+    );
+    expect(popover).not.toBeNull();
+
+    // Isolated Space displays clear indicator badge.
+    const isolatedRow = popover?.querySelector<HTMLElement>(
+      '[data-space-id="space-2"]',
+    );
+    expect(
+      isolatedRow?.querySelector('[data-space-isolation="isolated"]'),
+    ).not.toBeNull();
+
+    // Active Space with open active terminals shows disabled toggle and clear blocked reason.
+    const blockedToggle = popover?.querySelector<HTMLButtonElement>(
+      '[data-isolation-toggle="space-1"]',
+    );
+    expect(blockedToggle?.disabled).toBe(true);
+    expect(
+      popover?.querySelector('[data-isolation-blocked="space-1"]')?.textContent,
+    ).toContain("Close active terminals");
+
+    // Expand space-2 (no active terminals) and toggle back cleanly.
+    const expandBtn = isolatedRow?.querySelector<HTMLButtonElement>(
+      'button[aria-label="Expand"]',
+    );
+    act(() => {
+      expandBtn?.click();
+    });
+
+    const allowedToggle = popover?.querySelector<HTMLButtonElement>(
+      '[data-isolation-toggle="space-2"]',
+    );
+    expect(allowedToggle?.disabled).toBe(false);
+    await act(async () => {
+      allowedToggle?.click();
+    });
+    expect(onToggleSpaceIsolation).toHaveBeenCalledWith("space-2", "default");
+
+    const newIsolatedBtn = popover?.querySelector<HTMLButtonElement>(
+      "[data-new-isolated-space]",
+    );
+    expect(newIsolatedBtn).not.toBeNull();
+    act(() => {
+      newIsolatedBtn?.click();
+    });
+    expect(onNewIsolatedSpace).toHaveBeenCalledTimes(1);
+  });
 });
