@@ -96,6 +96,10 @@ function __terax_enforce_space_isolation
             end
         end
     end
+    set -ge OPENCODE_CONFIG_DIR
+    if set -Uq OPENCODE_CONFIG_DIR
+        set -gx OPENCODE_CONFIG_DIR ""
+    end
     __terax_enforce_space_path
 end
 

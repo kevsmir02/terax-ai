@@ -500,10 +500,41 @@ with tempfile.TemporaryDirectory() as space_tmp:
     shim_dir = os.path.join(space_tmp, "spaces", "sp-1", "bin")
     ctrl_dir = os.path.join(space_tmp, "ctrl", "bin")
     claude_dir = os.path.join(space_tmp, "spaces", "sp-1", "claude")
+    opc_cfg = os.path.join(space_tmp, "spaces", "sp-1", "opencode", "config")
+    opc_data = os.path.join(space_tmp, "spaces", "sp-1", "opencode", "data")
+    opc_state = os.path.join(space_tmp, "spaces", "sp-1", "opencode", "state")
+    opc_cache = os.path.join(space_tmp, "spaces", "sp-1", "opencode", "cache")
     xdg_cfg = os.path.join(space_tmp, "xdg", "config")
-    for directory in (shim_dir, ctrl_dir, claude_dir, xdg_cfg):
+    xdg_data = os.path.join(space_tmp, "xdg", "data")
+    xdg_state = os.path.join(space_tmp, "xdg", "state")
+    xdg_cache = os.path.join(space_tmp, "xdg", "cache")
+    for directory in (shim_dir, ctrl_dir, claude_dir, opc_cfg, opc_data, opc_state, opc_cache, xdg_cfg, xdg_data, xdg_state, xdg_cache):
         os.makedirs(directory, exist_ok=True)
-    write_exec(os.path.join(shim_dir, "opencode"), "#!/bin/sh\necho SHIM_OPENCODE\n")
+    write_exec(
+        os.path.join(shim_dir, "opencode"),
+        f"#!/bin/sh\n"
+        f"set -eu\n"
+        f"SHIM_DIR='{shim_dir}'\n"
+        f"real_opencode=\"\"\n"
+        f"old_ifs=\"${{IFS-}}\"\n"
+        f"IFS=\":\"\n"
+        f"for dir in ${{PATH-}}; do\n"
+        f"  [ -n \"$dir\" ] || continue\n"
+        f"  [ \"$dir\" = \"$SHIM_DIR\" ] && continue\n"
+        f"  if [ -f \"$dir/opencode\" ] && [ -x \"$dir/opencode\" ]; then\n"
+        f"    real_opencode=\"$dir/opencode\"\n"
+        f"    break\n"
+        f"  fi\n"
+        f"done\n"
+        f"IFS=\"$old_ifs\"\n"
+        f"[ -n \"$real_opencode\" ] || exit 127\n"
+        f"export XDG_DATA_HOME='{opc_data}'\n"
+        f"export XDG_STATE_HOME='{opc_state}'\n"
+        f"export XDG_CACHE_HOME='{opc_cache}'\n"
+        f"export OPENCODE_CONFIG_DIR='{opc_cfg}'\n"
+        f"exec \"$real_opencode\" --standalone \"$@\"\n",
+    )
+    os.chmod(os.path.join(shim_dir, "opencode"), 0o700)
     write_exec(os.path.join(ctrl_dir, "terax"), "#!/bin/sh\necho CTRL_TERAX\n")
     blocked_agents = ("agy", "codex", "gemini", "grok", "antigravity")
     for agent in blocked_agents:
@@ -514,7 +545,7 @@ with tempfile.TemporaryDirectory() as space_tmp:
 
     rc_setup = (
         'mkdir -p "$HOME/.local/bin" "$HOME/.opencode/bin"\n'
-        'printf "#!/bin/sh\\necho HOST_OPENCODE\\n" > "$HOME/.opencode/bin/opencode"\n'
+        'printf "#!/bin/sh\\nprintf \\"RESULT:OC_ARGS=%%s:\\\\nRESULT:OC_DATA=%%s:\\\\nRESULT:OC_STATE=%%s:\\\\nRESULT:OC_CACHE=%%s:\\\\nRESULT:OC_CFG=%%s:\\\\n\\" \\"\\$*\\" \\"\\${XDG_DATA_HOME-UNSET}\\" \\"\\${XDG_STATE_HOME-UNSET}\\" \\"\\${XDG_CACHE_HOME-UNSET}\\" \\"\\${OPENCODE_CONFIG_DIR-UNSET}\\"\\n" > "$HOME/.opencode/bin/opencode"\n'
         'printf "#!/bin/sh\\necho HOST_TERAX\\n" > "$HOME/.local/bin/terax"\n'
         'chmod 755 "$HOME/.opencode/bin/opencode" "$HOME/.local/bin/terax"\n'
         'for b in agy codex gemini grok antigravity; do\n'
@@ -533,11 +564,13 @@ with tempfile.TemporaryDirectory() as space_tmp:
             'export OPENAI_API_KEY="sk-openai-zshrc-leak"\n'
             'export OPENCODE_API_KEY="sk-opencode-zshrc-leak"\n'
             'export GEMINI_API_KEY="AIzaZshrcLeak123"\n'
+            'export OPENCODE_CONFIG_DIR="$HOME/.config/opencode-zshrc-override"\n'
         ),
         ".zlogin": (
             'export PATH="$HOME/.opencode/bin:$PATH"\n'
             'export GEMINI_API_KEY="AIzaZloginLeak999"\n'
             'export ANTHROPIC_API_KEY="sk-ant-zlogin-leak"\n'
+            'export OPENCODE_CONFIG_DIR="$HOME/.config/opencode-zlogin-override"\n'
         ),
     }
     base_env = {
@@ -546,6 +579,9 @@ with tempfile.TemporaryDirectory() as space_tmp:
         "CODR_CONTROL_BIN_DIR": ctrl_dir,
         "CLAUDE_CONFIG_DIR": claude_dir,
         "XDG_CONFIG_HOME": xdg_cfg,
+        "XDG_DATA_HOME": xdg_data,
+        "XDG_STATE_HOME": xdg_state,
+        "XDG_CACHE_HOME": xdg_cache,
     }
 
     s = Session(isolated_files, env=base_env)
@@ -558,6 +594,10 @@ with tempfile.TemporaryDirectory() as space_tmp:
         '"RESULT:ISO_GEM=${GEMINI_API_KEY-UNSET}:" '
         '"RESULT:ISO_HOME=$HOME:" '
         '"RESULT:ISO_XCFG=$XDG_CONFIG_HOME:" '
+        '"RESULT:ISO_XDATA=$XDG_DATA_HOME:" '
+        '"RESULT:ISO_XSTATE=$XDG_STATE_HOME:" '
+        '"RESULT:ISO_XCACHE=$XDG_CACHE_HOME:" '
+        '"RESULT:ISO_OPCCFG=${OPENCODE_CONFIG_DIR-UNSET}:" '
         '"RESULT:ISO_CLAUDE=${CLAUDE_CONFIG_DIR-UNSET}:"'
     )
     check("zsh isolated: opencode resolves to Space shim ahead of dotfiles/.zlogin", s.result("ISO_OC") == os.path.join(shim_dir, "opencode"), s.result("ISO_OC"))
@@ -566,9 +606,16 @@ with tempfile.TemporaryDirectory() as space_tmp:
     check("zsh isolated: OPENAI_API_KEY is scrubbed", s.result("ISO_OAI") == "UNSET", s.result("ISO_OAI"))
     check("zsh isolated: OPENCODE_API_KEY is scrubbed", s.result("ISO_OPC") == "UNSET", s.result("ISO_OPC"))
     check("zsh isolated: GEMINI_API_KEY is scrubbed after .zlogin", s.result("ISO_GEM") == "UNSET", s.result("ISO_GEM"))
+    check("zsh isolated: dotfile OPENCODE_CONFIG_DIR is scrubbed on shell", s.result("ISO_OPCCFG") == "UNSET", s.result("ISO_OPCCFG"))
     check("zsh isolated: host HOME remains unchanged", s.result("ISO_HOME") == s.home, s.result("ISO_HOME"))
     check("zsh isolated: host XDG_CONFIG_HOME remains unchanged", s.result("ISO_XCFG") == xdg_cfg, s.result("ISO_XCFG"))
+    check("zsh isolated: host XDG_DATA_HOME/STATE/CACHE remain unchanged", (s.result("ISO_XDATA"), s.result("ISO_XSTATE"), s.result("ISO_XCACHE")) == (xdg_data, xdg_state, xdg_cache))
     check("zsh isolated: CLAUDE_CONFIG_DIR stays scoped to Space", s.result("ISO_CLAUDE") == claude_dir, s.result("ISO_CLAUDE"))
+
+    s.run('opencode run zsh-turn; print -r -- "RESULT:AFTER_XDATA=$XDG_DATA_HOME:" "RESULT:AFTER_OPCCFG=${OPENCODE_CONFIG_DIR-UNSET}:"')
+    check("zsh isolated: opencode shim passes --standalone", s.result("OC_ARGS") == "--standalone run zsh-turn", s.result("OC_ARGS"))
+    check("zsh isolated: opencode shim scopes XDG_DATA_HOME/STATE/CACHE and OPENCODE_CONFIG_DIR to Space", (s.result("OC_DATA"), s.result("OC_STATE"), s.result("OC_CACHE"), s.result("OC_CFG")) == (opc_data, opc_state, opc_cache, opc_cfg))
+    check("zsh isolated: shell XDG_DATA_HOME and OPENCODE_CONFIG_DIR stay untouched after opencode exits", (s.result("AFTER_XDATA"), s.result("AFTER_OPCCFG")) == (xdg_data, "UNSET"))
 
     s.run('sh -c \'printf "RESULT:SH_OC=%s:\\nRESULT:SH_OAI=%s:\\nRESULT:SH_CLAUDE=%s:\\n" "$(command -v opencode)" "${OPENAI_API_KEY-UNSET}" "${CLAUDE_CONFIG_DIR-UNSET}"\'')
     check("zsh isolated: child sh inherits Space shim opencode", s.result("SH_OC") == os.path.join(shim_dir, "opencode"), s.result("SH_OC"))

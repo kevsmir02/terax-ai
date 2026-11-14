@@ -19,7 +19,8 @@ use tempfile::NamedTempFile;
 
 use crate::modules::pty::PtyState;
 use crate::modules::space_profile::{
-    provision_and_verify_claude_profile, verify_claude_cli_compatible, IsolatedProfileEnv,
+    provision_and_verify_claude_profile, provision_and_verify_opencode_profile,
+    verify_claude_cli_compatible, verify_opencode_cli_compatible, IsolatedProfileEnv,
     ProfileEnvironment,
 };
 
@@ -284,6 +285,7 @@ impl SpaceIsolationRegistry {
                     path_env_override,
                 )?;
                 provision_and_verify_claude_profile(&env, space_id)?;
+                provision_and_verify_opencode_profile(&env, space_id)?;
             }
             manifest
                 .spaces
@@ -330,6 +332,7 @@ impl SpaceIsolationRegistry {
                     path_env_override,
                 )?;
                 provision_and_verify_claude_profile(&env, space_id)?;
+                provision_and_verify_opencode_profile(&env, space_id)?;
             }
             if let Some(entry) = manifest.spaces.get_mut(space_id) {
                 entry.mode = mode;
@@ -551,6 +554,21 @@ impl SpaceIsolationRegistry {
         is_wsl: bool,
         require_claude_cli: bool,
     ) -> Result<Option<IsolatedProfileEnv>, String> {
+        self.prepare_pty_isolation_for_agent(
+            space_id,
+            expected_isolation,
+            is_wsl,
+            require_claude_cli.then_some("claude"),
+        )
+    }
+
+    pub fn prepare_pty_isolation_for_agent(
+        &self,
+        space_id: Option<&str>,
+        expected_isolation: Option<AccountIsolationMode>,
+        is_wsl: bool,
+        required_agent: Option<&str>,
+    ) -> Result<Option<IsolatedProfileEnv>, String> {
         let (id, expected, env_snapshot) = {
             let guard = self
                 .inner
@@ -595,7 +613,18 @@ impl SpaceIsolationRegistry {
                 .to_string()
         })?;
         let paths = provision_and_verify_claude_profile(&env, &id)?;
-        verify_claude_cli_compatible(env.path_env.as_deref(), &paths.shim_dir, require_claude_cli)?;
+        let _opencode_paths = provision_and_verify_opencode_profile(&env, &id)?;
+        verify_claude_cli_compatible(
+            env.path_env.as_deref(),
+            &paths.shim_dir,
+            required_agent == Some("claude"),
+        )?;
+        verify_opencode_cli_compatible(
+            env.path_env.as_deref(),
+            env.host_home.as_deref(),
+            &paths.shim_dir,
+            required_agent == Some("opencode"),
+        )?;
         Ok(Some(IsolatedProfileEnv {
             space_dir: paths.space_dir,
             shim_dir: paths.shim_dir,
@@ -615,10 +644,16 @@ impl SpaceIsolationRegistry {
                 return Err(reason);
             }
         }
-        let require_claude =
-            expected_isolation == AccountIsolationMode::Isolated && agent_id.trim() == "claude";
-        self.prepare_pty_isolation(Some(space_id), Some(expected_isolation), false, require_claude)
-            .map(|_| ())
+        let trimmed_agent = agent_id.trim();
+        let required_agent =
+            (expected_isolation == AccountIsolationMode::Isolated).then_some(trimmed_agent);
+        self.prepare_pty_isolation_for_agent(
+            Some(space_id),
+            Some(expected_isolation),
+            false,
+            required_agent,
+        )
+        .map(|_| ())
     }
 }
 
@@ -1930,19 +1965,107 @@ mod tests {
             .prepare_agent_launch("sp-iso", AccountIsolationMode::Isolated, "unknown-agent")
             .is_err());
 
-        for supported in ["pi", "opencode"] {
-            assert!(
-                registry
-                    .prepare_agent_launch("sp-iso", AccountIsolationMode::Isolated, supported)
-                    .is_ok(),
-                "isolated Space should allow {supported}"
-            );
-        }
+        assert!(registry
+            .prepare_agent_launch("sp-iso", AccountIsolationMode::Isolated, "pi")
+            .is_ok());
+        assert!(unsupported_isolated_agent_reason("opencode").is_none());
 
         let shim_dir = profiles_dir.join("sp-iso").join("bin");
         for bin in ["agy", "antigravity", "codex", "gemini", "grok"] {
             assert!(shim_dir.join(bin).is_file(), "missing shim {bin}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_launch_preflight_requires_compatible_opencode_cli_and_rejects_leaked_service_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("app-data/space-isolation/manifest.json");
+        let profiles_dir = dir.path().join("xdg-data/codr/space-profiles");
+        let host_home = dir.path().join("host-home");
+        let host_opencode_cfg = host_home.join(".config/opencode");
+        let empty_bin = dir.path().join("empty-bin");
+        fs::create_dir_all(&host_opencode_cfg).unwrap();
+        fs::create_dir_all(&empty_bin).unwrap();
+        fs::write(host_opencode_cfg.join("opencode.json"), r#"{"theme":"dark"}"#).unwrap();
+        fs::write(host_opencode_cfg.join("service.json"), r#"{"password":"secret"}"#).unwrap();
+        fs::write(host_opencode_cfg.join("cli.json"), r#"{"url":"http://127.0.0.1:4096"}"#).unwrap();
+
+        let no_opencode_registry = SpaceIsolationRegistry::for_paths_with_env(
+            manifest_path.clone(),
+            Some(profiles_dir.clone()),
+            Some(host_home.clone()),
+            Some(empty_bin.as_os_str().to_os_string()),
+        );
+        no_opencode_registry
+            .register_space("sp-default", AccountIsolationMode::Default)
+            .unwrap();
+        no_opencode_registry
+            .register_space("sp-iso", AccountIsolationMode::Isolated)
+            .unwrap();
+
+        // Registering an isolated Space provisions OpenCode shim and selective symlinks immediately.
+        let space_opencode_cfg = profiles_dir.join("sp-iso/opencode/config");
+        assert!(profiles_dir.join("sp-iso/bin/opencode").is_file());
+        assert!(space_opencode_cfg.join("opencode.json").exists());
+        assert!(fs::symlink_metadata(space_opencode_cfg.join("service.json")).is_err());
+        assert!(fs::symlink_metadata(space_opencode_cfg.join("cli.json")).is_err());
+
+        // Missing opencode binary is allowed in default Space but blocked when launching OpenCode in isolated Space.
+        assert!(no_opencode_registry
+            .prepare_agent_launch("sp-default", AccountIsolationMode::Default, "opencode")
+            .is_ok());
+        assert!(no_opencode_registry
+            .prepare_agent_launch("sp-iso", AccountIsolationMode::Isolated, "opencode")
+            .is_err());
+
+        // Incompatible opencode binary (without --standalone) blocks both pty_open and agent launch.
+        let bad_bin = dir.path().join("bad-bin");
+        fs::create_dir_all(&bad_bin).unwrap();
+        let bad_opencode = bad_bin.join("opencode");
+        fs::write(&bad_opencode, "#!/bin/sh\nprintf 'FLAGS\\n  --server\\n'\nexit 0\n").unwrap();
+        fs::set_permissions(&bad_opencode, fs::Permissions::from_mode(0o755)).unwrap();
+        let bad_registry = SpaceIsolationRegistry::for_paths_with_env(
+            manifest_path.clone(),
+            Some(profiles_dir.clone()),
+            Some(host_home.clone()),
+            Some(bad_bin.as_os_str().to_os_string()),
+        );
+        assert!(bad_registry
+            .validate_pty_open(Some("sp-iso"), Some(AccountIsolationMode::Isolated))
+            .is_err());
+        assert!(bad_registry
+            .prepare_agent_launch("sp-iso", AccountIsolationMode::Isolated, "opencode")
+            .is_err());
+
+        // Compatible opencode binary passes preflight, and leaked service.json blocks preflight.
+        let good_bin = dir.path().join("good-bin");
+        fs::create_dir_all(&good_bin).unwrap();
+        let good_opencode = good_bin.join("opencode");
+        fs::write(
+            &good_opencode,
+            "#!/bin/sh\nprintf 'FLAGS\\n  --standalone\\n'\nexit 0\n",
+        )
+        .unwrap();
+        fs::set_permissions(&good_opencode, fs::Permissions::from_mode(0o755)).unwrap();
+        let good_registry = SpaceIsolationRegistry::for_paths_with_env(
+            manifest_path,
+            Some(profiles_dir),
+            Some(host_home),
+            Some(good_bin.as_os_str().to_os_string()),
+        );
+        assert!(good_registry
+            .prepare_agent_launch("sp-iso", AccountIsolationMode::Isolated, "opencode")
+            .is_ok());
+
+        fs::write(space_opencode_cfg.join("service.json"), "{}").unwrap();
+        assert!(good_registry
+            .prepare_agent_launch("sp-iso", AccountIsolationMode::Isolated, "opencode")
+            .is_err());
+        fs::remove_file(space_opencode_cfg.join("service.json")).unwrap();
+        assert!(good_registry
+            .prepare_agent_launch("sp-iso", AccountIsolationMode::Isolated, "opencode")
+            .is_ok());
     }
 
     #[cfg(unix)]

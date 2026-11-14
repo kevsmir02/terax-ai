@@ -30,6 +30,7 @@ _terax_enforce_space_isolation() {
       unset "$key" 2>/dev/null || true
     fi
   done
+  unset OPENCODE_CONFIG_DIR 2>/dev/null || true
   local shim="$CODR_SPACE_SHIM_DIR"
   local ctrl="${CODR_CONTROL_BIN_DIR-}"
   local -a next=("$shim")

@@ -437,6 +437,23 @@ describe("Space isolation IPC sync & boot ordering", () => {
       expectedIsolation: "isolated",
       agentId: "claude",
     });
+
+    mockInvoke.mockRejectedValueOnce(
+      new Error("Leaked OpenCode 'service.json' found in Space config directory"),
+    );
+    await expect(
+      preflightAgentLaunch("sp-new-iso", "isolated", "opencode"),
+    ).rejects.toThrow("service.json");
+
+    mockInvoke.mockResolvedValueOnce(undefined);
+    await expect(
+      preflightAgentLaunch("sp-new-iso", "isolated", "opencode"),
+    ).resolves.toBeUndefined();
+    expect(mockInvoke).toHaveBeenCalledWith("space_isolation_preflight_agent", {
+      spaceId: "sp-new-iso",
+      expectedIsolation: "isolated",
+      agentId: "opencode",
+    });
   });
 
   it("retains profiles on disable, clears private accounts, retries failed cleanup, and tracks orphaned tombstones", async () => {

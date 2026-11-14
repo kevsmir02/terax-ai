@@ -91,6 +91,60 @@ describe("AgentLauncherPanel", () => {
     expect(errorEl?.textContent).toContain("CLAUDE_CONFIG_DIR");
   });
 
+  it("launches OpenCode via Space preflight and surfaces OpenCode preflight rejections", async () => {
+    const onLaunch = vi
+      .fn()
+      .mockResolvedValueOnce(true)
+      .mockRejectedValueOnce(
+        new Error(
+          "Installed OpenCode CLI does not support '--standalone'; update OpenCode before launching isolated Spaces to avoid shared daemon or host credential fallback",
+        ),
+      );
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    act(() => {
+      root?.render(<AgentLauncherPanel onBack={vi.fn()} onLaunch={onLaunch} />);
+    });
+
+    const openCodeButton = container.querySelector<HTMLButtonElement>(
+      'button[data-agent-slot="opencode"]',
+    );
+    expect(openCodeButton).not.toBeNull();
+
+    act(() => {
+      openCodeButton?.click();
+    });
+
+    const submit = container.querySelector<HTMLButtonElement>(
+      'button[type="submit"]',
+    );
+    expect(submit).not.toBeNull();
+
+    await act(async () => {
+      submit?.click();
+      await Promise.resolve();
+    });
+
+    expect(onLaunch).toHaveBeenNthCalledWith(1, {
+      agent: "opencode",
+      command: "opencode",
+      instances: 2,
+    });
+    expect(container.querySelector("[data-agent-launch-error]")).toBeNull();
+
+    await act(async () => {
+      submit?.click();
+      await Promise.resolve();
+    });
+
+    expect(onLaunch).toHaveBeenCalledTimes(2);
+    const errorEl = container.querySelector("[data-agent-launch-error]");
+    expect(errorEl?.textContent).toContain("--standalone");
+  });
+
   it("disables agy, codex, gemini, and grok in isolated Spaces with concise unsupported reasons while keeping claude, pi, and opencode enabled", async () => {
     useSpaces
       .getState()

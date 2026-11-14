@@ -199,7 +199,13 @@ fn is_valid_space_override_key(key: &str) -> bool {
     }
     if matches!(
         key,
-        "HOME" | "PATH" | "ZDOTDIR" | "TERM" | "COLORTERM" | "CLAUDE_CONFIG_DIR"
+        "HOME"
+            | "PATH"
+            | "ZDOTDIR"
+            | "TERM"
+            | "COLORTERM"
+            | "CLAUDE_CONFIG_DIR"
+            | "OPENCODE_CONFIG_DIR"
     ) || key.starts_with("XDG_")
     {
         return false;
@@ -241,6 +247,7 @@ pub(super) fn apply_common(
     if let Some(profile) = isolated {
         cmd.env("CLAUDE_CONFIG_DIR", &profile.claude_config_dir);
         cmd.env(identity::env("SPACE_SHIM_DIR"), &profile.shim_dir);
+        cmd.env_remove("OPENCODE_CONFIG_DIR");
         for key in crate::modules::space_profile::SCRUBBED_PROVIDER_ENV_KEYS {
             cmd.env_remove(key);
         }
@@ -1818,6 +1825,8 @@ mod tests {
         env_overrides.insert("PATH".to_string(), "/evil/bin".to_string());
         env_overrides.insert("HOME".to_string(), "/evil/home".to_string());
         env_overrides.insert("XDG_CONFIG_HOME".to_string(), "/evil/xdg".to_string());
+        env_overrides.insert("OPENCODE_CONFIG_DIR".to_string(), "/evil/opencode".to_string());
+        command.env("OPENCODE_CONFIG_DIR", "/ambient/opencode");
         env_overrides.insert(
             identity::env("SPACE_SHIM_DIR"),
             "/evil/shim".to_string(),
@@ -1869,6 +1878,7 @@ mod tests {
         assert_eq!(command.get_env("XDG_CONFIG_HOME"), expected_xdg.as_deref());
         assert_ne!(command.get_env("HOME"), Some(OsStr::new("/evil/home")));
         assert_ne!(command.get_env("XDG_CONFIG_HOME"), Some(OsStr::new("/evil/xdg")));
+        assert_eq!(command.get_env("OPENCODE_CONFIG_DIR"), None);
         assert_eq!(command.get_env("INVALID=NAME"), None);
         assert_eq!(
             command.get_env(identity::env("SPACE_SHIM_DIR")),

@@ -67,18 +67,50 @@ def run_fish_session(mode):
         shim_dir = os.path.join(tmp, "spaces", "sp-1", "bin")
         ctrl_dir = os.path.join(tmp, "ctrl", "bin")
         claude_dir = os.path.join(tmp, "spaces", "sp-1", "claude")
+        opc_cfg = os.path.join(tmp, "spaces", "sp-1", "opencode", "config")
+        opc_data = os.path.join(tmp, "spaces", "sp-1", "opencode", "data")
+        opc_state = os.path.join(tmp, "spaces", "sp-1", "opencode", "state")
+        opc_cache = os.path.join(tmp, "spaces", "sp-1", "opencode", "cache")
         for d in (
             os.path.join(home, ".local", "bin"),
             os.path.join(home, ".opencode", "bin"),
             os.path.join(xdg_cfg, "fish", "conf.d"),
             xdg_data, xdg_state, xdg_cache,
             shim_dir, ctrl_dir, claude_dir,
+            opc_cfg, opc_data, opc_state, opc_cache,
         ):
             os.makedirs(d, exist_ok=True)
 
         shutil.copy2(init_fish, os.path.join(xdg_cfg, "fish", "conf.d", "codr.fish"))
-        write_exec(os.path.join(shim_dir, "opencode"), "#!/bin/sh\necho SHIM_OPENCODE\n")
-        write_exec(os.path.join(home, ".opencode", "bin", "opencode"), "#!/bin/sh\necho HOST_OPENCODE\n")
+        write_exec(
+            os.path.join(shim_dir, "opencode"),
+            f"#!/bin/sh\n"
+            f"set -eu\n"
+            f"SHIM_DIR=\x27{shim_dir}\x27\n"
+            f"real_opencode=\"\"\n"
+            f"old_ifs=\"${{IFS-}}\"\n"
+            f"IFS=\":\"\n"
+            f"for dir in ${{PATH-}}; do\n"
+            f"  [ -n \"$dir\" ] || continue\n"
+            f"  [ \"$dir\" = \"$SHIM_DIR\" ] && continue\n"
+            f"  if [ -f \"$dir/opencode\" ] && [ -x \"$dir/opencode\" ]; then\n"
+            f"    real_opencode=\"$dir/opencode\"\n"
+            f"    break\n"
+            f"  fi\n"
+            f"done\n"
+            f"IFS=\"$old_ifs\"\n"
+            f"[ -n \"$real_opencode\" ] || exit 127\n"
+            f"export XDG_DATA_HOME=\x27{opc_data}\x27\n"
+            f"export XDG_STATE_HOME=\x27{opc_state}\x27\n"
+            f"export XDG_CACHE_HOME=\x27{opc_cache}\x27\n"
+            f"export OPENCODE_CONFIG_DIR=\x27{opc_cfg}\x27\n"
+            f"exec \"$real_opencode\" --standalone \"$@\"\n",
+        )
+        os.chmod(os.path.join(shim_dir, "opencode"), 0o700)
+        write_exec(
+            os.path.join(home, ".opencode", "bin", "opencode"),
+            "#!/bin/sh\nprintf \"OPENCODE_EXEC:ARGS=%s|DATA=%s|STATE=%s|CACHE=%s|CFG=%s\\n\" \"$*\" \"${XDG_DATA_HOME-UNSET}\" \"${XDG_STATE_HOME-UNSET}\" \"${XDG_CACHE_HOME-UNSET}\" \"${OPENCODE_CONFIG_DIR-UNSET}\"\n",
+        )
         write_exec(os.path.join(ctrl_dir, "terax"), "#!/bin/sh\necho CTRL_TERAX\n")
         write_exec(os.path.join(home, ".local", "bin", "terax"), "#!/bin/sh\necho HOST_TERAX\n")
         for agent in ("agy", "codex", "gemini", "grok", "antigravity"):
@@ -98,6 +130,7 @@ def run_fish_session(mode):
             "set -gx fish_greeting \"\"",
             "set -gx PATH \"$HOME/.opencode/bin\" \"$HOME/.local/bin\" $PATH",
             "fish_add_path -p \"$HOME/.local/bin\"",
+            "set -gx OPENCODE_CONFIG_DIR \"$HOME/.config/opencode-fish-override\"",
         ]
         if mode != "universal":
             cfg_lines.extend([
@@ -165,17 +198,23 @@ def run_fish_session(mode):
 
         drain(1.5)
         send(
-            "printf \"MAIN:OC=%s|TX=%s|ANT=%s|OAI=%s|OPC=%s|GEM=%s|HOME=%s|XCFG=%s|CLAUDE=%s|SHIM=%s\\n\" "
+            "printf \"MAIN:OC=%s|TX=%s|ANT=%s|OAI=%s|OPC=%s|GEM=%s|HOME=%s|XCFG=%s|XDATA=%s|OPCCFG=%s|CLAUDE=%s|SHIM=%s\\n\" "
             "(command -v opencode) (command -v terax) "
             "(set -q ANTHROPIC_API_KEY; and echo $ANTHROPIC_API_KEY; or echo UNSET) "
             "(set -q OPENAI_API_KEY; and echo $OPENAI_API_KEY; or echo UNSET) "
             "(set -q OPENCODE_API_KEY; and echo $OPENCODE_API_KEY; or echo UNSET) "
             "(set -q GEMINI_API_KEY; and echo $GEMINI_API_KEY; or echo UNSET) "
-            "\"$HOME\" \"$XDG_CONFIG_HOME\" "
+            "\"$HOME\" \"$XDG_CONFIG_HOME\" \"$XDG_DATA_HOME\" "
+            "(set -q OPENCODE_CONFIG_DIR; and test -n \"$OPENCODE_CONFIG_DIR\"; and echo $OPENCODE_CONFIG_DIR; or echo UNSET) "
             "(set -q CLAUDE_CONFIG_DIR; and echo $CLAUDE_CONFIG_DIR; or echo UNSET) "
             "(set -q CODR_SPACE_SHIM_DIR; and echo $CODR_SPACE_SHIM_DIR; or echo UNSET)"
         )
-        send("sh -c \x27printf \"SH:OC=%s|OAI=%s|CLAUDE=%s\\n\" \"$(command -v opencode)\" \"${OPENAI_API_KEY-UNSET}\" \"${CLAUDE_CONFIG_DIR-UNSET}\"\x27")
+        send("opencode run fish-turn")
+        send(
+            "printf \"AFTER_FISH_OC:XDATA=%s|OPCCFG=%s\\n\" \"$XDG_DATA_HOME\" "
+            "(set -q OPENCODE_CONFIG_DIR; and test -n \"$OPENCODE_CONFIG_DIR\"; and echo $OPENCODE_CONFIG_DIR; or echo UNSET)"
+        )
+        send("sh -c \x27printf \"SH:OC=%s|OAI=%s|CLAUDE=%s\\n\" \"$(command -v opencode)\" \"${OPENAI_API_KEY-UNSET}\" \"${CLAUDE_CONFIG_DIR-UNSET}\"; opencode run fish-sub\x27")
         if mode in ("isolated", "default"):
             send(
                 "for a in agy codex gemini grok antigravity; "
@@ -233,7 +272,11 @@ check("fish isolated: opencode resolves to Space shim ahead of config.fish", f"M
 check("fish isolated: control terax stays ahead of ~/.local/bin", f"|TX={iso_ctrl}/terax|" in iso_out, iso_out)
 check("fish isolated: all 4 ambient keys are scrubbed", "|ANT=UNSET|OAI=UNSET|OPC=UNSET|GEM=UNSET|" in iso_out, iso_out)
 check("fish isolated: host HOME and XDG_CONFIG_HOME stay intact", f"|HOME={iso_home}|XCFG={iso_xcfg}|" in iso_out, iso_out)
+check("fish isolated: dotfile OPENCODE_CONFIG_DIR is scrubbed on shell", "|OPCCFG=UNSET|" in iso_out, iso_out)
+check("fish isolated: opencode shim passes --standalone and Space-scoped XDG/OPENCODE_CONFIG_DIR", "OPENCODE_EXEC:ARGS=--standalone run fish-turn|" in iso_out and "/spaces/sp-1/opencode/data|STATE=" in iso_out, iso_out)
+check("fish isolated: shell XDG_DATA_HOME and OPENCODE_CONFIG_DIR stay untouched after opencode exits", "|OPCCFG=UNSET" in iso_out and "AFTER_FISH_OC:XDATA=" in iso_out, iso_out)
 check("fish isolated: child sh inherits Space shim, scrubbed key, and CLAUDE_CONFIG_DIR", f"SH:OC={iso_shim}/opencode|OAI=UNSET|CLAUDE={iso_claude}" in iso_out, iso_out)
+check("fish isolated: child sh opencode invocation uses Space shim and --standalone", "OPENCODE_EXEC:ARGS=--standalone run fish-sub|" in iso_out, iso_out)
 check("fish isolated: nested interactive fish enforces shim and scrubs keys", f"NESTED_FISH:OC={iso_shim}/opencode|ANT=UNSET|GEM=UNSET" in iso_out, iso_out)
 for leaked in ("sk-ant-fish-leak", "sk-openai-fish-leak", "sk-opencode-fish-leak", "AIzaFishLeak123"):
     check(f"fish isolated: no leaked secret {leaked}", leaked not in iso_out)

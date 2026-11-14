@@ -282,20 +282,44 @@ space_isolation_pty() {
   local shim_dir="$tmp/spaces/sp-1/bin"
   local ctrl_dir="$tmp/ctrl/bin"
   local claude_dir="$tmp/spaces/sp-1/claude"
+  local opc_cfg="$tmp/spaces/sp-1/opencode/config"
+  local opc_data="$tmp/spaces/sp-1/opencode/data"
+  local opc_state="$tmp/spaces/sp-1/opencode/state"
+  local opc_cache="$tmp/spaces/sp-1/opencode/cache"
   local xdg_cfg="$tmp/xdg/config"
   local xdg_data="$tmp/xdg/data"
   local xdg_state="$tmp/xdg/state"
   local xdg_cache="$tmp/xdg/cache"
   mkdir -p "$home/.local/bin" "$home/.opencode/bin" "$shim_dir" "$ctrl_dir" "$claude_dir" \
+           "$opc_cfg" "$opc_data" "$opc_state" "$opc_cache" \
            "$xdg_cfg" "$xdg_data" "$xdg_state" "$xdg_cache"
 
-  cat > "$shim_dir/opencode" <<'SH'
+  cat > "$shim_dir/opencode" <<SH
 #!/bin/sh
-echo "SHIM_OPENCODE"
+set -eu
+SHIM_DIR='$shim_dir'
+real_opencode=""
+old_ifs="\${IFS-}"
+IFS=":"
+for dir in \${PATH-}; do
+  [ -n "\$dir" ] || continue
+  [ "\$dir" = "\$SHIM_DIR" ] && continue
+  if [ -f "\$dir/opencode" ] && [ -x "\$dir/opencode" ]; then
+    real_opencode="\$dir/opencode"
+    break
+  fi
+done
+IFS="\$old_ifs"
+[ -n "\$real_opencode" ] || exit 127
+export XDG_DATA_HOME='$opc_data'
+export XDG_STATE_HOME='$opc_state'
+export XDG_CACHE_HOME='$opc_cache'
+export OPENCODE_CONFIG_DIR='$opc_cfg'
+exec "\$real_opencode" --standalone "\$@"
 SH
   cat > "$home/.opencode/bin/opencode" <<'SH'
 #!/bin/sh
-echo "HOST_OPENCODE"
+printf 'OPENCODE_EXEC:ARGS=%s|DATA=%s|STATE=%s|CACHE=%s|CFG=%s\n' "$*" "${XDG_DATA_HOME-UNSET}" "${XDG_STATE_HOME-UNSET}" "${XDG_CACHE_HOME-UNSET}" "${OPENCODE_CONFIG_DIR-UNSET}"
 SH
   cat > "$ctrl_dir/terax" <<'SH'
 #!/bin/sh
@@ -305,7 +329,8 @@ SH
 #!/bin/sh
 echo "HOST_TERAX"
 SH
-  chmod 755 "$shim_dir/opencode" "$home/.opencode/bin/opencode" "$ctrl_dir/terax" "$home/.local/bin/terax"
+  chmod 700 "$shim_dir/opencode"
+  chmod 755 "$home/.opencode/bin/opencode" "$ctrl_dir/terax" "$home/.local/bin/terax"
 
   for agent in agy codex gemini grok antigravity; do
     cat > "$shim_dir/$agent" <<SH
@@ -333,6 +358,7 @@ export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$PATH"
 export OPENAI_API_KEY="sk-openai-rc-leak"
 export OPENCODE_API_KEY="sk-opencode-rc-leak"
 export GEMINI_API_KEY="AIzaRcLeak123456"
+export OPENCODE_CONFIG_DIR="$HOME/.config/opencode-rc-override"
 RC
   if [ "$mode" = "isolated" ] || [ "$mode" = "default" ]; then
     printf 'export ANTHROPIC_API_KEY="sk-ant-rc-leak"\n' >> "$home/.bashrc"
@@ -390,11 +416,13 @@ def drain(seconds):
 
 drain(1.0)
 probe = "\n".join([
-    'printf "PROBE:OC=%s|TX=%s|ANT=%s|OAI=%s|OPC=%s|GEM=%s|HOME=%s|XCFG=%s|CLAUDE=%s|SHIM=%s\\n" '
+    'printf "PROBE:OC=%s|TX=%s|ANT=%s|OAI=%s|OPC=%s|GEM=%s|HOME=%s|XCFG=%s|XDATA=%s|XSTATE=%s|XCACHE=%s|OPCCFG=%s|CLAUDE=%s|SHIM=%s\\n" '
     '"$(command -v opencode)" "$(command -v terax)" '
     '"${ANTHROPIC_API_KEY-UNSET}" "${OPENAI_API_KEY-UNSET}" "${OPENCODE_API_KEY-UNSET}" "${GEMINI_API_KEY-UNSET}" '
-    '"$HOME" "$XDG_CONFIG_HOME" "${CLAUDE_CONFIG_DIR-UNSET}" "${CODR_SPACE_SHIM_DIR-UNSET}"',
-    """sh -c 'printf "CHILD_SH:OC=%s|OAI=%s|CLAUDE=%s\\n" "$(command -v opencode)" "${OPENAI_API_KEY-UNSET}" "${CLAUDE_CONFIG_DIR-UNSET}"'""",
+    '"$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" "${OPENCODE_CONFIG_DIR-UNSET}" "${CLAUDE_CONFIG_DIR-UNSET}" "${CODR_SPACE_SHIM_DIR-UNSET}"',
+    'opencode run main-turn',
+    'printf "AFTER_OC:XDATA=%s|XSTATE=%s|XCACHE=%s|OPCCFG=%s\\n" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" "${OPENCODE_CONFIG_DIR-UNSET}"',
+    """sh -c 'printf "CHILD_SH:OC=%s|OAI=%s|CLAUDE=%s\\n" "$(command -v opencode)" "${OPENAI_API_KEY-UNSET}" "${CLAUDE_CONFIG_DIR-UNSET}"; opencode run sub-turn'""",
     """bash -c 'printf "CHILD_BASH:OC=%s|ANT=%s|SHIM=%s\\n" "$(command -v opencode)" "${ANTHROPIC_API_KEY-UNSET}" "${CODR_SPACE_SHIM_DIR-UNSET}"'""",
     """( printf 'SUBSHELL:OC=%s|GEM=%s\\n' "$(command -v opencode)" "${GEMINI_API_KEY-UNSET}" )""",
     'for a in agy codex gemini grok antigravity; do p="$(command -v "$a")"; err="$("$a" 2>&1)"; rc=$?; printf "DIR_BLK_%s=%s:%s:%s\\n" "$a" "$p" "$rc" "${err#*: }"; done',
@@ -419,8 +447,13 @@ expect_contains "bash isolated: opencode path uses /spaces/sp-1/bin/opencode" "/
 expect_contains "bash isolated: control terax stays ahead of ~/.local/bin" "/ctrl/bin/terax|" "$bash_iso_out"
 expect_contains "bash isolated: all 4 ambient keys are scrubbed" "|ANT=UNSET|OAI=UNSET|OPC=UNSET|GEM=UNSET|" "$bash_iso_out"
 expect_contains "bash isolated: host HOME stays intact" "/home|XCFG=" "$bash_iso_out"
-expect_contains "bash isolated: host XDG_CONFIG_HOME stays intact" "/xdg/config|CLAUDE=" "$bash_iso_out"
+expect_contains "bash isolated: host XDG paths and unset OPENCODE_CONFIG_DIR stay intact" "/xdg/config|XDATA=" "$bash_iso_out"
+expect_contains "bash isolated: dotfile OPENCODE_CONFIG_DIR is scrubbed on shell" "|OPCCFG=UNSET|CLAUDE=" "$bash_iso_out"
+expect_contains "bash isolated: opencode shim passes --standalone and Space-scoped XDG/OPENCODE_CONFIG_DIR" "OPENCODE_EXEC:ARGS=--standalone run main-turn|" "$bash_iso_out"
+expect_contains "bash isolated: opencode shim scopes DATA/STATE/CACHE/CFG to Space" "/spaces/sp-1/opencode/data|STATE=" "$bash_iso_out"
+expect_contains "bash isolated: shell XDG_DATA_HOME remains host path after opencode exits" "AFTER_OC:XDATA=" "$bash_iso_out"
 expect_contains "bash isolated: nested sh inherits shim, scrubbed keys, and claude dir" "/spaces/sp-1/bin/opencode|OAI=UNSET|CLAUDE=" "$bash_iso_out"
+expect_contains "bash isolated: nested sh opencode invocation uses Space shim and --standalone" "OPENCODE_EXEC:ARGS=--standalone run sub-turn|" "$bash_iso_out"
 expect_contains "bash isolated: nested bash -c inherits shim and scrubbed ANTHROPIC_API_KEY" "/spaces/sp-1/bin/opencode|ANT=UNSET|SHIM=" "$bash_iso_out"
 for leaked in sk-ant-rc-leak sk-openai-profile-leak sk-openai-rc-leak sk-opencode-rc-leak AIzaRcLeak123456; do
   if printf '%s' "$bash_iso_out" | grep -Fq "$leaked"; then

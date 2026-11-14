@@ -199,6 +199,9 @@ mod tests {
             "/home/me/.cache/terax/control.json",
             "C:/Users/me/AppData/Local/terax/control.json",
             "//wsl.localhost/Ubuntu/home/me/.ssh/id_rsa",
+            "/home/me/.local/share/codr/space-profiles/sp-a/opencode/data/opencode/opencode.db",
+            "/home/me/.local/share/opencode/auth.json",
+            "/home/me/.config/opencode/service.json",
         ] {
             assert!(readable(Path::new(path)).is_err(), "{path}");
         }

@@ -59,6 +59,7 @@ if [ -z "${__CODR_HOOKS_LOADED-}" ]; then
     for key in ANTHROPIC_API_KEY OPENAI_API_KEY OPENCODE_API_KEY GEMINI_API_KEY; do
       _terax_space_key_preserved "$key" || unset "$key" 2>/dev/null || true
     done
+    unset OPENCODE_CONFIG_DIR 2>/dev/null || true
     if [ -n "${CODR_CONTROL_BIN_DIR-}" ]; then
       _terax_prepend_path_dedup "$CODR_CONTROL_BIN_DIR"
     fi
