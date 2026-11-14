@@ -22,6 +22,7 @@ import { InlineRename } from "./components/InlineRename";
 import type {
   AccountIsolationMode,
   IsolationToggleGuard,
+  SpaceRuntimeStatus,
 } from "./lib/isolation";
 import {
   hasIsolatedSharedRoot,
@@ -47,6 +48,9 @@ type Props = {
     nextMode: AccountIsolationMode,
   ) => Promise<void>;
   canToggleSpaceIsolation?: (spaceId: string) => IsolationToggleGuard;
+  onClearPrivateAccounts?: (spaceId: string) => void;
+  onRetrySpaceCleanup?: (spaceId: string) => void;
+  retryingCleanupId?: string | null;
   onDeleteSpace: (id: string) => void;
   onNewTabInSpace: (spaceId: string) => void;
   onJumpTab: (id: number) => void;
@@ -97,6 +101,9 @@ export function SpaceSwitcher({
   onNewIsolatedSpace,
   onToggleSpaceIsolation,
   canToggleSpaceIsolation,
+  onClearPrivateAccounts,
+  onRetrySpaceCleanup,
+  retryingCleanupId,
   onDeleteSpace,
   onNewTabInSpace,
   onJumpTab,
@@ -107,6 +114,8 @@ export function SpaceSwitcher({
 }: Props) {
   const spaces = useSpaces((s) => s.spaces);
   const activeId = useSpaces((s) => s.activeId);
+  const runtimeById = useSpaces((s) => s.runtimeById);
+  const orphanedCleanups = useSpaces((s) => s.orphanedCleanups);
   const setActive = useSpaces((s) => s.setActive);
   const rename = useSpaces((s) => s.rename);
   const shortcut = useShortcutLabel("space.overview");
@@ -321,6 +330,16 @@ export function SpaceSwitcher({
               Isolated
             </span>
           )}
+          {current.accountIsolation === "default" &&
+            runtimeById[current.id]?.hasRetainedProfiles && (
+              <span
+                data-retained-profiles={current.id}
+                title="Private profiles from previous Account isolation remain stored on disk"
+                className="rounded bg-amber-500/15 px-1 py-px text-[10px] font-medium text-amber-600 dark:text-amber-400"
+              >
+                Retained
+              </span>
+            )}
           {currentShared && (
             <SharedFolderBadge
               group={currentShared}
@@ -385,6 +404,18 @@ export function SpaceSwitcher({
               }
               togglingIsolation={togglingSpaceId === sp.id}
               isolationError={isolationErrorById[sp.id]}
+              runtimeStatus={runtimeById[sp.id]}
+              retryingCleanup={retryingCleanupId === sp.id}
+              onClearPrivateAccounts={
+                onClearPrivateAccounts
+                  ? () => onClearPrivateAccounts(sp.id)
+                  : undefined
+              }
+              onRetryCleanup={
+                onRetrySpaceCleanup
+                  ? () => onRetrySpaceCleanup(sp.id)
+                  : undefined
+              }
               onToggleIsolation={
                 onToggleSpaceIsolation
                   ? () =>
@@ -398,6 +429,42 @@ export function SpaceSwitcher({
               }
             />
           ))}
+          {Object.entries(orphanedCleanups).length > 0 && (
+            <div className="mt-1.5 border-t border-border/60 px-2 pt-1.5 pb-1">
+              <p className="text-[10px] font-medium text-muted-foreground">
+                Pending profile cleanups
+              </p>
+              <div className="mt-1 flex flex-col gap-1">
+                {Object.entries(orphanedCleanups).map(([orphanId, status]) => (
+                  <div
+                    key={orphanId}
+                    className="flex items-start justify-between gap-2 rounded bg-destructive/10 px-1.5 py-1 text-[10px]"
+                  >
+                    <span
+                      data-cleanup-error={orphanId}
+                      className="min-w-0 flex-1 break-words text-destructive"
+                    >
+                      {status.cleanupError ??
+                        "Pending profile directory cleanup"}
+                    </span>
+                    {onRetrySpaceCleanup && (
+                      <button
+                        type="button"
+                        data-cleanup-retry={orphanId}
+                        disabled={retryingCleanupId === orphanId}
+                        onClick={() => onRetrySpaceCleanup(orphanId)}
+                        className="shrink-0 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] font-medium text-foreground hover:bg-accent disabled:opacity-50"
+                      >
+                        {retryingCleanupId === orphanId
+                          ? "Retrying..."
+                          : "Retry"}
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
         <div className="mt-1.5 border-t border-border pt-1.5">
           {shared.length > 0 && (
@@ -486,6 +553,10 @@ type SpaceRowProps = {
   isolationGuard: IsolationToggleGuard;
   togglingIsolation: boolean;
   isolationError?: string;
+  runtimeStatus?: SpaceRuntimeStatus;
+  retryingCleanup: boolean;
+  onClearPrivateAccounts?: () => void;
+  onRetryCleanup?: () => void;
   onToggleIsolation?: () => void;
 };
 
@@ -516,6 +587,10 @@ function SpaceRow({
   isolationGuard,
   togglingIsolation,
   isolationError,
+  runtimeStatus,
+  retryingCleanup,
+  onClearPrivateAccounts,
+  onRetryCleanup,
   onToggleIsolation,
 }: SpaceRowProps) {
   const isDragging = dragging?.kind === "space" && dragging.id === space.id;
@@ -593,6 +668,16 @@ function SpaceRow({
                 Isolated
               </span>
             )}
+            {space.accountIsolation === "default" &&
+              runtimeStatus?.hasRetainedProfiles && (
+                <span
+                  data-retained-profiles={space.id}
+                  title="Account isolation is off, but private credentials remain stored on disk"
+                  className="shrink-0 rounded bg-amber-500/15 px-1 py-px text-[10px] font-medium text-amber-600 dark:text-amber-400"
+                >
+                  Retained profiles
+                </span>
+              )}
             {sharedGroup && (
               <SharedFolderBadge
                 group={sharedGroup}
@@ -649,68 +734,125 @@ function SpaceRow({
               {draggingTabFromOther ? "Drop to move here" : "No tabs"}
             </span>
           )}
-          {onToggleIsolation && (
-            <div className="mt-1 border-t border-border/60 px-2 pt-1.5 pb-1">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[10.5px] text-muted-foreground">
-                  {space.accountIsolation === "isolated"
-                    ? "Account: Isolated"
-                    : "Account: Shared"}
-                </span>
+          {runtimeStatus?.cleanupError && (
+            <div className="mt-1 flex items-start justify-between gap-2 rounded bg-destructive/10 px-2 py-1 text-[10px]">
+              <span
+                data-cleanup-error={space.id}
+                className="min-w-0 flex-1 break-words text-destructive"
+              >
+                {runtimeStatus.cleanupError}
+              </span>
+              {onRetryCleanup && (
                 <button
                   type="button"
-                  data-isolation-toggle={space.id}
-                  disabled={!isolationGuard.allowed || togglingIsolation}
-                  title={
-                    isolationGuard.allowed ? undefined : isolationGuard.reason
-                  }
+                  data-cleanup-retry={space.id}
+                  disabled={retryingCleanup}
                   onClick={(e) => {
                     e.stopPropagation();
-                    onToggleIsolation();
+                    onRetryCleanup();
                   }}
-                  className="rounded border border-border px-1.5 py-0.5 text-[10px] font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                  className="shrink-0 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] font-medium text-foreground hover:bg-accent disabled:opacity-50"
                 >
-                  {togglingIsolation
-                    ? "Updating..."
-                    : space.accountIsolation === "isolated"
-                      ? "Use host"
-                      : "Isolate"}
+                  {retryingCleanup ? "Retrying..." : "Retry"}
                 </button>
-              </div>
-              {!isolationGuard.allowed && (
-                <p
-                  data-isolation-blocked={space.id}
-                  className="mt-1 text-[10px] leading-snug text-muted-foreground"
-                >
-                  {isolationGuard.reason}
-                </p>
               )}
-              {isolationGuard.allowed &&
-                isolationGuard.requiresConfirmation && (
-                  <p
-                    data-isolation-confirm-hint={space.id}
-                    className="mt-1 text-[10px] leading-snug text-muted-foreground"
+            </div>
+          )}
+          {(onToggleIsolation ||
+            (onClearPrivateAccounts &&
+              (space.accountIsolation === "isolated" ||
+                runtimeStatus?.hasRetainedProfiles))) && (
+            <div className="mt-1 border-t border-border/60 px-2 pt-1.5 pb-1">
+              {onToggleIsolation && (
+                <>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10.5px] text-muted-foreground">
+                      {space.accountIsolation === "isolated"
+                        ? "Account: Isolated"
+                        : "Account: Shared"}
+                    </span>
+                    <button
+                      type="button"
+                      data-isolation-toggle={space.id}
+                      disabled={!isolationGuard.allowed || togglingIsolation}
+                      title={
+                        isolationGuard.allowed
+                          ? undefined
+                          : isolationGuard.reason
+                      }
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onToggleIsolation();
+                      }}
+                      className="rounded border border-border px-1.5 py-0.5 text-[10px] font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {togglingIsolation
+                        ? "Updating..."
+                        : space.accountIsolation === "isolated"
+                          ? "Use host"
+                          : "Isolate"}
+                    </button>
+                  </div>
+                  {!isolationGuard.allowed && (
+                    <p
+                      data-isolation-blocked={space.id}
+                      className="mt-1 text-[10px] leading-snug text-muted-foreground"
+                    >
+                      {isolationGuard.reason}
+                    </p>
+                  )}
+                  {isolationGuard.allowed &&
+                    isolationGuard.requiresConfirmation && (
+                      <p
+                        data-isolation-confirm-hint={space.id}
+                        className="mt-1 text-[10px] leading-snug text-muted-foreground"
+                      >
+                        Switching restarts active terminal Panes in the new
+                        Account context (non-terminal tabs stay open).
+                      </p>
+                    )}
+                  {space.accountIsolation === "isolated" && (
+                    <p
+                      data-oauth-guidance={space.id}
+                      className="mt-1 text-[10px] leading-snug text-muted-foreground"
+                    >
+                      OAuth keeps your system browser ($BROWSER / xdg-open)
+                      untouched: verify the active browser profile to avoid
+                      auto-consent, and avoid concurrent logins on fixed
+                      callback port 1455 (use manual URL paste fallback if it
+                      conflicts).
+                    </p>
+                  )}
+                  {isolationError && (
+                    <p className="mt-1 text-[10px] leading-snug text-destructive">
+                      {isolationError}
+                    </p>
+                  )}
+                </>
+              )}
+              {onClearPrivateAccounts &&
+                (space.accountIsolation === "isolated" ||
+                  runtimeStatus?.hasRetainedProfiles) && (
+                  <div
+                    className={
+                      onToggleIsolation
+                        ? "mt-1.5 flex justify-end"
+                        : "flex justify-end"
+                    }
                   >
-                    Switching restarts active terminal Panes in the new Account
-                    context (non-terminal tabs stay open).
-                  </p>
+                    <button
+                      type="button"
+                      data-clear-private-accounts={space.id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onClearPrivateAccounts();
+                      }}
+                      className="rounded border border-destructive/40 px-1.5 py-0.5 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/10"
+                    >
+                      Clear private accounts
+                    </button>
+                  </div>
                 )}
-              {space.accountIsolation === "isolated" && (
-                <p
-                  data-oauth-guidance={space.id}
-                  className="mt-1 text-[10px] leading-snug text-muted-foreground"
-                >
-                  OAuth keeps your system browser ($BROWSER / xdg-open)
-                  untouched: verify the active browser profile to avoid
-                  auto-consent, and avoid concurrent logins on fixed callback
-                  port 1455 (use manual URL paste fallback if it conflicts).
-                </p>
-              )}
-              {isolationError && (
-                <p className="mt-1 text-[10px] leading-snug text-destructive">
-                  {isolationError}
-                </p>
-              )}
             </div>
           )}
         </div>

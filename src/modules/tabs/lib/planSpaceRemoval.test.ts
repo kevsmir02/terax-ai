@@ -1,5 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { planSpaceRemoval, type Tab, type TerminalTab } from "./useTabs";
+import {
+  planSpaceRemoval,
+  planTerminalCleanupForSpace,
+  type Tab,
+  type TerminalTab,
+} from "./useTabs";
+
+function editor(id: number, spaceId: string): Tab {
+  return {
+    id,
+    kind: "editor",
+    spaceId,
+    title: "notes.md",
+    path: "/work/notes.md",
+  } as Tab;
+}
 
 function term(id: number, spaceId: string): Tab {
   return {
@@ -105,5 +120,52 @@ describe("repeated close attempts", () => {
 
     expect(second).toBeNull();
     expect(first?.tabs.map((tab) => tab.id)).toEqual([3]);
+  });
+});
+
+describe("planTerminalCleanupForSpace", () => {
+  it("closes only terminal tabs in the target space while keeping non-terminal tabs and other spaces", () => {
+    const tabs = [term(1, "a"), editor(2, "a"), term(3, "b")];
+    const plan = planTerminalCleanupForSpace(
+      tabs,
+      1,
+      "a",
+      "/work",
+      counterFrom(100),
+    );
+    expect(plan).not.toBeNull();
+    expect(plan?.closedTabIds).toEqual([1]);
+    expect(plan?.disposeLeafIds).toEqual([10]);
+    expect(plan?.tabs.map((t) => [t.id, t.spaceId, t.kind])).toEqual([
+      [2, "a", "editor"],
+      [3, "b", "terminal"],
+    ]);
+    expect(plan?.activeId).toBe(2);
+  });
+
+  it("adds a cold replacement tab when clearing leaves the space without tabs", () => {
+    const tabs = [term(1, "a"), term(2, "a"), term(3, "b")];
+    const plan = planTerminalCleanupForSpace(
+      tabs,
+      1,
+      "a",
+      "/work",
+      counterFrom(100),
+    );
+    expect(plan?.closedTabIds).toEqual([1, 2]);
+    expect(plan?.disposeLeafIds).toEqual([10, 20]);
+    const inA = plan?.tabs.filter((t) => t.spaceId === "a") ?? [];
+    expect(inA).toHaveLength(1);
+    const cold = inA[0] as TerminalTab;
+    expect(cold.cold).toBe(true);
+    expect(cold.cwd).toBe("/work");
+    expect(plan?.activeId).toBe(cold.id);
+  });
+
+  it("returns null when the space has no terminal tabs", () => {
+    const tabs = [editor(2, "a"), term(3, "b")];
+    expect(
+      planTerminalCleanupForSpace(tabs, 2, "a", "/work", counterFrom(100)),
+    ).toBeNull();
   });
 });

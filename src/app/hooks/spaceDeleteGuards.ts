@@ -1,11 +1,11 @@
+import type { CloseManyHazards } from "@/app/hooks/tabCloseGuards";
 import {
   dirtyAfterSave,
   evaluateCloseHazards,
   hasNewCloseManyHazards,
 } from "@/app/hooks/tabCloseGuards";
-import type { CloseManyHazards } from "@/app/hooks/tabCloseGuards";
-import { leafIds } from "@/modules/terminal/lib/panes";
 import type { Tab } from "@/modules/tabs";
+import { leafIds } from "@/modules/terminal/lib/panes";
 
 export type SpaceHazardSnapshot = {
   dirtyIds: number[];
@@ -36,6 +36,18 @@ export type SpaceDeleteTransaction = {
   hazards: CloseManyHazards;
 };
 
+export type SpaceIsolationContext = {
+  accountIsolation?: "default" | "isolated";
+  hasRetainedProfiles?: boolean;
+};
+
+export type ClearPrivateAccountsTransaction = {
+  spaceId: string;
+  spaceName: string;
+  terminalCount: number;
+  busyLeafIds: number[];
+};
+
 export type SpaceDeleteResult =
   | { status: "idle" }
   | { status: "canceled" }
@@ -48,8 +60,8 @@ export type SpaceDeleteDeps = {
   isDirty?: (tabId: number) => boolean;
   isBusy: (leafId: number) => Promise<boolean>;
   confirmRunning: () => boolean;
-  /** Removes saved organization only. Files, worktrees and processes are not this callback. */
-  deleteOrganization: (spaceId: string) => void;
+  /** Removes saved organization and awaits any Space-scoped profile cleanup. */
+  deleteOrganization: (spaceId: string) => void | Promise<void>;
 };
 
 /**
@@ -137,7 +149,7 @@ export class SpaceDeleteGuard {
     }
     this.pendingTransaction = null;
     this.generation += 1;
-    this.deps.deleteOrganization(acknowledged.spaceId);
+    await this.deps.deleteOrganization(acknowledged.spaceId);
     return { status: "deleted", spaceId: acknowledged.spaceId };
   }
 
@@ -150,16 +162,34 @@ export class SpaceDeleteGuard {
   }
 }
 
-/** Dialog copy that keeps Space deletion distinct from any filesystem action. */
+/** Dialog copy covering organization deletion and any Space-scoped local credentials. */
 export function spaceDeleteMessage(
   pending: SpaceDeleteTransaction,
   tabs: readonly Tab[],
   spaceName = "this Space",
+  profileContext?: SpaceIsolationContext,
 ): string {
   const { dirtyIds, busyLeafIds } = pending.hazards;
   const parts: string[] = [
     `Deleting "${spaceName}" removes its saved tabs and organization only. Files and worktrees on disk are not deleted.`,
   ];
+  if (
+    profileContext?.accountIsolation === "isolated" ||
+    profileContext?.hasRetainedProfiles
+  ) {
+    if (profileContext.accountIsolation === "isolated") {
+      parts.push(
+        "Running Space terminal processes holding in-memory tokens will be stopped first, and local credentials and private profiles for this Space will be deleted from disk.",
+      );
+    } else {
+      parts.push(
+        "Retained local credentials and private profiles for this Space on disk will be deleted.",
+      );
+    }
+    parts.push(
+      "Remote provider OAuth sessions remain active unless revoked at the provider.",
+    );
+  }
   if (dirtyIds.length > 0) {
     const titles = dirtyIds
       .map((id) => tabs.find((tab) => tab.id === id)?.title)
@@ -182,4 +212,23 @@ export function spaceDeleteMessage(
     );
   }
   return parts.join(" ");
+}
+
+export function clearPrivateAccountsMessage(
+  tx: ClearPrivateAccountsTransaction,
+): string {
+  const processDetail =
+    tx.terminalCount === 0
+      ? "Any running Space terminal processes"
+      : tx.terminalCount === 1
+        ? "1 Space terminal process"
+        : `${tx.terminalCount} Space terminal processes`;
+  const busyDetail =
+    tx.busyLeafIds.length > 0 ? ` (${tx.busyLeafIds.length} active)` : "";
+  return [
+    `Clearing private accounts for "${tx.spaceName}" permanently deletes local credentials and private account profiles stored for this Space.`,
+    `${processDetail}${busyDetail} holding in-memory tokens will be stopped first.`,
+    "Non-terminal tabs, project files, and worktrees on disk stay untouched.",
+    "This removes local credentials only and does not revoke remote provider OAuth grants unless you revoke them at the provider.",
+  ].join(" ");
 }

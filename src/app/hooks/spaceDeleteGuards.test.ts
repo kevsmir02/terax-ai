@@ -225,4 +225,82 @@ describe("SpaceDeleteGuard", () => {
     expect(pending?.hazards.dirtyIds).toEqual([1]);
     expect(pending?.hazards.busyLeafIds).toEqual([20]);
   });
+
+  it("awaits async deleteOrganization before resolving deleted", async () => {
+    let resolved = false;
+    const { deps } = harness({
+      tabs: () => [editor(1, "a", false)],
+      deleteOrganization: async () => {
+        await new Promise((r) => setTimeout(r, 10));
+        resolved = true;
+      },
+    });
+    const guard = new SpaceDeleteGuard(deps);
+    await guard.request("a");
+    await expect(guard.confirm()).resolves.toMatchObject({ status: "deleted" });
+    expect(resolved).toBe(true);
+  });
+
+  it("explains local credential deletion, process termination, and remote OAuth distinction for isolated and retained Spaces", async () => {
+    const { deps } = harness();
+    const guard = new SpaceDeleteGuard(deps);
+    const pending = await guard.request("a");
+    if (!pending) throw new Error("expected pending");
+
+    const isoMsg = (
+      spaceDeleteMessage as (
+        p: typeof pending,
+        t: ReturnType<typeof deps.tabs>,
+        n: string,
+        ctx?: { accountIsolation?: string; hasRetainedProfiles?: boolean },
+      ) => string
+    )(pending, deps.tabs(), "Client", {
+      accountIsolation: "isolated",
+      hasRetainedProfiles: true,
+    });
+    expect(isoMsg).toContain("Files and worktrees on disk are not deleted");
+    expect(isoMsg).toMatch(/local.*credentials|private.*profiles/i);
+    expect(isoMsg).toMatch(/in-memory tokens|stopped/i);
+    expect(isoMsg).toMatch(/remote.*OAuth|revoked/i);
+
+    const retainedMsg = (
+      spaceDeleteMessage as (
+        p: typeof pending,
+        t: ReturnType<typeof deps.tabs>,
+        n: string,
+        ctx?: { accountIsolation?: string; hasRetainedProfiles?: boolean },
+      ) => string
+    )(pending, deps.tabs(), "Client", {
+      accountIsolation: "default",
+      hasRetainedProfiles: true,
+    });
+    expect(retainedMsg).toMatch(/local.*credentials|private.*profiles/i);
+    expect(retainedMsg).toMatch(/remote.*OAuth|revoked/i);
+  });
+
+  it("formats Clear private accounts hazard copy distinguishing local wipe from remote OAuth revocation", async () => {
+    const guardsMod = await import("./spaceDeleteGuards");
+    const formatClear = (
+      guardsMod as unknown as {
+        clearPrivateAccountsMessage: (tx: {
+          spaceId: string;
+          spaceName: string;
+          terminalCount: number;
+          busyLeafIds: number[];
+        }) => string;
+      }
+    ).clearPrivateAccountsMessage;
+    expect(typeof formatClear).toBe("function");
+    const msg = formatClear({
+      spaceId: "sp-1",
+      spaceName: "Client",
+      terminalCount: 2,
+      busyLeafIds: [20],
+    });
+    expect(msg).toContain("Client");
+    expect(msg).toMatch(/local.*credentials|private.*accounts/i);
+    expect(msg).toMatch(/in-memory tokens|terminal/i);
+    expect(msg).toMatch(/remote.*OAuth|does not revoke/i);
+    expect(msg).toMatch(/Non-terminal tabs|project files/i);
+  });
 });
