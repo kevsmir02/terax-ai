@@ -117,7 +117,7 @@ function HookAgentRow({
           configured
         </span>
       ) : (
-        <span className="text-[11px] text-muted-foreground/70">
+        <span className="text-[11px] text-muted-foreground">
           {partial ? "partly configured" : "not configured"}
         </span>
       )}
@@ -221,7 +221,7 @@ export function NotificationBell({ onActivate }: Props) {
         <Button
           variant="ghost"
           size="icon"
-          className="relative size-7 shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="relative size-7 shrink-0 rounded-md text-foreground hover:bg-accent hover:text-foreground"
           title="Agent notifications"
         >
           <HugeiconsIcon
@@ -264,13 +264,13 @@ export function NotificationBell({ onActivate }: Props) {
         </div>
 
         {empty ? (
-          <div className="border-t border-border/60 px-3 py-5 text-center text-xs leading-relaxed text-muted-foreground">
+          <div className="border-t border-border px-3 py-5 text-center text-xs leading-relaxed text-muted-foreground">
             No agent activity yet.
             <br />
             Run a coding agent to track it here.
           </div>
         ) : (
-          <div className="max-h-80 overflow-y-auto border-t border-border/60 p-1">
+          <div className="max-h-80 overflow-y-auto border-t border-border p-1">
             {active.map((s) => (
               <StatusRow
                 key={s.leafId}
@@ -280,7 +280,7 @@ export function NotificationBell({ onActivate }: Props) {
               />
             ))}
             {activeCount > 0 && notifications.length > 0 ? (
-              <div className="mx-2 my-1 h-px bg-border/50" />
+              <div className="mx-2 my-1 h-px bg-border" />
             ) : null}
             {notifications.map((n) => (
               <NotificationRow
@@ -292,12 +292,12 @@ export function NotificationBell({ onActivate }: Props) {
           </div>
         )}
 
-        <div className="border-t border-border/60 p-1">
+        <div className="border-t border-border p-1">
           <button
             type="button"
             onClick={() => setAlertsOpen((v) => !v)}
             aria-expanded={alertsOpen}
-            className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70 transition-colors hover:text-foreground"
+            className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground transition-colors hover:text-foreground"
           >
             <HugeiconsIcon
               icon={Notification03Icon}
@@ -307,7 +307,7 @@ export function NotificationBell({ onActivate }: Props) {
             Agent alerts
             <span className="ml-auto flex items-center gap-1.5 normal-case tracking-normal">
               {enabledCount > 0 ? (
-                <span className="text-[10px] text-muted-foreground/60">
+                <span className="text-[10px] text-muted-foreground">
                   {enabledCount} on
                 </span>
               ) : null}
@@ -328,7 +328,7 @@ export function NotificationBell({ onActivate }: Props) {
                   status={hooks[id] ?? null}
                 />
               ))}
-              <p className="px-2 pt-1 pb-0.5 text-[10px] leading-relaxed text-muted-foreground/70">
+              <p className="px-2 pt-1 pb-0.5 text-[10px] leading-relaxed text-muted-foreground">
                 Hooks are opt-in: review, install or remove them in Settings →
                 Agents.
               </p>

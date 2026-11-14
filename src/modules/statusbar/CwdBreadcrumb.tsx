@@ -83,9 +83,7 @@ export function CwdBreadcrumb({ cwd, filePath, home, onCd }: Props) {
   }
 
   if (!cwd) {
-    return (
-      <span className="text-xs text-muted-foreground/70">no directory</span>
-    );
+    return <span className="text-xs text-muted-foreground">no directory</span>;
   }
 
   const segments = segmentsFromCwd(cwd, home);
@@ -144,7 +142,7 @@ function BreadcrumbSegment({
           <button type="button" onClick={onClick} className="cursor-pointer">
             <Badge
               variant="outline"
-              className="gap-1 text-muted-foreground hover:text-foreground"
+              className="gap-1 border-border bg-background text-foreground hover:bg-accent"
             >
               {isHome ? (
                 <HugeiconsIcon
@@ -199,7 +197,7 @@ function CurrentSegmentDropdown({
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
-        <BreadcrumbPage className="flex cursor-pointer items-center gap-1 rounded-sm px-1 py-0.5 text-foreground hover:bg-accent">
+        <BreadcrumbPage className="flex cursor-pointer items-center gap-1 rounded-sm px-1.5 py-0.5 font-medium text-foreground hover:bg-accent">
           {label === "~" ? (
             <>
               <HugeiconsIcon
@@ -214,7 +212,7 @@ function CurrentSegmentDropdown({
           )}
           <HugeiconsIcon
             icon={ArrowDown01Icon}
-            className="size-3 opacity-70"
+            className="size-3 text-muted-foreground"
             strokeWidth={2}
           />
         </BreadcrumbPage>
@@ -265,7 +263,7 @@ function CollapsedSegments({
             <button
               type="button"
               title="Show hidden folders"
-              className="flex items-center rounded-sm px-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="flex items-center rounded-sm px-1 text-foreground hover:bg-accent"
             >
               <HugeiconsIcon
                 icon={MoreHorizontalIcon}

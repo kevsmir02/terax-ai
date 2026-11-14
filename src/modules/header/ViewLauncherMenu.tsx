@@ -76,7 +76,7 @@ export function ViewLauncherMenu({
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="size-7 shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                className="size-7 shrink-0 rounded-md text-foreground hover:bg-accent hover:text-foreground"
                 title="Open view or agents"
                 aria-label="Open view or agents"
               >
