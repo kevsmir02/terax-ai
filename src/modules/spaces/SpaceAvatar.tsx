@@ -24,7 +24,7 @@ export function SpaceAvatar({ space, size = "sm", active, className }: Props) {
       className={cn(
         "flex shrink-0 items-center justify-center font-semibold leading-none ring-1 ring-inset",
         SIZES[size],
-        active ? "ring-transparent" : "ring-border/50 text-muted-foreground",
+        active ? "ring-transparent" : "ring-border text-foreground",
         className,
       )}
       style={

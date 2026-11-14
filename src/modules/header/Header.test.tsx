@@ -357,6 +357,138 @@ describe("Header", () => {
     });
   });
 
+  it("renders the active tab pill with a solid surface and 1px border while keeping inactive tabs muted", () => {
+    const { container: host } = mountHeader({
+      tabs: [makeTerminalTab(1), makeTerminalTab(2)],
+      activeId: 1,
+    });
+
+    const tablist = host.querySelector<HTMLElement>('[role="tablist"]');
+    expect(tablist).not.toBeNull();
+
+    const pill = tablist?.querySelector<HTMLElement>("span[aria-hidden]");
+    expect(pill).not.toBeNull();
+    const pillClasses = (pill?.className ?? "").split(/\s+/);
+    expect(pillClasses).toContain("bg-background");
+    expect(pillClasses).toContain("border");
+    expect(pillClasses).toContain("border-border");
+    expect(pillClasses).not.toContain("bg-foreground/[0.07]");
+    expect(pillClasses).not.toContain("ring-foreground/[0.05]");
+
+    const activeTab = host.querySelector<HTMLElement>('[data-tab-id="1"]');
+    const inactiveTab = host.querySelector<HTMLElement>('[data-tab-id="2"]');
+    expect(activeTab?.getAttribute("data-tab-active")).toBe("true");
+    expect(inactiveTab?.hasAttribute("data-tab-active")).toBe(false);
+
+    const activeClasses = (activeTab?.className ?? "").split(/\s+/);
+    const inactiveClasses = (inactiveTab?.className ?? "").split(/\s+/);
+    expect(activeClasses).toContain("text-foreground");
+    expect(inactiveClasses).toContain("text-muted-foreground");
+    expect(inactiveClasses).toContain("hover:text-foreground");
+    expect(inactiveClasses).not.toContain("hover:text-foreground/80");
+  });
+
+  it("keeps the active tab close icon softly visible at rest while inactive tabs reveal theirs on hover", () => {
+    const { container: host } = mountHeader({
+      tabs: [makeTerminalTab(1), makeTerminalTab(2)],
+      activeId: 1,
+    });
+
+    const activeClose = host.querySelector<HTMLElement>(
+      '[data-tab-id="1"] [aria-label="Close tab"]',
+    );
+    const inactiveClose = host.querySelector<HTMLElement>(
+      '[data-tab-id="2"] [aria-label="Close tab"]',
+    );
+    expect(activeClose).not.toBeNull();
+    expect(inactiveClose).not.toBeNull();
+
+    const activeCloseClasses = (activeClose?.className ?? "").split(/\s+/);
+    const inactiveCloseClasses = (inactiveClose?.className ?? "").split(/\s+/);
+
+    expect(activeCloseClasses).not.toContain("opacity-0");
+    expect(
+      activeCloseClasses.some((c) => /^opacity-(?:5\d|6\d|7\d)$/.test(c)),
+    ).toBe(true);
+    expect(activeCloseClasses).toContain("group-hover:opacity-100");
+    expect(activeCloseClasses).toContain("hover:opacity-100");
+
+    expect(inactiveCloseClasses).toContain("opacity-0");
+    expect(
+      inactiveCloseClasses.some((c) =>
+        /^group-hover:opacity-(?:[6-9]\d|100)$/.test(c),
+      ),
+    ).toBe(true);
+  });
+
+  it("styles the pinned + new-tab control as an outlined size-7 rounded-md button matching header actions", () => {
+    const { container: host } = mountHeader();
+
+    const newTabButton = host.querySelector<HTMLButtonElement>(
+      'button[title="New tab"]',
+    );
+    expect(newTabButton).not.toBeNull();
+    const classes = (newTabButton?.className ?? "").split(/\s+/);
+
+    expect(classes).toContain("size-7");
+    expect(classes).toContain("rounded-md");
+    expect(classes).toContain("border");
+    expect(classes).toContain("border-border");
+    expect(classes).toContain("text-foreground");
+    expect(classes).not.toContain("size-6");
+    expect(classes).not.toContain("rounded-full");
+    expect(classes).not.toContain("bg-foreground/[0.06]");
+    expect(classes).not.toContain("ring-foreground/[0.04]");
+  });
+
+  it("renders header utility buttons, dividers, and inline search with crisp resting contrast", () => {
+    const { container: host } = mountHeader();
+
+    const utilityTitles = [
+      "Toggle sidebar",
+      "Command palette",
+      "Agent notifications",
+      "Open view or agents",
+      "Settings",
+    ];
+    for (const title of utilityTitles) {
+      const btn = host.querySelector<HTMLButtonElement>(
+        `button[title="${title}"]`,
+      );
+      expect(btn, `button "${title}" should exist`).not.toBeNull();
+      const classes = (btn?.className ?? "").split(/\s+/);
+      expect(classes, `${title} size-7`).toContain("size-7");
+      expect(classes, `${title} rounded-md`).toContain("rounded-md");
+      expect(classes, `${title} text-foreground`).toContain("text-foreground");
+      expect(classes, `${title} no text-muted-foreground`).not.toContain(
+        "text-muted-foreground",
+      );
+    }
+
+    const searchInput = host.querySelector<HTMLInputElement>("input");
+    expect(searchInput).not.toBeNull();
+    const inputClasses = (searchInput?.className ?? "").split(/\s+/);
+    expect(inputClasses).toContain("rounded-md");
+    expect(inputClasses).toContain("border-border");
+    expect(inputClasses).toContain("bg-background");
+    expect(inputClasses).toContain("placeholder:text-muted-foreground");
+    expect(inputClasses).not.toContain("bg-muted/80");
+    expect(inputClasses).not.toContain("placeholder:text-muted-foreground/70");
+
+    const headerRoot = host.firstElementChild as Element;
+    act(() => {
+      triggerResize(headerRoot, 600);
+    });
+    const compactSearch = host.querySelector<HTMLButtonElement>(
+      'button[title^="Search"]',
+    );
+    expect(compactSearch).not.toBeNull();
+    const compactClasses = (compactSearch?.className ?? "").split(/\s+/);
+    expect(compactClasses).toContain("size-7");
+    expect(compactClasses).toContain("rounded-md");
+    expect(compactClasses).toContain("text-foreground");
+  });
+
   it("renders a solid bottom hairline on Header without re-painting bg-frame", () => {
     const { container: host } = mountHeader();
     const headerRoot = host.firstElementChild as HTMLElement | null;

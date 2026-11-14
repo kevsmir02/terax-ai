@@ -101,7 +101,7 @@ export function Header({
     <Button
       variant="ghost"
       size="icon"
-      className="size-7 shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+      className="size-7 shrink-0 rounded-md text-foreground hover:bg-accent hover:text-foreground"
       onClick={onOpenSettings}
       title="Settings"
     >
@@ -122,18 +122,18 @@ export function Header({
           onClick={onToggleSidebar}
           title="Toggle sidebar"
           variant="ghost"
-          size="icon-sm"
-          className="shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+          size="icon"
+          className="size-7 shrink-0 rounded-md text-foreground hover:bg-accent hover:text-foreground"
         >
           <HugeiconsIcon icon={SidebarLeftIcon} size={18} strokeWidth={1.75} />
         </Button>
 
         <Button
-          size="icon-sm"
+          size="icon"
           variant="ghost"
           onClick={onOpenCommandPalette}
           title="Command palette"
-          className="shrink-0 gap-1.5 rounded-md px-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="size-7 shrink-0 rounded-md text-foreground hover:bg-accent hover:text-foreground"
         >
           <HugeiconsIcon icon={CommandIcon} size={14} strokeWidth={1.75} />
         </Button>
