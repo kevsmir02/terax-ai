@@ -56,6 +56,7 @@
     --color-frame: var(--frame);
     --color-terminal-background: var(--terminal-background);
     --color-terminal-header: var(--terminal-header);
+    --color-terminal-header-focused: var(--terminal-header-focused);
     --radius-sm: calc(var(--radius) * 0.6);
     --radius-md: calc(var(--radius) * 0.8);
     --radius-lg: var(--radius);
@@ -212,6 +213,11 @@
  * status bar), while Content stage keeps opaque `--background`. */
 :root {
   --frame: color-mix(in oklab, var(--card) 97%, var(--foreground) 3%);
+  --terminal-header-focused: color-mix(
+    in oklab,
+    var(--terminal-header) 95%,
+    var(--foreground) 5%
+  );
 }
 
 /* Window vibrancy (macOS NSVisualEffectView / Windows Mica). Only the frame

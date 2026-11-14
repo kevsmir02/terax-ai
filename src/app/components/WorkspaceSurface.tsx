@@ -26,6 +26,7 @@ type Props = {
    * a mutable terminal cwd.
    */
   spaceRoots: Readonly<Record<string, string | null>>;
+  home?: string | null;
   /** Shared native window-presentation feed (occlusion/sleep), optional. */
   subscribeWindowPresentation?: PresentationSubscription;
   registerTerminalHandle: TerminalStackProps["registerHandle"];
@@ -33,6 +34,7 @@ type Props = {
   onCwd: TerminalStackProps["onCwd"];
   onExit: TerminalStackProps["onExit"];
   onFocusLeaf: TerminalStackProps["onFocusLeaf"];
+  onCloseLeaf?: TerminalStackProps["onCloseLeaf"];
   registerEditorHandle: EditorStackProps["registerHandle"];
   onEditorDirtyChange: EditorStackProps["onDirtyChange"];
   onEditorCloseTab: EditorStackProps["onCloseTab"];
@@ -63,12 +65,14 @@ export function WorkspaceSurface({
   activeTab,
   activeSpaceId,
   spaceRoots,
+  home,
   subscribeWindowPresentation,
   registerTerminalHandle,
   onSearchReady,
   onCwd,
   onExit,
   onFocusLeaf,
+  onCloseLeaf,
   registerEditorHandle,
   onEditorDirtyChange,
   onEditorCloseTab,
@@ -107,11 +111,13 @@ export function WorkspaceSurface({
             <TerminalStack
               tabs={tabs}
               activeId={activeId}
+              home={home}
               registerHandle={registerTerminalHandle}
               onSearchReady={onSearchReady}
               onCwd={onCwd}
               onExit={onExit}
               onFocusLeaf={onFocusLeaf}
+              onCloseLeaf={onCloseLeaf}
             />
           </div>
           <WorkspaceInputBar

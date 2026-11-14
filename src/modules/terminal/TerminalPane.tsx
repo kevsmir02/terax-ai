@@ -1,4 +1,5 @@
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { PaneHeader } from "@/modules/terminal/PaneHeader";
 import type { TerminalSearchController } from "@/modules/terminal/search/TerminalSearchController";
 import { useTheme } from "@/modules/theme";
 import {
@@ -13,11 +14,11 @@ import {
 } from "react";
 import type { TerminalBackendKind } from "./backend/contracts";
 import { terminalBackendFor } from "./backend/selection";
-import {
-  useGhosttyTerminalSession,
-  ghosttyBlockGeometry,
-} from "./ghostty/useGhosttyTerminalSession";
 import { ghosttyBlocks } from "./ghostty/ghosttyBlockSessions";
+import {
+  ghosttyBlockGeometry,
+  useGhosttyTerminalSession,
+} from "./ghostty/useGhosttyTerminalSession";
 
 export type TerminalPaneHandle = {
   write: (data: string) => void;
@@ -36,11 +37,16 @@ export type TerminalPaneProps = {
   /** This leaf is the active pane within its tab and receives auto-focus. */
   focused?: boolean;
   initialCwd?: string;
+  cwd?: string;
+  customTitle?: string;
+  leafCount?: number;
+  home?: string | null;
   /** Enable command-block decorations (OSC 133) for this terminal. */
   blocks?: boolean;
   onSearchReady?: (leafId: number, addon: TerminalSearchController) => void;
   onExit?: (leafId: number, code: number) => void;
   onCwd?: (leafId: number, cwd: string) => void;
+  onClose?: (leafId: number) => void;
 };
 
 const TerminalAccessibleOutput = lazy(
@@ -60,10 +66,15 @@ const GhosttyTerminalPane = memo(
       visible,
       focused = true,
       initialCwd,
+      cwd,
+      customTitle,
+      leafCount = 1,
+      home,
       blocks = false,
       onSearchReady,
       onExit,
       onCwd,
+      onClose,
       backend,
     },
     ref,
@@ -160,6 +171,15 @@ const GhosttyTerminalPane = memo(
         }
         data-terminal-backend={backend}
       >
+        <PaneHeader
+          leafId={leafId}
+          focused={focused}
+          leafCount={leafCount}
+          cwd={cwd ?? initialCwd}
+          customTitle={customTitle}
+          home={home}
+          onClose={onClose ? () => onClose(leafId) : undefined}
+        />
         {/* Solid border inset keeps the center transparent over the shared WebGPU canvas. */}
         <div
           data-terminal-pane-body=""

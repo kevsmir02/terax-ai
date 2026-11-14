@@ -96,6 +96,16 @@ describe("default theme tokens and tonal hierarchy", () => {
     expect(readVar(themeInline, "--color-terminal-header")).toBe(
       "var(--terminal-header)",
     );
+    expect(readVar(themeInline, "--color-terminal-header-focused")).toBe(
+      "var(--terminal-header-focused)",
+    );
+  });
+
+  it("derives opaque --terminal-header-focused without vibrancy translucency", () => {
+    const derived = readVar(css, "--terminal-header-focused");
+    expect(derived).toContain("var(--terminal-header)");
+    expect(derived).toContain("var(--foreground)");
+    expect(derived).not.toContain("transparent");
   });
 
   it("establishes a four-step tonal hierarchy in light default with crisp white terminal over tinted stage", () => {
