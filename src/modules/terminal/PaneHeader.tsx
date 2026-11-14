@@ -137,7 +137,7 @@ export const PaneHeader = memo(function PaneHeader({
                 )}
               />
               <span>
-                {identity.phase === "attention" ? "Needs attention" : "Working"}
+                {identity.phase === "attention" ? "Needs attention" : "Running"}
               </span>
             </span>
           )}

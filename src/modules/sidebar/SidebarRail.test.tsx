@@ -44,7 +44,7 @@ function mountRail(
 
 describe("SidebarRail", () => {
   it("uses solid border hairlines, crisp active selection, and readable badge contrast", () => {
-    const { container: host, onSelectView } = mountRail("explorer", 4);
+    const { container: host } = mountRail("explorer", 4);
     const rail = host.firstElementChild as HTMLElement;
     const railClasses = (rail?.className ?? "").split(/\s+/);
 
@@ -59,8 +59,6 @@ describe("SidebarRail", () => {
     const gitBtn = host.querySelector<HTMLButtonElement>(
       'button[aria-label="Git"]',
     );
-    expect(filesBtn?.getAttribute("aria-pressed")).toBe("true");
-    expect(gitBtn?.getAttribute("aria-pressed")).toBe("false");
 
     const activeClasses = (filesBtn?.className ?? "").split(/\s+/);
     expect(activeClasses).toContain("border");
@@ -84,38 +82,16 @@ describe("SidebarRail", () => {
     expect(badgeClasses).toContain("text-foreground");
     expect(badgeClasses).not.toContain("border-border/60");
     expect(badgeClasses).not.toContain("text-muted-foreground/95");
-
-    act(() => {
-      gitBtn?.click();
-    });
-    expect(onSelectView).toHaveBeenCalledWith("source-control");
   });
 
-  it("renders a solid border-t border-border hairline and crisp change badge border", () => {
-    const { container: host } = mountRail("explorer", 3);
-    const rail = host.firstElementChild as HTMLElement | null;
-    expect(rail).not.toBeNull();
-    const classes = rail?.className.split(/\s+/) ?? [];
-    expect(classes).toContain("border-t");
-    expect(classes).toContain("border-border");
-    expect(classes).not.toContain("border-border/60");
-
-    const badge = Array.from(host.querySelectorAll("span")).find(
-      (el) => el.textContent?.trim() === "3",
-    );
-    expect(badge).not.toBeUndefined();
-    const badgeClasses = badge?.className.split(/\s+/) ?? [];
-    expect(badgeClasses).toContain("border-border");
-    expect(badgeClasses).not.toContain("border-border/60");
-  });
-
-  it("reflects active view and invokes onSelectView when toggled", () => {
+  it("reflects active view, omits change badge when changedCount is zero, and invokes onSelectView when toggled", () => {
     const onSelectView = vi.fn();
     const { container: host } = mountRail("explorer", 0, onSelectView);
     const buttons = Array.from(host.querySelectorAll("button"));
     expect(buttons).toHaveLength(2);
     expect(buttons[0]?.getAttribute("aria-pressed")).toBe("true");
     expect(buttons[1]?.getAttribute("aria-pressed")).toBe("false");
+    expect(buttons[1]?.querySelectorAll("span")).toHaveLength(1);
 
     act(() => {
       buttons[1]?.click();

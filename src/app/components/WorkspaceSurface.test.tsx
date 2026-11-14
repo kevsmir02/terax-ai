@@ -613,11 +613,10 @@ describe("WorkspaceSurface", () => {
     });
     expect(label()).toBe("Claude Code");
     expect(container.querySelector('[data-pane-icon="agent"]')).not.toBeNull();
-    expect(
-      container
-        .querySelector<HTMLElement>("[data-pane-phase]")
-        ?.getAttribute("data-pane-phase"),
-    ).toBe("working");
+    const workingPhase =
+      container.querySelector<HTMLElement>("[data-pane-phase]");
+    expect(workingPhase?.getAttribute("data-pane-phase")).toBe("working");
+    expect(workingPhase?.textContent).toBe("Running");
 
     act(() => {
       useAgentActivityStore.setState({
@@ -625,11 +624,10 @@ describe("WorkspaceSurface", () => {
         phases: { 9001: "attention" },
       });
     });
-    expect(
-      container
-        .querySelector<HTMLElement>("[data-pane-phase]")
-        ?.getAttribute("data-pane-phase"),
-    ).toBe("attention");
+    const attentionPhase =
+      container.querySelector<HTMLElement>("[data-pane-phase]");
+    expect(attentionPhase?.getAttribute("data-pane-phase")).toBe("attention");
+    expect(attentionPhase?.textContent).toBe("Needs attention");
 
     leafPtyIds.clear();
     act(() => {
@@ -637,14 +635,32 @@ describe("WorkspaceSurface", () => {
       useAgentStore.getState().start(401, 40, "codex");
     });
     expect(label()).toBe("Codex");
-    expect(
-      container
-        .querySelector<HTMLElement>("[data-pane-phase]")
-        ?.getAttribute("data-pane-phase"),
-    ).toBe("working");
+    const sessionPhase =
+      container.querySelector<HTMLElement>("[data-pane-phase]");
+    expect(sessionPhase?.getAttribute("data-pane-phase")).toBe("working");
+    expect(sessionPhase?.textContent).toBe("Running");
   });
 
-  it("renders a concise read-only tildified and left-truncated cwd in each PaneHeader", () => {
+  it("renders a concise read-only tildified and left-truncated cwd in each PaneHeader without leaking tab.cwd across split leaves", () => {
+    const singleTabWithTabCwd: Tab = {
+      id: 49,
+      spaceId: "default",
+      kind: "terminal",
+      title: "zsh",
+      cwd: "/home/loba/terax-ai",
+      paneTree: { kind: "leaf", id: 491 },
+      activeLeafId: 491,
+    };
+    const singleContainer = mountSurface(
+      singleTabWithTabCwd,
+      [singleTabWithTabCwd],
+      { home: "/home/loba" },
+    );
+    const singleCwd = singleContainer.querySelector<HTMLElement>(
+      '[data-pane-leaf="491"] [data-pane-cwd]',
+    );
+    expect(singleCwd?.textContent).toBe("~/terax-ai");
+
     const splitTab: Tab = {
       id: 50,
       spaceId: "default",
@@ -656,12 +672,13 @@ describe("WorkspaceSurface", () => {
         id: 1,
         dir: "row",
         children: [
-          { kind: "leaf", id: 501 },
+          { kind: "leaf", id: 501, cwd: "/home/loba/terax-ai" },
           {
             kind: "leaf",
             id: 502,
             cwd: "/home/loba/Documents/projects/personal/terax-ai/packages/core",
           },
+          { kind: "leaf", id: 503 },
         ],
       },
       activeLeafId: 501,
@@ -677,6 +694,9 @@ describe("WorkspaceSurface", () => {
     const leaf502Cwd = container.querySelector<HTMLElement>(
       '[data-pane-leaf="502"] [data-pane-cwd]',
     );
+    const leaf503Cwd = container.querySelector<HTMLElement>(
+      '[data-pane-leaf="503"] [data-pane-cwd]',
+    );
 
     expect(leaf501Cwd?.textContent).toBe("~/terax-ai");
     expect(leaf501Cwd?.getAttribute("title")).toBe("~/terax-ai");
@@ -687,6 +707,7 @@ describe("WorkspaceSurface", () => {
     expect(leaf502Cwd?.getAttribute("title")).toBe(
       "~/Documents/projects/personal/terax-ai/packages/core",
     );
+    expect(leaf503Cwd).toBeNull();
   });
 
   it("gates the PaneHeader close button on leafCount > 1 and invokes onCloseLeaf without focusing the closing leaf", () => {

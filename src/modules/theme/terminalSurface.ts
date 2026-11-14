@@ -55,12 +55,11 @@ interface Oklab {
 const DARK_AUTO_DEEPEN_WEIGHT = 0.28;
 const DARK_HEADER_FG_WEIGHT = 0.045;
 const LIGHT_HEADER_FG_WEIGHT = 0.025;
+const LIGHT_TINTED_HEADER_WHITE_WEIGHT = 0.45;
+const LIGHT_NEAR_WHITE_LUMINANCE = 0.94;
 const MIN_HEADER_BLACK_L = 0.165;
 
-/**
- * Picks the effective variant and records whether the selected palette is
- * dark or light (even when requested under the opposite mode as a fallback).
- */
+// Preserves the variant's own dark/light identity even when requested under the opposite mode as a fallback.
 export function resolveThemeVariant(
   theme: Theme,
   requestedMode: ThemeMode,
@@ -75,12 +74,7 @@ export function resolveThemeVariant(
   return null;
 }
 
-/**
- * Resolves the terminal canvas background and opaque header surface for a
- * theme variant. Explicit `terminal.background` wins verbatim; otherwise dark
- * variants auto-deepen from `colors.background` while light variants stay
- * bright.
- */
+// Keeps the terminal canvas deeper than the stage on dark presets without darkening bright light variants.
 export function resolveTerminalSurface(
   variant: ThemeVariant,
   variantMode: ThemeMode,
@@ -114,11 +108,7 @@ export function resolveTerminalSurface(
   };
 }
 
-/**
- * Resolves explicit swatch colors for a theme card in Settings, keeping
- * `terax-default` anchored to its CSS defaults instead of reading active
- * window custom properties.
- */
+// Anchors `terax-default` swatches to CSS defaults instead of reading active window custom properties.
 export function resolveThemeSwatch(
   theme: Theme,
   requestedMode: ThemeMode,
@@ -176,11 +166,19 @@ function deriveTerminalHeader(
     return `color-mix(in oklab, ${terminalBackground} ${keepPct}, ${foreground})`;
   }
 
+  const isTintedLight =
+    mode === "light" && rgbLuminance(bgRgb) < LIGHT_NEAR_WHITE_LUMINANCE;
   const weight =
-    mode === "dark" ? DARK_HEADER_FG_WEIGHT : LIGHT_HEADER_FG_WEIGHT;
+    mode === "dark"
+      ? DARK_HEADER_FG_WEIGHT
+      : isTintedLight
+        ? LIGHT_TINTED_HEADER_WHITE_WEIGHT
+        : LIGHT_HEADER_FG_WEIGHT;
   const bgLab = rgbToOklab(bgRgb);
-  const fgLab = rgbToOklab(fgRgb);
-  let mixed = mixOklab(bgLab, fgLab, weight);
+  const targetLab = isTintedLight
+    ? rgbToOklab([255, 255, 255])
+    : rgbToOklab(fgRgb);
+  let mixed = mixOklab(bgLab, targetLab, weight);
   let result = oklabToHex(mixed);
 
   if (result === normalizeHex(terminalBackground)) {
@@ -188,7 +186,9 @@ function deriveTerminalHeader(
       L:
         mode === "dark"
           ? Math.max(bgLab.L + 0.04, MIN_HEADER_BLACK_L)
-          : Math.max(0, bgLab.L - 0.04),
+          : isTintedLight
+            ? Math.min(1, bgLab.L + 0.04)
+            : Math.max(0, bgLab.L - 0.04),
       a: bgLab.a,
       b: bgLab.b,
     };
@@ -236,6 +236,14 @@ function mixOklab(a: Oklab, b: Oklab, weightB: number): Oklab {
 function srgbToLinear(channel: number): number {
   const c = channel / 255;
   return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+}
+
+function rgbLuminance([r8, g8, b8]: readonly [number, number, number]): number {
+  return (
+    0.2126 * srgbToLinear(r8) +
+    0.7152 * srgbToLinear(g8) +
+    0.0722 * srgbToLinear(b8)
+  );
 }
 
 function linearToSrgb(channel: number): number {

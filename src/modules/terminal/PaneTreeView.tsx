@@ -51,32 +51,23 @@ export function PaneTreeView(props: Props) {
     } = props;
     const focused = node.id === activeLeafId;
     const b = getBundle(node.id);
+    const focusIfNotCloseTarget = (event: { target: EventTarget | null }) => {
+      if (
+        !focused &&
+        !(
+          event.target instanceof Element &&
+          event.target.closest("[data-pane-close]")
+        )
+      ) {
+        onFocusLeaf(node.id);
+      }
+    };
     return (
       <div
-        onMouseDownCapture={(event) => {
-          if (
-            !focused &&
-            !(
-              event.target instanceof Element &&
-              event.target.closest("[data-pane-close]")
-            )
-          ) {
-            onFocusLeaf(node.id);
-          }
-        }}
+        onMouseDownCapture={focusIfNotCloseTarget}
         // Catches focus from Tab, programmatic focus, or any path that
-        // skips mousedown — keeps activeLeafId in sync with DOM focus.
-        onFocus={(event) => {
-          if (
-            !focused &&
-            !(
-              event.target instanceof Element &&
-              event.target.closest("[data-pane-close]")
-            )
-          ) {
-            onFocusLeaf(node.id);
-          }
-        }}
+        // skips mousedown: keeps activeLeafId in sync with DOM focus.
+        onFocus={focusIfNotCloseTarget}
         data-pane-leaf={node.id}
         className="relative h-full w-full"
       >
@@ -85,7 +76,7 @@ export function PaneTreeView(props: Props) {
           visible={tabVisible}
           focused={focused}
           initialCwd={node.cwd}
-          cwd={node.cwd ?? tabCwd}
+          cwd={node.cwd ?? (leafCount === 1 ? tabCwd : undefined)}
           customTitle={customTitle}
           leafCount={leafCount}
           home={home}

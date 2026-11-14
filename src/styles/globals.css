@@ -220,11 +220,10 @@
   );
 }
 
-/* Window vibrancy (macOS NSVisualEffectView / Windows Mica). Only the frame
- * goes translucent: panes keep `--background` so terminal and editor text
- * stays on a solid, readable surface and the terminal canvas still matches its
- * container. Redefining `--frame` rather than layering an overlay means
- * `bg-frame` and the borderless-chrome `#root` both follow automatically. */
+/* Window vibrancy (macOS NSVisualEffectView / Windows Mica). Only `--frame`
+ * (the outer Shell frame) goes translucent; Content stage (`--background`),
+ * Pane header (`--terminal-header`), and Terminal card (`--terminal-background`)
+ * stay opaque so terminal and editor text remain on a solid readable surface. */
 html[data-vibrancy="on"],
 html[data-vibrancy="on"] body {
   background: transparent;
