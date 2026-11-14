@@ -1,12 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceEnv } from "@/modules/workspace";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   duplicateSpaceMeta,
   duplicateSpaceOrganization,
+  evaluateIsolationToggleGuard,
   normalizeAccountIsolation,
   normalizeSpaceMeta,
 } from "./isolation";
-import { loadAll, saveSpacesList, type SpaceMeta } from "./store";
+import { loadAll, type SpaceMeta, saveSpacesList } from "./store";
 
 const { mockEntries, mockSet, mockDelete } = vi.hoisted(() => ({
   mockEntries: vi.fn<() => Promise<[string, unknown][]>>(),
@@ -227,5 +228,35 @@ describe("Space Account isolation metadata & duplication", () => {
         { kind: "editor", path: "/tmp/client-a/README.md" },
       ],
     });
+  });
+
+  it("permits toggling isolation only when no active or live terminals exist in that Space", () => {
+    const blockedWarm = evaluateIsolationToggleGuard(
+      "sp-a",
+      [
+        { spaceId: "sp-a", kind: "terminal", cold: false, leafIds: [1] },
+        { spaceId: "sp-b", kind: "terminal", cold: false, leafIds: [2] },
+      ],
+      () => false,
+    );
+    expect(blockedWarm.allowed).toBe(false);
+
+    const blockedLiveCold = evaluateIsolationToggleGuard(
+      "sp-a",
+      [{ spaceId: "sp-a", kind: "terminal", cold: true, leafIds: [3] }],
+      (leafId) => leafId === 3,
+    );
+    expect(blockedLiveCold.allowed).toBe(false);
+
+    const allowed = evaluateIsolationToggleGuard(
+      "sp-a",
+      [
+        { spaceId: "sp-a", kind: "editor", leafIds: [] },
+        { spaceId: "sp-a", kind: "terminal", cold: true, leafIds: [4] },
+        { spaceId: "sp-b", kind: "terminal", cold: false, leafIds: [5] },
+      ],
+      (leafId) => leafId === 5,
+    );
+    expect(allowed).toEqual({ allowed: true });
   });
 });

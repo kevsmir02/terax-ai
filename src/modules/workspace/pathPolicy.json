@@ -19,12 +19,15 @@
     "^\\.pgpass(?:[.\\s:]|$)",
     "^\\.npmrc(?:[.\\s:]|$)",
     "^\\.pypirc(?:[.\\s:]|$)",
+    "^\\.credentials\\.json(?:[.\\s:]|$)",
+    "^\\.claude\\.json(?:[.\\s:]|$)",
     "^secrets?\\.(json|ya?ml|toml|env)(?:[.\\s:]|$)",
     "^service[-_]?account.*\\.json(?:[.\\s:]|$)"
   ],
   "protectedDirs": [
     "/.ssh",
     "/.gnupg",
+    "/.claude",
     "/.aws",
     "/.azure",
     "/.kube",
@@ -54,6 +57,8 @@
     "/appdata/local/app.crynta.terax",
     "/.local/share/app.crynta.terax",
     "/.cache/codr",
+    "/codr/space-profiles",
+    "/terax/space-profiles",
     "/appdata/local/io.github.kevsmir02.codr",
     "/.local/share/io.github.kevsmir02.codr",
     "/.config/io.github.kevsmir02.codr"

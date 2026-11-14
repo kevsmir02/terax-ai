@@ -247,6 +247,7 @@ pub fn spawn(
     blocks: bool,
     shell: Option<String>,
     control: Option<crate::modules::control::ShellControlEnv>,
+    isolated: Option<crate::modules::space_profile::IsolatedProfileEnv>,
     colors: Option<TerminalColors>,
     pane_id: Option<u32>,
 ) -> Result<Arc<Session>, String> {
@@ -281,7 +282,7 @@ pub fn spawn(
             pixel_width: 0,
             pixel_height: 0,
         },
-        move || shell_init::build_command(cwd, workspace, blocks, shell, control),
+        move || shell_init::build_command(cwd, workspace, blocks, shell, control, isolated),
     )
 }
 

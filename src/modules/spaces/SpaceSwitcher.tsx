@@ -19,8 +19,12 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { InlineRename } from "./components/InlineRename";
+import type {
+  AccountIsolationMode,
+  IsolationToggleGuard,
+} from "./lib/isolation";
+import { type SharedRoot, sharedRoots } from "./lib/sharedRoots";
 import { accentFor } from "./lib/spaceColor";
-import { sharedRoots, type SharedRoot } from "./lib/sharedRoots";
 import type { SpaceMeta } from "./lib/store";
 import { useSpaces } from "./lib/useSpaces";
 import { SharedFolderBadge } from "./SharedFolderBadge";
@@ -31,6 +35,12 @@ type Props = {
   onOpenChange: (open: boolean) => void;
   tabs: Tab[];
   onNewSpace: () => void;
+  onNewIsolatedSpace?: () => void;
+  onToggleSpaceIsolation?: (
+    spaceId: string,
+    nextMode: AccountIsolationMode,
+  ) => Promise<void>;
+  canToggleSpaceIsolation?: (spaceId: string) => IsolationToggleGuard;
   onDeleteSpace: (id: string) => void;
   onNewTabInSpace: (spaceId: string) => void;
   onJumpTab: (id: number) => void;
@@ -78,6 +88,9 @@ export function SpaceSwitcher({
   onOpenChange,
   tabs,
   onNewSpace,
+  onNewIsolatedSpace,
+  onToggleSpaceIsolation,
+  canToggleSpaceIsolation,
   onDeleteSpace,
   onNewTabInSpace,
   onJumpTab,
@@ -95,6 +108,37 @@ export function SpaceSwitcher({
   const [expanded, setExpanded] = useState<Set<string>>(() =>
     activeId ? new Set([activeId]) : new Set(),
   );
+  const [togglingSpaceId, setTogglingSpaceId] = useState<string | null>(null);
+  const [isolationErrorById, setIsolationErrorById] = useState<
+    Record<string, string>
+  >({});
+
+  useEffect(() => {
+    if (!open) setIsolationErrorById({});
+  }, [open]);
+
+  const handleToggleIsolation = async (
+    spaceId: string,
+    nextMode: AccountIsolationMode,
+  ) => {
+    if (!onToggleSpaceIsolation) return;
+    setTogglingSpaceId(spaceId);
+    setIsolationErrorById((prev) => {
+      const next = { ...prev };
+      delete next[spaceId];
+      return next;
+    });
+    try {
+      await onToggleSpaceIsolation(spaceId, nextMode);
+    } catch (error) {
+      setIsolationErrorById((prev) => ({
+        ...prev,
+        [spaceId]: error instanceof Error ? error.message : String(error),
+      }));
+    } finally {
+      setTogglingSpaceId((cur) => (cur === spaceId ? null : cur));
+    }
+  };
 
   const drag = useRef<DragState | null>(null);
   const dropRef = useRef<DropTarget | null>(null);
@@ -255,6 +299,14 @@ export function SpaceSwitcher({
           <span className="max-w-36 truncate text-xs font-medium">
             {current.name}
           </span>
+          {current.accountIsolation === "isolated" && (
+            <span
+              data-space-isolation="isolated"
+              className="rounded bg-primary/15 px-1 py-px text-[10px] font-medium text-primary"
+            >
+              Isolated
+            </span>
+          )}
           {currentShared && <SharedFolderBadge group={currentShared} />}
           <HugeiconsIcon
             icon={ArrowRight01Icon}
@@ -308,6 +360,22 @@ export function SpaceSwitcher({
               onNewTab={() => onNewTabInSpace(sp.id)}
               onJumpTab={onJumpTab}
               onCloseTab={onCloseTab}
+              isolationGuard={
+                canToggleSpaceIsolation?.(sp.id) ?? { allowed: true }
+              }
+              togglingIsolation={togglingSpaceId === sp.id}
+              isolationError={isolationErrorById[sp.id]}
+              onToggleIsolation={
+                onToggleSpaceIsolation
+                  ? () =>
+                      void handleToggleIsolation(
+                        sp.id,
+                        sp.accountIsolation === "isolated"
+                          ? "default"
+                          : "isolated",
+                      )
+                  : undefined
+              }
             />
           ))}
         </div>
@@ -328,6 +396,21 @@ export function SpaceSwitcher({
             <HugeiconsIcon icon={PlusSignIcon} size={14} strokeWidth={1.75} />
             <span className="flex-1">New space</span>
           </button>
+          {onNewIsolatedSpace && (
+            <button
+              type="button"
+              data-new-isolated-space
+              onClick={() => {
+                onNewIsolatedSpace();
+                onOpenChange(false);
+              }}
+              title="Create a Space with an isolated Claude Code profile"
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-accent"
+            >
+              <HugeiconsIcon icon={PlusSignIcon} size={14} strokeWidth={1.75} />
+              <span className="flex-1">New isolated space</span>
+            </button>
+          )}
         </div>
       </PopoverContent>
       {overlay &&
@@ -379,6 +462,10 @@ type SpaceRowProps = {
   onNewTab: () => void;
   onJumpTab: (id: number) => void;
   onCloseTab: (id: number) => void;
+  isolationGuard: IsolationToggleGuard;
+  togglingIsolation: boolean;
+  isolationError?: string;
+  onToggleIsolation?: () => void;
 };
 
 function SpaceRow({
@@ -404,6 +491,10 @@ function SpaceRow({
   onNewTab,
   onJumpTab,
   onCloseTab,
+  isolationGuard,
+  togglingIsolation,
+  isolationError,
+  onToggleIsolation,
 }: SpaceRowProps) {
   const isDragging = dragging?.kind === "space" && dragging.id === space.id;
   const moveTarget = drop?.kind === "into-space" && drop.spaceId === space.id;
@@ -472,6 +563,14 @@ function SpaceRow({
         )}
         {!editing && (
           <>
+            {space.accountIsolation === "isolated" && (
+              <span
+                data-space-isolation="isolated"
+                className="shrink-0 rounded bg-primary/15 px-1 py-px text-[10px] font-medium text-primary"
+              >
+                Isolated
+              </span>
+            )}
             {sharedGroup && <SharedFolderBadge group={sharedGroup} />}
             <span className="shrink-0 px-1 text-[10px] tabular-nums text-muted-foreground group-hover:hidden">
               {tabs.length}
@@ -522,6 +621,49 @@ function SpaceRow({
             <span className="px-2 py-1 text-[10.5px] text-muted-foreground">
               {draggingTabFromOther ? "Drop to move here" : "No tabs"}
             </span>
+          )}
+          {onToggleIsolation && (
+            <div className="mt-1 border-t border-border/60 px-2 pt-1.5 pb-1">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10.5px] text-muted-foreground">
+                  {space.accountIsolation === "isolated"
+                    ? "Account: Isolated"
+                    : "Account: Shared"}
+                </span>
+                <button
+                  type="button"
+                  data-isolation-toggle={space.id}
+                  disabled={!isolationGuard.allowed || togglingIsolation}
+                  title={
+                    isolationGuard.allowed ? undefined : isolationGuard.reason
+                  }
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggleIsolation();
+                  }}
+                  className="rounded border border-border px-1.5 py-0.5 text-[10px] font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {togglingIsolation
+                    ? "Updating..."
+                    : space.accountIsolation === "isolated"
+                      ? "Use host"
+                      : "Isolate"}
+                </button>
+              </div>
+              {!isolationGuard.allowed && (
+                <p
+                  data-isolation-blocked={space.id}
+                  className="mt-1 text-[10px] leading-snug text-muted-foreground"
+                >
+                  {isolationGuard.reason}
+                </p>
+              )}
+              {isolationError && (
+                <p className="mt-1 text-[10px] leading-snug text-destructive">
+                  {isolationError}
+                </p>
+              )}
+            </div>
           )}
         </div>
       )}

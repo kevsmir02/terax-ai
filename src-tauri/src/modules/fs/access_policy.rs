@@ -20,7 +20,7 @@ struct PathPolicy {
     protected_dirs: Vec<String>,
 }
 
-pub(super) fn readable(path: &Path) -> Result<(), String> {
+pub(crate) fn readable(path: &Path) -> Result<(), String> {
     // This fork's control directory holds a live credential, and so does the upstream
     // application's: both are refused, which keeps the denylist in sync with whatever
     // name the identity table gives the fork (see `modules::identity`).

@@ -1,5 +1,5 @@
 mod access;
-mod access_policy;
+pub(crate) mod access_policy;
 pub mod assets;
 #[cfg(feature = "bench")]
 pub mod bench_probe;

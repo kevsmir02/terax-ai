@@ -6,14 +6,20 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
 use std::fs::{self, DirBuilder, File};
 use std::io::{ErrorKind, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::NamedTempFile;
+
+use crate::modules::space_profile::{
+    provision_and_verify_claude_profile, verify_claude_cli_compatible, IsolatedProfileEnv,
+    ProfileEnvironment,
+};
 
 const MANIFEST_VERSION: u32 = 1;
 const MAX_SPACE_ID_LEN: usize = 128;
@@ -87,6 +93,8 @@ enum RegistryState {
     Ready {
         manifest_path: PathBuf,
         profiles_dir: Option<PathBuf>,
+        host_home_override: Option<Option<PathBuf>>,
+        path_env_override: Option<Option<OsString>>,
         manifest: Manifest,
     },
     Error {
@@ -94,9 +102,9 @@ enum RegistryState {
     },
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct SpaceIsolationRegistry {
-    inner: Mutex<RegistryState>,
+    inner: Arc<Mutex<RegistryState>>,
 }
 
 impl SpaceIsolationRegistry {
@@ -106,16 +114,44 @@ impl SpaceIsolationRegistry {
         registry
     }
 
+    pub fn for_paths_with_env(
+        manifest_path: PathBuf,
+        profiles_dir: Option<PathBuf>,
+        host_home: Option<PathBuf>,
+        path_env: Option<OsString>,
+    ) -> Self {
+        let registry = Self::default();
+        let _ = registry.initialize_with_env(
+            manifest_path,
+            profiles_dir,
+            Some(host_home),
+            Some(path_env),
+        );
+        registry
+    }
+
     pub fn initialize(
         &self,
         manifest_path: PathBuf,
         profiles_dir: Option<PathBuf>,
+    ) -> Result<(), String> {
+        self.initialize_with_env(manifest_path, profiles_dir, None, None)
+    }
+
+    pub fn initialize_with_env(
+        &self,
+        manifest_path: PathBuf,
+        profiles_dir: Option<PathBuf>,
+        host_home_override: Option<Option<PathBuf>>,
+        path_env_override: Option<Option<OsString>>,
     ) -> Result<(), String> {
         let next = match fs::read_to_string(&manifest_path) {
             Ok(raw) => match parse_manifest(&raw) {
                 Ok(manifest) => RegistryState::Ready {
                     manifest_path,
                     profiles_dir,
+                    host_home_override,
+                    path_env_override,
                     manifest,
                 },
                 Err(reason) => {
@@ -129,6 +165,8 @@ impl SpaceIsolationRegistry {
             Err(err) if err.kind() == ErrorKind::NotFound => RegistryState::Ready {
                 manifest_path,
                 profiles_dir,
+                host_home_override,
+                path_env_override,
                 manifest: Manifest::default(),
             },
             Err(err) => {
@@ -158,7 +196,7 @@ impl SpaceIsolationRegistry {
             .inner
             .lock()
             .map_err(|_| "Space isolation registry lock poisoned".to_string())?;
-        let (_, profiles_dir, _) = ready_parts(&guard)?;
+        let (_, profiles_dir, _, _, _) = ready_parts(&guard)?;
         let base = profiles_dir
             .as_ref()
             .ok_or_else(|| "Space profiles directory is unavailable".to_string())?;
@@ -173,7 +211,7 @@ impl SpaceIsolationRegistry {
             .inner
             .lock()
             .map_err(|_| "Space isolation registry lock poisoned".to_string())?;
-        let (manifest_path, profiles_dir, manifest) = ready_parts_mut(&mut guard)?;
+        let (manifest_path, profiles_dir, _, _, manifest) = ready_parts_mut(&mut guard)?;
         let profiles_ref = profiles_dir.as_deref();
         let (statuses, dirty) = plan_sync_manifest(manifest, &inputs, &|id| {
             has_retained_profile_dir(profiles_ref, id)
@@ -194,7 +232,8 @@ impl SpaceIsolationRegistry {
             .inner
             .lock()
             .map_err(|_| "Space isolation registry lock poisoned".to_string())?;
-        let (manifest_path, profiles_dir, manifest) = ready_parts_mut(&mut guard)?;
+        let (manifest_path, profiles_dir, host_home_override, path_env_override, manifest) =
+            ready_parts_mut(&mut guard)?;
 
         if manifest.tombstones.contains_key(space_id) {
             return Err(
@@ -211,6 +250,14 @@ impl SpaceIsolationRegistry {
                 );
             }
         } else {
+            if mode == AccountIsolationMode::Isolated {
+                let env = build_profile_env(
+                    profiles_dir.as_deref(),
+                    host_home_override,
+                    path_env_override,
+                )?;
+                provision_and_verify_claude_profile(&env, space_id)?;
+            }
             manifest
                 .spaces
                 .insert(space_id.to_string(), ManifestSpaceEntry { mode });
@@ -235,7 +282,8 @@ impl SpaceIsolationRegistry {
             .inner
             .lock()
             .map_err(|_| "Space isolation registry lock poisoned".to_string())?;
-        let (manifest_path, profiles_dir, manifest) = ready_parts_mut(&mut guard)?;
+        let (manifest_path, profiles_dir, host_home_override, path_env_override, manifest) =
+            ready_parts_mut(&mut guard)?;
 
         if manifest.tombstones.contains_key(space_id) {
             return Err(
@@ -244,11 +292,21 @@ impl SpaceIsolationRegistry {
             );
         }
 
-        let Some(entry) = manifest.spaces.get_mut(space_id) else {
+        let Some(current_mode) = manifest.spaces.get(space_id).map(|entry| entry.mode) else {
             return Err("Space is not registered in the isolation registry".to_string());
         };
-        if entry.mode != mode {
-            entry.mode = mode;
+        if current_mode != mode {
+            if mode == AccountIsolationMode::Isolated {
+                let env = build_profile_env(
+                    profiles_dir.as_deref(),
+                    host_home_override,
+                    path_env_override,
+                )?;
+                provision_and_verify_claude_profile(&env, space_id)?;
+            }
+            if let Some(entry) = manifest.spaces.get_mut(space_id) {
+                entry.mode = mode;
+            }
             write_manifest_atomic(manifest_path, manifest)?;
         }
 
@@ -266,7 +324,7 @@ impl SpaceIsolationRegistry {
             .inner
             .lock()
             .map_err(|_| "Space isolation registry lock poisoned".to_string())?;
-        let (manifest_path, profiles_dir, manifest) = ready_parts_mut(&mut guard)?;
+        let (manifest_path, profiles_dir, _, _, manifest) = ready_parts_mut(&mut guard)?;
 
         let retained = has_retained_profile_dir(profiles_dir.as_deref(), space_id);
         let has_tombstone = manifest.tombstones.contains_key(space_id);
@@ -306,7 +364,7 @@ impl SpaceIsolationRegistry {
             .inner
             .lock()
             .map_err(|_| "Space isolation registry lock poisoned".to_string())?;
-        let (manifest_path, _, manifest) = ready_parts_mut(&mut guard)?;
+        let (manifest_path, _, _, _, manifest) = ready_parts_mut(&mut guard)?;
         manifest.tombstones.insert(
             space_id.to_string(),
             PendingTombstone {
@@ -325,7 +383,7 @@ impl SpaceIsolationRegistry {
             .inner
             .lock()
             .map_err(|_| "Space isolation registry lock poisoned".to_string())?;
-        let (manifest_path, _, manifest) = ready_parts_mut(&mut guard)?;
+        let (manifest_path, _, _, _, manifest) = ready_parts_mut(&mut guard)?;
         if manifest.tombstones.remove(space_id).is_some() {
             write_manifest_atomic(manifest_path, manifest)?;
         }
@@ -337,22 +395,139 @@ impl SpaceIsolationRegistry {
         space_id: Option<&str>,
         expected_isolation: Option<AccountIsolationMode>,
     ) -> Result<(), String> {
-        let guard = self
-            .inner
-            .lock()
-            .map_err(|_| "Space isolation registry lock poisoned".to_string())?;
-        let (_, _, manifest) = ready_parts(&guard)?;
-        validate_pty_open_against_manifest(manifest, space_id, expected_isolation)
+        self.prepare_pty_isolation(space_id, expected_isolation, false, false)
+            .map(|_| ())
+    }
+
+    pub fn prepare_pty_isolation(
+        &self,
+        space_id: Option<&str>,
+        expected_isolation: Option<AccountIsolationMode>,
+        is_wsl: bool,
+        require_claude_cli: bool,
+    ) -> Result<Option<IsolatedProfileEnv>, String> {
+        let (id, expected, env_snapshot) = {
+            let guard = self
+                .inner
+                .lock()
+                .map_err(|_| "Space isolation registry lock poisoned".to_string())?;
+            let (_, profiles_dir, host_home_override, path_env_override, manifest) =
+                ready_parts(&guard)?;
+            validate_pty_open_against_manifest(manifest, space_id, expected_isolation)?;
+            let expected = expected_isolation.ok_or_else(|| {
+                "Missing expectedIsolation for terminal open; refusing host fallback".to_string()
+            })?;
+            let id = space_id
+                .ok_or_else(|| {
+                    "Missing spaceId for terminal open; refusing host credential fallback"
+                        .to_string()
+                })?
+                .to_string();
+            let snapshot = if expected == AccountIsolationMode::Isolated {
+                if is_wsl {
+                    return Err(
+                        "Isolated Account context is not supported for WSL terminals; refusing host credential fallback"
+                            .to_string(),
+                    );
+                }
+                Some(build_profile_env(
+                    profiles_dir.as_deref(),
+                    host_home_override,
+                    path_env_override,
+                )?)
+            } else {
+                None
+            };
+            (id, expected, snapshot)
+        };
+
+        if expected == AccountIsolationMode::Default {
+            return Ok(None);
+        }
+
+        let env = env_snapshot.ok_or_else(|| {
+            "Space profiles directory is unavailable; refusing isolated launch without host fallback"
+                .to_string()
+        })?;
+        let paths = provision_and_verify_claude_profile(&env, &id)?;
+        verify_claude_cli_compatible(env.path_env.as_deref(), &paths.shim_dir, require_claude_cli)?;
+        Ok(Some(IsolatedProfileEnv {
+            space_dir: paths.space_dir,
+            shim_dir: paths.shim_dir,
+            claude_config_dir: paths.claude_dir,
+        }))
+    }
+
+    pub fn prepare_agent_launch(
+        &self,
+        space_id: &str,
+        expected_isolation: AccountIsolationMode,
+        agent_id: &str,
+    ) -> Result<(), String> {
+        let require_claude =
+            expected_isolation == AccountIsolationMode::Isolated && agent_id == "claude";
+        self.prepare_pty_isolation(Some(space_id), Some(expected_isolation), false, require_claude)
+            .map(|_| ())
     }
 }
 
-fn ready_parts(state: &RegistryState) -> Result<(&PathBuf, &Option<PathBuf>, &Manifest), String> {
+type ReadyParts<'a> = (
+    &'a PathBuf,
+    &'a Option<PathBuf>,
+    &'a Option<Option<PathBuf>>,
+    &'a Option<Option<OsString>>,
+    &'a Manifest,
+);
+
+type ReadyPartsMut<'a> = (
+    &'a PathBuf,
+    &'a Option<PathBuf>,
+    &'a Option<Option<PathBuf>>,
+    &'a Option<Option<OsString>>,
+    &'a mut Manifest,
+);
+
+fn build_profile_env(
+    profiles_dir: Option<&Path>,
+    host_home_override: &Option<Option<PathBuf>>,
+    path_env_override: &Option<Option<OsString>>,
+) -> Result<ProfileEnvironment, String> {
+    let profiles_root = profiles_dir
+        .ok_or_else(|| {
+            "Space profiles directory is unavailable; refusing isolated launch without host fallback"
+                .to_string()
+        })?
+        .to_path_buf();
+    let host_home = match host_home_override {
+        Some(custom) => custom.clone(),
+        None => dirs::home_dir(),
+    };
+    let path_env = match path_env_override {
+        Some(custom) => custom.clone(),
+        None => std::env::var_os("PATH"),
+    };
+    Ok(ProfileEnvironment {
+        profiles_root,
+        host_home,
+        path_env,
+    })
+}
+
+fn ready_parts(state: &RegistryState) -> Result<ReadyParts<'_>, String> {
     match state {
         RegistryState::Ready {
             manifest_path,
             profiles_dir,
+            host_home_override,
+            path_env_override,
             manifest,
-        } => Ok((manifest_path, profiles_dir, manifest)),
+        } => Ok((
+            manifest_path,
+            profiles_dir,
+            host_home_override,
+            path_env_override,
+            manifest,
+        )),
         RegistryState::Uninitialized => Err(
             "Space isolation registry is uninitialized; refusing terminal open without host fallback"
                 .to_string(),
@@ -361,15 +536,21 @@ fn ready_parts(state: &RegistryState) -> Result<(&PathBuf, &Option<PathBuf>, &Ma
     }
 }
 
-fn ready_parts_mut(
-    state: &mut RegistryState,
-) -> Result<(&PathBuf, &Option<PathBuf>, &mut Manifest), String> {
+fn ready_parts_mut(state: &mut RegistryState) -> Result<ReadyPartsMut<'_>, String> {
     match state {
         RegistryState::Ready {
             manifest_path,
             profiles_dir,
+            host_home_override,
+            path_env_override,
             manifest,
-        } => Ok((manifest_path, profiles_dir, manifest)),
+        } => Ok((
+            manifest_path,
+            profiles_dir,
+            host_home_override,
+            path_env_override,
+            manifest,
+        )),
         RegistryState::Uninitialized => {
             Err("Space isolation registry is uninitialized; refusing isolation update".to_string())
         }
@@ -394,8 +575,10 @@ pub fn validate_space_id(id: &str) -> Result<(), String> {
 }
 
 fn looks_like_secret_token(token: &str) -> bool {
-    let trimmed = token.trim_matches(|c: char| matches!(c, '"' | '\'' | ',' | ';' | ')' | '('));
-    [
+    let trimmed = token.trim_matches(|c: char| {
+        matches!(c, '"' | '\'' | ',' | ';' | ')' | '(' | '{' | '}' | '[' | ']')
+    });
+    if [
         "sk-",
         "ghp_",
         "github_pat_",
@@ -403,9 +586,83 @@ fn looks_like_secret_token(token: &str) -> bool {
         "xoxp-",
         "AIza",
         "AKIA",
+        "eyJ",
     ]
     .iter()
-    .any(|prefix| trimmed.starts_with(prefix))
+    .any(|prefix| trimmed.starts_with(prefix) && (!prefix.eq(&"eyJ") || trimmed.contains('.')))
+    {
+        return true;
+    }
+    let lower = token.to_ascii_lowercase();
+    [
+        "\"accesstoken\":",
+        "\"refreshtoken\":",
+        "\"apikey\":",
+        "\"sessionkey\":",
+        "\"oauth",
+        "\"secret\":",
+        "\"token\":",
+        "\"password\":",
+    ]
+    .iter()
+    .any(|pattern| lower.contains(pattern))
+}
+
+fn is_json_secret_key_prefix(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    [
+        "\"accesstoken\":",
+        "\"refreshtoken\":",
+        "\"apikey\":",
+        "\"sessionkey\":",
+        "\"secret\":",
+        "\"token\":",
+        "\"password\":",
+    ]
+    .iter()
+    .any(|pattern| lower.ends_with(pattern))
+}
+
+pub fn contains_secret_payload(payload: &str) -> bool {
+    let lower = payload.to_ascii_lowercase();
+    if payload.contains("sk-ant-")
+        || payload.contains("sk-proj-")
+        || payload.contains("ghp_")
+        || payload.contains("github_pat_")
+        || payload.contains("xoxb-")
+        || payload.contains("xoxp_")
+        || payload.contains("claudeAiOauth")
+    {
+        return true;
+    }
+    if [
+        "\"accesstoken\":",
+        "\"refreshtoken\":",
+        "\"sessionkey\":",
+        "\"oauthaccount\":",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+    {
+        return true;
+    }
+    for prefix in [
+        "anthropic_api_key=",
+        "claude_code_oauth_token=",
+        "openai_api_key=",
+    ] {
+        if let Some(pos) = lower.find(prefix) {
+            let rest = &payload[pos + prefix.len()..];
+            let val_len = rest
+                .chars()
+                .take_while(|c| !c.is_whitespace() && *c != '"' && *c != '\'')
+                .count();
+            if val_len >= 8 {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 pub fn sanitize_error_message(message: &str) -> String {
@@ -422,12 +679,15 @@ pub fn sanitize_error_message(message: &str) -> String {
             continue;
         }
         let lower = token.to_ascii_lowercase();
-        if lower == "bearer" || lower == "bearer:" {
+        if matches!(lower.as_str(), "bearer" | "bearer:" | "basic" | "basic:") {
             out.push(token.to_string());
             redact_next = true;
             continue;
         }
         if looks_like_secret_token(token) {
+            if is_json_secret_key_prefix(token) {
+                redact_next = true;
+            }
             out.push("[redacted]".to_string());
         } else if let Some((k, _)) = token.split_once('=') {
             let kl = k.to_ascii_lowercase();
@@ -435,6 +695,8 @@ pub fn sanitize_error_message(message: &str) -> String {
                 || kl.contains("token")
                 || kl.contains("secret")
                 || kl.contains("auth")
+                || kl.contains("password")
+                || kl.contains("cookie")
             {
                 out.push(format!("{k}=[redacted]"));
             } else {
@@ -590,13 +852,6 @@ pub fn validate_pty_open_against_manifest(
         );
     }
 
-    if expected == AccountIsolationMode::Isolated {
-        return Err(
-            "Isolated Account context is blocked until Space Agent profile adapters are available; refusing host fallback"
-                .to_string(),
-        );
-    }
-
     Ok(())
 }
 
@@ -742,6 +997,21 @@ pub fn space_isolation_remove(
     state.remove_space(&space_id)
 }
 
+#[tauri::command]
+pub async fn space_isolation_preflight_agent(
+    state: tauri::State<'_, SpaceIsolationRegistry>,
+    space_id: String,
+    expected_isolation: AccountIsolationMode,
+    agent_id: String,
+) -> Result<(), String> {
+    let registry = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        registry.prepare_agent_launch(&space_id, expected_isolation, &agent_id)
+    })
+    .await
+    .map_err(|e| sanitize_error_message(&e.to_string()))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -758,8 +1028,14 @@ mod tests {
             .join("xdg-data")
             .join("codr")
             .join("space-profiles");
-        let registry =
-            SpaceIsolationRegistry::for_paths(manifest_path.clone(), Some(profiles_dir.clone()));
+        let host_home = dir.path().join("host-home");
+        fs::create_dir_all(&host_home).unwrap();
+        let registry = SpaceIsolationRegistry::for_paths_with_env(
+            manifest_path.clone(),
+            Some(profiles_dir.clone()),
+            Some(host_home),
+            Some(OsString::new()),
+        );
         (dir, registry, manifest_path, profiles_dir)
     }
 
@@ -920,9 +1196,10 @@ mod tests {
         assert!(registry
             .validate_pty_open(Some("sp-dead"), Some(AccountIsolationMode::Default))
             .is_err());
+        // In #65, valid registered sp-iso passes preflight and provisions its profile dir.
         assert!(registry
             .validate_pty_open(Some("sp-iso"), Some(AccountIsolationMode::Isolated))
-            .is_err());
+            .is_ok());
         assert!(registry
             .validate_pty_open(Some("default"), Some(AccountIsolationMode::Default))
             .is_ok());
@@ -935,9 +1212,11 @@ mod tests {
 
     #[test]
     fn redacts_secret_patterns_from_sanitized_errors() {
-        let raw = "failed near sk-ant-secretvalue1234567890 and ANTHROPIC_API_KEY=supersecretvalue999\nnewline";
+        let raw = "failed near sk-ant-secretvalue1234567890 Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig {\"accessToken\":\"tok_abc\"} and ANTHROPIC_API_KEY=supersecretvalue999\nnewline";
         let sanitized = sanitize_error_message(raw);
         assert!(!sanitized.contains("sk-ant-secretvalue1234567890"));
+        assert!(!sanitized.contains("eyJhbGciOiJIUzI1NiJ9"));
+        assert!(!sanitized.contains("tok_abc"));
         assert!(!sanitized.contains("supersecretvalue999"));
         assert!(!sanitized.contains('\n'));
     }
@@ -970,5 +1249,57 @@ mod tests {
         assert!(reloaded
             .validate_pty_open(Some("sp-retained"), Some(AccountIsolationMode::Default))
             .is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_launch_preflight_requires_compatible_claude_cli_when_isolated() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("app-data/space-isolation/manifest.json");
+        let profiles_dir = dir.path().join("xdg-data/codr/space-profiles");
+        let host_home = dir.path().join("host-home");
+        let empty_bin = dir.path().join("empty-bin");
+        fs::create_dir_all(&host_home).unwrap();
+        fs::create_dir_all(&empty_bin).unwrap();
+
+        let no_claude_registry = SpaceIsolationRegistry::for_paths_with_env(
+            manifest_path.clone(),
+            Some(profiles_dir.clone()),
+            Some(host_home.clone()),
+            Some(empty_bin.as_os_str().to_os_string()),
+        );
+        no_claude_registry
+            .register_space("sp-default", AccountIsolationMode::Default)
+            .unwrap();
+        no_claude_registry
+            .register_space("sp-iso", AccountIsolationMode::Isolated)
+            .unwrap();
+
+        assert!(no_claude_registry
+            .prepare_agent_launch("sp-default", AccountIsolationMode::Default, "claude")
+            .is_ok());
+        assert!(no_claude_registry
+            .prepare_agent_launch("sp-iso", AccountIsolationMode::Isolated, "claude")
+            .is_err());
+
+        let good_bin = dir.path().join("good-bin");
+        fs::create_dir_all(&good_bin).unwrap();
+        let claude_path = good_bin.join("claude");
+        fs::write(
+            &claude_path,
+            "#!/bin/sh\nprintf '{\"loggedIn\":false,\"configDirectory\":\"%s\"}\\n' \"$CLAUDE_CONFIG_DIR\"\nexit 1\n",
+        )
+        .unwrap();
+        fs::set_permissions(&claude_path, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let good_registry = SpaceIsolationRegistry::for_paths_with_env(
+            manifest_path,
+            Some(profiles_dir),
+            Some(host_home),
+            Some(good_bin.as_os_str().to_os_string()),
+        );
+        assert!(good_registry
+            .prepare_agent_launch("sp-iso", AccountIsolationMode::Isolated, "claude")
+            .is_ok());
     }
 }

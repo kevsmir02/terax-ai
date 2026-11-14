@@ -172,8 +172,9 @@ pub(crate) fn preflight_pty_open(
     isolation: &SpaceIsolationRegistry,
     space_id: Option<&str>,
     expected_isolation: Option<AccountIsolationMode>,
-) -> Result<(), String> {
-    isolation.validate_pty_open(space_id, expected_isolation)
+    is_wsl: bool,
+) -> Result<Option<crate::modules::space_profile::IsolatedProfileEnv>, String> {
+    isolation.prepare_pty_isolation(space_id, expected_isolation, is_wsl, false)
 }
 
 #[tauri::command]
@@ -196,8 +197,24 @@ pub async fn pty_open(
     space_id: Option<String>,
     expected_isolation: Option<AccountIsolationMode>,
 ) -> Result<u32, String> {
-    preflight_pty_open(&isolation, space_id.as_deref(), expected_isolation)?;
     let workspace = WorkspaceEnv::from_option(workspace);
+    let isolation_registry = isolation.inner().clone();
+    let preflight_space_id = space_id.clone();
+    let preflight_is_wsl = workspace.is_wsl();
+    let isolated_env = tauri::async_runtime::spawn_blocking(move || {
+        preflight_pty_open(
+            &isolation_registry,
+            preflight_space_id.as_deref(),
+            expected_isolation,
+            preflight_is_wsl,
+        )
+    })
+    .await
+    .map_err(|e| {
+        crate::modules::space_isolation::sanitize_error_message(&format!(
+            "pty_open preflight failed: {e}"
+        ))
+    })??;
     let blocks = blocks.unwrap_or(false);
     // A Windows helper cannot execute inside WSL without explicit path and
     // network translation. Do not inject credentials for a broken command.
@@ -234,6 +251,7 @@ pub async fn pty_open(
             blocks,
             shell,
             control_env,
+            isolated_env,
             colors,
             pane_id,
         )
@@ -954,11 +972,21 @@ mod tests {
     }
 
     #[test]
-    fn pty_open_preflight_blocks_missing_mismatched_tombstoned_and_isolated_before_spawn() {
+    fn pty_open_preflight_provisions_isolated_space_and_blocks_failures_before_spawn() {
+        use std::ffi::OsString;
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+
         let dir = tempfile::tempdir().unwrap();
-        let registry = SpaceIsolationRegistry::for_paths(
-            dir.path().join("space-isolation").join("manifest.json"),
-            Some(dir.path().join("space-profiles")),
+        let host_home = dir.path().join("host-home");
+        std::fs::create_dir_all(&host_home).unwrap();
+        let manifest_path = dir.path().join("space-isolation").join("manifest.json");
+        let profiles_dir = dir.path().join("space-profiles");
+        let registry = SpaceIsolationRegistry::for_paths_with_env(
+            manifest_path.clone(),
+            Some(profiles_dir.clone()),
+            Some(host_home.clone()),
+            Some(OsString::new()),
         );
         registry
             .register_space("sp-default", AccountIsolationMode::Default)
@@ -973,43 +1001,274 @@ mod tests {
             .record_tombstone("sp-tomb", None, Some("pending cleanup".to_string()))
             .unwrap();
 
-        assert!(preflight_pty_open(&registry, None, Some(AccountIsolationMode::Default)).is_err());
-        assert!(preflight_pty_open(&registry, Some("sp-default"), None).is_err());
+        assert!(preflight_pty_open(&registry, None, Some(AccountIsolationMode::Default), false).is_err());
+        assert!(preflight_pty_open(&registry, Some("sp-default"), None, false).is_err());
         assert!(preflight_pty_open(
             &registry,
             Some("sp-unregistered"),
             Some(AccountIsolationMode::Default),
+            false,
         )
         .is_err());
         assert!(preflight_pty_open(
             &registry,
             Some("sp-default"),
             Some(AccountIsolationMode::Isolated),
+            false,
         )
         .is_err());
         assert!(preflight_pty_open(
             &registry,
             Some("sp-iso"),
             Some(AccountIsolationMode::Default),
-        )
-        .is_err());
-        assert!(preflight_pty_open(
-            &registry,
-            Some("sp-iso"),
-            Some(AccountIsolationMode::Isolated),
+            false,
         )
         .is_err());
         assert!(preflight_pty_open(
             &registry,
             Some("sp-tomb"),
             Some(AccountIsolationMode::Default),
+            false,
         )
         .is_err());
+        // WSL is out of scope for Space profile isolation and must fail closed.
         assert!(preflight_pty_open(
             &registry,
-            Some("sp-default"),
-            Some(AccountIsolationMode::Default),
+            Some("sp-iso"),
+            Some(AccountIsolationMode::Isolated),
+            true,
+        )
+        .is_err());
+
+        // Valid isolated preflight returns Space profile paths without touching host ~/.claude.
+        let iso_env = preflight_pty_open(
+            &registry,
+            Some("sp-iso"),
+            Some(AccountIsolationMode::Isolated),
+            false,
+        )
+        .unwrap()
+        .expect("isolated space should resolve IsolatedProfileEnv");
+        assert_eq!(iso_env.shim_dir, profiles_dir.join("sp-iso").join("bin"));
+        assert_eq!(
+            iso_env.claude_config_dir,
+            profiles_dir.join("sp-iso").join("claude")
+        );
+        assert!(!host_home.join(".claude").exists());
+
+        // Tampering permissions or broken profiles root blocks pty_open fail-closed.
+        #[cfg(unix)]
+        {
+            std::fs::set_permissions(
+                &iso_env.claude_config_dir,
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+            assert!(preflight_pty_open(
+                &registry,
+                Some("sp-iso"),
+                Some(AccountIsolationMode::Isolated),
+                false,
+            )
+            .is_err());
+        }
+        let no_profiles_registry = SpaceIsolationRegistry::for_paths_with_env(
+            manifest_path,
+            None,
+            Some(host_home),
+            Some(OsString::new()),
+        );
+        assert!(preflight_pty_open(
+            &no_profiles_registry,
+            Some("sp-iso"),
+            Some(AccountIsolationMode::Isolated),
+            false,
+        )
+        .is_err());
+
+        assert_eq!(
+            preflight_pty_open(
+                &registry,
+                Some("sp-default"),
+                Some(AccountIsolationMode::Default),
+                false,
+            )
+            .unwrap(),
+            None
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parallel_isolated_spaces_run_independently_without_touching_home_or_xdg() {
+        use std::ffi::OsString;
+        let dir = tempfile::tempdir().unwrap();
+        let host_home = dir.path().join("host-home");
+        std::fs::create_dir_all(host_home.join(".claude")).unwrap();
+        let host_claude_sentinel = r#"{"hostSecret":true}"#;
+        std::fs::write(host_home.join(".claude/.credentials.json"), host_claude_sentinel).unwrap();
+
+        let manifest_path = dir.path().join("space-isolation/manifest.json");
+        let profiles_dir = dir.path().join("space-profiles");
+        let registry = SpaceIsolationRegistry::for_paths_with_env(
+            manifest_path.clone(),
+            Some(profiles_dir.clone()),
+            Some(host_home.clone()),
+            Some(OsString::new()),
+        );
+        registry
+            .register_space("sp-alpha", AccountIsolationMode::Isolated)
+            .unwrap();
+        registry
+            .register_space("sp-beta", AccountIsolationMode::Isolated)
+            .unwrap();
+
+        let env_alpha = preflight_pty_open(
+            &registry,
+            Some("sp-alpha"),
+            Some(AccountIsolationMode::Isolated),
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        let env_beta = preflight_pty_open(
+            &registry,
+            Some("sp-beta"),
+            Some(AccountIsolationMode::Isolated),
+            false,
+        )
+        .unwrap()
+        .unwrap();
+
+        let expected_home = std::env::var_os("HOME").unwrap_or_default();
+        let state = Arc::new(PtyState::default());
+
+        let spawn_probe = |pty_id: u32, iso: &crate::modules::space_profile::IsolatedProfileEnv, token: &str, out_file: &std::path::Path| {
+            let mut cmd = portable_pty::CommandBuilder::new("/bin/sh");
+            shell_init::apply_common(&mut cmd, Some(dir.path().to_string_lossy().into_owned()), false, None, Some(iso));
+            let script = format!(
+                "printf 'HOME=%s\\nCLAUDE=%s\\nPATH0=%s\\n' \"$HOME\" \"$CLAUDE_CONFIG_DIR\" \"${{PATH%%:*}}\" > '{out}'; printf '{tok}' > \"$CLAUDE_CONFIG_DIR/.credentials.json\"",
+                out = out_file.display(),
+                tok = token,
+            );
+            cmd.args(["-c", &script]);
+            let s = session::spawn_with(
+                session::Host {
+                    id: pty_id,
+                    owner: Arc::from("main"),
+                    hub: state.hub.clone(),
+                    class: PresentationClass::default(),
+                    signal: Arc::new(|_| {}),
+                    notify: Arc::new(|_| {}),
+                    pane_id: None,
+                    link: agent_detect::AgentLink::new(),
+                    reap: Box::new(|| {}),
+                    colors: None,
+                },
+                PtySize {
+                    rows: 24,
+                    cols: 80,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                },
+                move || Ok(cmd),
+            )
+            .unwrap();
+            state.sessions.write().unwrap().insert(pty_id, Arc::clone(&s));
+            s
+        };
+
+        let out_alpha = dir.path().join("probe-alpha.txt");
+        let out_beta = dir.path().join("probe-beta.txt");
+        let creds_alpha = env_alpha.claude_config_dir.join(".credentials.json");
+        let creds_beta = env_beta.claude_config_dir.join(".credentials.json");
+        let _s_alpha = spawn_probe(101, &env_alpha, "alpha-login", &out_alpha);
+        let _s_beta = spawn_probe(102, &env_beta, "beta-login", &out_beta);
+
+        wait_for("both parallel isolated PTYs to write isolated files", || {
+            creds_alpha.exists() && creds_beta.exists() && out_alpha.exists() && out_beta.exists()
+        });
+
+        let report_alpha = std::fs::read_to_string(&out_alpha).unwrap();
+        let report_beta = std::fs::read_to_string(&out_beta).unwrap();
+        assert!(report_alpha.contains(&format!("HOME={}", expected_home.to_string_lossy())));
+        assert!(report_beta.contains(&format!("HOME={}", expected_home.to_string_lossy())));
+        assert!(report_alpha.contains(&format!("CLAUDE={}", env_alpha.claude_config_dir.display())));
+        assert!(report_beta.contains(&format!("CLAUDE={}", env_beta.claude_config_dir.display())));
+        assert!(report_alpha.contains(&format!("PATH0={}", env_alpha.shim_dir.display())));
+        assert!(report_beta.contains(&format!("PATH0={}", env_beta.shim_dir.display())));
+
+        // Simulated independent Space credentials persist across registry reload.
+        assert_eq!(
+            std::fs::read_to_string(env_alpha.claude_config_dir.join(".credentials.json")).unwrap(),
+            "alpha-login"
+        );
+        assert_eq!(
+            std::fs::read_to_string(env_beta.claude_config_dir.join(".credentials.json")).unwrap(),
+            "beta-login"
+        );
+        assert_eq!(
+            std::fs::read_to_string(host_home.join(".claude/.credentials.json")).unwrap(),
+            host_claude_sentinel
+        );
+
+        let reloaded = SpaceIsolationRegistry::for_paths_with_env(
+            manifest_path,
+            Some(profiles_dir),
+            Some(host_home),
+            Some(OsString::new()),
+        );
+        assert!(preflight_pty_open(
+            &reloaded,
+            Some("sp-alpha"),
+            Some(AccountIsolationMode::Isolated),
+            false,
         )
         .is_ok());
+        assert!(preflight_pty_open(
+            &reloaded,
+            Some("sp-beta"),
+            Some(AccountIsolationMode::Isolated),
+            false,
+        )
+        .is_ok());
+
+        for id in [101, 102] {
+            if let Some(session) = state.take(id) {
+                reap(id, session, "test cleanup");
+            }
+        }
+    }
+
+    #[test]
+    fn pty_diagnostics_never_exposes_env_credentials_or_profile_secrets() {
+        let state = Arc::new(PtyState::default());
+        let session = open(&state, 1, "main");
+        let diag = PtyDiagnostics {
+            host_pid: std::process::id(),
+            host_rss_bytes: None,
+            hub: state.hub.diagnostics(),
+            sessions: vec![PtySessionDiagnostics {
+                id: 1,
+                output: session.diagnostics(),
+            }],
+        };
+        let serialized = serde_json::to_string(&diag).unwrap();
+        for forbidden in [
+            "CLAUDE_CONFIG_DIR",
+            ".credentials.json",
+            "CONTROL_TOKEN",
+            "space-profiles",
+            "sk-ant-",
+            "accessToken",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "pty diagnostics exposed forbidden marker {forbidden}: {serialized}"
+            );
+        }
+        if let Some(session) = state.take(1) {
+            reap(1, session, "test cleanup");
+        }
     }
 }

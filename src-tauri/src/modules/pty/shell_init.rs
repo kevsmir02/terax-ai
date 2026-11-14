@@ -57,16 +57,17 @@ pub fn build_command(
     blocks: bool,
     shell: Option<String>,
     control: Option<ShellControlEnv>,
+    isolated: Option<crate::modules::space_profile::IsolatedProfileEnv>,
 ) -> Result<CommandBuilder, String> {
     let shell = sanitize_shell_override(shell);
     #[cfg(unix)]
     {
         let _ = workspace;
-        unix::build(cwd, blocks, shell, control)
+        unix::build(cwd, blocks, shell, control, isolated)
     }
     #[cfg(windows)]
     {
-        windows::build(cwd, workspace, blocks, shell, control)
+        windows::build(cwd, workspace, blocks, shell, control, isolated)
     }
 }
 
@@ -185,11 +186,12 @@ fn ensure_utf8_locale(cmd: &mut CommandBuilder) {
     cmd.env("LANG", fallback);
 }
 
-fn apply_common(
+pub(super) fn apply_common(
     cmd: &mut CommandBuilder,
     cwd: Option<String>,
     blocks: bool,
     control: Option<&ShellControlEnv>,
+    isolated: Option<&crate::modules::space_profile::IsolatedProfileEnv>,
 ) {
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
@@ -212,6 +214,14 @@ fn apply_common(
             }
         }
     }
+    let mut prepend_dirs: Vec<PathBuf> = Vec::new();
+    if let Some(profile) = isolated {
+        cmd.env("CLAUDE_CONFIG_DIR", &profile.claude_config_dir);
+        cmd.env(identity::env("SPACE_SHIM_DIR"), &profile.shim_dir);
+        prepend_dirs.push(profile.shim_dir.clone());
+    } else {
+        cmd.env_remove(identity::env("SPACE_SHIM_DIR"));
+    }
     if let Some(control) = control {
         cmd.env(identity::env("CONTROL_ADDR"), &control.address);
         cmd.env(identity::env("CONTROL_TOKEN"), &control.token);
@@ -220,15 +230,18 @@ fn apply_common(
             cmd.env(identity::env("CLI"), path);
         }
         if let Some(bin_dir) = &control.cli_bin_dir {
-            let paths = std::iter::once(bin_dir.clone()).chain(
-                clean_path
-                    .as_deref()
-                    .into_iter()
-                    .flat_map(std::env::split_paths),
-            );
-            if let Ok(path) = std::env::join_paths(paths) {
-                cmd.env("PATH", path);
-            }
+            prepend_dirs.push(bin_dir.clone());
+        }
+    }
+    if !prepend_dirs.is_empty() {
+        let paths = prepend_dirs.into_iter().chain(
+            clean_path
+                .as_deref()
+                .into_iter()
+                .flat_map(std::env::split_paths),
+        );
+        if let Ok(path) = std::env::join_paths(paths) {
+            cmd.env("PATH", path);
         }
     }
     ensure_utf8_locale(cmd);
@@ -356,10 +369,11 @@ mod unix {
         blocks: bool,
         shell_override: Option<String>,
         control: Option<super::ShellControlEnv>,
+        isolated: Option<crate::modules::space_profile::IsolatedProfileEnv>,
     ) -> Result<CommandBuilder, String> {
         let (shell, shell_path) = Shell::resolve(shell_override);
         let mut cmd = CommandBuilder::new(&shell_path);
-        super::apply_common(&mut cmd, cwd, blocks, control.as_ref());
+        super::apply_common(&mut cmd, cwd, blocks, control.as_ref(), isolated.as_ref());
         apply_shell_init(&mut cmd, &shell, &shell_path);
         Ok(cmd)
     }
@@ -736,9 +750,10 @@ mod windows {
         blocks: bool,
         shell: Option<String>,
         control: Option<super::ShellControlEnv>,
+        isolated: Option<crate::modules::space_profile::IsolatedProfileEnv>,
     ) -> Result<CommandBuilder, String> {
         if let WorkspaceEnv::Wsl { distro } = workspace {
-            let _ = (blocks, shell, control);
+            let _ = (blocks, shell, control, isolated);
             return build_wsl(cwd, distro);
         }
         let shell_path = shell
@@ -757,7 +772,7 @@ mod windows {
         let is_cmd = shell_name == "cmd.exe";
 
         let mut cmd = CommandBuilder::new(&shell_path);
-        super::apply_common(&mut cmd, cwd, blocks, control.as_ref());
+        super::apply_common(&mut cmd, cwd, blocks, control.as_ref(), isolated.as_ref());
 
         if is_cmd {
             let host = std::env::var("COMPUTERNAME").unwrap_or_default();
@@ -1393,7 +1408,7 @@ mod tests {
             cli_path: Some("/app/terax-cli".into()),
             cli_bin_dir: Some(std::path::PathBuf::from("/app/bin")),
         };
-        apply_common(&mut command, None, false, Some(&control));
+        apply_common(&mut command, None, false, Some(&control), None);
 
         assert_eq!(
             command.get_env(identity::env("CONTROL_ADDR")),
@@ -1432,7 +1447,7 @@ mod tests {
             cli_path: Some("/app/terax-cli".into()),
             cli_bin_dir: Some(std::path::PathBuf::from("/app/bin")),
         };
-        apply_common(&mut command, None, true, Some(&control));
+        apply_common(&mut command, None, true, Some(&control), None);
 
         for upstream in [
             "TERMINAL",
@@ -1464,5 +1479,58 @@ mod tests {
                 identity::env(ours)
             );
         }
+    }
+
+    #[test]
+    fn isolated_profile_exports_claude_config_dir_and_shim_dir_without_changing_home_or_xdg() {
+        let mut command = CommandBuilder::new("shell");
+        let isolated = crate::modules::space_profile::IsolatedProfileEnv {
+            space_dir: std::path::PathBuf::from("/tmp/spaces/sp-iso"),
+            shim_dir: std::path::PathBuf::from("/tmp/spaces/sp-iso/bin"),
+            claude_config_dir: std::path::PathBuf::from("/tmp/spaces/sp-iso/claude"),
+        };
+        let control = ShellControlEnv {
+            address: "127.0.0.1:1234".into(),
+            token: "secret".into(),
+            pane_id: 7,
+            cli_path: Some("/app/terax-cli".into()),
+            cli_bin_dir: Some(std::path::PathBuf::from("/app/bin")),
+        };
+
+        apply_common(&mut command, None, false, Some(&control), Some(&isolated));
+
+        assert_eq!(
+            command.get_env("CLAUDE_CONFIG_DIR"),
+            Some(OsStr::new("/tmp/spaces/sp-iso/claude"))
+        );
+        assert_eq!(
+            command.get_env(identity::env("SPACE_SHIM_DIR")),
+            Some(OsStr::new("/tmp/spaces/sp-iso/bin"))
+        );
+        let path_head: Vec<_> = command
+            .get_env("PATH")
+            .map(|path| std::env::split_paths(path).take(2).collect())
+            .unwrap_or_default();
+        assert_eq!(
+            path_head,
+            vec![
+                std::path::PathBuf::from("/tmp/spaces/sp-iso/bin"),
+                std::path::PathBuf::from("/app/bin"),
+            ]
+        );
+        // Host HOME and shell-wide XDG_* overrides must never be injected by isolated env.
+        assert_eq!(command.get_env("XDG_DATA_HOME"), None);
+        assert_eq!(command.get_env("XDG_CONFIG_HOME"), None);
+        assert_eq!(command.get_env("XDG_STATE_HOME"), None);
+        assert_eq!(command.get_env("XDG_CACHE_HOME"), None);
+    }
+
+    #[test]
+    fn default_profile_clears_inherited_space_shim_dir() {
+        let mut command = CommandBuilder::new("shell");
+        command.env(identity::env("SPACE_SHIM_DIR"), "/stale/shim");
+        apply_common(&mut command, None, false, None, None);
+        assert_eq!(command.get_env(identity::env("SPACE_SHIM_DIR")), None);
+        assert_eq!(command.get_env("CLAUDE_CONFIG_DIR"), None);
     }
 }

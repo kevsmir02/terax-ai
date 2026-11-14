@@ -845,4 +845,46 @@ describe("WorkspaceSurface", () => {
       expectedIsolation: "isolated",
     });
   });
+
+  it("keeps existing terminal session context pinned when switching active Spaces", () => {
+    const tabA: Tab = {
+      id: 90,
+      kind: "terminal",
+      spaceId: "sp-alpha",
+      title: "alpha",
+      paneTree: { kind: "leaf", id: 901 },
+      activeLeafId: 901,
+    };
+    const tabB: Tab = {
+      id: 91,
+      kind: "terminal",
+      spaceId: "sp-beta",
+      title: "beta",
+      paneTree: { kind: "leaf", id: 902 },
+      activeLeafId: 902,
+    };
+
+    mountSurface(tabA, [tabA, tabB], {
+      activeSpaceId: "sp-alpha",
+      spaceIsolations: { "sp-alpha": "isolated", "sp-beta": "default" },
+    });
+    expect(sessionBindings.get(901)).toEqual({
+      spaceId: "sp-alpha",
+      expectedIsolation: "isolated",
+    });
+
+    // Switch active Space to sp-beta: sp-alpha's session stays pinned to its starting context.
+    mountSurface(tabB, [tabA, tabB], {
+      activeSpaceId: "sp-beta",
+      spaceIsolations: { "sp-alpha": "isolated", "sp-beta": "default" },
+    });
+    expect(sessionBindings.get(901)).toEqual({
+      spaceId: "sp-alpha",
+      expectedIsolation: "isolated",
+    });
+    expect(sessionBindings.get(902)).toEqual({
+      spaceId: "sp-beta",
+      expectedIsolation: "default",
+    });
+  });
 });

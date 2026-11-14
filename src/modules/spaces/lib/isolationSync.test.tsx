@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
+
+import { DEFAULT_SPACE_ID, type Tab } from "@/modules/tabs/lib/useTabs";
+import { LOCAL_WORKSPACE } from "@/modules/workspace";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_SPACE_ID, type Tab } from "@/modules/tabs/lib/useTabs";
-import { LOCAL_WORKSPACE } from "@/modules/workspace";
 import {
   resetIsolationSyncForTests,
   waitForSpaceIsolationSync,
@@ -403,6 +404,38 @@ describe("Space isolation IPC sync & boot ordering", () => {
     expect(reconciled.runtimeById).toEqual({
       "sp-one": { hasRetainedProfiles: false },
       "sp-two": { hasRetainedProfiles: true },
+    });
+  });
+
+  it("creates isolated Spaces and runs fail-closed Agent Launcher preflight via IPC", async () => {
+    mockInvoke.mockResolvedValue({
+      id: "sp-new-iso",
+      accountIsolation: "isolated",
+      hasRetainedProfiles: true,
+    });
+
+    const meta = useSpaces.getState().create({
+      id: "sp-new-iso",
+      name: "Client Isolated",
+      root: "/work/client",
+      accountIsolation: "isolated",
+    });
+    expect(meta.accountIsolation).toBe("isolated");
+
+    const { preflightAgentLaunch } = await import("./isolationSync");
+    mockInvoke.mockRejectedValueOnce(new Error("Claude CLI missing"));
+    await expect(
+      preflightAgentLaunch("sp-new-iso", "isolated", "claude"),
+    ).rejects.toThrow("Claude CLI missing");
+
+    mockInvoke.mockResolvedValueOnce(undefined);
+    await expect(
+      preflightAgentLaunch("sp-new-iso", "isolated", "claude"),
+    ).resolves.toBeUndefined();
+    expect(mockInvoke).toHaveBeenCalledWith("space_isolation_preflight_agent", {
+      spaceId: "sp-new-iso",
+      expectedIsolation: "isolated",
+      agentId: "claude",
     });
   });
 });
