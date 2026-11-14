@@ -62,7 +62,7 @@ export function RecoveryStatusBar({
       role="status"
       aria-live="polite"
       className={cn(
-        "flex h-6 shrink-0 items-center gap-2 border-b border-border/60 bg-muted/40 px-3 text-[11px]",
+        "flex h-6 shrink-0 items-center gap-2 border-b border-border bg-muted/40 px-3 text-[11px]",
         tone,
       )}
     >

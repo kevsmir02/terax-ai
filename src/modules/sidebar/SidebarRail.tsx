@@ -32,7 +32,7 @@ export function SidebarRail({ activeView, onSelectView, changedCount }: Props) {
   return (
     <div
       style={{ height: SIDEBAR_RAIL_HEIGHT }}
-      className="flex shrink-0 items-stretch gap-1 border-t border-border/60 bg-foreground/[0.025] px-1.5 py-1"
+      className="flex shrink-0 items-stretch gap-1 border-t border-border bg-foreground/[0.025] px-1.5 py-1"
     >
       {items.map((item) => {
         const isActive = item.id === activeView;
@@ -60,7 +60,7 @@ export function SidebarRail({ activeView, onSelectView, changedCount }: Props) {
             />
             <span>{item.label}</span>
             {showBadge ? (
-              <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full border border-border/60 bg-card px-1 text-[9px] font-semibold leading-none tabular-nums text-muted-foreground/95">
+              <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full border border-border bg-card px-1 text-[9px] font-semibold leading-none tabular-nums text-muted-foreground/95">
                 {item.badge! > 99 ? "99+" : item.badge}
               </span>
             ) : null}

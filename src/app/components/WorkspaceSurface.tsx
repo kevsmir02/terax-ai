@@ -53,7 +53,7 @@ const LAYER = "absolute inset-0";
  * must not keep working off screen, so {@link PreviewStack} unloads a frame
  * whenever its tab, its Space or the window is not on screen.
  *
- * Layers sit flush inside the workspace pane; only the terminal layer is inset,
+ * Layers sit flush inside the Content stage; only the terminal layer is inset,
  * because the terminal draws glyphs right up to its container edge.
  */
 export function WorkspaceSurface({
@@ -86,7 +86,7 @@ export function WorkspaceSurface({
   const isGitHistoryTab = kind === "git-history";
 
   return (
-    <div className="relative h-full min-h-0">
+    <div className="relative h-full min-h-0 bg-background">
       <div
         className={cn(
           LAYER,

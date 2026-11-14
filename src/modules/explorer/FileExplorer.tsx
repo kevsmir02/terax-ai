@@ -674,7 +674,7 @@ export const FileExplorer = memo(
         tabIndex={0}
         onKeyDown={handleKeyDown}
       >
-        <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border/60 px-2">
+        <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border px-2">
           <span
             className="flex flex-1 items-center truncate text-xs font-medium text-foreground/80"
             title={rootPath}
