@@ -481,7 +481,7 @@ export function CheckpointPanel({ worktree, destructive, onMutated }: Props) {
     return (
       <li
         key={entry.ref}
-        className="flex items-center gap-2 rounded-md border border-border/55 px-2 py-1.5"
+        className="flex items-center gap-2 rounded-md border border-border px-2 py-1.5"
       >
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
@@ -538,7 +538,7 @@ export function CheckpointPanel({ worktree, destructive, onMutated }: Props) {
         title="Checkpoints"
         disabled={!worktree}
         onClick={() => setOpen(true)}
-        className="inline-flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+        className="inline-flex size-7 cursor-pointer items-center justify-center rounded-md text-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
       >
         <HugeiconsIcon icon={Clock01Icon} size={14} strokeWidth={1.85} />
       </button>
@@ -603,7 +603,7 @@ export function CheckpointPanel({ worktree, destructive, onMutated }: Props) {
             </p>
           ) : null}
           {message ? (
-            <p className="rounded-md border border-border/60 bg-foreground/[0.04] px-2 py-1.5 text-[11.5px] text-muted-foreground">
+            <p className="rounded-md border border-border bg-muted px-2 py-1.5 text-[11.5px] text-muted-foreground">
               {message}
             </p>
           ) : null}
@@ -644,7 +644,7 @@ export function CheckpointPanel({ worktree, destructive, onMutated }: Props) {
                     {safety.map((entry) => (
                       <li
                         key={entry.ref}
-                        className="flex items-center gap-2 rounded-md border border-border/55 px-2 py-1.5"
+                        className="flex items-center gap-2 rounded-md border border-border px-2 py-1.5"
                       >
                         <div className="min-w-0 flex-1">
                           <div className="text-[12px] font-medium">
@@ -702,7 +702,7 @@ export function CheckpointPanel({ worktree, destructive, onMutated }: Props) {
               ) : null}
 
               {inspection ? (
-                <section className="space-y-1 rounded-md border border-border/60 bg-foreground/[0.03] p-2">
+                <section className="space-y-1 rounded-md border border-border bg-muted p-2">
                   <div className="flex items-center justify-between gap-2">
                     <h3 className="text-[11px] font-semibold">
                       {inspection.name ?? shortRef(inspection.ref)} ·{" "}
@@ -759,7 +759,7 @@ export function CheckpointPanel({ worktree, destructive, onMutated }: Props) {
           </AlertDialogHeader>
           {pending ? (
             <>
-              <section className="space-y-1 rounded-md border border-border/60 px-2 py-1.5 text-[11px]">
+              <section className="space-y-1 rounded-md border border-border px-2 py-1.5 text-[11px]">
                 <p className="font-medium">
                   {pending.preview.affectedTotal} affected{" "}
                   {pending.preview.affectedTotal === 1 ? "path" : "paths"} ·

@@ -1,4 +1,5 @@
 import { usePreferencesStore } from "@/modules/settings/preferences";
+import { PaneHeader } from "@/modules/terminal/PaneHeader";
 import type { TerminalSearchController } from "@/modules/terminal/search/TerminalSearchController";
 import { useTheme } from "@/modules/theme";
 import {
@@ -13,11 +14,11 @@ import {
 } from "react";
 import type { TerminalBackendKind } from "./backend/contracts";
 import { terminalBackendFor } from "./backend/selection";
-import {
-  useGhosttyTerminalSession,
-  ghosttyBlockGeometry,
-} from "./ghostty/useGhosttyTerminalSession";
 import { ghosttyBlocks } from "./ghostty/ghosttyBlockSessions";
+import {
+  ghosttyBlockGeometry,
+  useGhosttyTerminalSession,
+} from "./ghostty/useGhosttyTerminalSession";
 
 export type TerminalPaneHandle = {
   write: (data: string) => void;
@@ -36,11 +37,16 @@ export type TerminalPaneProps = {
   /** This leaf is the active pane within its tab and receives auto-focus. */
   focused?: boolean;
   initialCwd?: string;
+  cwd?: string;
+  customTitle?: string;
+  leafCount?: number;
+  home?: string | null;
   /** Enable command-block decorations (OSC 133) for this terminal. */
   blocks?: boolean;
   onSearchReady?: (leafId: number, addon: TerminalSearchController) => void;
   onExit?: (leafId: number, code: number) => void;
   onCwd?: (leafId: number, cwd: string) => void;
+  onClose?: (leafId: number) => void;
 };
 
 const TerminalAccessibleOutput = lazy(
@@ -60,10 +66,15 @@ const GhosttyTerminalPane = memo(
       visible,
       focused = true,
       initialCwd,
+      cwd,
+      customTitle,
+      leafCount = 1,
+      home,
       blocks = false,
       onSearchReady,
       onExit,
       onCwd,
+      onClose,
       backend,
     },
     ref,
@@ -108,7 +119,7 @@ const GhosttyTerminalPane = memo(
 
     return (
       <div
-        className="zoom-exempt relative h-full w-full overflow-hidden"
+        className="zoom-exempt relative flex h-full w-full flex-col overflow-hidden"
         style={{
           visibility: visible ? "visible" : "hidden",
           pointerEvents: visible ? "auto" : "none",
@@ -160,50 +171,67 @@ const GhosttyTerminalPane = memo(
         }
         data-terminal-backend={backend}
       >
-        <div ref={containerRef} className="absolute inset-0" />
-        {screenReader && session.model && (
-          <Suspense fallback={null}>
-            <TerminalAccessibleOutput
-              model={session.model}
-              visible={visible}
-              focused={focused}
-              onExit={session.focus}
-            />
-          </Suspense>
-        )}
-        {blocks && (
-          <Suspense fallback={null}>
-            <GhosttyBlockOverlay leafId={leafId} />
-          </Suspense>
-        )}
-        {session.error && (
-          <div
-            role="alert"
-            className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-background p-6 text-center text-sm"
-          >
-            <strong>
-              {session.error.kind === "renderer"
-                ? "Unable to display terminal"
-                : "Unable to start terminal"}
-            </strong>
-            <p className="max-w-md break-words text-muted-foreground">
-              {session.error.message}
-            </p>
-            {session.error.kind === "renderer" && (
-              <p className="text-muted-foreground">
-                Your terminal session is preserved. Retry to restore its
-                display.
-              </p>
+        <PaneHeader
+          leafId={leafId}
+          focused={focused}
+          leafCount={leafCount}
+          cwd={cwd ?? initialCwd}
+          customTitle={customTitle}
+          home={home}
+          onClose={onClose ? () => onClose(leafId) : undefined}
+        />
+        {/* Solid border inset keeps the center transparent over the shared WebGPU canvas. */}
+        <div
+          data-terminal-pane-body=""
+          className="relative flex min-h-0 flex-1 flex-col border-8 border-solid border-terminal-background"
+        >
+          <div className="relative h-full w-full min-h-0 flex-1">
+            <div ref={containerRef} className="absolute inset-0" />
+            {screenReader && session.model && (
+              <Suspense fallback={null}>
+                <TerminalAccessibleOutput
+                  model={session.model}
+                  visible={visible}
+                  focused={focused}
+                  onExit={session.focus}
+                />
+              </Suspense>
             )}
-            <button
-              type="button"
-              className="rounded-md border px-3 py-1.5 hover:bg-accent focus-visible:outline-2"
-              onClick={session.retry}
-            >
-              {session.error.kind === "renderer" ? "Retry display" : "Retry"}
-            </button>
+            {blocks && (
+              <Suspense fallback={null}>
+                <GhosttyBlockOverlay leafId={leafId} />
+              </Suspense>
+            )}
           </div>
-        )}
+          {session.error && (
+            <div
+              role="alert"
+              className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-background p-6 text-center text-sm"
+            >
+              <strong>
+                {session.error.kind === "renderer"
+                  ? "Unable to display terminal"
+                  : "Unable to start terminal"}
+              </strong>
+              <p className="max-w-md break-words text-muted-foreground">
+                {session.error.message}
+              </p>
+              {session.error.kind === "renderer" && (
+                <p className="text-muted-foreground">
+                  Your terminal session is preserved. Retry to restore its
+                  display.
+                </p>
+              )}
+              <button
+                type="button"
+                className="rounded-md border px-3 py-1.5 hover:bg-accent focus-visible:outline-2"
+                onClick={session.retry}
+              >
+                {session.error.kind === "renderer" ? "Retry display" : "Retry"}
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     );
   }),

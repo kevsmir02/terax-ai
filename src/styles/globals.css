@@ -54,6 +54,9 @@
     --color-foreground: var(--foreground);
     --color-background: var(--background);
     --color-frame: var(--frame);
+    --color-terminal-background: var(--terminal-background);
+    --color-terminal-header: var(--terminal-header);
+    --color-terminal-header-focused: var(--terminal-header-focused);
     --radius-sm: calc(var(--radius) * 0.6);
     --radius-md: calc(var(--radius) * 0.8);
     --radius-lg: var(--radius);
@@ -66,38 +69,38 @@
 /* Baseline tokens mirror the built-in default theme, so the first paint already
  * matches what `applyTheme` writes a frame later. */
 :root {
-    --background: #ffffff;
+    --background: #f4f4f5;
     --foreground: #111111;
-    --card: #f3f3f3;
+    --card: #ececee;
     --card-foreground: #111111;
     --popover: #ffffff;
     --popover-foreground: #111111;
     --primary: #111111;
     --primary-foreground: #ffffff;
-    --secondary: #ededed;
+    --secondary: #e7e7ea;
     --secondary-foreground: #111111;
-    --muted: #ededed;
-    --muted-foreground: #656565;
-    --accent: #e5e5e5;
+    --muted: #e7e7ea;
+    --muted-foreground: #52525b;
+    --accent: #e0e0e4;
     --accent-foreground: #111111;
     --destructive: #c0392f;
-    --border: rgba(0, 0, 0, 0.09);
-    --input: rgba(0, 0, 0, 0.13);
-    --ring: #8a8a8a;
+    --border: rgba(0, 0, 0, 0.15);
+    --input: rgba(0, 0, 0, 0.2);
+    --ring: #71717a;
     --chart-1: #111111;
     --chart-2: #4a4a4a;
     --chart-3: #656565;
     --chart-4: #8a8a8a;
     --chart-5: #b4b4b4;
     --radius: 0.625rem;
-    --sidebar: #f3f3f3;
+    --sidebar: #ececee;
     --sidebar-foreground: #111111;
     --sidebar-primary: #111111;
     --sidebar-primary-foreground: #ffffff;
-    --sidebar-accent: #e5e5e5;
+    --sidebar-accent: #e0e0e4;
     --sidebar-accent-foreground: #111111;
-    --sidebar-border: rgba(0, 0, 0, 0.09);
-    --sidebar-ring: #8a8a8a;
+    --sidebar-border: rgba(0, 0, 0, 0.15);
+    --sidebar-ring: #71717a;
 }
 
 .dark {
@@ -112,12 +115,12 @@
     --secondary: #2a2a2a;
     --secondary-foreground: #f7f7f7;
     --muted: #1d1d1d;
-    --muted-foreground: #a3a3a3;
+    --muted-foreground: #b0b0b5;
     --accent: #2a2a2a;
     --accent-foreground: #f7f7f7;
     --destructive: #e35d5d;
-    --border: rgba(255, 255, 255, 0.09);
-    --input: rgba(255, 255, 255, 0.13);
+    --border: rgba(255, 255, 255, 0.15);
+    --input: rgba(255, 255, 255, 0.2);
     --ring: #8a8a8a;
     --chart-1: #f7f7f7;
     --chart-2: #b4b4b4;
@@ -130,7 +133,7 @@
     --sidebar-primary-foreground: #141414;
     --sidebar-accent: #2a2a2a;
     --sidebar-accent-foreground: #f7f7f7;
-    --sidebar-border: rgba(255, 255, 255, 0.09);
+    --sidebar-border: rgba(255, 255, 255, 0.15);
     --sidebar-ring: #8a8a8a;
 }
 
@@ -152,10 +155,11 @@
 }
 
 :root {
-  --terminal-background: var(--background);
+  --terminal-background: #ffffff;
+  --terminal-header: #fafafa;
   --terminal-foreground: var(--foreground);
   --terminal-cursor: var(--foreground);
-  --terminal-cursor-accent: var(--background);
+  --terminal-cursor-accent: var(--terminal-background);
   --terminal-selection: var(--accent);
   --terminal-ansi-black: #111111;
   --terminal-ansi-red: #c0392f;
@@ -180,6 +184,8 @@
  * placeholder. An unscoped ANSI block would put dark colours on a white
  * terminal for every light-mode user. */
 .dark {
+  --terminal-background: #09090b;
+  --terminal-header: #101012;
   --terminal-ansi-black: #3f3f3f;
   --terminal-ansi-red: #e35d5d;
   --terminal-ansi-green: #6ec48f;
@@ -203,36 +209,21 @@
   --editor-font-size: 13px;
 }
 
-/* Floating-pane chrome. `--frame` is the canvas the panes sit on (header,
- * status bar, gutters); a pane keeps `--background` so the terminal canvas and the
- * pane surface stay the same color. Both are derived from tokens every theme
- * already declares, so built-in and user themes get the separation for free. */
+/* Outer shell frame token. `--frame` paints the outer shell (header, sidebar,
+ * status bar), while Content stage keeps opaque `--background`. */
 :root {
   --frame: color-mix(in oklab, var(--card) 97%, var(--foreground) 3%);
-  --pane-radius: calc(var(--radius) * 1.4);
-  --pane-shadow: none;
-}
-.dark {
-  --pane-shadow: inset 0 1px 0 oklch(1 0 0 / 0.035);
-}
-
-/* No drop shadow: panes meet the header and the status bar flush, so the only
- * gutter is horizontal and anything cast downward would be clipped anyway
- * (react-resizable-panels clips panel content at the panel box). Separation
- * comes from the border plus the frame/pane tone step. */
-.terax-pane {
-  border-radius: var(--pane-radius);
-  border: 1px solid var(--border);
-  background: var(--background);
-  box-shadow: var(--pane-shadow);
-  overflow: hidden;
+  --terminal-header-focused: color-mix(
+    in oklab,
+    var(--terminal-header) 95%,
+    var(--foreground) 5%
+  );
 }
 
-/* Window vibrancy (macOS NSVisualEffectView / Windows Mica). Only the frame
- * goes translucent: panes keep `--background` so terminal and editor text
- * stays on a solid, readable surface and the terminal canvas still matches its
- * container. Redefining `--frame` rather than layering an overlay means
- * `bg-frame` and the borderless-chrome `#root` both follow automatically. */
+/* Window vibrancy (macOS NSVisualEffectView / Windows Mica). Only `--frame`
+ * (the outer Shell frame) goes translucent; Content stage (`--background`),
+ * Pane header (`--terminal-header`), and Terminal card (`--terminal-background`)
+ * stay opaque so terminal and editor text remain on a solid readable surface. */
 html[data-vibrancy="on"],
 html[data-vibrancy="on"] body {
   background: transparent;

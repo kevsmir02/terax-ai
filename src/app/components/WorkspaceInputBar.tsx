@@ -21,7 +21,7 @@ export function WorkspaceInputBar({ isBlockTab, activeLeafId }: Props) {
   return (
     <div
       data-block-input-bar
-      className="shrink-0 border-t border-border/60 bg-foreground/[0.02] px-3 py-2"
+      className="shrink-0 border-t border-border bg-terminal-header px-3 py-2"
     >
       <div className="flex flex-col gap-2 rounded-lg px-1 py-1">
         <div className="flex items-end gap-2.5">

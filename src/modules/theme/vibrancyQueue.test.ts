@@ -179,7 +179,7 @@ describe("vibrancy application", () => {
 
     await vibrancy.applyVibrancy(false, false);
 
-    expect(root.style.backgroundColor).toBe("#ffffff");
+    expect(root.style.backgroundColor).toBe("#f4f4f5");
     expect(core.invoke).toHaveBeenCalledWith("window_set_backdrop", {
       enabled: false,
       dark: false,

@@ -25,26 +25,49 @@ type Props = {
   tabVisible: boolean;
   activeLeafId: number;
   blocks: boolean;
+  tabCwd?: string;
+  customTitle?: string;
+  leafCount?: number;
+  home?: string | null;
   onFocusLeaf: (leafId: number) => void;
+  onCloseLeaf?: (leafId: number) => void;
   getBundle: (leafId: number) => LeafBundle;
 };
 
 export function PaneTreeView(props: Props) {
   const { node } = props;
   if (node.kind === "leaf") {
-    const { tabVisible, activeLeafId, blocks, onFocusLeaf, getBundle } = props;
+    const {
+      tabVisible,
+      activeLeafId,
+      blocks,
+      tabCwd,
+      customTitle,
+      leafCount = 1,
+      home,
+      onFocusLeaf,
+      onCloseLeaf,
+      getBundle,
+    } = props;
     const focused = node.id === activeLeafId;
     const b = getBundle(node.id);
+    const focusIfNotCloseTarget = (event: { target: EventTarget | null }) => {
+      if (
+        !focused &&
+        !(
+          event.target instanceof Element &&
+          event.target.closest("[data-pane-close]")
+        )
+      ) {
+        onFocusLeaf(node.id);
+      }
+    };
     return (
       <div
-        onMouseDownCapture={() => {
-          if (!focused) onFocusLeaf(node.id);
-        }}
+        onMouseDownCapture={focusIfNotCloseTarget}
         // Catches focus from Tab, programmatic focus, or any path that
-        // skips mousedown — keeps activeLeafId in sync with DOM focus.
-        onFocus={() => {
-          if (!focused) onFocusLeaf(node.id);
-        }}
+        // skips mousedown: keeps activeLeafId in sync with DOM focus.
+        onFocus={focusIfNotCloseTarget}
         data-pane-leaf={node.id}
         className="relative h-full w-full"
       >
@@ -53,11 +76,16 @@ export function PaneTreeView(props: Props) {
           visible={tabVisible}
           focused={focused}
           initialCwd={node.cwd}
+          cwd={node.cwd ?? (leafCount === 1 ? tabCwd : undefined)}
+          customTitle={customTitle}
+          leafCount={leafCount}
+          home={home}
           blocks={blocks}
           ref={b.setRef}
           onSearchReady={b.onSearchReady}
           onCwd={b.onCwd}
           onExit={b.onExit}
+          onClose={onCloseLeaf}
         />
         <DropOverlay leafId={node.id} />
       </div>
@@ -118,7 +146,7 @@ function TerminalResizableHandle() {
 
   return (
     <ResizableHandle
-      className="bg-border/50 transition-colors duration-[var(--dur-fast)] after:w-3 hover:bg-border"
+      className="bg-border transition-colors duration-[var(--dur-fast)] hover:bg-ring/70 active:bg-ring data-[separator=hover]:bg-ring/70 data-[separator=active]:bg-ring"
       onPointerDownCapture={(event) => {
         if (event.button === 0) startPointerInteraction();
       }}

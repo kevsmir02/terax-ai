@@ -16,7 +16,7 @@ export function MarkdownViewToggle({
   renderedHint,
 }: Props) {
   return (
-    <div className="absolute right-3 top-3 z-10 inline-flex items-center gap-0.5 rounded-md border border-border/60 bg-card p-0.5 text-[11px] shadow-sm">
+    <div className="absolute right-3 top-3 z-10 inline-flex items-center gap-0.5 rounded-md border border-border bg-card p-0.5 text-[11px] shadow-sm">
       <button
         type="button"
         onClick={() => onChange("rendered")}

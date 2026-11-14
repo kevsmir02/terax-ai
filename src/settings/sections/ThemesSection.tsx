@@ -33,6 +33,7 @@ import {
   deleteCustomTheme,
   saveCustomTheme,
 } from "@/modules/theme/customThemes";
+import { resolveThemeSwatch } from "@/modules/theme/terminalSurface";
 import {
   deleteThemeFile,
   handOffThemeEdit,
@@ -163,8 +164,8 @@ export function ThemesSection() {
           title={backdrop === "mica" ? "Mica background" : "Window vibrancy"}
           description={
             backdrop === "mica"
-              ? "Blend the header, status bar and gutters into the desktop wallpaper. Windows 11 only."
-              : "Frost the header, status bar and gutters over what is behind the window. Panes stay solid."
+              ? "Blend the outer shell frame into the desktop wallpaper while the content stage and terminals stay solid. Windows 11 only."
+              : "Frost the outer shell frame over what is behind the window. The content stage and terminals stay solid."
           }
         >
           <Switch
@@ -225,13 +226,7 @@ export function ThemesSection() {
         ) : null}
         <div className="grid grid-cols-2 gap-2">
           {themes.map((t) => {
-            const v =
-              t.variants[resolvedMode] ?? t.variants.dark ?? t.variants.light;
-            const c = v?.colors;
-            const swatchBg = c?.background ?? "var(--background)";
-            const swatchFg = c?.foreground ?? "var(--foreground)";
-            const swatchAccent = c?.primary ?? c?.accent ?? "var(--accent)";
-            const swatchMuted = c?.muted ?? "var(--muted)";
+            const swatch = resolveThemeSwatch(t, resolvedMode);
             const selected = themeId === t.id;
             const isCustom = customIds.has(t.id);
             return (
@@ -242,26 +237,46 @@ export function ThemesSection() {
                 className={cn(
                   "group flex items-center gap-3 rounded-lg border p-2.5 text-left transition-all",
                   selected
-                    ? "border-foreground/60 ring-1 ring-foreground/20"
-                    : "border-border/60 hover:border-border",
+                    ? "border-foreground ring-1 ring-foreground/20"
+                    : "border-border hover:border-foreground/40",
                 )}
               >
                 <div
-                  className="flex h-10 w-14 shrink-0 items-center justify-center gap-1 rounded-md border border-border/40"
-                  style={{ background: swatchBg }}
+                  data-theme-swatch={t.id}
+                  className="flex h-10 w-14 shrink-0 overflow-hidden rounded-md border border-border p-1"
+                  style={{ background: swatch.stageBackground }}
                 >
-                  <span
-                    className="h-5 w-2 rounded-sm"
-                    style={{ background: swatchAccent }}
-                  />
-                  <span
-                    className="h-5 w-2 rounded-sm"
-                    style={{ background: swatchFg, opacity: 0.7 }}
-                  />
-                  <span
-                    className="h-5 w-2 rounded-sm"
-                    style={{ background: swatchMuted }}
-                  />
+                  <div
+                    className="flex h-full w-full flex-col overflow-hidden rounded-[3px] border"
+                    style={{ borderColor: swatch.border }}
+                  >
+                    <div
+                      data-swatch-role="header"
+                      className="h-1.5 shrink-0"
+                      style={{
+                        background: swatch.terminalHeader,
+                        borderBottom: `1px solid ${swatch.border}`,
+                      }}
+                    />
+                    <div
+                      data-swatch-role="terminal"
+                      className="flex flex-1 items-center justify-center gap-1"
+                      style={{ background: swatch.terminalBackground }}
+                    >
+                      <span
+                        className="h-3.5 w-1.5 rounded-[2px]"
+                        style={{ background: swatch.accent }}
+                      />
+                      <span
+                        className="h-3.5 w-1.5 rounded-[2px]"
+                        style={{ background: swatch.foreground, opacity: 0.75 }}
+                      />
+                      <span
+                        className="h-3.5 w-1.5 rounded-[2px]"
+                        style={{ background: swatch.muted }}
+                      />
+                    </div>
+                  </div>
                 </div>
                 <div className="flex min-w-0 flex-1 flex-col">
                   <span className="truncate text-[12.5px] font-medium">
@@ -401,7 +416,7 @@ export function ThemesSection() {
           </div>
         ) : null}
         {backgroundKind === "image" && backgroundImageId ? (
-          <div className="flex flex-col gap-3 rounded-lg border border-border/60 p-3">
+          <div className="flex flex-col gap-3 rounded-lg border border-border p-3">
             <div className="flex items-center justify-between gap-3">
               <span className="text-[11.5px] text-muted-foreground">
                 Opacity

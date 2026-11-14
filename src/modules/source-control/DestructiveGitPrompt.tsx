@@ -66,7 +66,7 @@ export function DestructiveGitPrompt({
             blocker.kind === "unsavedBuffer" ? (
               <label
                 key={`buffer:${blocker.tabId}`}
-                className="flex items-start gap-2 rounded-md border border-border/60 px-2 py-1.5"
+                className="flex items-start gap-2 rounded-md border border-border px-2 py-1.5"
               >
                 <input
                   type="checkbox"
@@ -94,7 +94,7 @@ export function DestructiveGitPrompt({
             ) : (
               <label
                 key={`work:${blocker.leafId}`}
-                className="flex items-start gap-2 rounded-md border border-border/60 px-2 py-1.5"
+                className="flex items-start gap-2 rounded-md border border-border px-2 py-1.5"
               >
                 <input
                   type="checkbox"

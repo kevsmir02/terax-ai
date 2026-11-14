@@ -1,8 +1,8 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { SharedFolderBadge } from "./SharedFolderBadge";
 import type { SharedRoot } from "./lib/sharedRoots";
+import { SharedFolderBadge } from "./SharedFolderBadge";
 
 const group: SharedRoot = {
   root: "/work/terax",
@@ -27,5 +27,13 @@ describe("SharedFolderBadge", () => {
 
   it("carries the normalized shared root for the app lab to read", () => {
     expect(render()).toContain('data-shared-root="/work/terax"');
+  });
+
+  it("uses undiluted border-border and text-muted-foreground contrast", () => {
+    const html = render();
+    expect(html).toContain("border-border ");
+    expect(html).toContain("text-muted-foreground");
+    expect(html).not.toContain("border-border/70");
+    expect(html).not.toContain("text-muted-foreground/80");
   });
 });

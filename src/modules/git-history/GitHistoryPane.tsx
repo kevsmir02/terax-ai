@@ -532,7 +532,7 @@ export function GitHistoryPane({
         ) : (
           <>
             <div
-              className="grid shrink-0 items-center gap-3 border-b border-border/40 bg-card/55 pr-3 text-[9.5px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/70"
+              className="grid shrink-0 items-center gap-3 border-b border-border bg-card/55 pr-3 text-[9.5px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/70"
               style={{
                 height: TABLE_HEADER_HEIGHT,
                 gridTemplateColumns: gridTemplate,
@@ -833,7 +833,7 @@ function CommitDetail({
 
   return (
     <div className="flex max-h-[60vh] min-h-0 flex-col">
-      <div className="shrink-0 border-b border-border/45 p-3">
+      <div className="shrink-0 border-b border-border p-3">
         <div className="flex items-start gap-2">
           <span className="mt-px shrink-0 rounded bg-muted/65 px-1.5 py-0.5 font-mono text-[10.5px] leading-none tabular-nums text-muted-foreground">
             {commit.shortSha}

@@ -151,7 +151,7 @@ export function MarkdownImageView({
         <span
           role="note"
           data-markdown-image-notice={state.kind}
-          className="block rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
+          className="block rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
         >
           <span className="font-medium text-foreground">{notice.title}</span>{" "}
           {notice.reason}

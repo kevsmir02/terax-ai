@@ -119,7 +119,7 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
           onReload={reload}
         />
         {showXfoHint ? (
-          <div className="flex h-7 shrink-0 items-center gap-1.5 border-b border-border/60 bg-amber-500/8 px-3 text-[11px] text-amber-600 dark:text-amber-400">
+          <div className="flex h-7 shrink-0 items-center gap-1.5 border-b border-border bg-amber-500/8 px-3 text-[11px] text-amber-600 dark:text-amber-400">
             <HugeiconsIcon
               icon={Alert02Icon}
               size={12}
@@ -135,7 +135,7 @@ export const PreviewPane = forwardRef<PreviewPaneHandle, Props>(
         {showCookieHint ? (
           <div
             role="note"
-            className="flex h-7 shrink-0 items-center gap-1.5 border-b border-border/60 bg-sky-500/8 px-3 text-[11px] text-sky-700 dark:text-sky-300"
+            className="flex h-7 shrink-0 items-center gap-1.5 border-b border-border bg-sky-500/8 px-3 text-[11px] text-sky-700 dark:text-sky-300"
           >
             <HugeiconsIcon
               icon={InformationCircleIcon}
@@ -235,7 +235,7 @@ export function PreviewReloadNotice({
     <div
       role="status"
       data-preview-reloaded={reason}
-      className="flex shrink-0 items-start gap-1.5 border-b border-border/60 bg-muted/60 px-3 py-1.5 text-[11px] text-muted-foreground"
+      className="flex shrink-0 items-start gap-1.5 border-b border-border bg-muted/60 px-3 py-1.5 text-[11px] text-muted-foreground"
     >
       <HugeiconsIcon
         icon={InformationCircleIcon}
@@ -279,7 +279,7 @@ function UnloadedState({ reason }: { reason: PreviewFrameUnloadReason }) {
       data-preview-unloaded={reason}
       className="flex h-full w-full flex-col items-center justify-center gap-3 px-6 text-center"
     >
-      <div className="flex size-10 items-center justify-center rounded-2xl border border-border/60 bg-card text-muted-foreground">
+      <div className="flex size-10 items-center justify-center rounded-2xl border border-border bg-card text-muted-foreground">
         <HugeiconsIcon icon={Globe02Icon} size={18} strokeWidth={1.5} />
       </div>
       <div className="space-y-1">
@@ -297,7 +297,7 @@ function UnloadedState({ reason }: { reason: PreviewFrameUnloadReason }) {
 function EmptyState() {
   return (
     <div className="flex h-full w-full flex-col items-center justify-center gap-4 px-6 text-center">
-      <div className="flex size-12 items-center justify-center rounded-2xl border border-border/60 bg-card text-muted-foreground">
+      <div className="flex size-12 items-center justify-center rounded-2xl border border-border bg-card text-muted-foreground">
         <HugeiconsIcon icon={Globe02Icon} size={20} strokeWidth={1.5} />
       </div>
       <div className="space-y-1.5">
