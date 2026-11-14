@@ -13,32 +13,38 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
-const mocks = vi.hoisted(() => ({
-  livePtys: new Map<number, number>(),
-  busyLeaves: new Set<number>(),
-  cwds: new Map<number, string>(),
-  disposeSession: vi.fn((leafId: number) => {
-    mocks.livePtys.delete(leafId);
-  }),
-  setSpaceIsolation: vi.fn<
-    (
-      id: string,
-      mode: "default" | "isolated",
-    ) => Promise<{
-      spaceId: string;
-      accountIsolation: "default" | "isolated";
-      profileReady: boolean;
-      stale: boolean;
-      activeRuntimeMode: "default" | "isolated" | null;
-    }>
-  >(async (id, mode) => ({
-    spaceId: id,
-    accountIsolation: mode,
-    profileReady: mode === "isolated",
-    stale: false,
-    activeRuntimeMode: null,
-  })),
-}));
+const mocks = vi.hoisted(() => {
+  const livePtys = new Map<number, number>();
+  const busyLeaves = new Set<number>();
+  const cwds = new Map<number, string>();
+  const retainedSpaces = new Set<string>();
+  return {
+    livePtys,
+    busyLeaves,
+    cwds,
+    retainedSpaces,
+    disposeSession: vi.fn((leafId: number) => {
+      livePtys.delete(leafId);
+    }),
+    setSpaceIsolation: vi.fn<
+      (
+        id: string,
+        mode: "default" | "isolated",
+      ) => Promise<{
+        id: string;
+        accountIsolation: "default" | "isolated";
+        hasRetainedProfiles: boolean;
+      }>
+    >(async (id, mode) => {
+      if (mode === "isolated") retainedSpaces.add(id);
+      return {
+        id,
+        accountIsolation: mode,
+        hasRetainedProfiles: mode === "isolated" || retainedSpaces.has(id),
+      };
+    }),
+  };
+});
 
 vi.mock("@/modules/terminal/lib/terminalSessionApi", async (importOriginal) => {
   const actual =
@@ -248,14 +254,18 @@ describe("useSpaceIsolationGuards & SpaceIsolationDialogs", () => {
     mocks.cwds.clear();
     mocks.cwds.set(10, "/work/terax/packages/core");
     mocks.disposeSession.mockClear();
+    mocks.retainedSpaces.clear();
+    mocks.retainedSpaces.add("sp-iso-a");
+    mocks.retainedSpaces.add("sp-iso-b");
     mocks.setSpaceIsolation.mockReset();
-    mocks.setSpaceIsolation.mockImplementation(async (id, mode) => ({
-      spaceId: id,
-      accountIsolation: mode,
-      profileReady: mode === "isolated",
-      stale: false,
-      activeRuntimeMode: null,
-    }));
+    mocks.setSpaceIsolation.mockImplementation(async (id, mode) => {
+      if (mode === "isolated") mocks.retainedSpaces.add(id);
+      return {
+        id,
+        accountIsolation: mode,
+        hasRetainedProfiles: mode === "isolated" || mocks.retainedSpaces.has(id),
+      };
+    });
 
     useSpaces.getState().hydrate(
       [
@@ -523,5 +533,55 @@ describe("useSpaceIsolationGuards & SpaceIsolationDialogs", () => {
       useSpaces.getState().spaces.find((s) => s.id === "sp-default")
         ?.accountIsolation,
     ).toBe("isolated");
+  });
+
+  it("retains private profiles while guarding and restarting active terminals when disabling isolation", async () => {
+    let api!: Parameters<typeof Harness>[0]["onReady"] extends (
+      a: infer A,
+    ) => void
+      ? A
+      : never;
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    act(() => {
+      root?.render(<Harness onReady={(a) => (api = a)} />);
+    });
+
+    await act(async () => {
+      await api.requestToggle("sp-iso-a", "default");
+    });
+
+    const dialog = document.body.querySelector<HTMLElement>(
+      "[data-space-isolation-dialog]",
+    );
+    expect(dialog).not.toBeNull();
+    const confirmBtn = Array.from(dialog?.querySelectorAll("button") ?? []).find(
+      (b) => b.textContent === "Restart Terminals & Switch",
+    );
+    expect(confirmBtn).toBeDefined();
+
+    await act(async () => {
+      confirmBtn?.click();
+    });
+
+    expect(
+      document.body.querySelector("[data-space-isolation-dialog]"),
+    ).toBeNull();
+    expect(mocks.disposeSession).toHaveBeenCalledWith(20);
+    expect(
+      useSpaces.getState().spaces.find((s) => s.id === "sp-iso-a")
+        ?.accountIsolation,
+    ).toBe("default");
+    expect(
+      useSpaces.getState().runtimeById["sp-iso-a"]?.hasRetainedProfiles,
+    ).toBe(true);
+    const restarted = api.getTabs().find((t) => t.id === 3);
+    expect(restarted?.kind).toBe("terminal");
+    if (restarted?.kind === "terminal") {
+      expect(leafIds(restarted.paneTree)).not.toEqual([20]);
+    }
   });
 });

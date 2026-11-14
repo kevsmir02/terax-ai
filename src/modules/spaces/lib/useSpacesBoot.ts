@@ -1,9 +1,9 @@
-import { native } from "@/modules/workspace/native";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { Tab } from "@/modules/tabs";
 import { DEFAULT_SPACE_ID } from "@/modules/tabs/lib/useTabs";
 import { isLeaf, type PaneNode } from "@/modules/terminal/lib/panes";
 import { parseWorkspaceScopeKey, type WorkspaceEnv } from "@/modules/workspace";
+import { native } from "@/modules/workspace/native";
 import { useEffect, useRef } from "react";
 import { activeSpaceEnv } from "./activeSpace";
 import {
@@ -48,6 +48,7 @@ async function syncSpacesFailSafe(spaces: SpaceMeta[]): Promise<{
   spaces: SpaceMeta[];
   changed: boolean;
   runtimeById: Record<string, SpaceRuntimeStatus>;
+  orphanedCleanups: Record<string, SpaceRuntimeStatus>;
 }> {
   try {
     const records = await syncSpaceIsolation(spaces);
@@ -62,7 +63,7 @@ async function syncSpacesFailSafe(spaces: SpaceMeta[]): Promise<{
         cleanupError: message,
       };
     }
-    return { spaces, changed: false, runtimeById };
+    return { spaces, changed: false, runtimeById, orphanedCleanups: {} };
   }
 }
 
@@ -107,13 +108,20 @@ export function useSpacesBoot({
           const {
             spaces: syncedSpaces,
             runtimeById,
+            orphanedCleanups,
           } = await syncSpacesFailSafe([meta]);
           await saveSpacesList(syncedSpaces);
           await saveActiveId(DEFAULT_SPACE_ID);
           setActiveSpaceForNewTabs(DEFAULT_SPACE_ID);
           useSpaces
             .getState()
-            .hydrate(syncedSpaces, DEFAULT_SPACE_ID, undefined, runtimeById);
+            .hydrate(
+              syncedSpaces,
+              DEFAULT_SPACE_ID,
+              undefined,
+              runtimeById,
+              orphanedCleanups,
+            );
           return;
         }
 
@@ -121,6 +129,7 @@ export function useSpacesBoot({
           spaces: syncedSpaces,
           changed,
           runtimeById,
+          orphanedCleanups,
         } = await syncSpacesFailSafe(spaces);
         if (changed) {
           await saveSpacesList(syncedSpaces);
@@ -160,6 +169,7 @@ export function useSpacesBoot({
             plan.activeSpaceId,
             plan.initialActiveIndex,
             runtimeById,
+            orphanedCleanups,
           );
         replaceTabs(plan.tabs, plan.activeTabId);
       } catch (e) {

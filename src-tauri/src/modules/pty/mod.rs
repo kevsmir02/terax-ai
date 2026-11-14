@@ -15,10 +15,11 @@ mod unix_reader;
 mod wake;
 mod wire;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, RwLock};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use portable_pty::PtySize;
 use tauri::Manager;
@@ -44,23 +45,43 @@ pub struct PaneTarget {
     pub link: Arc<agent_detect::AgentLink>,
 }
 
+#[derive(Clone)]
+struct ReapTarget {
+    space_id: Option<String>,
+    pane_id: Option<u32>,
+    shell_pid: u32,
+    child_exited: Arc<(Mutex<bool>, Condvar)>,
+    #[cfg(unix)]
+    targets: ProcessTargets,
+}
+
+#[cfg(unix)]
+#[derive(Clone, Default)]
+struct ProcessTargets {
+    pgids: Vec<i32>,
+    pids: Vec<i32>,
+}
+
+#[derive(Clone)]
 pub struct PtyState {
-    sessions: RwLock<HashMap<u32, Arc<Session>>>,
+    sessions: Arc<RwLock<HashMap<u32, Arc<Session>>>>,
+    reaping: Arc<Mutex<HashMap<u32, ReapTarget>>>,
     // Starts at 1 so freshly-handed-out ids are never 0, which the frontend
     // sometimes treats as "unset". Increments monotonically; never reused.
-    next_id: AtomicU32,
+    next_id: Arc<AtomicU32>,
     hub: Hub,
     /// Resolved from the app's config on the first `terax-pty` request.
-    origins: OnceLock<crate::modules::webview_origin::AllowedOrigins>,
+    origins: Arc<OnceLock<crate::modules::webview_origin::AllowedOrigins>>,
 }
 
 impl Default for PtyState {
     fn default() -> Self {
         Self {
-            sessions: RwLock::new(HashMap::new()),
-            next_id: AtomicU32::new(1),
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+            reaping: Arc::new(Mutex::new(HashMap::new())),
+            next_id: Arc::new(AtomicU32::new(1)),
             hub: Hub::new(),
-            origins: OnceLock::new(),
+            origins: Arc::new(OnceLock::new()),
         }
     }
 }
@@ -123,8 +144,27 @@ impl PtyState {
                 .collect()
         };
         for (id, session) in owned {
-            reap(id, session, "webview destroyed");
+            self.reap_tracked(id, session, "webview destroyed");
         }
+    }
+
+    fn reap_tracked(&self, id: u32, session: Arc<Session>, reason: &str) {
+        let entry = ReapTarget::from_session(&session);
+        self.reaping.lock().unwrap().insert(id, entry);
+        let child_exited = session.child_exited.clone();
+        reap_with_cleanup(id, session, reason, move || {
+            if *child_exited.0.lock().unwrap() {
+                // Keep cleanup lightweight: prune exited entries on next stop/reap.
+            }
+        });
+        self.prune_finished_reaps();
+    }
+
+    fn prune_finished_reaps(&self) {
+        self.reaping
+            .lock()
+            .unwrap()
+            .retain(|_, entry| !entry.is_completely_dead());
     }
 
     /// Native window occlusion or system sleep: every terminal of the window
@@ -134,6 +174,159 @@ impl PtyState {
             label: Arc::from(label),
             hidden,
         });
+    }
+
+    /// Stops every Space-owned terminal PTY and POSIX process group,
+    /// escalating SIGTERM -> grace -> SIGKILL as needed, and awaits process
+    /// exit before returning so profile directories are never deleted under
+    /// live agent processes.
+    pub(crate) fn stop_space_sessions(
+        &self,
+        space_id: &str,
+        pane_ids: &[u32],
+        grace_ms: u64,
+    ) -> Result<(), String> {
+        let matches_space = |s_space: Option<&str>, s_pane: Option<u32>| -> bool {
+            s_space == Some(space_id) || s_pane.is_some_and(|pane| pane_ids.contains(&pane))
+        };
+
+        let live: Vec<(u32, Arc<Session>)> = {
+            let mut sessions = self.sessions.write().unwrap();
+            let ids: Vec<u32> = sessions
+                .iter()
+                .filter(|(_, s)| matches_space(s.space_id.as_deref(), s.pane_id))
+                .map(|(id, _)| *id)
+                .collect();
+            ids.into_iter()
+                .filter_map(|id| sessions.remove(&id).map(|s| (id, s)))
+                .collect()
+        };
+        for (id, _) in &live {
+            self.hub.submit(Command::Unregister { id: *id });
+        }
+
+        let in_flight: Vec<ReapTarget> = {
+            self.prune_finished_reaps();
+            self.reaping
+                .lock()
+                .unwrap()
+                .values()
+                .filter(|entry| matches_space(entry.space_id.as_deref(), entry.pane_id))
+                .cloned()
+                .collect()
+        };
+
+        if live.is_empty() && in_flight.is_empty() {
+            return Ok(());
+        }
+
+        #[cfg(unix)]
+        let mut live_targets: Vec<(&Arc<Session>, ProcessTargets)> = live
+            .iter()
+            .map(|(_, s)| (s, capture_session_targets(s)))
+            .collect();
+
+        #[cfg(unix)]
+        for (_, targets) in &live_targets {
+            signal_targets(targets, libc::SIGTERM);
+        }
+
+        #[cfg(not(unix))]
+        for (_, session) in &live {
+            session.close_output();
+            let _ = session.killer.lock().unwrap().kill();
+        }
+
+        let grace = Duration::from_millis(grace_ms.min(MAX_TERMINATE_GRACE_MS));
+        let grace_deadline = Instant::now() + grace;
+
+        loop {
+            let all_live_done = {
+                #[cfg(unix)]
+                {
+                    live_targets
+                        .iter()
+                        .all(|(s, t)| *s.child_exited.0.lock().unwrap() && !t.any_alive())
+                }
+                #[cfg(not(unix))]
+                {
+                    live.iter().all(|(_, s)| *s.child_exited.0.lock().unwrap())
+                }
+            };
+            let all_inflight_done = in_flight.iter().all(ReapTarget::is_completely_dead);
+            if all_live_done && all_inflight_done {
+                break;
+            }
+            if Instant::now() >= grace_deadline {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        // Escalate any survivor via SIGKILL (plus any children spawned during grace).
+        #[cfg(unix)]
+        for (session, targets) in &mut live_targets {
+            if !*session.child_exited.0.lock().unwrap() || targets.any_alive() {
+                session.close_output();
+                targets.merge(capture_session_targets(session));
+                signal_targets(targets, libc::SIGKILL);
+                let _ = session.killer.lock().unwrap().kill();
+            }
+        }
+        #[cfg(unix)]
+        for entry in &in_flight {
+            if !entry.is_completely_dead() {
+                let mut refreshed = entry.targets.clone();
+                refreshed.merge(capture_descendants_of_pid(entry.shell_pid));
+                signal_targets(&refreshed, libc::SIGKILL);
+            }
+        }
+        #[cfg(not(unix))]
+        for (_, session) in &live {
+            if !*session.child_exited.0.lock().unwrap() {
+                session.close_output();
+                let _ = session.killer.lock().unwrap().kill();
+            }
+        }
+
+        let kill_deadline = Instant::now() + Duration::from_millis(3_000);
+        let mut timed_out = false;
+        loop {
+            let all_live_done = {
+                #[cfg(unix)]
+                {
+                    live_targets.iter().all(|(s, t)| {
+                        *s.child_exited.0.lock().unwrap()
+                            && !t.any_alive()
+                            && capture_session_targets(s).is_dead()
+                    })
+                }
+                #[cfg(not(unix))]
+                {
+                    live.iter().all(|(_, s)| *s.child_exited.0.lock().unwrap())
+                }
+            };
+            let all_inflight_done = in_flight.iter().all(ReapTarget::is_completely_dead);
+            if all_live_done && all_inflight_done {
+                break;
+            }
+            if Instant::now() >= kill_deadline {
+                timed_out = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(15));
+        }
+
+        for (id, session) in live {
+            session.close_output();
+            spawn_drop_thread(id, session);
+        }
+        self.prune_finished_reaps();
+
+        if timed_out {
+            return Err("Timed out waiting for Space terminal processes to exit".to_string());
+        }
+        Ok(())
     }
 }
 
@@ -146,9 +339,26 @@ fn check_presentation_batch(ids: &[u32]) -> Result<(), String> {
     Ok(())
 }
 
-/// Closes output, kills the child and drops the session off the caller's
-/// thread (`ClosePseudoConsole` can block until conhost drains).
-fn reap(id: u32, session: Arc<Session>, reason: &str) {
+fn spawn_drop_thread(id: u32, session: Arc<Session>) {
+    thread::Builder::new()
+        .name(format!("terax-pty-drop-{id}"))
+        .spawn(move || {
+            let t0 = Instant::now();
+            session::drop_session(session);
+            log::info!(
+                "pty session id={id} dropped in {}ms",
+                t0.elapsed().as_millis()
+            );
+        })
+        .expect("spawn pty drop thread");
+}
+
+fn reap_with_cleanup(
+    id: u32,
+    session: Arc<Session>,
+    reason: &str,
+    on_done: impl FnOnce() + Send + 'static,
+) {
     session.close_output();
     if let Err(e) = session.killer.lock().unwrap().kill() {
         // Non-fatal: the child may already have exited on its own (e.g. the
@@ -158,14 +368,167 @@ fn reap(id: u32, session: Arc<Session>, reason: &str) {
     thread::Builder::new()
         .name(format!("terax-pty-drop-{id}"))
         .spawn(move || {
-            let t0 = std::time::Instant::now();
+            let t0 = Instant::now();
             session::drop_session(session);
+            on_done();
             log::info!(
                 "pty session id={id} dropped in {}ms",
                 t0.elapsed().as_millis()
             );
         })
         .expect("spawn pty drop thread");
+}
+
+/// Closes output, kills the child and drops the session off the caller's
+/// thread (`ClosePseudoConsole` can block until conhost drains).
+#[cfg(test)]
+fn reap(id: u32, session: Arc<Session>, reason: &str) {
+    reap_with_cleanup(id, session, reason, || {});
+}
+
+impl ReapTarget {
+    fn from_session(session: &Session) -> Self {
+        Self {
+            space_id: session.space_id.clone(),
+            pane_id: session.pane_id,
+            shell_pid: session.shell_pid,
+            child_exited: session.child_exited.clone(),
+            #[cfg(unix)]
+            targets: capture_session_targets(session),
+        }
+    }
+
+    fn is_completely_dead(&self) -> bool {
+        let exited = *self.child_exited.0.lock().unwrap();
+        if !exited {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            !self.targets.any_alive() && !raw_pid_is_alive(self.shell_pid)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = self.shell_pid;
+            true
+        }
+    }
+}
+
+#[cfg(unix)]
+impl ProcessTargets {
+    fn merge(&mut self, other: Self) {
+        for pgid in other.pgids {
+            if !self.pgids.contains(&pgid) {
+                self.pgids.push(pgid);
+            }
+        }
+        for pid in other.pids {
+            if !self.pids.contains(&pid) {
+                self.pids.push(pid);
+            }
+        }
+    }
+
+    fn any_alive(&self) -> bool {
+        self.pgids.iter().copied().any(pgid_has_alive_process)
+            || self
+                .pids
+                .iter()
+                .copied()
+                .any(|p| raw_pid_is_alive(p as u32))
+    }
+
+    fn is_dead(&self) -> bool {
+        !self.any_alive()
+    }
+}
+
+#[cfg(unix)]
+fn raw_pid_is_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    let rc = unsafe { libc::kill(pid as i32, 0) };
+    rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(unix)]
+fn pgid_has_alive_process(pgid: i32) -> bool {
+    if pgid <= 1 {
+        return false;
+    }
+    let rc = unsafe { libc::kill(-pgid, 0) };
+    rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(unix)]
+fn capture_descendants_of_pid(root_pid: u32) -> ProcessTargets {
+    let mut targets = ProcessTargets::default();
+    if root_pid == 0 {
+        return targets;
+    }
+    let own_pid = unsafe { libc::getpid() };
+    let own_group = unsafe { libc::getpgid(0) };
+
+    let mut queue = vec![root_pid];
+    let mut seen = HashSet::new();
+    seen.insert(root_pid);
+
+    while let Some(pid) = queue.pop() {
+        let pid_i = pid as i32;
+        if pid_i > 1 && pid_i != own_pid {
+            targets.pids.push(pid_i);
+            let pgid = unsafe { libc::getpgid(pid_i) };
+            if pgid > 1 && pgid != own_group && !targets.pgids.contains(&pgid) {
+                targets.pgids.push(pgid);
+            }
+        }
+        for child in foreground::children_of(pid) {
+            if seen.insert(child) {
+                queue.push(child);
+            }
+        }
+    }
+    targets
+}
+
+#[cfg(unix)]
+fn capture_session_targets(session: &Session) -> ProcessTargets {
+    let mut targets = capture_descendants_of_pid(session.shell_pid);
+    let own_group = unsafe { libc::getpgid(0) };
+    let fg_group = session
+        .master
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|master| master.process_group_leader());
+    if let Some(pgid) = fg_group {
+        if pgid > 1 && pgid != own_group && !targets.pgids.contains(&pgid) {
+            targets.pgids.push(pgid);
+        }
+    }
+    targets
+}
+
+#[cfg(unix)]
+fn signal_targets(targets: &ProcessTargets, sig: i32) {
+    let own_pid = unsafe { libc::getpid() };
+    let own_group = unsafe { libc::getpgid(0) };
+    for &pgid in &targets.pgids {
+        if pgid > 1 && pgid != own_group {
+            unsafe {
+                libc::kill(-pgid, sig);
+            }
+        }
+    }
+    for &pid in &targets.pids {
+        if pid > 1 && pid != own_pid {
+            unsafe {
+                libc::kill(pid, sig);
+            }
+        }
+    }
 }
 
 pub(crate) fn preflight_pty_open(
@@ -254,6 +617,7 @@ pub async fn pty_open(
             isolated_env,
             colors,
             pane_id,
+            space_id,
         )
     })
     .await
@@ -387,7 +751,7 @@ pub fn pty_close(state: tauri::State<PtyState>, id: u32) -> Result<(), String> {
     match state.take(id) {
         Some(session) => {
             log::info!("pty closed id={id}");
-            reap(id, session, "close");
+            state.reap_tracked(id, session, "close");
         }
         None => log::debug!("pty_close: unknown id={id}"),
     }
@@ -449,7 +813,7 @@ pub fn pty_close_all(state: tauri::State<PtyState>) -> Result<usize, String> {
     let count = drained.len();
     for (id, session) in drained {
         state.hub.submit(Command::Unregister { id });
-        reap(id, session, "close_all");
+        state.reap_tracked(id, session, "close_all");
     }
     if count > 0 {
         log::info!("pty_close_all: reaped {count} orphaned session(s)");
@@ -585,11 +949,7 @@ const MAX_TERMINATE_GRACE_MS: u64 = 10_000;
 /// exit. **It never escalates**: a job that ignores SIGTERM is reported as a
 /// survivor so the window can ask before forcing, and forcing stays the
 /// separate, explicitly confirmed `pty_close_all`.
-fn terminate_sessions(
-    state: &PtyState,
-    ids: Vec<u32>,
-    grace_ms: u64,
-) -> TerminateReport {
+fn terminate_sessions(state: &PtyState, ids: Vec<u32>, grace_ms: u64) -> TerminateReport {
     let grace = grace_ms.min(MAX_TERMINATE_GRACE_MS);
     let targets: Vec<(u32, Arc<Session>)> = {
         let sessions = state.sessions.read().unwrap();
@@ -746,6 +1106,7 @@ mod tests {
                 signal: Arc::new(|_| {}),
                 notify: Arc::new(|_| {}),
                 pane_id,
+                space_id: None,
                 link: agent_detect::AgentLink::new(),
                 reap: Box::new(move || {
                     if let Some(session) = reaper.take(id) {
@@ -787,6 +1148,7 @@ mod tests {
                 signal: Arc::new(|_| {}),
                 notify: Arc::new(|_| {}),
                 pane_id: None,
+                space_id: None,
                 link: agent_detect::AgentLink::new(),
                 reap: Box::new(move || {
                     if let Some(session) = reaper.take(id) {
@@ -1001,7 +1363,10 @@ mod tests {
             .record_tombstone("sp-tomb", None, Some("pending cleanup".to_string()))
             .unwrap();
 
-        assert!(preflight_pty_open(&registry, None, Some(AccountIsolationMode::Default), false).is_err());
+        assert!(
+            preflight_pty_open(&registry, None, Some(AccountIsolationMode::Default), false)
+                .is_err()
+        );
         assert!(preflight_pty_open(&registry, Some("sp-default"), None, false).is_err());
         assert!(preflight_pty_open(
             &registry,
@@ -1106,7 +1471,11 @@ mod tests {
         let host_home = dir.path().join("host-home");
         std::fs::create_dir_all(host_home.join(".claude")).unwrap();
         let host_claude_sentinel = r#"{"hostSecret":true}"#;
-        std::fs::write(host_home.join(".claude/.credentials.json"), host_claude_sentinel).unwrap();
+        std::fs::write(
+            host_home.join(".claude/.credentials.json"),
+            host_claude_sentinel,
+        )
+        .unwrap();
 
         let manifest_path = dir.path().join("space-isolation/manifest.json");
         let profiles_dir = dir.path().join("space-profiles");
@@ -1143,9 +1512,18 @@ mod tests {
         let expected_home = std::env::var_os("HOME").unwrap_or_default();
         let state = Arc::new(PtyState::default());
 
-        let spawn_probe = |pty_id: u32, iso: &crate::modules::space_profile::IsolatedProfileEnv, token: &str, out_file: &std::path::Path| {
+        let spawn_probe = |pty_id: u32,
+                           iso: &crate::modules::space_profile::IsolatedProfileEnv,
+                           token: &str,
+                           out_file: &std::path::Path| {
             let mut cmd = portable_pty::CommandBuilder::new("/bin/sh");
-            shell_init::apply_common(&mut cmd, Some(dir.path().to_string_lossy().into_owned()), false, None, Some(iso));
+            shell_init::apply_common(
+                &mut cmd,
+                Some(dir.path().to_string_lossy().into_owned()),
+                false,
+                None,
+                Some(iso),
+            );
             let script = format!(
                 "printf 'HOME=%s\\nCLAUDE=%s\\nPATH0=%s\\n' \"$HOME\" \"$CLAUDE_CONFIG_DIR\" \"${{PATH%%:*}}\" > '{out}'; printf '{tok}' > \"$CLAUDE_CONFIG_DIR/.credentials.json\"",
                 out = out_file.display(),
@@ -1161,6 +1539,7 @@ mod tests {
                     signal: Arc::new(|_| {}),
                     notify: Arc::new(|_| {}),
                     pane_id: None,
+                    space_id: None,
                     link: agent_detect::AgentLink::new(),
                     reap: Box::new(|| {}),
                     colors: None,
@@ -1174,7 +1553,11 @@ mod tests {
                 move || Ok(cmd),
             )
             .unwrap();
-            state.sessions.write().unwrap().insert(pty_id, Arc::clone(&s));
+            state
+                .sessions
+                .write()
+                .unwrap()
+                .insert(pty_id, Arc::clone(&s));
             s
         };
 
@@ -1185,9 +1568,15 @@ mod tests {
         let _s_alpha = spawn_probe(101, &env_alpha, "alpha-login", &out_alpha);
         let _s_beta = spawn_probe(102, &env_beta, "beta-login", &out_beta);
 
-        wait_for("both parallel isolated PTYs to write isolated files", || {
-            creds_alpha.exists() && creds_beta.exists() && out_alpha.exists() && out_beta.exists()
-        });
+        wait_for(
+            "both parallel isolated PTYs to write isolated files",
+            || {
+                creds_alpha.exists()
+                    && creds_beta.exists()
+                    && out_alpha.exists()
+                    && out_beta.exists()
+            },
+        );
 
         let report_alpha = std::fs::read_to_string(&out_alpha).unwrap();
         let report_beta = std::fs::read_to_string(&out_beta).unwrap();
@@ -1269,6 +1658,235 @@ mod tests {
         }
         if let Some(session) = state.take(1) {
             reap(1, session, "test cleanup");
+        }
+    }
+
+    #[cfg(unix)]
+    fn open_running_for_space(
+        state: &Arc<PtyState>,
+        id: u32,
+        pane_id: Option<u32>,
+        space_id: Option<&str>,
+        script: &str,
+    ) -> Arc<Session> {
+        let reaper = state.clone();
+        let session = spawn_with(
+            Host {
+                id,
+                owner: Arc::from("main"),
+                hub: state.hub.clone(),
+                class: PresentationClass::Hidden,
+                signal: Arc::new(|_| {}),
+                notify: Arc::new(|_| {}),
+                pane_id,
+                space_id: space_id.map(str::to_string),
+                link: agent_detect::AgentLink::new(),
+                reap: Box::new(move || {
+                    if let Some(session) = reaper.take(id) {
+                        session::drop_session(session);
+                    }
+                }),
+                colors: None,
+            },
+            PtySize::default(),
+            || {
+                let mut command = CommandBuilder::new("/bin/sh");
+                command.arg("-c");
+                command.arg(script);
+                Ok(command)
+            },
+        )
+        .unwrap();
+        state.sessions.write().unwrap().insert(id, session.clone());
+        session
+    }
+
+    #[cfg(unix)]
+    fn pid_is_alive(pid: u32) -> bool {
+        if pid == 0 {
+            return false;
+        }
+        let rc = unsafe { libc::kill(pid as i32, 0) };
+        if rc == 0 {
+            return true;
+        }
+        std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_space_sessions_kills_process_group_escalates_sigkill_and_awaits_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let child_pid_file = dir.path().join("child.pid");
+        let state = Arc::new(PtyState::default());
+
+        let stubborn = open_running_for_space(
+            &state,
+            201,
+            Some(10),
+            Some("sp-target"),
+            &format!(
+                "trap '' TERM; (trap '' TERM; sh -c 'sleep 30' & echo $! > '{}'; wait) & wait",
+                child_pid_file.display()
+            ),
+        );
+        let default_mode_pane =
+            open_running_for_space(&state, 202, Some(20), None, "sleep 30; true");
+        let other_space =
+            open_running_for_space(&state, 203, Some(30), Some("sp-other"), "sleep 30; true");
+
+        wait_for("stubborn grandchild pid file", || child_pid_file.exists());
+        let child_pid: u32 = std::fs::read_to_string(&child_pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        wait_for("other space shell running", || {
+            pid_is_alive(other_space.shell_pid)
+        });
+
+        state
+            .stop_space_sessions("sp-target", &[10, 20], 120)
+            .unwrap();
+
+        assert!(stubborn.has_child_exited());
+        assert!(default_mode_pane.has_child_exited());
+        assert!(!pid_is_alive(stubborn.shell_pid));
+        assert!(!pid_is_alive(child_pid));
+        assert!(!pid_is_alive(default_mode_pane.shell_pid));
+
+        assert!(!other_space.has_child_exited());
+        assert!(pid_is_alive(other_space.shell_pid));
+        assert!(state.sessions.read().unwrap().contains_key(&203));
+
+        if let Some(session) = state.take(203) {
+            reap(203, session, "test cleanup");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_space_sessions_sends_sigterm_before_escalating_to_sigkill() {
+        let dir = tempfile::tempdir().unwrap();
+        let ready = dir.path().join("ready");
+        let term_marker = dir.path().join("sigterm.seen");
+        let state = Arc::new(PtyState::default());
+
+        let coop = open_running_for_space(
+            &state,
+            204,
+            Some(40),
+            Some("sp-coop"),
+            &format!(
+                "trap 'touch \"{}\"; exit 0' TERM; touch '{}'; while true; do sleep 0.05; done",
+                term_marker.display(),
+                ready.display()
+            ),
+        );
+        wait_for("coop trap armed", || ready.exists());
+
+        state.stop_space_sessions("sp-coop", &[40], 1500).unwrap();
+
+        assert!(term_marker.exists(), "SIGTERM trap marker should exist");
+        assert!(coop.has_child_exited());
+        assert!(!pid_is_alive(coop.shell_pid));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_space_stops_process_group_before_atomic_tombstone_and_deletion() {
+        use std::ffi::OsString;
+        let dir = tempfile::tempdir().unwrap();
+        let host_home = dir.path().join("host-home");
+        let project_root = dir.path().join("project-root");
+        let shared_dir = dir.path().join("shared-resources");
+        std::fs::create_dir_all(host_home.join(".claude")).unwrap();
+        std::fs::create_dir_all(&project_root).unwrap();
+        std::fs::create_dir_all(&shared_dir).unwrap();
+        std::fs::write(host_home.join(".claude/.credentials.json"), "host-secret").unwrap();
+        std::fs::write(project_root.join("README.md"), "repo-data").unwrap();
+        std::fs::write(shared_dir.join("skill.md"), "shared-skill").unwrap();
+
+        let manifest_path = dir.path().join("space-isolation/manifest.json");
+        let profiles_dir = dir.path().join("space-profiles");
+        let registry = SpaceIsolationRegistry::for_paths_with_env(
+            manifest_path,
+            Some(profiles_dir.clone()),
+            Some(host_home.clone()),
+            Some(OsString::new()),
+        );
+        registry
+            .register_space("sp-wipe", AccountIsolationMode::Isolated)
+            .unwrap();
+        registry
+            .register_space("sp-other", AccountIsolationMode::Isolated)
+            .unwrap();
+
+        let env_wipe = preflight_pty_open(
+            &registry,
+            Some("sp-wipe"),
+            Some(AccountIsolationMode::Isolated),
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        std::fs::write(
+            env_wipe.claude_config_dir.join(".credentials.json"),
+            "wipe-tok",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&shared_dir, env_wipe.space_dir.join("shared-link")).unwrap();
+
+        let state = Arc::new(PtyState::default());
+        let heartbeat = env_wipe.claude_config_dir.join("heartbeat");
+        let script = format!(
+            "trap '' TERM; (trap '' TERM; while true; do printf x > '{}'; sleep 0.015; done) & wait",
+            heartbeat.display()
+        );
+        let wipe_pty = open_running_for_space(&state, 301, Some(55), Some("sp-wipe"), &script);
+        let other_pty =
+            open_running_for_space(&state, 302, Some(56), Some("sp-other"), "sleep 30; true");
+        wait_for("heartbeat file written by stubborn space process", || {
+            heartbeat.exists()
+        });
+
+        let status = registry
+            .remove_space_with_pty(&state, "sp-wipe", &[55])
+            .unwrap();
+
+        assert!(!status.has_retained_profiles);
+        assert!(status.cleanup_error.is_none());
+        assert!(wipe_pty.has_child_exited());
+        assert!(!pid_is_alive(wipe_pty.shell_pid));
+        assert!(!profiles_dir.join("sp-wipe").exists());
+        assert!(!heartbeat.exists());
+        if profiles_dir.join(".tombstones").exists() {
+            assert_eq!(
+                std::fs::read_dir(profiles_dir.join(".tombstones"))
+                    .unwrap()
+                    .count(),
+                0
+            );
+        }
+
+        // Strict boundary check: host home, project root, shared symlink targets, and other Space untouched.
+        assert_eq!(
+            std::fs::read_to_string(host_home.join(".claude/.credentials.json")).unwrap(),
+            "host-secret"
+        );
+        assert_eq!(
+            std::fs::read_to_string(project_root.join("README.md")).unwrap(),
+            "repo-data"
+        );
+        assert_eq!(
+            std::fs::read_to_string(shared_dir.join("skill.md")).unwrap(),
+            "shared-skill"
+        );
+        assert!(profiles_dir.join("sp-other").exists());
+        assert!(pid_is_alive(other_pty.shell_pid));
+
+        if let Some(session) = state.take(302) {
+            reap(302, session, "test cleanup");
         }
     }
 }

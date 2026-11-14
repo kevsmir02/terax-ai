@@ -438,4 +438,133 @@ describe("Space isolation IPC sync & boot ordering", () => {
       agentId: "claude",
     });
   });
+
+  it("retains profiles on disable, clears private accounts, retries failed cleanup, and tracks orphaned tombstones", async () => {
+    const { reconcileSpacesWithIsolation } = await import("./isolationSync");
+
+    const spaces: SpaceMeta[] = [
+      {
+        id: "sp-1",
+        name: "Client",
+        root: "/work/client",
+        env: LOCAL_WORKSPACE,
+        accountIsolation: "isolated",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ];
+    const reconciled = reconcileSpacesWithIsolation(spaces, [
+      { id: "sp-1", accountIsolation: "isolated", hasRetainedProfiles: true },
+      {
+        id: "sp-orphan",
+        accountIsolation: "default",
+        hasRetainedProfiles: true,
+        cleanupError: "PermissionDenied at [path]",
+      },
+    ]);
+    expect(reconciled.orphanedCleanups).toEqual({
+      "sp-orphan": {
+        hasRetainedProfiles: true,
+        cleanupError: "PermissionDenied at [path]",
+      },
+    });
+
+    useSpaces
+      .getState()
+      .hydrate(
+        spaces,
+        "sp-1",
+        undefined,
+        reconciled.runtimeById,
+        reconciled.orphanedCleanups,
+      );
+
+    // Disabling keeps retained profiles visible.
+    mockInvoke.mockResolvedValueOnce({
+      id: "sp-1",
+      accountIsolation: "default",
+      hasRetainedProfiles: true,
+    });
+    await useSpaces.getState().setAccountIsolation("sp-1", "default");
+    expect(useSpaces.getState().runtimeById["sp-1"]).toEqual({
+      hasRetainedProfiles: true,
+    });
+
+    // Clear private accounts forwards paneIds and updates runtime state.
+    mockInvoke.mockResolvedValueOnce({
+      id: "sp-1",
+      accountIsolation: "default",
+      hasRetainedProfiles: false,
+    });
+    const clearResult = await (
+      useSpaces.getState() as unknown as {
+        clearPrivateAccounts: (
+          id: string,
+          paneIds?: number[],
+        ) => Promise<unknown>;
+      }
+    ).clearPrivateAccounts("sp-1", [10, 11]);
+    expect(mockInvoke).toHaveBeenCalledWith("space_isolation_clear_profiles", {
+      spaceId: "sp-1",
+      paneIds: [10, 11],
+    });
+    expect(clearResult).toEqual({
+      id: "sp-1",
+      accountIsolation: "default",
+      hasRetainedProfiles: false,
+    });
+    expect(useSpaces.getState().runtimeById["sp-1"]).toEqual({
+      hasRetainedProfiles: false,
+    });
+
+    // Failed removal surfaces recoverable orphaned cleanup + Retry clears it.
+    mockInvoke.mockResolvedValueOnce({
+      id: "sp-1",
+      accountIsolation: "default",
+      hasRetainedProfiles: true,
+      cleanupError: "PermissionDenied: busy",
+    });
+    (
+      useSpaces.getState().remove as (
+        id: string,
+        paneIds?: number[],
+      ) => string | null
+    )("sp-1", [20]);
+    await waitForSpaceIsolationSync("sp-1");
+    expect(mockInvoke).toHaveBeenCalledWith("space_isolation_remove", {
+      spaceId: "sp-1",
+      paneIds: [20],
+    });
+    expect(
+      (
+        useSpaces.getState() as unknown as {
+          orphanedCleanups: Record<string, unknown>;
+        }
+      ).orphanedCleanups["sp-1"],
+    ).toEqual({
+      hasRetainedProfiles: true,
+      cleanupError: "PermissionDenied: busy",
+    });
+
+    mockInvoke.mockResolvedValueOnce({
+      id: "sp-orphan",
+      accountIsolation: "default",
+      hasRetainedProfiles: false,
+    });
+    await (
+      useSpaces.getState() as unknown as {
+        retryCleanup: (id: string) => Promise<unknown>;
+      }
+    ).retryCleanup("sp-orphan");
+    expect(mockInvoke).toHaveBeenCalledWith("space_isolation_retry_cleanup", {
+      spaceId: "sp-orphan",
+    });
+    expect(
+      (
+        useSpaces.getState() as unknown as {
+          orphanedCleanups: Record<string, unknown>;
+        }
+      ).orphanedCleanups["sp-orphan"],
+    ).toBeUndefined();
+  });
 });
