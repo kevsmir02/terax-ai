@@ -3,6 +3,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -19,14 +20,13 @@ import {
   ComputerTerminal02Icon,
   GitBranchIcon,
   Globe02Icon,
+  GridViewIcon,
   PencilEdit02Icon,
-  PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useRef, useState } from "react";
 
 type Props = {
-  onNew: () => void;
   onNewBlock: () => void;
   onNewPreview: () => void;
   onNewEditor: () => void;
@@ -34,15 +34,13 @@ type Props = {
   onLaunchAgents: (request: AgentLaunchRequest) => void;
 };
 
-export function NewTabMenu({
-  onNew,
+export function ViewLauncherMenu({
   onNewBlock,
   onNewPreview,
   onNewEditor,
   onNewGitGraph,
   onLaunchAgents,
 }: Props) {
-  const terminalHint = useShortcutHint("tab.new");
   const blockHint = useShortcutHint("tab.newBlock");
   const editorHint = useShortcutHint("tab.newEditor");
   const previewHint = useShortcutHint("tab.newPreview");
@@ -71,21 +69,27 @@ export function NewTabMenu({
   return (
     <Popover open={launcherOpen} onOpenChange={setLauncherOpen}>
       <PopoverAnchor asChild>
-        <span className="inline-flex">
+        <span className="inline-flex shrink-0">
           <DropdownMenu open={menuOpen} onOpenChange={onMenuOpenChange}>
             <DropdownMenuTrigger asChild>
               <Button
+                type="button"
                 variant="ghost"
                 size="icon"
-                className="ml-1 size-6 shrink-0 rounded-full bg-foreground/[0.06] text-muted-foreground ring-1 ring-inset ring-foreground/[0.04] hover:bg-foreground/[0.12] hover:text-foreground"
-                title="New tab"
+                className="size-7 shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+                title="Open view or agents"
+                aria-label="Open view or agents"
               >
-                <HugeiconsIcon icon={PlusSignIcon} size={14} strokeWidth={2} />
+                <HugeiconsIcon
+                  icon={GridViewIcon}
+                  size={15}
+                  strokeWidth={1.75}
+                />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent
-              align="start"
-              className="min-w-44"
+              align="end"
+              className="min-w-48"
               onCloseAutoFocus={(event) => {
                 event.preventDefault();
                 if (!openLauncherAfterMenuClose.current) return;
@@ -94,28 +98,6 @@ export function NewTabMenu({
                 requestAnimationFrame(() => setLauncherOpen(true));
               }}
             >
-              <DropdownMenuItem onSelect={onNew}>
-                <HugeiconsIcon
-                  icon={ComputerTerminal02Icon}
-                  size={14}
-                  strokeWidth={1.75}
-                />
-                <span className="flex-1">Terminal</span>
-                <span className="text-xs text-muted-foreground">
-                  {terminalHint}
-                </span>
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={onNewBlock}>
-                <HugeiconsIcon
-                  icon={ComputerTerminal02Icon}
-                  size={14}
-                  strokeWidth={1.75}
-                />
-                <span className="flex-1">Blocks</span>
-                <span className="text-xs text-muted-foreground">
-                  {blockHint}
-                </span>
-              </DropdownMenuItem>
               <DropdownMenuItem onSelect={openLauncher}>
                 <HugeiconsIcon
                   icon={AiBrowserIcon}
@@ -130,24 +112,13 @@ export function NewTabMenu({
                   className="text-muted-foreground"
                 />
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={onNewEditor}>
-                <HugeiconsIcon
-                  icon={PencilEdit02Icon}
-                  size={14}
-                  strokeWidth={1.75}
-                />
-                <span className="flex-1">Editor</span>
-                <span className="text-xs text-muted-foreground">
-                  {editorHint}
-                </span>
-              </DropdownMenuItem>
               <DropdownMenuItem onSelect={onNewPreview}>
                 <HugeiconsIcon
                   icon={Globe02Icon}
                   size={14}
                   strokeWidth={1.75}
                 />
-                <span className="flex-1">Preview</span>
+                <span className="flex-1">Web Preview</span>
                 <span className="text-xs text-muted-foreground">
                   {previewHint}
                 </span>
@@ -160,12 +131,35 @@ export function NewTabMenu({
                 />
                 <span className="flex-1">Git Graph</span>
               </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={onNewBlock}>
+                <HugeiconsIcon
+                  icon={ComputerTerminal02Icon}
+                  size={14}
+                  strokeWidth={1.75}
+                />
+                <span className="flex-1">Blocks</span>
+                <span className="text-xs text-muted-foreground">
+                  {blockHint}
+                </span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={onNewEditor}>
+                <HugeiconsIcon
+                  icon={PencilEdit02Icon}
+                  size={14}
+                  strokeWidth={1.75}
+                />
+                <span className="flex-1">Editor</span>
+                <span className="text-xs text-muted-foreground">
+                  {editorHint}
+                </span>
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </span>
       </PopoverAnchor>
       <PopoverContent
-        align="start"
+        align="end"
         sideOffset={6}
         onCloseAutoFocus={(event) => {
           event.preventDefault();
