@@ -6,8 +6,18 @@ import { isLeaf, type PaneNode } from "@/modules/terminal/lib/panes";
 import { parseWorkspaceScopeKey, type WorkspaceEnv } from "@/modules/workspace";
 import { useEffect, useRef } from "react";
 import { activeSpaceEnv } from "./activeSpace";
+import {
+  reconcileSpacesWithIsolation,
+  syncSpaceIsolation,
+} from "./isolationSync";
 import { planSpaceRestore } from "./restore";
-import { loadAll, type SpaceMeta, saveActiveId, saveSpacesList } from "./store";
+import {
+  loadAll,
+  type SpaceMeta,
+  type SpaceRuntimeStatus,
+  saveActiveId,
+  saveSpacesList,
+} from "./store";
 import { useSpaces } from "./useSpaces";
 
 type Params = {
@@ -32,6 +42,28 @@ function uniqueCwds(tabs: Tab[]): string[] {
   };
   for (const t of tabs) if (t.kind === "terminal") walk(t.paneTree);
   return [...set];
+}
+
+async function syncSpacesFailSafe(spaces: SpaceMeta[]): Promise<{
+  spaces: SpaceMeta[];
+  changed: boolean;
+  runtimeById: Record<string, SpaceRuntimeStatus>;
+}> {
+  try {
+    const records = await syncSpaceIsolation(spaces);
+    return reconcileSpacesWithIsolation(spaces, records);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[terax] space isolation sync failed:", error);
+    const runtimeById: Record<string, SpaceRuntimeStatus> = {};
+    for (const space of spaces) {
+      runtimeById[space.id] = {
+        hasRetainedProfiles: false,
+        cleanupError: message,
+      };
+    }
+    return { spaces, changed: false, runtimeById };
+  }
 }
 
 export function useSpacesBoot({
@@ -68,29 +100,45 @@ export function useSpacesBoot({
             env: parseWorkspaceScopeKey(
               usePreferencesStore.getState().defaultWorkspaceEnv,
             ),
+            accountIsolation: "default",
             createdAt: Date.now(),
             updatedAt: Date.now(),
           };
-          await saveSpacesList([meta]);
+          const {
+            spaces: syncedSpaces,
+            runtimeById,
+          } = await syncSpacesFailSafe([meta]);
+          await saveSpacesList(syncedSpaces);
           await saveActiveId(DEFAULT_SPACE_ID);
           setActiveSpaceForNewTabs(DEFAULT_SPACE_ID);
-          useSpaces.getState().hydrate([meta], DEFAULT_SPACE_ID);
+          useSpaces
+            .getState()
+            .hydrate(syncedSpaces, DEFAULT_SPACE_ID, undefined, runtimeById);
           return;
         }
 
+        const {
+          spaces: syncedSpaces,
+          changed,
+          runtimeById,
+        } = await syncSpacesFailSafe(spaces);
+        if (changed) {
+          await saveSpacesList(syncedSpaces);
+        }
+
         const active =
-          activeId && spaces.some((s) => s.id === activeId)
+          activeId && syncedSpaces.some((s) => s.id === activeId)
             ? activeId
-            : spaces[0].id;
+            : syncedSpaces[0].id;
         setActiveSpaceForNewTabs(active);
 
         // Apply the space's env+home before the fresh-tab fallback and spawns
         // below; env is set synchronously so cwd resolution picks WSL vs local.
-        const env = activeSpaceEnv(spaces, active);
+        const env = activeSpaceEnv(syncedSpaces, active);
         const restoredHome = await adoptWorkspaceEnv(env);
 
         const plan = planSpaceRestore({
-          spaces,
+          spaces: syncedSpaces,
           states,
           activeId: active,
           env,
@@ -107,7 +155,12 @@ export function useSpacesBoot({
 
         useSpaces
           .getState()
-          .hydrate(spaces, plan.activeSpaceId, plan.initialActiveIndex);
+          .hydrate(
+            syncedSpaces,
+            plan.activeSpaceId,
+            plan.initialActiveIndex,
+            runtimeById,
+          );
         replaceTabs(plan.tabs, plan.activeTabId);
       } catch (e) {
         console.error("[terax] spaces boot failed:", e);

@@ -1,6 +1,14 @@
 import { LazyStore } from "@tauri-apps/plugin-store";
 import type { WorkspaceEnv } from "@/modules/workspace";
+import {
+  type AccountIsolationMode,
+  newSpaceId,
+  normalizeSpaceMeta,
+  type RawSpaceMeta,
+} from "./isolation";
 import type { SerializedTab } from "./serialize";
+
+export type { AccountIsolationMode, SpaceRuntimeStatus } from "./isolation";
 
 export type SpaceMeta = {
   id: string;
@@ -9,6 +17,7 @@ export type SpaceMeta = {
   env: WorkspaceEnv;
   /** Opt-in accent, index into SPACE_COLORS. Undefined = theme primary. */
   color?: number;
+  accountIsolation: AccountIsolationMode;
   createdAt: number;
   updatedAt: number;
 };
@@ -38,8 +47,10 @@ export async function loadAll(): Promise<LoadedSpaces> {
   let activeId: string | null = null;
   const states = new Map<string, SpaceState>();
   for (const [k, v] of entries) {
-    if (k === KEY_SPACES) spaces = (v as SpaceMeta[]) ?? [];
-    else if (k === KEY_ACTIVE) activeId = (v as string | null) ?? null;
+    if (k === KEY_SPACES) {
+      const raw = Array.isArray(v) ? (v as RawSpaceMeta[]) : [];
+      spaces = raw.map(normalizeSpaceMeta);
+    } else if (k === KEY_ACTIVE) activeId = (v as string | null) ?? null;
     else if (k.startsWith(STATE_PREFIX)) {
       states.set(k.slice(STATE_PREFIX.length), v as SpaceState);
     }
@@ -48,7 +59,7 @@ export async function loadAll(): Promise<LoadedSpaces> {
 }
 
 export async function saveSpacesList(spaces: SpaceMeta[]): Promise<void> {
-  await store.set(KEY_SPACES, spaces);
+  await store.set(KEY_SPACES, spaces.map(normalizeSpaceMeta));
 }
 
 export async function saveActiveId(id: string | null): Promise<void> {
@@ -63,6 +74,4 @@ export async function deleteSpaceData(id: string): Promise<void> {
   await store.delete(stateKey(id));
 }
 
-export function newSpaceId(): string {
-  return `sp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
+export { newSpaceId };

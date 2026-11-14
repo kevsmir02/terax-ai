@@ -1,6 +1,7 @@
 import { loadSessionRenderer } from "@/modules/terminal/ghostty/loadSessionRenderer";
 import { currentWorkspaceEnv, workspaceScopeKey } from "@/modules/workspace";
 import { useSpaces } from "@/modules/spaces/lib/useSpaces";
+import type { AccountIsolationMode } from "@/modules/spaces/lib/isolation";
 import {
   ensureGhosttyBlocks,
   ghosttyBlocks,
@@ -78,6 +79,8 @@ type Callbacks = {
 
 type GhosttySession = {
   readonly leafId: number;
+  spaceId: string;
+  expectedIsolation?: AccountIsolationMode;
   readonly backend: GhosttyBackend;
   initialCwd: string | undefined;
   lastCwd: string | null;
@@ -127,6 +130,8 @@ const oscClipboard = new LatestClipboardWrite(writeTerminalClipboard);
 
 type Options = {
   leafId: number;
+  spaceId: string;
+  expectedIsolation?: AccountIsolationMode;
   backend: GhosttyBackend;
   container: React.RefObject<HTMLDivElement | null>;
   visible: boolean;
@@ -140,6 +145,8 @@ type Options = {
 
 export function useGhosttyTerminalSession({
   leafId,
+  spaceId,
+  expectedIsolation,
   backend,
   container,
   visible,
@@ -181,6 +188,8 @@ export function useGhosttyTerminalSession({
       backend,
       initialCwdRef.current,
       fontRef.current,
+      spaceId,
+      expectedIsolation,
     );
     if (blocks) ensureGhosttyBlocks(leafId);
     const node = container.current;
@@ -216,7 +225,14 @@ export function useGhosttyTerminalSession({
   }, [leafId, backend, font]);
 
   useEffect(() => {
-    const session = ensureSession(leafId, backend, initialCwdRef.current);
+    const session = ensureSession(
+      leafId,
+      backend,
+      initialCwdRef.current,
+      undefined,
+      spaceId,
+      expectedIsolation,
+    );
     session.visible = visible;
     session.focused = focused;
     if (!visible || !focused) session.cancelFocusRetry?.();
@@ -519,6 +535,8 @@ function ensureSession(
   backend: GhosttyBackend,
   initialCwd?: string,
   font?: TerminalFontSpec,
+  spaceId = "",
+  expectedIsolation?: AccountIsolationMode,
 ): GhosttySession {
   const existing = sessions.get(leafId);
   if (existing) {
@@ -526,6 +544,10 @@ function ensureSession(
       throw new Error(
         `Ghostty backend changed for live leaf ${leafId}; reload is required`,
       );
+    }
+    if (!existing.pty) {
+      if (spaceId) existing.spaceId = spaceId;
+      existing.expectedIsolation = expectedIsolation;
     }
     return existing;
   }
@@ -537,6 +559,8 @@ function ensureSession(
   });
   const session: GhosttySession = {
     leafId,
+    spaceId,
+    expectedIsolation,
     backend,
     initialCwd,
     lastCwd: null,
@@ -856,6 +880,10 @@ async function initializeSessionGeneration(
     preferences.terminalShell || undefined,
     session.leafId,
     theme,
+    {
+      spaceId: session.spaceId,
+      expectedIsolation: session.expectedIsolation,
+    },
   );
   if (session.disposed || generation !== session.generation) {
     await pty.close();

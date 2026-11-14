@@ -24,6 +24,7 @@ use portable_pty::PtySize;
 use tauri::Manager;
 
 use crate::modules::control::ControlState;
+use crate::modules::space_isolation::{AccountIsolationMode, SpaceIsolationRegistry};
 use crate::modules::workspace::{user_spawn_cwd_or_home, WorkspaceEnv, WorkspaceRegistry};
 use hub::{Command, Hub};
 pub use presentation::PresentationClass;
@@ -167,6 +168,14 @@ fn reap(id: u32, session: Arc<Session>, reason: &str) {
         .expect("spawn pty drop thread");
 }
 
+pub(crate) fn preflight_pty_open(
+    isolation: &SpaceIsolationRegistry,
+    space_id: Option<&str>,
+    expected_isolation: Option<AccountIsolationMode>,
+) -> Result<(), String> {
+    isolation.validate_pty_open(space_id, expected_isolation)
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn pty_open(
@@ -174,6 +183,7 @@ pub async fn pty_open(
     webview: tauri::Webview,
     state: tauri::State<'_, PtyState>,
     control: tauri::State<'_, ControlState>,
+    isolation: tauri::State<'_, SpaceIsolationRegistry>,
     cols: u16,
     rows: u16,
     cwd: Option<String>,
@@ -183,7 +193,10 @@ pub async fn pty_open(
     pane_id: Option<u32>,
     presentation: Option<PresentationClass>,
     colors: Option<TerminalColors>,
+    space_id: Option<String>,
+    expected_isolation: Option<AccountIsolationMode>,
 ) -> Result<u32, String> {
+    preflight_pty_open(&isolation, space_id.as_deref(), expected_isolation)?;
     let workspace = WorkspaceEnv::from_option(workspace);
     let blocks = blocks.unwrap_or(false);
     // A Windows helper cannot execute inside WSL without explicit path and
@@ -938,5 +951,65 @@ mod tests {
         if let Some(session) = state.take(2) {
             reap(2, session, "test cleanup");
         }
+    }
+
+    #[test]
+    fn pty_open_preflight_blocks_missing_mismatched_tombstoned_and_isolated_before_spawn() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = SpaceIsolationRegistry::for_paths(
+            dir.path().join("space-isolation").join("manifest.json"),
+            Some(dir.path().join("space-profiles")),
+        );
+        registry
+            .register_space("sp-default", AccountIsolationMode::Default)
+            .unwrap();
+        registry
+            .register_space("sp-iso", AccountIsolationMode::Isolated)
+            .unwrap();
+        registry
+            .register_space("sp-tomb", AccountIsolationMode::Default)
+            .unwrap();
+        registry
+            .record_tombstone("sp-tomb", None, Some("pending cleanup".to_string()))
+            .unwrap();
+
+        assert!(preflight_pty_open(&registry, None, Some(AccountIsolationMode::Default)).is_err());
+        assert!(preflight_pty_open(&registry, Some("sp-default"), None).is_err());
+        assert!(preflight_pty_open(
+            &registry,
+            Some("sp-unregistered"),
+            Some(AccountIsolationMode::Default),
+        )
+        .is_err());
+        assert!(preflight_pty_open(
+            &registry,
+            Some("sp-default"),
+            Some(AccountIsolationMode::Isolated),
+        )
+        .is_err());
+        assert!(preflight_pty_open(
+            &registry,
+            Some("sp-iso"),
+            Some(AccountIsolationMode::Default),
+        )
+        .is_err());
+        assert!(preflight_pty_open(
+            &registry,
+            Some("sp-iso"),
+            Some(AccountIsolationMode::Isolated),
+        )
+        .is_err());
+        assert!(preflight_pty_open(
+            &registry,
+            Some("sp-tomb"),
+            Some(AccountIsolationMode::Default),
+        )
+        .is_err());
+        assert!(preflight_pty_open(
+            &registry,
+            Some("sp-default"),
+            Some(AccountIsolationMode::Default),
+        )
+        .is_ok());
     }
 }

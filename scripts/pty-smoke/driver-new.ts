@@ -126,9 +126,29 @@ async function probeGate() {
   };
 }
 
+let smokeSpaceReady: Promise<unknown> | null = null;
+const smokeOpenPty: Driver["openPty"] = async (
+  cols,
+  rows,
+  handlers,
+  cwd,
+  blocks,
+  shell,
+  paneId,
+) => {
+  smokeSpaceReady ??= invoke("space_isolation_sync", {
+    spaces: [{ id: "default", accountIsolation: "default" }],
+  }).catch(() => {});
+  await smokeSpaceReady;
+  return openPty(cols, rows, handlers, cwd, blocks, shell, paneId, undefined, {
+    spaceId: "default",
+    expectedIsolation: "default",
+  });
+};
+
 export const driver: Driver = {
   name: "multiplexed pull stream (terax-pty)",
-  openPty,
+  openPty: smokeOpenPty,
   setPresentation: setLeafPresentation,
   // A poll and its response are one round trip; ack-only requests are extra.
   streamOps: () => wire.polls + wire.acks,

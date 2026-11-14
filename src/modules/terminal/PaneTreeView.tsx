@@ -3,6 +3,7 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
+import type { AccountIsolationMode } from "@/modules/spaces/lib/isolation";
 import type { TerminalSearchController } from "@/modules/terminal/search/TerminalSearchController";
 import { Fragment, useCallback, useEffect, useRef } from "react";
 import { useTerminalDropStore } from "./lib/dropStore";
@@ -22,6 +23,8 @@ type LeafBundle = {
 
 type Props = {
   node: PaneNode;
+  spaceId: string;
+  expectedIsolation?: AccountIsolationMode;
   tabVisible: boolean;
   activeLeafId: number;
   blocks: boolean;
@@ -73,6 +76,8 @@ export function PaneTreeView(props: Props) {
       >
         <TerminalPane
           leafId={node.id}
+          spaceId={props.spaceId}
+          expectedIsolation={props.expectedIsolation}
           visible={tabVisible}
           focused={focused}
           initialCwd={node.cwd}

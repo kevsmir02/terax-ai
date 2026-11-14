@@ -9,6 +9,7 @@ function space(over: Partial<SpaceMeta>): SpaceMeta {
     name: "Space",
     root: null,
     env: { kind: "local" },
+    accountIsolation: "default",
     createdAt: 0,
     updatedAt: 0,
     ...over,

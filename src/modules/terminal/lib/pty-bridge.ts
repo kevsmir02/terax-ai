@@ -19,6 +19,8 @@ import {
 import { tokenBytes } from "@/modules/terminal/lib/ptyWire";
 import type { TerminalGpuTheme } from "@/modules/terminal/ghostty/gpu/terminalVisuals";
 import { assertNoDestructiveSpawn } from "@/modules/git";
+import type { AccountIsolationMode } from "@/modules/spaces/lib/isolation";
+import { waitForSpaceIsolationSync } from "@/modules/spaces/lib/isolationSync";
 import { currentWorkspaceEnv } from "@/modules/workspace";
 import { native } from "@/modules/workspace/native";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
@@ -108,6 +110,11 @@ export type PtySession = {
   close: () => Promise<void>;
 };
 
+export type PtyIsolationBinding = {
+  spaceId: string;
+  expectedIsolation?: AccountIsolationMode;
+};
+
 export async function openPty(
   cols: number,
   rows: number,
@@ -117,7 +124,15 @@ export async function openPty(
   shell?: string,
   paneId?: number,
   colors?: PtyColors,
+  isolation?: PtyIsolationBinding,
 ): Promise<PtySession> {
+  const spaceId = isolation?.spaceId?.trim();
+  const expectedIsolation = isolation?.expectedIsolation;
+  if (!spaceId || !expectedIsolation) {
+    throw new Error(
+      "Terminal open requires explicit Space id and expected Account isolation; refusing host fallback",
+    );
+  }
   const stream = outputHub();
   let id: number | null = null;
   let released = false;
@@ -163,6 +178,7 @@ export async function openPty(
   const presentation =
     paneId === undefined ? undefined : leafPresentationClass(paneId);
   try {
+    await waitForSpaceIsolationSync(spaceId);
     // A terminal started inside a worktree that a destructive Git action is
     // mutating would race that action with a shell nobody accounted for.
     await assertNoDestructiveSpawn(cwd ?? "", (path) =>
@@ -180,6 +196,8 @@ export async function openPty(
       paneId: paneId ?? null,
       presentation: presentation ?? null,
       colors: colors ?? null,
+      spaceId,
+      expectedIsolation,
     });
   } catch (error) {
     releaseHandlers();

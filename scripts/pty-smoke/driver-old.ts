@@ -16,9 +16,29 @@ window.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 
 const count = (command: string) => invokes.get(command) ?? 0;
 
+let smokeSpaceReady: Promise<unknown> | null = null;
+const smokeOpenPty: Driver["openPty"] = async (
+  cols,
+  rows,
+  handlers,
+  cwd,
+  blocks,
+  shell,
+  paneId,
+) => {
+  smokeSpaceReady ??= invoke("space_isolation_sync", {
+    spaces: [{ id: "default", accountIsolation: "default" }],
+  }).catch(() => {});
+  await smokeSpaceReady;
+  return openPty(cols, rows, handlers, cwd, blocks, shell, paneId, undefined, {
+    spaceId: "default",
+    expectedIsolation: "default",
+  });
+};
+
 export const driver: Driver = {
   name: "per-terminal channels (previous transport)",
-  openPty,
+  openPty: smokeOpenPty,
   // Each channel message is one delivery (webview.eval, plus a fetch invoke
   // for payloads over 1 KiB), each acknowledgement one synchronous invoke.
   streamOps: (deliveries) =>

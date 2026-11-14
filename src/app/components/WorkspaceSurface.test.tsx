@@ -11,14 +11,24 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const sessionContainers = new Map<number, RefObject<HTMLDivElement | null>>();
+const sessionBindings = new Map<
+  number,
+  { spaceId?: string; expectedIsolation?: string }
+>();
 const leafPtyIds = new Map<number, number>();
 
 vi.mock("@/modules/terminal/ghostty/useGhosttyTerminalSession", () => ({
   useGhosttyTerminalSession: (opts: {
     leafId: number;
     container: RefObject<HTMLDivElement | null>;
+    spaceId?: string;
+    expectedIsolation?: string;
   }) => {
     sessionContainers.set(opts.leafId, opts.container);
+    sessionBindings.set(opts.leafId, {
+      spaceId: opts.spaceId,
+      expectedIsolation: opts.expectedIsolation,
+    });
     return {
       model: null,
       error: null,
@@ -102,6 +112,7 @@ let root: Root | null = null;
 
 beforeEach(() => {
   sessionContainers.clear();
+  sessionBindings.clear();
   leafPtyIds.clear();
   useAgentStore.setState({ sessions: {}, notifications: [] });
   useAgentActivityStore.setState({ phases: {}, agents: {} });
@@ -135,6 +146,7 @@ function baseProps(
     activeTab,
     activeSpaceId: "default",
     spaceRoots: { default: "/repo" },
+    spaceIsolations: { default: "default" },
     registerTerminalHandle: vi.fn(),
     onSearchReady: vi.fn(),
     onCwd: vi.fn(),
@@ -811,5 +823,26 @@ describe("WorkspaceSurface", () => {
       expect(body).not.toBeNull();
       expect(body?.className).not.toMatch(/opacity-|brightness-|contrast-/);
     }
+  });
+
+  it("threads each terminal tab's own spaceId and expectedIsolation through to terminal sessions", () => {
+    const tabInOtherSpace: Tab = {
+      id: 80,
+      kind: "terminal",
+      spaceId: "sp-client",
+      title: "client",
+      paneTree: { kind: "leaf", id: 801 },
+      activeLeafId: 801,
+    };
+
+    mountSurface(tabInOtherSpace, [tabInOtherSpace], {
+      activeSpaceId: "default",
+      spaceIsolations: { default: "default", "sp-client": "isolated" },
+    });
+
+    expect(sessionBindings.get(801)).toEqual({
+      spaceId: "sp-client",
+      expectedIsolation: "isolated",
+    });
   });
 });
