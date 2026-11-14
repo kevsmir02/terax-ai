@@ -13,6 +13,7 @@ function space(id: string, name: string, root: string | null): SpaceMeta {
     name,
     root,
     env: { kind: "local" },
+    accountIsolation: "default",
     createdAt: 0,
     updatedAt: 0,
   };

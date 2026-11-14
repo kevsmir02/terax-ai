@@ -135,8 +135,28 @@ describe("PTY bridge over the multiplexed stream", () => {
       }
       return Promise.resolve();
     });
-    const openingFirst = openPty(80, 24, { onData: vi.fn() });
-    const openingSecond = openPty(80, 24, { onData: vi.fn() });
+    const openingFirst = openPty(
+      80,
+      24,
+      { onData: vi.fn() },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { spaceId: "default", expectedIsolation: "default" },
+    );
+    const openingSecond = openPty(
+      80,
+      24,
+      { onData: vi.fn() },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { spaceId: "default", expectedIsolation: "default" },
+    );
     await flush();
     expect(mocks.invoke).not.toHaveBeenCalled();
     subscribed();
@@ -169,7 +189,10 @@ describe("PTY bridge over the multiplexed stream", () => {
   it("opens the stream before pty_open and no longer passes output channels", async () => {
     const { openPty } = await load();
     nativeInvoke();
-    await openPty(80, 24, { onData: vi.fn() }, "/work", true, "zsh", 9);
+    await openPty(80, 24, { onData: vi.fn() }, "/work", true, "zsh", 9, undefined, {
+      spaceId: "default",
+      expectedIsolation: "default",
+    });
     const commands = mocks.invoke.mock.calls.map(([command]) => command);
     expect(commands.indexOf("pty_stream_open")).toBeLessThan(
       commands.indexOf("pty_open"),
@@ -182,6 +205,8 @@ describe("PTY bridge over the multiplexed stream", () => {
       blocks: true,
       shell: "zsh",
       paneId: 9,
+      spaceId: "default",
+      expectedIsolation: "default",
     });
     expect(open).not.toHaveProperty("onData");
     expect(open).not.toHaveProperty("onExit");
@@ -192,7 +217,17 @@ describe("PTY bridge over the multiplexed stream", () => {
     const { openPty } = await load();
     nativeInvoke();
     const onData = vi.fn();
-    const session = await openPty(80, 24, { onData });
+    const session = await openPty(
+      80,
+      24,
+      { onData },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { spaceId: "default", expectedIsolation: "default" },
+    );
     await flush();
     expect(polls()).toHaveLength(1);
     expect(heldPoll().url).toBe("terax-pty://localhost/poll");
@@ -213,7 +248,17 @@ describe("PTY bridge over the multiplexed stream", () => {
   it("acknowledges parsed output on the next poll instead of invoking per chunk", async () => {
     const { openPty } = await load();
     nativeInvoke();
-    const session = await openPty(80, 24, { onData: vi.fn() });
+    const session = await openPty(
+      80,
+      24,
+      { onData: vi.fn() },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { spaceId: "default", expectedIsolation: "default" },
+    );
     await flush();
     heldPoll().reply([
       { kind: "data", id: session.id, offset: 0, bytes: Uint8Array.of(4, 5) },
@@ -233,12 +278,22 @@ describe("PTY bridge over the multiplexed stream", () => {
     const { openPty } = await load();
     nativeInvoke();
     let finishDelivery: (() => void) | undefined;
-    const session = await openPty(80, 24, {
-      onData: () =>
-        new Promise<void>((resolve) => {
-          finishDelivery = resolve;
-        }),
-    });
+    const session = await openPty(
+      80,
+      24,
+      {
+        onData: () =>
+          new Promise<void>((resolve) => {
+            finishDelivery = resolve;
+          }),
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { spaceId: "default", expectedIsolation: "default" },
+    );
     await flush();
     heldPoll().reply([
       { kind: "data", id: session.id, offset: 0, bytes: Uint8Array.of(4, 5) },
@@ -259,7 +314,17 @@ describe("PTY bridge over the multiplexed stream", () => {
     const { openPty, useAgentActivityStore } = await load();
     nativeInvoke(60);
     const onExit = vi.fn();
-    const session = await openPty(80, 24, { onData: vi.fn(), onExit });
+    const session = await openPty(
+      80,
+      24,
+      { onData: vi.fn(), onExit },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { spaceId: "default", expectedIsolation: "default" },
+    );
     mocks.signal?.({ payload: { id: 60, kind: "started", agent: "codex" } });
     await flush();
     heldPoll().reply([{ kind: "exit", id: session.id, code: 0 }]);
@@ -286,6 +351,8 @@ describe("PTY bridge over the multiplexed stream", () => {
       false,
       undefined,
       31,
+      undefined,
+      { spaceId: "default", expectedIsolation: "default" },
     );
     const open = openArguments();
     expect(open.presentation).toBe("hidden");
@@ -300,6 +367,87 @@ describe("PTY bridge over the multiplexed stream", () => {
       ids: [session.id],
       class: "focused",
       seq: 1,
+    });
+    await session.close();
+  });
+
+  it("fails closed before invoking pty_open when Space binding is missing or incomplete", async () => {
+    const { openPty } = await load();
+    nativeInvoke();
+
+    await expect(openPty(80, 24, { onData: vi.fn() })).rejects.toThrow(
+      /Space id|Account isolation/i,
+    );
+    await expect(
+      openPty(
+        80,
+        24,
+        { onData: vi.fn() },
+        undefined,
+        false,
+        undefined,
+        undefined,
+        undefined,
+        { spaceId: "", expectedIsolation: "default" },
+      ),
+    ).rejects.toThrow(/Space id|Account isolation/i);
+
+    expect(mocks.invoke).not.toHaveBeenCalledWith("pty_open", expect.anything());
+  });
+
+  it("passes non-active Space binding verbatim and waits for pending Space isolation sync before pty_open", async () => {
+    const { openPty } = await load();
+    const { registerSpaceIsolation, resetIsolationSyncForTests } = await import(
+      "@/modules/spaces/lib/isolationSync"
+    );
+    resetIsolationSyncForTests();
+
+    let finishRegister!: () => void;
+    const order: string[] = [];
+    mocks.invoke.mockImplementation((command: string) => {
+      order.push(command);
+      if (command === "space_isolation_register") {
+        return new Promise((resolve) => {
+          finishRegister = () =>
+            resolve({
+              id: "sp-beta",
+              accountIsolation: "isolated",
+              hasRetainedProfiles: false,
+            });
+        });
+      }
+      if (command === "pty_stream_open")
+        return Promise.resolve("00000000000000aa");
+      if (command === "pty_open") return Promise.resolve(99);
+      return Promise.resolve();
+    });
+
+    const reg = registerSpaceIsolation("sp-beta", "isolated");
+    const opening = openPty(
+      80,
+      24,
+      { onData: vi.fn() },
+      "/work/beta",
+      false,
+      undefined,
+      12,
+      undefined,
+      { spaceId: "sp-beta", expectedIsolation: "isolated" },
+    );
+
+    await flush();
+    expect(order).toEqual(["space_isolation_register"]);
+
+    finishRegister();
+    await reg;
+    const session = await opening;
+
+    expect(order.indexOf("space_isolation_register")).toBeLessThan(
+      order.indexOf("pty_open"),
+    );
+    expect(openArguments()).toMatchObject({
+      spaceId: "sp-beta",
+      expectedIsolation: "isolated",
     });
     await session.close();
   });

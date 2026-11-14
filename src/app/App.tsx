@@ -270,6 +270,13 @@ export default function App() {
     () => Object.fromEntries(spaceList.map((space) => [space.id, space.root])),
     [spaceList],
   );
+  const spaceIsolations = useMemo(
+    () =>
+      Object.fromEntries(
+        spaceList.map((space) => [space.id, space.accountIsolation]),
+      ),
+    [spaceList],
+  );
   const activeSpaceIdRef = useRef(activeSpaceId);
   useLayoutEffect(() => {
     tabsRef.current = tabs;
@@ -1790,6 +1797,7 @@ export default function App() {
                     activeTab={activeTab}
                     activeSpaceId={activeSpaceId ?? DEFAULT_SPACE_ID}
                     spaceRoots={spaceRoots}
+                    spaceIsolations={spaceIsolations}
                     home={home}
                     subscribeWindowPresentation={subscribeWindowPresentation}
                     registerTerminalHandle={registerTerminalHandle}

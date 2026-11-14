@@ -1,6 +1,7 @@
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { PaneHeader } from "@/modules/terminal/PaneHeader";
 import type { TerminalSearchController } from "@/modules/terminal/search/TerminalSearchController";
+import type { AccountIsolationMode } from "@/modules/spaces/lib/isolation";
 import { useTheme } from "@/modules/theme";
 import {
   forwardRef,
@@ -32,6 +33,8 @@ export type TerminalPaneHandle = {
 export type TerminalPaneProps = {
   /** Stable identifier for this leaf (passed back through callbacks). */
   leafId: number;
+  spaceId: string;
+  expectedIsolation?: AccountIsolationMode;
   /** Tab containing this pane is on screen. */
   visible: boolean;
   /** This leaf is the active pane within its tab and receives auto-focus. */
@@ -63,6 +66,8 @@ const GhosttyTerminalPane = memo(
   >(function GhosttyTerminalPane(
     {
       leafId,
+      spaceId,
+      expectedIsolation,
       visible,
       focused = true,
       initialCwd,
@@ -87,6 +92,8 @@ const GhosttyTerminalPane = memo(
     const { resolvedMode, activeTheme } = useTheme();
     const session = useGhosttyTerminalSession({
       leafId,
+      spaceId,
+      expectedIsolation,
       backend,
       container: containerRef,
       visible,
