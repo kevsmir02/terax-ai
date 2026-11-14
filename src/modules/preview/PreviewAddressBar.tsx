@@ -110,7 +110,7 @@ export const PreviewAddressBar = forwardRef<PreviewAddressBarHandle, Props>(
     };
 
     return (
-      <div className="shrink-0 border-b border-border/60">
+      <div className="shrink-0 border-b border-border">
         <div className="flex h-9 items-center gap-1 bg-card/40 px-1.5">
           <Button
             type="button"

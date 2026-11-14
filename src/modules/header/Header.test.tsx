@@ -488,4 +488,15 @@ describe("Header", () => {
     expect(compactClasses).toContain("rounded-md");
     expect(compactClasses).toContain("text-foreground");
   });
+
+  it("renders a solid bottom hairline on Header without re-painting bg-frame", () => {
+    const { container: host } = mountHeader();
+    const headerRoot = host.firstElementChild as HTMLElement | null;
+    expect(headerRoot).not.toBeNull();
+    expect(headerRoot?.hasAttribute("data-tauri-drag-region")).toBe(true);
+    const classes = headerRoot?.className.split(/\s+/) ?? [];
+    expect(classes).toContain("border-b");
+    expect(classes).toContain("border-border");
+    expect(classes).not.toContain("bg-frame");
+  });
 });

@@ -19,7 +19,7 @@ export function StatusBar({
   onWorkspaceChange,
 }: Props) {
   return (
-    <footer className="flex h-8 shrink-0 items-center justify-between gap-3 pl-3 pr-4 text-[11px] text-foreground">
+    <footer className="flex h-8 shrink-0 items-center justify-between gap-3 border-t border-border pl-3 pr-4 text-[11px] text-foreground">
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <WorkspaceEnvSelector onSelect={onWorkspaceChange} />
         <CwdBreadcrumb cwd={cwd} filePath={filePath} home={home} onCd={onCd} />

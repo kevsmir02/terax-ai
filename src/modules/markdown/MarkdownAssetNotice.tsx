@@ -41,7 +41,7 @@ export function MarkdownAssetNotice({
     <div
       role="note"
       data-markdown-asset-notice
-      className="mb-4 rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
+      className="mb-4 rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
     >
       {remote > 0 && (
         <p>

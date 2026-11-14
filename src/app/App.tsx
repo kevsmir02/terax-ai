@@ -1730,96 +1730,90 @@ export default function App() {
                   persistSidebarCollapsed(size.inPixels <= 0);
                 }}
               >
-                <div className="h-full min-h-0 pl-2 pr-0.5">
-                  <div className="terax-pane flex h-full min-h-0 flex-col">
-                    <div
-                      key={sidebarView}
-                      className="min-h-0 flex-1 terax-panel-in"
-                    >
-                      {sidebarView === "explorer" ? (
-                        <FileExplorer
-                          ref={explorerRef}
-                          rootPath={explorerRoot}
-                          gitStatus={
-                            explorerGitDecorations ? sourceControl.status : null
-                          }
-                          activeFilePath={explorerActiveFilePath}
-                          onOpenFile={handleOpenFile}
-                          onPathRenamed={handleExplorerPathRenamed}
-                          onPathsDeleted={handlePathsDeleted}
-                          canReplacePath={canReplaceExplorerPath}
-                          onRevealInTerminal={cdInNewTab}
-                          onOpenInSourceControl={
-                            handleOpenRepositoryInSourceControl
-                          }
-                          onOpenGitHistory={handleOpenGitHistoryForPath}
-                          pathDropTarget={terminalPathDropTarget}
-                          visible={!sidebarCollapsed}
-                        />
-                      ) : (
-                        <SourceControlPanel
-                          open
-                          sourceControl={sourceControl}
-                          onOpenDiff={openGitDiffTab}
-                          onOpenGitGraph={openGitGraphFromContext}
-                          onOpenFile={handleOpenFile}
-                          onNavigateToPath={cdInNewTab}
-                          repositoryTarget={sourceControlRepositoryTarget}
-                          onFollowRepositoryContext={
-                            handleFollowRepositoryContext
-                          }
-                          destructive={destructiveSupport}
-                          worktreeDialogOpen={worktreeDialogOpen}
-                          onWorktreeDialogOpenChange={setWorktreeDialogOpen}
-                          onOpenWorktreeAsSpace={openWorktreeAsSpace}
-                          worktreeRemoveTarget={worktreeRemoveTarget}
-                          onWorktreeRemoveOpenChange={setWorktreeRemoveTarget}
-                        />
-                      )}
-                    </div>
-                    <SidebarRail
-                      activeView={sidebarView}
-                      onSelectView={persistSidebarView}
-                      changedCount={sourceControl.changedCount}
-                    />
+                <div className="flex h-full min-h-0 flex-col">
+                  <div
+                    key={sidebarView}
+                    className="min-h-0 flex-1 terax-panel-in"
+                  >
+                    {sidebarView === "explorer" ? (
+                      <FileExplorer
+                        ref={explorerRef}
+                        rootPath={explorerRoot}
+                        gitStatus={
+                          explorerGitDecorations ? sourceControl.status : null
+                        }
+                        activeFilePath={explorerActiveFilePath}
+                        onOpenFile={handleOpenFile}
+                        onPathRenamed={handleExplorerPathRenamed}
+                        onPathsDeleted={handlePathsDeleted}
+                        canReplacePath={canReplaceExplorerPath}
+                        onRevealInTerminal={cdInNewTab}
+                        onOpenInSourceControl={
+                          handleOpenRepositoryInSourceControl
+                        }
+                        onOpenGitHistory={handleOpenGitHistoryForPath}
+                        pathDropTarget={terminalPathDropTarget}
+                        visible={!sidebarCollapsed}
+                      />
+                    ) : (
+                      <SourceControlPanel
+                        open
+                        sourceControl={sourceControl}
+                        onOpenDiff={openGitDiffTab}
+                        onOpenGitGraph={openGitGraphFromContext}
+                        onOpenFile={handleOpenFile}
+                        onNavigateToPath={cdInNewTab}
+                        repositoryTarget={sourceControlRepositoryTarget}
+                        onFollowRepositoryContext={
+                          handleFollowRepositoryContext
+                        }
+                        destructive={destructiveSupport}
+                        worktreeDialogOpen={worktreeDialogOpen}
+                        onWorktreeDialogOpenChange={setWorktreeDialogOpen}
+                        onOpenWorktreeAsSpace={openWorktreeAsSpace}
+                        worktreeRemoveTarget={worktreeRemoveTarget}
+                        onWorktreeRemoveOpenChange={setWorktreeRemoveTarget}
+                      />
+                    )}
                   </div>
+                  <SidebarRail
+                    activeView={sidebarView}
+                    onSelectView={persistSidebarView}
+                    changedCount={sourceControl.changedCount}
+                  />
                 </div>
               </ResizablePanel>
-              <ResizableHandle className="w-1 rounded-full bg-transparent transition-colors duration-[var(--dur-fast)] after:w-4 hover:bg-border" />
+              <ResizableHandle />
               <ResizablePanel id="workspace" defaultSize="78%" minSize="30%">
-                <div className="h-full min-h-0 pl-0.5 pr-2">
-                  <div className="terax-pane flex h-full min-h-0 flex-col">
-                    <div className="relative min-h-0 flex-1">
-                      <WorkspaceSurface
-                        tabs={tabs}
-                        activeId={activeId}
-                        activeTab={activeTab}
-                        activeSpaceId={activeSpaceId ?? DEFAULT_SPACE_ID}
-                        spaceRoots={spaceRoots}
-                        subscribeWindowPresentation={
-                          subscribeWindowPresentation
-                        }
-                        registerTerminalHandle={registerTerminalHandle}
-                        onSearchReady={handleSearchReady}
-                        onCwd={handleTerminalCwd}
-                        onExit={handleLeafExit}
-                        onFocusLeaf={handleFocusLeaf}
-                        registerEditorHandle={registerEditorHandle}
-                        onEditorDirtyChange={handleEditorDirty}
-                        onEditorCloseTab={handleEditorClose}
-                        registerPreviewHandle={registerPreviewHandle}
-                        onPreviewUrlChange={handlePreviewUrl}
-                        onOpenCommitFile={openCommitFileDiffTab}
-                        onGitHistorySearchHandle={setGitHistoryHandle}
-                        onSetMarkdownView={setMarkdownView}
-                      />
-                    </div>
-
-                    <WorkspaceInputBar
-                      isBlockTab={isBlockTab}
-                      activeLeafId={activeLeafId}
+                <div className="flex h-full min-h-0 flex-col bg-background">
+                  <div className="relative min-h-0 flex-1">
+                    <WorkspaceSurface
+                      tabs={tabs}
+                      activeId={activeId}
+                      activeTab={activeTab}
+                      activeSpaceId={activeSpaceId ?? DEFAULT_SPACE_ID}
+                      spaceRoots={spaceRoots}
+                      subscribeWindowPresentation={subscribeWindowPresentation}
+                      registerTerminalHandle={registerTerminalHandle}
+                      onSearchReady={handleSearchReady}
+                      onCwd={handleTerminalCwd}
+                      onExit={handleLeafExit}
+                      onFocusLeaf={handleFocusLeaf}
+                      registerEditorHandle={registerEditorHandle}
+                      onEditorDirtyChange={handleEditorDirty}
+                      onEditorCloseTab={handleEditorClose}
+                      registerPreviewHandle={registerPreviewHandle}
+                      onPreviewUrlChange={handlePreviewUrl}
+                      onOpenCommitFile={openCommitFileDiffTab}
+                      onGitHistorySearchHandle={setGitHistoryHandle}
+                      onSetMarkdownView={setMarkdownView}
                     />
                   </div>
+
+                  <WorkspaceInputBar
+                    isBlockTab={isBlockTab}
+                    activeLeafId={activeLeafId}
+                  />
                 </div>
               </ResizablePanel>
             </ResizablePanelGroup>

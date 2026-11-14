@@ -91,7 +91,7 @@ export function CodeBlock({ code, lang, syntax = true }: CodeBlockProps) {
 
 function GeneratingPlaceholder({ label }: { label: string }) {
   return (
-    <div className="not-prose my-2 flex items-center gap-2 rounded-lg border border-border/50 bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+    <div className="not-prose my-2 flex items-center gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
       <span className="inline-block size-1.5 animate-pulse rounded-full bg-muted-foreground/60" />
       <TextShimmer duration={1.2}>
         {label === "text" ? "Generating code…" : `Generating ${label}…`}
@@ -114,9 +114,9 @@ function BlockChrome({
   return (
     <div
       data-syntax={syntax ? "on" : "off"}
-      className="not-prose my-2 overflow-hidden rounded-lg border border-border/50 bg-muted/30"
+      className="not-prose my-2 overflow-hidden rounded-lg border border-border bg-muted/30"
     >
-      <div className="flex items-center justify-between gap-2 border-b border-border/40 bg-muted/20 px-3 py-1">
+      <div className="flex items-center justify-between gap-2 border-b border-border bg-muted/20 px-3 py-1">
         <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
           {label}
         </span>
@@ -219,7 +219,7 @@ function CommandCard({
   return (
     <div
       data-syntax={syntax ? "on" : "off"}
-      className="not-prose my-2 overflow-hidden rounded-lg border border-border/50 bg-muted/40"
+      className="not-prose my-2 overflow-hidden rounded-lg border border-border bg-muted/40"
     >
       <div className="flex items-center justify-between gap-2 px-3 py-1.5">
         <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
@@ -230,7 +230,7 @@ function CommandCard({
           <CopyButton text={code} />
         </div>
       </div>
-      <div className="border-t border-border/40 bg-background/40">
+      <div className="border-t border-border bg-background/40">
         <pre
           className={cn(
             "m-0 overflow-x-auto px-3 py-2 font-mono text-[12px] leading-relaxed text-foreground",
