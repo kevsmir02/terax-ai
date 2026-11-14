@@ -1,18 +1,18 @@
-import { leafHasForegroundProcess } from "@/modules/terminal";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { Tab } from "@/modules/tabs";
+import { leafHasForegroundProcess } from "@/modules/terminal";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
-import { dirtyAfterSave, saveAllForClose } from "./tabCloseGuards";
 import {
   SpaceDeleteGuard,
   type SpaceDeleteResult,
   type SpaceDeleteTransaction,
 } from "./spaceDeleteGuards";
+import { dirtyAfterSave, saveAllForClose } from "./tabCloseGuards";
 
 type Params = {
   tabs: Tab[];
-  /** Removes the Space' metadata and tabs. Never a filesystem operation. */
-  deleteSpace: (spaceId: string) => void;
+  /** Removes the Space's metadata, tabs, and any Space-scoped private profiles. */
+  deleteSpace: (spaceId: string) => void | Promise<void>;
   /** Resolves true only when the buffer is fully persisted. */
   saveTab: (tabId: number) => Promise<boolean>;
   isTabDirty: (tabId: number) => boolean;
@@ -86,13 +86,18 @@ export function useSpaceDeleteGuard({
         pending?.hazards.dirtyIds
           .map((id) => discardRef.current(id))
           .filter((discard): discard is () => void => discard !== null) ?? [];
-      const result = await guard.confirm();
-      if (result.status === "deleted") {
-        for (const discard of discards) discard();
-      }
-      setPendingSpaceDelete(guard.current());
+      setSpaceDeleteSaving(true);
       setSpaceDeleteIncomplete(false);
-      return result;
+      try {
+        const result = await guard.confirm();
+        if (result.status === "deleted") {
+          for (const discard of discards) discard();
+        }
+        setPendingSpaceDelete(guard.current());
+        return result;
+      } finally {
+        setSpaceDeleteSaving(false);
+      }
     }, [guard]);
 
   /**

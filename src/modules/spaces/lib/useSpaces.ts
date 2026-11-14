@@ -2,8 +2,11 @@ import { usePreferencesStore } from "@/modules/settings/preferences";
 import { parseWorkspaceScopeKey, type WorkspaceEnv } from "@/modules/workspace";
 import { create } from "zustand";
 import {
+  clearSpacePrivateProfiles,
   registerSpaceIsolation,
   removeSpaceIsolation,
+  retrySpaceIsolationCleanup,
+  type SpaceIsolationSyncResult,
   setSpaceIsolationMode,
   toRuntimeStatus,
 } from "./isolationSync";
@@ -34,11 +37,13 @@ type State = {
   initialActiveIndex: Record<string, number>;
   // Derived non-secret runtime isolation status synchronized from Rust.
   runtimeById: Record<string, SpaceRuntimeStatus>;
+  orphanedCleanups: Record<string, SpaceRuntimeStatus>;
   hydrate: (
     spaces: SpaceMeta[],
     activeId: string | null,
     initialActiveIndex?: Record<string, number>,
     runtimeById?: Record<string, SpaceRuntimeStatus>,
+    orphanedCleanups?: Record<string, SpaceRuntimeStatus>,
   ) => void;
   create: (input: CreateInput) => SpaceMeta;
   rename: (id: string, name: string) => void;
@@ -48,12 +53,17 @@ type State = {
     id: string,
     mode: AccountIsolationMode,
   ) => Promise<void>;
+  clearPrivateAccounts: (
+    id: string,
+    paneIds?: number[],
+  ) => Promise<SpaceIsolationSyncResult>;
+  retryCleanup: (id: string) => Promise<SpaceIsolationSyncResult>;
   setRuntimeStatus: (
     id: string,
     status: SpaceRuntimeStatus | undefined,
   ) => void;
   reorder: (orderedIds: string[]) => void;
-  remove: (id: string) => string | null;
+  remove: (id: string, paneIds?: number[]) => string | null;
   setActive: (id: string) => void;
 };
 
@@ -63,13 +73,21 @@ export const useSpaces = create<State>((set, get) => ({
   hydrated: false,
   initialActiveIndex: {},
   runtimeById: {},
+  orphanedCleanups: {},
 
-  hydrate: (spaces, activeId, initialActiveIndex = {}, runtimeById = {}) => {
+  hydrate: (
+    spaces,
+    activeId,
+    initialActiveIndex = {},
+    runtimeById = {},
+    orphanedCleanups = {},
+  ) => {
     set({
       spaces,
       activeId,
       initialActiveIndex,
       runtimeById,
+      orphanedCleanups,
       hydrated: true,
     });
   },
@@ -152,6 +170,46 @@ export const useSpaces = create<State>((set, get) => ({
     await saveSpacesList(spaces);
   },
 
+  clearPrivateAccounts: async (id, paneIds = []) => {
+    const status = await clearSpacePrivateProfiles(id, paneIds);
+    const spaces = get().spaces.map((s) =>
+      s.id === id && s.accountIsolation !== status.accountIsolation
+        ? {
+            ...s,
+            accountIsolation: status.accountIsolation,
+            updatedAt: Date.now(),
+          }
+        : s,
+    );
+    const runtimeById = {
+      ...get().runtimeById,
+      [id]: toRuntimeStatus(status),
+    };
+    set({ spaces, runtimeById });
+    return status;
+  },
+
+  retryCleanup: async (id) => {
+    const status = await retrySpaceIsolationCleanup(id);
+    const nextStatus = toRuntimeStatus(status);
+    const cur = get();
+    const isKnownSpace = cur.spaces.some((s) => s.id === id);
+    const runtimeById = isKnownSpace
+      ? { ...cur.runtimeById, [id]: nextStatus }
+      : cur.runtimeById;
+    const orphanedCleanups = { ...cur.orphanedCleanups };
+    if (
+      !isKnownSpace &&
+      (nextStatus.cleanupError !== undefined || nextStatus.hasRetainedProfiles)
+    ) {
+      orphanedCleanups[id] = nextStatus;
+    } else {
+      delete orphanedCleanups[id];
+    }
+    set({ runtimeById, orphanedCleanups });
+    return status;
+  },
+
   setRuntimeStatus: (id, status) => {
     const next = { ...get().runtimeById };
     if (status === undefined) {
@@ -177,7 +235,7 @@ export const useSpaces = create<State>((set, get) => ({
     void saveSpacesList(next);
   },
 
-  remove: (id) => {
+  remove: (id, paneIds) => {
     const prev = get();
     const spaces = prev.spaces.filter((s) => s.id !== id);
     const runtimeById = { ...prev.runtimeById };
@@ -188,7 +246,32 @@ export const useSpaces = create<State>((set, get) => ({
     void saveSpacesList(spaces);
     void deleteSpaceData(id);
     if (activeId !== prev.activeId) void saveActiveId(activeId);
-    void removeSpaceIsolation(id).catch(() => {});
+    void removeSpaceIsolation(id, paneIds)
+      .then((status) => {
+        if (
+          status &&
+          (status.cleanupError !== undefined || status.hasRetainedProfiles)
+        ) {
+          set((cur) => ({
+            orphanedCleanups: {
+              ...cur.orphanedCleanups,
+              [id]: toRuntimeStatus(status),
+            },
+          }));
+        }
+      })
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        set((cur) => ({
+          orphanedCleanups: {
+            ...cur.orphanedCleanups,
+            [id]: {
+              hasRetainedProfiles: true,
+              cleanupError: message,
+            },
+          },
+        }));
+      });
     return activeId;
   },
 

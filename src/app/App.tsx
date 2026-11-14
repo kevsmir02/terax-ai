@@ -74,6 +74,7 @@ import {
   useSpacePersistence,
   useSpaces,
   useSpacesBoot,
+  waitForSpaceIsolationSync,
 } from "@/modules/spaces";
 import { normalizeSpaceRoot } from "@/modules/spaces/lib/sharedRoots";
 import { StatusBar } from "@/modules/statusbar";
@@ -145,6 +146,10 @@ import { CloseDialogs } from "./components/CloseDialogs";
 import { QuitDialog } from "./components/QuitDialog";
 import { WorkspaceSurface } from "./components/WorkspaceSurface";
 import {
+  type ClearPrivateAccountsTransaction,
+  spaceHazardSnapshot,
+} from "./hooks/spaceDeleteGuards";
+import {
   hasOpenPathTab,
   renamedPath,
   spacesEmptiedByTabs,
@@ -173,6 +178,7 @@ export default function App() {
     reorderTabByGap,
     newTabInSpace,
     removeTabsForSpace,
+    removeTerminalTabsForSpace,
     markBooted,
     setActiveSpaceForNewTabs,
     newTab,
@@ -263,6 +269,7 @@ export default function App() {
   // Space identity by name only: agent notifications carry the Space's own
   // name, never a path, cwd or open file.
   const spaceList = useSpaces((s) => s.spaces);
+  const spaceRuntimeById = useSpaces((s) => s.runtimeById);
   const spaceNames = useMemo(
     () => Object.fromEntries(spaceList.map((space) => [space.id, space.name])),
     [spaceList],
@@ -1319,16 +1326,100 @@ export default function App() {
   );
 
   const commitDeleteSpace = useCallback(
-    (id: string) => {
-      const nextSpaceId = useSpaces.getState().remove(id);
+    async (id: string) => {
+      const paneIds = spaceHazardSnapshot(tabsRef.current, id).leafIds;
+      const nextSpaceId = useSpaces.getState().remove(id, paneIds);
       if (!nextSpaceId) return;
       const root = useSpaces
         .getState()
         .spaces.find((s) => s.id === nextSpaceId)?.root;
+      await waitForSpaceIsolationSync(id);
       removeTabsForSpace(id, nextSpaceId, root ?? undefined);
     },
     [removeTabsForSpace],
   );
+
+  const [pendingClearPrivateAccounts, setPendingClearPrivateAccounts] =
+    useState<ClearPrivateAccountsTransaction | null>(null);
+  const [clearPrivateAccountsBusy, setClearPrivateAccountsBusy] =
+    useState(false);
+  const [retryingCleanupId, setRetryingCleanupId] = useState<string | null>(
+    null,
+  );
+
+  const requestClearPrivateAccounts = useCallback(async (spaceId: string) => {
+    const space = useSpaces.getState().spaces.find((s) => s.id === spaceId);
+    if (!space) return;
+    setSwitcherOpen(false);
+    const terminalCount = tabsRef.current.filter(
+      (t) => t.spaceId === spaceId && t.kind === "terminal",
+    ).length;
+    const { leafIds: spaceLeafIds } = spaceHazardSnapshot(
+      tabsRef.current,
+      spaceId,
+    );
+    const busyChecks = await Promise.all(
+      spaceLeafIds.map(async (lid) => {
+        try {
+          return (await leafHasForegroundProcess(lid)) ? lid : null;
+        } catch {
+          return lid;
+        }
+      }),
+    );
+    const busyLeafIds = busyChecks.filter((id): id is number => id !== null);
+    setPendingClearPrivateAccounts({
+      spaceId,
+      spaceName: space.name,
+      terminalCount,
+      busyLeafIds,
+    });
+  }, []);
+
+  const confirmClearPrivateAccounts = useCallback(async () => {
+    const tx = pendingClearPrivateAccounts;
+    if (!tx || clearPrivateAccountsBusy) return;
+    setClearPrivateAccountsBusy(true);
+    try {
+      const paneIds = spaceHazardSnapshot(tabsRef.current, tx.spaceId).leafIds;
+      const spaceRoot = useSpaces
+        .getState()
+        .spaces.find((s) => s.id === tx.spaceId)?.root;
+      const status = await useSpaces
+        .getState()
+        .clearPrivateAccounts(tx.spaceId, paneIds);
+      removeTerminalTabsForSpace(tx.spaceId, spaceRoot ?? undefined);
+      setPendingClearPrivateAccounts(null);
+      if (status.cleanupError) {
+        toast.error(status.cleanupError);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      toast.error(`Clear private accounts failed: ${message}`);
+      setPendingClearPrivateAccounts(null);
+    } finally {
+      setClearPrivateAccountsBusy(false);
+    }
+  }, [
+    clearPrivateAccountsBusy,
+    pendingClearPrivateAccounts,
+    removeTerminalTabsForSpace,
+  ]);
+
+  const handleRetrySpaceCleanup = useCallback(async (spaceId: string) => {
+    setRetryingCleanupId(spaceId);
+    try {
+      const status = await useSpaces.getState().retryCleanup(spaceId);
+      if (status.cleanupError) {
+        toast.error(status.cleanupError);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      toast.error(`Profile cleanup retry failed: ${message}`);
+    } finally {
+      setRetryingCleanupId((cur) => (cur === spaceId ? null : cur));
+    }
+  }, []);
 
   const prepareDiscard = useCallback((id: number): (() => void) | null => {
     const handle = editorRefs.current.get(id);
@@ -1424,6 +1515,9 @@ export default function App() {
       onNewIsolatedSpace={() => void handleNewSpace("isolated")}
       canToggleSpaceIsolation={canToggleSpaceIsolation}
       onToggleSpaceIsolation={handleToggleSpaceIsolation}
+      onClearPrivateAccounts={(id) => void requestClearPrivateAccounts(id)}
+      onRetrySpaceCleanup={(id) => void handleRetrySpaceCleanup(id)}
+      retryingCleanupId={retryingCleanupId}
       onDeleteSpace={requestSpaceDelete}
       onNewTabInSpace={handleNewTabInSpace}
       onJumpTab={jumpToTab}
@@ -1947,11 +2041,31 @@ export default function App() {
               spaceList.find((s) => s.id === pendingSpaceDelete?.spaceId)
                 ?.name ?? "this Space"
             }
+            spaceProfileContext={
+              pendingSpaceDelete
+                ? {
+                    accountIsolation:
+                      spaceList.find((s) => s.id === pendingSpaceDelete.spaceId)
+                        ?.accountIsolation ?? "default",
+                    hasRetainedProfiles:
+                      spaceRuntimeById[pendingSpaceDelete.spaceId]
+                        ?.hasRetainedProfiles ?? false,
+                  }
+                : undefined
+            }
             spaceDeleteSaving={spaceDeleteSaving}
             spaceDeleteIncomplete={spaceDeleteIncomplete}
             onCancelSpaceDelete={cancelSpaceDelete}
             onConfirmSpaceDelete={() => void confirmSpaceDelete()}
             onSaveAndDeleteSpace={() => void saveAndDeleteSpace()}
+            pendingClearPrivateAccounts={pendingClearPrivateAccounts}
+            clearPrivateAccountsBusy={clearPrivateAccountsBusy}
+            onCancelClearPrivateAccounts={() =>
+              setPendingClearPrivateAccounts(null)
+            }
+            onConfirmClearPrivateAccounts={() =>
+              void confirmClearPrivateAccounts()
+            }
           />
 
           <QuitDialog

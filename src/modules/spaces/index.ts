@@ -5,7 +5,10 @@ export {
   evaluateIsolationToggleGuard,
   type IsolationToggleGuard,
 } from "./lib/isolation";
-export { preflightAgentLaunch } from "./lib/isolationSync";
+export {
+  preflightAgentLaunch,
+  waitForSpaceIsolationSync,
+} from "./lib/isolationSync";
 export type {
   AccountIsolationMode,
   SpaceMeta,

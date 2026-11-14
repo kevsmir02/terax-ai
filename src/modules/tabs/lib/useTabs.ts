@@ -21,9 +21,9 @@ import {
 } from "@/modules/terminal/lib/panes";
 import { disposeSession } from "@/modules/terminal/lib/terminalSessionApi";
 import {
+  type SetStateAction,
   useCallback,
   useEffect,
-  type SetStateAction,
   useRef,
   useState,
 } from "react";
@@ -565,6 +565,40 @@ export function planSpaceRemoval(
   return { tabs: next, disposeLeafIds, activeId };
 }
 
+export function planTerminalCleanupForSpace(
+  tabs: Tab[],
+  currentActiveId: number,
+  spaceId: string,
+  spaceCwd: string | undefined,
+  allocId: () => number,
+): {
+  tabs: Tab[];
+  disposeLeafIds: number[];
+  closedTabIds: number[];
+  activeId: number;
+} | null {
+  const removed = tabs.filter(
+    (t): t is TerminalTab => t.spaceId === spaceId && t.kind === "terminal",
+  );
+  if (removed.length === 0) return null;
+  const closedTabIds = removed.map((t) => t.id);
+  const closedSet = new Set(closedTabIds);
+  const disposeLeafIds = removed.flatMap((t) => leafIds(t.paneTree));
+  let next = tabs.filter((t) => !closedSet.has(t.id));
+  let activeId = currentActiveId;
+  const remainingInSpace = next.filter((t) => t.spaceId === spaceId);
+  if (remainingInSpace.length === 0) {
+    const tabId = allocId();
+    next = [...next, coldTerminalTab(tabId, allocId(), spaceId, spaceCwd)];
+    if (!next.some((t) => t.id === currentActiveId)) {
+      activeId = tabId;
+    }
+  } else if (!next.some((t) => t.id === currentActiveId)) {
+    activeId = remainingInSpace[remainingInSpace.length - 1].id;
+  }
+  return { tabs: next, disposeLeafIds, closedTabIds, activeId };
+}
+
 export function useTabs(initial?: Partial<TerminalTab>) {
   const [tabs, renderTabs] = useState<Tab[]>(() => {
     const tabId = 1;
@@ -732,6 +766,30 @@ export function useTabs(initial?: Partial<TerminalTab>) {
         if (!plan) return curr;
         toDispose = plan.disposeLeafIds;
         toClose = leaving;
+        setActiveId(plan.activeId);
+        return plan.tabs;
+      });
+      for (const lid of toDispose) disposeSession(lid);
+      for (const id of toClose) assetScopes.closeTab(id);
+    },
+    [setActiveId, setTabs],
+  );
+
+  const removeTerminalTabsForSpace = useCallback(
+    (spaceId: string, spaceCwd?: string) => {
+      let toDispose: number[] = [];
+      let toClose: number[] = [];
+      setTabs((curr) => {
+        const plan = planTerminalCleanupForSpace(
+          curr,
+          activeIdRef.current,
+          spaceId,
+          spaceCwd,
+          () => nextIdRef.current++,
+        );
+        if (!plan) return curr;
+        toDispose = plan.disposeLeafIds;
+        toClose = plan.closedTabIds;
         setActiveId(plan.activeId);
         return plan.tabs;
       });
@@ -1380,6 +1438,7 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     reorderTabByGap,
     newTabInSpace,
     removeTabsForSpace,
+    removeTerminalTabsForSpace,
     markBooted,
     setActiveSpaceForNewTabs,
     setOverrideLanguage,

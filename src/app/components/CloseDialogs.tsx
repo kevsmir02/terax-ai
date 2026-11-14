@@ -1,8 +1,11 @@
-import type { CloseManyPending } from "@/app/hooks/tabCloseGuards";
 import {
-  spaceDeleteMessage,
+  type ClearPrivateAccountsTransaction,
+  clearPrivateAccountsMessage,
   type SpaceDeleteTransaction,
+  type SpaceIsolationContext,
+  spaceDeleteMessage,
 } from "@/app/hooks/spaceDeleteGuards";
+import type { CloseManyPending } from "@/app/hooks/tabCloseGuards";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -40,11 +43,16 @@ type Props = {
   onSaveAndCloseMany: () => void;
   pendingSpaceDelete: SpaceDeleteTransaction | null;
   spaceName: string;
+  spaceProfileContext?: SpaceIsolationContext;
   spaceDeleteSaving: boolean;
   spaceDeleteIncomplete: boolean;
   onCancelSpaceDelete: () => void;
   onConfirmSpaceDelete: () => void;
   onSaveAndDeleteSpace: () => void;
+  pendingClearPrivateAccounts?: ClearPrivateAccountsTransaction | null;
+  clearPrivateAccountsBusy?: boolean;
+  onCancelClearPrivateAccounts?: () => void;
+  onConfirmClearPrivateAccounts?: () => void;
 };
 
 function OptOutRow({
@@ -132,11 +140,16 @@ export function CloseDialogs({
   onSaveAndCloseMany,
   pendingSpaceDelete,
   spaceName,
+  spaceProfileContext,
   spaceDeleteSaving,
   spaceDeleteIncomplete,
   onCancelSpaceDelete,
   onConfirmSpaceDelete,
   onSaveAndDeleteSpace,
+  pendingClearPrivateAccounts = null,
+  clearPrivateAccountsBusy = false,
+  onCancelClearPrivateAccounts,
+  onConfirmClearPrivateAccounts,
 }: Props) {
   const [optOutTerminalClose, setOptOutTerminalClose] = useState(false);
 
@@ -311,7 +324,12 @@ export function CloseDialogs({
             <AlertDialogTitle>Delete Space?</AlertDialogTitle>
             <AlertDialogDescription>
               {pendingSpaceDelete
-                ? spaceDeleteMessage(pendingSpaceDelete, tabs, spaceName)
+                ? spaceDeleteMessage(
+                    pendingSpaceDelete,
+                    tabs,
+                    spaceName,
+                    spaceProfileContext,
+                  )
                 : ""}
               {spaceDeleteIncomplete
                 ? " The save did not cover the current text (newer edits, a file conflict or a write failure), so the Space and its tabs stay as they are."
@@ -346,6 +364,45 @@ export function CloseDialogs({
               pendingSpaceDelete.hazards.dirtyIds.length > 0
                 ? "Delete Without Saving"
                 : "Delete Space"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={pendingClearPrivateAccounts !== null}
+        onOpenChange={(open) => {
+          if (!open && !clearPrivateAccountsBusy) {
+            onCancelClearPrivateAccounts?.();
+          }
+        }}
+      >
+        <AlertDialogContent data-clear-accounts-dialog>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Clear private accounts?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingClearPrivateAccounts
+                ? clearPrivateAccountsMessage(pendingClearPrivateAccounts)
+                : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              disabled={clearPrivateAccountsBusy}
+              onClick={() => onCancelClearPrivateAccounts?.()}
+            >
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={clearPrivateAccountsBusy}
+              onClick={(event) => {
+                event.preventDefault();
+                onConfirmClearPrivateAccounts?.();
+              }}
+            >
+              {clearPrivateAccountsBusy
+                ? "Clearing..."
+                : "Clear Private Accounts"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
