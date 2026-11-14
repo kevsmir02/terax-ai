@@ -59,8 +59,28 @@ describe("agent launch commands", () => {
       pi: "pi --provider local",
       opencode: "opencode",
       grok: "grok",
-      antigravity: "antigravity",
+      antigravity: "agy",
     });
+  });
+
+  it("normalizes legacy desktop antigravity defaults to agy while preserving custom CLI commands", () => {
+    expect(
+      normalizeAgentLaunchCommands({
+        antigravity: "antigravity",
+      }).antigravity,
+    ).toBe("agy");
+
+    expect(
+      normalizeAgentLaunchCommands({
+        antigravity: "antigravity-desktop --new-window",
+      }).antigravity,
+    ).toBe("agy");
+
+    expect(
+      normalizeAgentLaunchCommands({
+        antigravity: "  agy --model gemini  ",
+      }).antigravity,
+    ).toBe("agy --model gemini");
   });
 });
 
@@ -71,32 +91,57 @@ describe("Antigravity CLI versus its desktop app", () => {
     expect(launcher).toMatchObject({
       id: "antigravity",
       label: "Antigravity CLI",
-      defaultCommand: "antigravity",
+      defaultCommand: "agy",
       supportsHooks: false,
     });
   });
 
   it("launches the terminal CLI, with aliases and flags", () => {
-    expect(resolveAgentLaunchCommand("antigravity", " ag --model x ")).toEqual({
-      ok: true,
-      command: "ag --model x",
-    });
+    for (const cli of [
+      " agy ",
+      " agy --model x ",
+      "/usr/local/bin/agy",
+      "~/.local/bin/agy chat",
+      "/opt/antigravity/agy --fast",
+      " ag --model x ",
+    ]) {
+      expect(resolveAgentLaunchCommand("antigravity", cli)).toEqual({
+        ok: true,
+        command: cli.trim(),
+      });
+    }
   });
 
   it("refuses desktop-app commands instead of pretending to control the GUI", () => {
     for (const gui of [
+      "antigravity",
+      "antigravity --new-window",
+      "/usr/local/bin/antigravity",
+      "~/.local/bin/antigravity chat",
+      "antigravity.exe",
+      '"C:\\Program Files\\Antigravity\\antigravity.exe"',
+      "env FOO=1 antigravity",
       "antigravity-desktop",
       "antigravity-gui --new-window",
       "open -a Antigravity",
       "open -n -a Antigravity /workspace",
       "xdg-open /usr/share/applications/antigravity.desktop",
+      "/usr/bin/xdg-open /usr/share/applications/antigravity.desktop",
       "/Applications/Antigravity.app/Contents/MacOS/Antigravity",
+      "/Applications/Antigravity.app/Contents/MacOS/agy",
       "gio open antigravity.desktop",
+      "gtk-launch antigravity",
+      "gtk-launch agy",
+      "flatpak run com.antigravity.App",
+      "snap run antigravity",
     ]) {
       const result = resolveAgentLaunchCommand("antigravity", gui);
 
-      expect(result).toMatchObject({ ok: false });
-      if (!result.ok) expect(result.error).toMatch(/terminal CLI/);
+      expect(result, gui).toMatchObject({ ok: false });
+      if (!result.ok) {
+        expect(result.error).toMatch(/terminal CLI/);
+        expect(result.error).toMatch(/`agy`/);
+      }
     }
   });
 
