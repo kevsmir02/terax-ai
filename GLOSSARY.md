@@ -28,6 +28,18 @@ _Avoid_: Backup, commit
 The set of workspace capabilities supported for a particular external agent, such as launching, process status, structured events, notifications, and control. Support for one capability does not imply support for the others.
 _Avoid_: Full support
 
+**Account isolation**:
+An opt-in Space setting that binds terminal sessions in that Space to a Space-specific account context instead of the host's shared environment.
+_Avoid_: Sandbox, container
+
+**Account context**:
+The external-agent authentication and private state scope attached to a Space and its terminal sessions, either the shared host environment or a Space-owned isolated context.
+_Avoid_: Session profile, sandbox
+
+**Agent profile**:
+A Space-owned private directory holding authentication and non-shared state for one external agent under an isolated account context.
+_Avoid_: Harness account, installation
+
 **Candidate**:
 A recorded revision and the artifacts built from it, proposed for validation and release. Calling something a candidate is not a support claim.
 _Avoid_: Release, beta
