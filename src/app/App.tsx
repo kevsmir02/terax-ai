@@ -1790,12 +1790,14 @@ export default function App() {
                     activeTab={activeTab}
                     activeSpaceId={activeSpaceId ?? DEFAULT_SPACE_ID}
                     spaceRoots={spaceRoots}
+                    home={home}
                     subscribeWindowPresentation={subscribeWindowPresentation}
                     registerTerminalHandle={registerTerminalHandle}
                     onSearchReady={handleSearchReady}
                     onCwd={handleTerminalCwd}
                     onExit={handleLeafExit}
                     onFocusLeaf={handleFocusLeaf}
+                    onCloseLeaf={closePaneByLeaf}
                     registerEditorHandle={registerEditorHandle}
                     onEditorDirtyChange={handleEditorDirty}
                     onEditorCloseTab={handleEditorClose}

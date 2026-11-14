@@ -1,13 +1,17 @@
 // @vitest-environment jsdom
 
 import { WorkspaceSurface } from "@/app/components/WorkspaceSurface";
+import { useAgentStore } from "@/modules/agents/store/agentStore";
+import { usePreferencesStore } from "@/modules/settings/preferences";
 import type { Tab } from "@/modules/tabs";
+import { useAgentActivityStore } from "@/modules/terminal/lib/agentActivity";
 import { teraxDefault } from "@/modules/theme/themes/terax-default";
 import { act, type ComponentProps, type RefObject } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const sessionContainers = new Map<number, RefObject<HTMLDivElement | null>>();
+const leafPtyIds = new Map<number, number>();
 
 vi.mock("@/modules/terminal/ghostty/useGhosttyTerminalSession", () => ({
   useGhosttyTerminalSession: (opts: {
@@ -35,7 +39,9 @@ vi.mock("@/modules/terminal/ghostty/useGhosttyTerminalSession", () => ({
   ghosttyLeafHasForegroundProcess: vi.fn(async () => false),
   ghosttyLeafIdForPty: vi.fn(() => null),
   ghosttyCwdForLeaf: vi.fn(() => null),
-  ghosttyPtyIdForLeaf: vi.fn(() => null),
+  ghosttyPtyIdForLeaf: vi.fn(
+    (leafId: number) => leafPtyIds.get(leafId) ?? null,
+  ),
   ghosttySelectionForLeaf: vi.fn(() => null),
   hasGhosttySession: vi.fn(() => false),
   interruptGhosttySession: vi.fn(),
@@ -96,6 +102,10 @@ let root: Root | null = null;
 
 beforeEach(() => {
   sessionContainers.clear();
+  leafPtyIds.clear();
+  useAgentStore.setState({ sessions: {}, notifications: [] });
+  useAgentActivityStore.setState({ phases: {}, agents: {} });
+  usePreferencesStore.setState({ terminalShell: "" });
   globalThis.ResizeObserver = class {
     observe() {}
     unobserve() {}
@@ -544,5 +554,241 @@ describe("WorkspaceSurface", () => {
     expect(innerStage?.className.split(/\s+/)).toEqual(
       expect.arrayContaining(["relative", "h-full", "w-full"]),
     );
+
+    const paneHeader =
+      paneRoot?.querySelector<HTMLElement>("[data-pane-header]");
+    expect(paneHeader).not.toBeNull();
+    expect(paneRoot?.firstElementChild).toBe(paneHeader);
+    expect(paneHeader?.nextElementSibling).toBe(paneBody);
+    expect(paneHeader?.contains(mountNode ?? null)).toBe(false);
+    expect(paneHeader?.contains(overlay ?? null)).toBe(false);
+    expect(paneHeader?.className.split(/\s+/)).toEqual(
+      expect.arrayContaining([
+        "shrink-0",
+        "border-b",
+        "border-border",
+        "bg-terminal-header",
+      ]),
+    );
+  });
+
+  it("displays left-side PaneHeader identity in agent > customTitle > shell > Terminal precedence with live phase indicators and ignores OSC 0/2 tab.title churn", () => {
+    const noisyTab: Tab = {
+      id: 40,
+      spaceId: "default",
+      kind: "terminal",
+      title: "loba@archlinux: ~/some/noisy/osc-prompt-title",
+      paneTree: { kind: "leaf", id: 401 },
+      activeLeafId: 401,
+    };
+
+    const container = mountSurface(noisyTab, [noisyTab]);
+    const label = () =>
+      container.querySelector<HTMLElement>("[data-pane-label]")?.textContent;
+
+    expect(label()).toBe("Terminal");
+    expect(
+      container.querySelector('[data-pane-icon="terminal"]'),
+    ).not.toBeNull();
+    expect(container.querySelector("[data-pane-phase]")).toBeNull();
+
+    act(() => {
+      usePreferencesStore.setState({ terminalShell: "/usr/bin/fish" });
+    });
+    expect(label()).toBe("fish");
+
+    const customTitledTab: Tab = {
+      ...noisyTab,
+      customTitle: "  Dev Server  ",
+    };
+    mountSurface(customTitledTab, [customTitledTab]);
+    expect(label()).toBe("Dev Server");
+
+    leafPtyIds.set(401, 9001);
+    act(() => {
+      useAgentActivityStore.setState({
+        agents: { 9001: "claude" },
+        phases: { 9001: "working" },
+      });
+    });
+    expect(label()).toBe("Claude Code");
+    expect(container.querySelector('[data-pane-icon="agent"]')).not.toBeNull();
+    expect(
+      container
+        .querySelector<HTMLElement>("[data-pane-phase]")
+        ?.getAttribute("data-pane-phase"),
+    ).toBe("working");
+
+    act(() => {
+      useAgentActivityStore.setState({
+        agents: { 9001: "claude" },
+        phases: { 9001: "attention" },
+      });
+    });
+    expect(
+      container
+        .querySelector<HTMLElement>("[data-pane-phase]")
+        ?.getAttribute("data-pane-phase"),
+    ).toBe("attention");
+
+    leafPtyIds.clear();
+    act(() => {
+      useAgentActivityStore.setState({ agents: {}, phases: {} });
+      useAgentStore.getState().start(401, 40, "codex");
+    });
+    expect(label()).toBe("Codex");
+    expect(
+      container
+        .querySelector<HTMLElement>("[data-pane-phase]")
+        ?.getAttribute("data-pane-phase"),
+    ).toBe("working");
+  });
+
+  it("renders a concise read-only tildified and left-truncated cwd in each PaneHeader", () => {
+    const splitTab: Tab = {
+      id: 50,
+      spaceId: "default",
+      kind: "terminal",
+      title: "zsh",
+      cwd: "/home/loba/terax-ai",
+      paneTree: {
+        kind: "split",
+        id: 1,
+        dir: "row",
+        children: [
+          { kind: "leaf", id: 501 },
+          {
+            kind: "leaf",
+            id: 502,
+            cwd: "/home/loba/Documents/projects/personal/terax-ai/packages/core",
+          },
+        ],
+      },
+      activeLeafId: 501,
+    };
+
+    const container = mountSurface(splitTab, [splitTab], {
+      home: "/home/loba",
+    });
+
+    const leaf501Cwd = container.querySelector<HTMLElement>(
+      '[data-pane-leaf="501"] [data-pane-cwd]',
+    );
+    const leaf502Cwd = container.querySelector<HTMLElement>(
+      '[data-pane-leaf="502"] [data-pane-cwd]',
+    );
+
+    expect(leaf501Cwd?.textContent).toBe("~/terax-ai");
+    expect(leaf501Cwd?.getAttribute("title")).toBe("~/terax-ai");
+    expect(leaf501Cwd?.tagName).toBe("SPAN");
+    expect(leaf501Cwd?.querySelector("button")).toBeNull();
+
+    expect(leaf502Cwd?.textContent).toBe("~/.../terax-ai/packages/core");
+    expect(leaf502Cwd?.getAttribute("title")).toBe(
+      "~/Documents/projects/personal/terax-ai/packages/core",
+    );
+  });
+
+  it("gates the PaneHeader close button on leafCount > 1 and invokes onCloseLeaf without focusing the closing leaf", () => {
+    const onCloseLeaf = vi.fn();
+    const onFocusLeaf = vi.fn();
+
+    const singleContainer = mountSurface(TERMINAL_TAB, [TERMINAL_TAB], {
+      onCloseLeaf,
+      onFocusLeaf,
+    });
+    expect(singleContainer.querySelector("[data-pane-close]")).toBeNull();
+
+    const splitTab: Tab = {
+      id: 60,
+      spaceId: "default",
+      kind: "terminal",
+      title: "split",
+      paneTree: {
+        kind: "split",
+        id: 1,
+        dir: "row",
+        children: [
+          { kind: "leaf", id: 601 },
+          { kind: "leaf", id: 602 },
+        ],
+      },
+      activeLeafId: 601,
+    };
+
+    const splitContainer = mountSurface(splitTab, [splitTab], {
+      onCloseLeaf,
+      onFocusLeaf,
+    });
+    const closeButtons =
+      splitContainer.querySelectorAll<HTMLButtonElement>("[data-pane-close]");
+    expect(closeButtons).toHaveLength(2);
+
+    const unfocusedClose = splitContainer.querySelector<HTMLButtonElement>(
+      '[data-pane-leaf="602"] [data-pane-close]',
+    );
+    expect(unfocusedClose).not.toBeNull();
+    act(() => {
+      unfocusedClose?.dispatchEvent(
+        new MouseEvent("mousedown", { bubbles: true }),
+      );
+      unfocusedClose?.click();
+    });
+    expect(onCloseLeaf).toHaveBeenCalledWith(602);
+    expect(onFocusLeaf).not.toHaveBeenCalled();
+  });
+
+  it("visually distinguishes the focused split PaneHeader with elevated surface, crisp foreground, and top accent cue while muting unfocused headers and never dimming terminal bodies", () => {
+    const splitTab: Tab = {
+      id: 70,
+      spaceId: "default",
+      kind: "terminal",
+      title: "split",
+      paneTree: {
+        kind: "split",
+        id: 1,
+        dir: "row",
+        children: [
+          { kind: "leaf", id: 701 },
+          { kind: "leaf", id: 702 },
+        ],
+      },
+      activeLeafId: 701,
+    };
+
+    const container = mountSurface(splitTab, [splitTab]);
+    const focusedHeader = container.querySelector<HTMLElement>(
+      '[data-pane-leaf="701"] [data-pane-header]',
+    );
+    const unfocusedHeader = container.querySelector<HTMLElement>(
+      '[data-pane-leaf="702"] [data-pane-header]',
+    );
+    const focusedBody = container.querySelector<HTMLElement>(
+      '[data-pane-leaf="701"] [data-terminal-pane-body]',
+    );
+    const unfocusedBody = container.querySelector<HTMLElement>(
+      '[data-pane-leaf="702"] [data-terminal-pane-body]',
+    );
+
+    expect(focusedHeader?.getAttribute("data-pane-focused")).toBe("true");
+    expect(focusedHeader?.className.split(/\s+/)).toEqual(
+      expect.arrayContaining(["bg-terminal-header-focused", "text-foreground"]),
+    );
+    expect(
+      focusedHeader?.querySelector("[data-pane-focus-indicator]"),
+    ).not.toBeNull();
+
+    expect(unfocusedHeader?.getAttribute("data-pane-focused")).toBe("false");
+    expect(unfocusedHeader?.className.split(/\s+/)).toEqual(
+      expect.arrayContaining(["bg-terminal-header", "text-muted-foreground"]),
+    );
+    expect(
+      unfocusedHeader?.querySelector("[data-pane-focus-indicator]"),
+    ).toBeNull();
+
+    for (const body of [focusedBody, unfocusedBody]) {
+      expect(body).not.toBeNull();
+      expect(body?.className).not.toMatch(/opacity-|brightness-|contrast-/);
+    }
   });
 });

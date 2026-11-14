@@ -9,12 +9,14 @@ import type { TerminalPaneHandle } from "./TerminalPane";
 type Props = {
   tabs: Tab[];
   activeId: number;
+  home?: string | null;
   /** Register/unregister handle by leaf id (not tab id). */
   registerHandle: (leafId: number, handle: TerminalPaneHandle | null) => void;
   onSearchReady: (leafId: number, addon: TerminalSearchController) => void;
   onCwd: (leafId: number, cwd: string) => void;
   onExit: (leafId: number, code: number) => void;
   onFocusLeaf: (tabId: number, leafId: number) => void;
+  onCloseLeaf?: (leafId: number) => void;
 };
 
 type Bundle = {
@@ -27,11 +29,13 @@ type Bundle = {
 export function TerminalStack({
   tabs,
   activeId,
+  home,
   registerHandle,
   onSearchReady,
   onCwd,
   onExit,
   onFocusLeaf,
+  onCloseLeaf,
 }: Props) {
   const terminals = useMemo(() => selectLiveTerminals(tabs), [tabs]);
 
@@ -90,6 +94,7 @@ export function TerminalStack({
       />
       {terminals.map((t) => {
         const tabVisible = t.id === activeId;
+        const leafCount = leafIds(t.paneTree).length;
         return (
           <div
             key={t.id}
@@ -106,7 +111,12 @@ export function TerminalStack({
               tabVisible={tabVisible}
               activeLeafId={t.activeLeafId}
               blocks={t.blocks ?? false}
+              tabCwd={t.cwd}
+              customTitle={t.customTitle}
+              leafCount={leafCount}
+              home={home}
               onFocusLeaf={(leafId) => onFocusLeaf(t.id, leafId)}
+              onCloseLeaf={onCloseLeaf}
               getBundle={getBundle}
             />
           </div>
