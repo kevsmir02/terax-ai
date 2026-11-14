@@ -149,7 +149,7 @@ export const SearchInline = forwardRef<SearchInlineHandle, Props>(
               ref={setInputRef}
               value={q}
               placeholder={placeholder}
-              className="h-7 w-full bg-muted/80 pr-7 pl-7 text-[13px]! placeholder:text-muted-foreground/70 focus-visible:ring-0"
+              className="h-7 w-full rounded-md border border-border bg-background pr-7 pl-7 text-[13px]! text-foreground placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-0"
               onChange={(e) => {
                 const next = e.target.value;
                 setQ(next);
@@ -193,7 +193,7 @@ export const SearchInline = forwardRef<SearchInlineHandle, Props>(
             <Button
               variant="ghost"
               size="icon"
-              className="size-7 shrink-0 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="size-7 shrink-0 rounded-md text-foreground hover:bg-accent hover:text-foreground"
               onClick={focus}
               title={tooltipTitle}
             >

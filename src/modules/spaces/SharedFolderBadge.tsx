@@ -14,7 +14,7 @@ export function SharedFolderBadge({
       data-shared-root={group.root}
       title={sharedRootWarning(group.root, group.names)}
       className={cn(
-        "shrink-0 rounded border border-border/70 px-1 py-px text-[9.5px] font-medium uppercase tracking-wide text-muted-foreground/80",
+        "shrink-0 rounded border border-border bg-background px-1 py-px text-[9.5px] font-medium uppercase tracking-wide text-muted-foreground",
         className,
       )}
     >

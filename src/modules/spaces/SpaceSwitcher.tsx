@@ -250,7 +250,7 @@ export function SpaceSwitcher({
         <button
           type="button"
           title={shortcut ? `Spaces · ${shortcut}` : "Spaces"}
-          className="flex h-7 shrink-0 items-center gap-2 rounded-md px-2 text-muted-foreground/90 outline-none transition-colors hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground"
+          className="flex h-7 shrink-0 items-center gap-2 rounded-md px-2 text-foreground outline-none transition-colors hover:bg-accent data-[state=open]:bg-accent"
         >
           <span className="max-w-36 truncate text-xs font-medium">
             {current.name}
@@ -260,7 +260,7 @@ export function SpaceSwitcher({
             icon={ArrowRight01Icon}
             size={14}
             strokeWidth={1.75}
-            className="shrink-0 opacity-65"
+            className="shrink-0 text-muted-foreground"
           />
         </button>
       </PopoverTrigger>
@@ -268,7 +268,9 @@ export function SpaceSwitcher({
         <div className="flex items-center justify-between px-1.5 pb-1.5 pt-0.5">
           <span className="text-xs font-semibold text-foreground">Spaces</span>
           {shortcut && (
-            <Kbd className="h-5 bg-muted/70 text-[10px]">{shortcut}</Kbd>
+            <Kbd className="h-5 border border-border bg-muted text-[10px] text-foreground">
+              {shortcut}
+            </Kbd>
           )}
         </div>
         <div className="-mx-0.5 max-h-[60vh] overflow-y-auto px-0.5">
@@ -309,11 +311,11 @@ export function SpaceSwitcher({
             />
           ))}
         </div>
-        <div className="mt-1.5 border-t border-border/60 pt-1.5">
+        <div className="mt-1.5 border-t border-border pt-1.5">
           {shared.length > 0 && (
             <p
               data-shared-note
-              className="px-2 pb-1.5 text-[10px] leading-snug text-muted-foreground/70"
+              className="px-2 pb-1.5 text-[10px] leading-snug text-muted-foreground"
             >
               Spaces organize tabs only; files and processes are shared.
             </p>
@@ -321,7 +323,7 @@ export function SpaceSwitcher({
           <button
             type="button"
             onClick={onNewSpace}
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-accent"
           >
             <HugeiconsIcon icon={PlusSignIcon} size={14} strokeWidth={1.75} />
             <span className="flex-1">New space</span>
@@ -435,8 +437,8 @@ function SpaceRow({
           moveTarget
             ? "bg-primary/10 ring-1 ring-inset ring-primary/40"
             : isActive
-              ? "bg-accent"
-              : "hover:bg-accent/50",
+              ? "bg-accent ring-1 ring-inset ring-border"
+              : "hover:bg-muted",
         )}
       >
         <button
@@ -447,7 +449,7 @@ function SpaceRow({
             e.stopPropagation();
             onToggle();
           }}
-          className="flex size-4 shrink-0 items-center justify-center rounded text-muted-foreground/60 hover:text-foreground"
+          className="flex size-4 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground"
         >
           <HugeiconsIcon
             icon={expanded ? ArrowDown01Icon : ArrowRight01Icon}
@@ -471,7 +473,7 @@ function SpaceRow({
         {!editing && (
           <>
             {sharedGroup && <SharedFolderBadge group={sharedGroup} />}
-            <span className="shrink-0 px-1 text-[10px] tabular-nums text-muted-foreground/50 group-hover:hidden">
+            <span className="shrink-0 px-1 text-[10px] tabular-nums text-muted-foreground group-hover:hidden">
               {tabs.length}
             </span>
             <div
@@ -517,7 +519,7 @@ function SpaceRow({
             />
           ))}
           {tabs.length === 0 && (
-            <span className="px-2 py-1 text-[10.5px] text-muted-foreground/50">
+            <span className="px-2 py-1 text-[10.5px] text-muted-foreground">
               {draggingTabFromOther ? "Drop to move here" : "No tabs"}
             </span>
           )}
@@ -575,7 +577,7 @@ function TabRow({
           }
         }}
         className={cn(
-          "group/tab relative flex cursor-pointer select-none items-center gap-2 rounded-md px-2 py-1 outline-none transition-colors hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-primary/40",
+          "group/tab relative flex cursor-pointer select-none items-center gap-2 rounded-md px-2 py-1 text-foreground outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-primary/40",
           isDragging && "opacity-50",
         )}
       >
@@ -585,7 +587,7 @@ function TabRow({
             {labelFor(tab)}
           </span>
           {subtitle && (
-            <span className="truncate text-[9.5px] leading-tight text-muted-foreground/55">
+            <span className="truncate text-[9.5px] leading-tight text-muted-foreground">
               {subtitle}
             </span>
           )}
@@ -665,7 +667,7 @@ function RowAction({
         onClick();
       }}
       className={cn(
-        "flex size-5 items-center justify-center rounded text-muted-foreground/70 transition-colors",
+        "flex size-5 items-center justify-center rounded text-muted-foreground transition-colors",
         destructive
           ? "hover:bg-destructive/10 hover:text-destructive"
           : "hover:bg-accent hover:text-foreground",

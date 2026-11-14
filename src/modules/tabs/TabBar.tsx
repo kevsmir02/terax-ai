@@ -213,7 +213,7 @@ export function TabBar({
             >
               <span
                 aria-hidden
-                className="pointer-events-none absolute left-0 top-1/2 h-7 rounded-md bg-foreground/[0.07] shadow-sm ring-1 ring-inset ring-foreground/[0.05]"
+                className="pointer-events-none absolute left-0 top-1/2 h-7 rounded-md border border-border bg-background shadow-xs"
                 style={
                   pill
                     ? {
@@ -251,7 +251,7 @@ export function TabBar({
                       <div
                         data-tab-id={t.id}
                         className={cn(
-                          "flex h-7 shrink-0 items-center gap-1.5 rounded-md bg-accent text-xs text-foreground",
+                          "flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-border bg-background text-xs text-foreground",
                           compact ? "px-1.5" : "px-2",
                         )}
                       >
@@ -338,7 +338,7 @@ export function TabBar({
                       isNew && "terax-tab-in",
                       isActive
                         ? "text-foreground dark:text-foreground"
-                        : "text-muted-foreground hover:text-foreground/80 dark:text-muted-foreground",
+                        : "text-muted-foreground hover:text-foreground",
                       draggingId === t.id && "opacity-50",
                       compact
                         ? "px-1.5!"
@@ -380,7 +380,7 @@ export function TabBar({
                             side="bottom"
                             sideOffset={6}
                             alignOffset={-4}
-                            className="max-h-75 w-48 overflow-y-auto rounded-xl border border-border/40 bg-popover p-1 shadow-lg"
+                            className="max-h-75 w-48 overflow-y-auto rounded-xl border border-border bg-popover p-1 shadow-lg"
                             onClick={(e) => e.stopPropagation()}
                             onPointerDown={(e) => e.stopPropagation()}
                             onPointerUp={(e) => e.stopPropagation()}
@@ -413,13 +413,13 @@ export function TabBar({
                                 e.preventDefault();
                                 setShowAllLanguages((v) => !v);
                               }}
-                              className="w-full px-2.5 py-1.5 text-left text-xs text-primary/60 hover:text-primary rounded-lg transition-colors hover:bg-accent"
+                              className="w-full px-2.5 py-1.5 text-left text-xs text-primary hover:text-primary rounded-lg transition-colors hover:bg-accent"
                             >
                               {showAllLanguages
                                 ? "↑ Fewer languages"
                                 : "↓ All languages"}
                             </DropdownMenuItem>
-                            <DropdownMenuSeparator className="my-1 border-t border-border/30" />
+                            <DropdownMenuSeparator className="my-1 border-t border-border" />
                             {(showAllLanguages
                               ? ALL_LANGUAGES
                               : EXPOSED_LANGUAGES
@@ -461,7 +461,7 @@ export function TabBar({
                       {t.kind === "editor" && t.dirty ? (
                         <span
                           aria-label="Unsaved changes"
-                          className="size-1.5 shrink-0 rounded-full bg-foreground/70"
+                          className="size-1.5 shrink-0 rounded-full bg-foreground"
                         />
                       ) : null}
                     </span>
@@ -482,7 +482,12 @@ export function TabBar({
                           e.stopPropagation();
                           onClose(t.id);
                         }}
-                        className="rounded p-0.5 opacity-0 transition-opacity hover:bg-accent hover:opacity-100 group-hover:opacity-60"
+                        className={cn(
+                          "rounded p-0.5 transition-opacity hover:bg-accent hover:opacity-100",
+                          isActive
+                            ? "opacity-65 group-hover:opacity-100"
+                            : "opacity-0 group-hover:opacity-75 hover:text-foreground",
+                        )}
                       >
                         <HugeiconsIcon
                           icon={Cancel01Icon}
@@ -578,10 +583,10 @@ export function TabBar({
       </div>
       <Button
         type="button"
-        variant="ghost"
+        variant="outline"
         size="icon"
         onClick={onNew}
-        className="ml-1 size-6 shrink-0 rounded-full bg-foreground/[0.06] text-muted-foreground ring-1 ring-inset ring-foreground/[0.04] hover:bg-foreground/[0.12] hover:text-foreground"
+        className="ml-1 size-7 shrink-0 rounded-md border border-border bg-transparent text-foreground hover:bg-accent hover:text-foreground dark:bg-transparent dark:hover:bg-accent"
         title="New tab"
         aria-label="New tab"
       >

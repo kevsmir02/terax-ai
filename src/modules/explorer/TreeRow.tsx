@@ -106,17 +106,22 @@ function EntryRowImpl(props: EntryRowProps) {
         !isDir && !multiSelectActive && actions.beginRename(path)
       }
       className={cn(
-        "group flex h-6 w-full min-w-0 cursor-pointer items-center gap-2 rounded-sm px-1.5 text-left text-[13px] transition-colors hover:bg-accent/70",
+        "group flex h-6 w-full min-w-0 cursor-pointer items-center gap-2 rounded-sm px-1.5 text-left text-[13px] transition-colors hover:bg-accent",
         isSelected
-          ? "bg-accent text-foreground"
+          ? "bg-accent font-medium text-foreground ring-1 ring-inset ring-border"
           : gitignored
-            ? "text-muted-foreground/70"
-            : "text-foreground/85",
+            ? "text-muted-foreground"
+            : "text-foreground",
         isDropTarget && "bg-primary/10 ring-1 ring-inset ring-primary/60",
       )}
       style={{ paddingLeft }}
     >
-      <span className="flex size-3.5 shrink-0 items-center justify-center text-muted-foreground">
+      <span
+        className={cn(
+          "flex size-3.5 shrink-0 items-center justify-center group-hover:text-foreground",
+          isSelected ? "text-foreground" : "text-muted-foreground",
+        )}
+      >
         {isDir ? (
           <HugeiconsIcon
             icon={ArrowRight01Icon}
