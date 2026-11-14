@@ -21,6 +21,9 @@
     "^\\.pypirc(?:[.\\s:]|$)",
     "^\\.credentials\\.json(?:[.\\s:]|$)",
     "^\\.claude\\.json(?:[.\\s:]|$)",
+    "^opencode\\.db(?:-(?:wal|shm))?(?:[.\\s:]|$)",
+    "^auth\\.json(?:[.\\s:]|$)",
+    "^service\\.json(?:[.\\s:]|$)",
     "^secrets?\\.(json|ya?ml|toml|env)(?:[.\\s:]|$)",
     "^service[-_]?account.*\\.json(?:[.\\s:]|$)"
   ],
@@ -28,6 +31,8 @@
     "/.ssh",
     "/.gnupg",
     "/.claude",
+    "/.local/share/opencode",
+    "/.local/state/opencode",
     "/.aws",
     "/.azure",
     "/.kube",

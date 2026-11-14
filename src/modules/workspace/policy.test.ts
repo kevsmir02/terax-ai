@@ -267,7 +267,18 @@ describe("application credentials", () => {
     "/Users/me/Library/Caches/terax/control.json",
     "/home/me/.cache/terax/control.json",
     "C:/Users/me/AppData/Local/terax/control.json",
+    "/home/me/.local/share/codr/space-profiles/sp-a/opencode/data/opencode/opencode.db",
+    "/home/me/.local/share/opencode/opencode.db",
+    "/home/me/.local/share/opencode/auth.json",
+    "/home/me/.config/opencode/service.json",
   ])("refuses %s even inside a home grant", (path) => {
     expect(checkReadable(path).ok).toBe(false);
+  });
+
+  it("allows non-secret shared OpenCode config entries", () => {
+    expect(checkReadable("/home/me/.config/opencode/opencode.json").ok).toBe(
+      true,
+    );
+    expect(checkReadable("/home/me/.config/opencode/tui.json").ok).toBe(true);
   });
 });

@@ -1240,6 +1240,228 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn parallel_isolated_opencode_spaces_isolate_db_and_config_while_preserving_shell_xdg() {
+        use std::ffi::OsString;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let host_home = dir.path().join("host-home");
+        let host_opencode_cfg = host_home.join(".config/opencode");
+        let host_opencode_data = host_home.join(".local/share/opencode");
+        let host_opencode_bin_dir = host_home.join(".opencode/bin");
+        std::fs::create_dir_all(host_opencode_cfg.join("plugins")).unwrap();
+        std::fs::create_dir_all(&host_opencode_data).unwrap();
+        std::fs::create_dir_all(&host_opencode_bin_dir).unwrap();
+        std::fs::write(
+            host_opencode_cfg.join("opencode.json"),
+            r#"{"model":"shared-sonnet"}"#,
+        )
+        .unwrap();
+        std::fs::write(host_opencode_cfg.join("AGENTS.md"), "# Shared Rules").unwrap();
+        std::fs::write(
+            host_opencode_cfg.join("service.json"),
+            r#"{"password":"host-daemon-password"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            host_opencode_cfg.join("cli.json"),
+            r#"{"serverUrl":"http://127.0.0.1:4096"}"#,
+        )
+        .unwrap();
+        let host_db_sentinel = "host-opencode-db-untouched";
+        std::fs::write(host_opencode_data.join("opencode.db"), host_db_sentinel).unwrap();
+
+        let stub_opencode = host_opencode_bin_dir.join("opencode");
+        std::fs::write(
+            &stub_opencode,
+            "#!/bin/sh\n\
+             if [ \"$1\" = \"--help\" ]; then\n\
+               printf 'FLAGS\\n  --standalone\\n'\n\
+               exit 0\n\
+             fi\n\
+             mkdir -p \"$XDG_DATA_HOME/opencode\" \"$XDG_STATE_HOME/opencode\" \"$XDG_CACHE_HOME/opencode\"\n\
+             printf 'ARGS=%s\\nCFG=%s\\nHAS_OPENCODE_JSON=%s\\nHAS_SERVICE_JSON=%s\\nHAS_CLI_JSON=%s\\n' \\\n\
+               \"$*\" \"$OPENCODE_CONFIG_DIR\" \\\n\
+               \"$([ -f \"$OPENCODE_CONFIG_DIR/opencode.json\" ] && echo yes || echo no)\" \\\n\
+               \"$([ -e \"$OPENCODE_CONFIG_DIR/service.json\" ] && echo yes || echo no)\" \\\n\
+               \"$([ -e \"$OPENCODE_CONFIG_DIR/cli.json\" ] && echo yes || echo no)\" \\\n\
+               > \"$XDG_STATE_HOME/opencode/run.log\"\n\
+             printf '%s' \"$2\" > \"$XDG_DATA_HOME/opencode/opencode.db\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&stub_opencode, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let path_with_opencode = std::env::join_paths([
+            host_opencode_bin_dir.as_path(),
+            std::path::Path::new("/usr/bin"),
+            std::path::Path::new("/bin"),
+        ])
+        .unwrap();
+
+        let manifest_path = dir.path().join("space-isolation/manifest.json");
+        let profiles_dir = dir.path().join("space-profiles");
+        let registry = SpaceIsolationRegistry::for_paths_with_env(
+            manifest_path.clone(),
+            Some(profiles_dir.clone()),
+            Some(host_home.clone()),
+            Some(path_with_opencode.clone()),
+        );
+        registry
+            .register_space("sp-alpha", AccountIsolationMode::Isolated)
+            .unwrap();
+        registry
+            .register_space("sp-beta", AccountIsolationMode::Isolated)
+            .unwrap();
+
+        let env_alpha = preflight_pty_open(
+            &registry,
+            Some("sp-alpha"),
+            Some(AccountIsolationMode::Isolated),
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        let env_beta = preflight_pty_open(
+            &registry,
+            Some("sp-beta"),
+            Some(AccountIsolationMode::Isolated),
+            false,
+        )
+        .unwrap()
+        .unwrap();
+
+        let state = Arc::new(PtyState::default());
+        let host_xdg_data = dir.path().join("host-xdg-data");
+        let host_xdg_cfg = dir.path().join("host-xdg-cfg");
+        std::fs::create_dir_all(&host_xdg_data).unwrap();
+        std::fs::create_dir_all(&host_xdg_cfg).unwrap();
+
+        let spawn_opencode_pty = |pty_id: u32,
+                                  iso: &crate::modules::space_profile::IsolatedProfileEnv,
+                                  account_tag: &str,
+                                  shell_report: &std::path::Path| {
+            let mut cmd = portable_pty::CommandBuilder::new("/bin/sh");
+            shell_init::apply_common(
+                &mut cmd,
+                Some(dir.path().to_string_lossy().into_owned()),
+                false,
+                None,
+                Some(iso),
+            );
+            let combined_path = std::env::join_paths([
+                iso.shim_dir.as_path(),
+                host_opencode_bin_dir.as_path(),
+                std::path::Path::new("/usr/bin"),
+                std::path::Path::new("/bin"),
+            ])
+            .unwrap();
+            cmd.env("PATH", combined_path);
+            cmd.env("XDG_DATA_HOME", &host_xdg_data);
+            cmd.env("XDG_CONFIG_HOME", &host_xdg_cfg);
+            let script = format!(
+                "opencode '{tag}' && printf 'SHELL_XDG_DATA=%s\\nSHELL_XDG_CFG=%s\\nSHELL_OPC_CFG=%s\\n' \"$XDG_DATA_HOME\" \"$XDG_CONFIG_HOME\" \"${{OPENCODE_CONFIG_DIR-UNSET}}\" > '{out}'",
+                tag = account_tag,
+                out = shell_report.display(),
+            );
+            cmd.args(["-c", &script]);
+            let s = session::spawn_with(
+                session::Host {
+                    id: pty_id,
+                    owner: Arc::from("main"),
+                    hub: state.hub.clone(),
+                    class: PresentationClass::default(),
+                    signal: Arc::new(|_| {}),
+                    notify: Arc::new(|_| {}),
+                    pane_id: None,
+                    link: agent_detect::AgentLink::new(),
+                    reap: Box::new(|| {}),
+                    colors: None,
+                },
+                PtySize {
+                    rows: 24,
+                    cols: 80,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                },
+                move || Ok(cmd),
+            )
+            .unwrap();
+            state
+                .sessions
+                .write()
+                .unwrap()
+                .insert(pty_id, Arc::clone(&s));
+            s
+        };
+
+        let shell_alpha = dir.path().join("shell-alpha.txt");
+        let shell_beta = dir.path().join("shell-beta.txt");
+        let db_alpha = profiles_dir.join("sp-alpha/opencode/data/opencode/opencode.db");
+        let db_beta = profiles_dir.join("sp-beta/opencode/data/opencode/opencode.db");
+        let _s_alpha = spawn_opencode_pty(201, &env_alpha, "acct-alpha", &shell_alpha);
+        let _s_beta = spawn_opencode_pty(202, &env_beta, "acct-beta", &shell_beta);
+
+        wait_for("both parallel isolated OpenCode PTYs to finish", || {
+            db_alpha.exists() && db_beta.exists() && shell_alpha.exists() && shell_beta.exists()
+        });
+
+        assert_eq!(std::fs::read_to_string(&db_alpha).unwrap(), "acct-alpha");
+        assert_eq!(std::fs::read_to_string(&db_beta).unwrap(), "acct-beta");
+        assert_eq!(
+            std::fs::read_to_string(host_opencode_data.join("opencode.db")).unwrap(),
+            host_db_sentinel
+        );
+
+        let log_alpha = std::fs::read_to_string(
+            profiles_dir.join("sp-alpha/opencode/state/opencode/run.log"),
+        )
+        .unwrap();
+        assert!(log_alpha.contains("ARGS=--standalone acct-alpha\n"));
+        assert!(log_alpha.contains("HAS_OPENCODE_JSON=yes\n"));
+        assert!(log_alpha.contains("HAS_SERVICE_JSON=no\n"));
+        assert!(log_alpha.contains("HAS_CLI_JSON=no\n"));
+
+        for report_path in [&shell_alpha, &shell_beta] {
+            let report = std::fs::read_to_string(report_path).unwrap();
+            assert!(
+                report.contains(&format!("SHELL_XDG_DATA={}\n", host_xdg_data.display())),
+                "got: {report}"
+            );
+            assert!(
+                report.contains(&format!("SHELL_XDG_CFG={}\n", host_xdg_cfg.display())),
+                "got: {report}"
+            );
+            assert!(
+                report.contains("SHELL_OPC_CFG=UNSET\n"),
+                "got: {report}"
+            );
+        }
+
+        // Logins in opencode.db persist across registry reload and Layout restoration preflight.
+        let reloaded = SpaceIsolationRegistry::for_paths_with_env(
+            manifest_path,
+            Some(profiles_dir),
+            Some(host_home),
+            Some(OsString::from(path_with_opencode)),
+        );
+        assert!(reloaded
+            .prepare_agent_launch("sp-alpha", AccountIsolationMode::Isolated, "opencode")
+            .is_ok());
+        assert!(reloaded
+            .prepare_agent_launch("sp-beta", AccountIsolationMode::Isolated, "opencode")
+            .is_ok());
+        assert_eq!(std::fs::read_to_string(&db_alpha).unwrap(), "acct-alpha");
+        assert_eq!(std::fs::read_to_string(&db_beta).unwrap(), "acct-beta");
+
+        for id in [201, 202] {
+            if let Some(session) = state.take(id) {
+                reap(id, session, "test cleanup");
+            }
+        }
+    }
+
     #[test]
     fn pty_diagnostics_never_exposes_env_credentials_or_profile_secrets() {
         let state = Arc::new(PtyState::default());

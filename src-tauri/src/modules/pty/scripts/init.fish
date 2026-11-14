@@ -85,6 +85,10 @@ function __terax_enforce_space_isolation
             end
         end
     end
+    set -ge OPENCODE_CONFIG_DIR
+    if set -Uq OPENCODE_CONFIG_DIR
+        set -gx OPENCODE_CONFIG_DIR ""
+    end
     if set -q CODR_CONTROL_BIN_DIR; and test -n "$CODR_CONTROL_BIN_DIR"
         __terax_prepend_path_dedup "$CODR_CONTROL_BIN_DIR"
     end

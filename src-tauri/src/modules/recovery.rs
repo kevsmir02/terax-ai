@@ -771,24 +771,35 @@ mod tests {
     fn protected_paths_and_auth_secret_payloads_never_persist_in_recovery_drafts() {
         let (_dir, store) = store();
 
-        let protected = serde_json::json!({
-            "version": 1,
-            "bufferId": "buf-secret-path",
-            "spaceId": "sp-a",
-            "path": "/home/me/.local/share/codr/space-profiles/sp-a/claude/.credentials.json",
-            "fileIdentity": "1-1",
-            "bufferRevision": 1,
-            "diskRevision": null,
-            "text": "{}",
-            "bytes": 2,
-            "updatedAt": 1,
-        })
-        .to_string();
-        assert!(matches!(store.put(&protected), Err(StoreError::Failed { .. })));
+        for protected_path in [
+            "/home/me/.local/share/codr/space-profiles/sp-a/claude/.credentials.json",
+            "/home/me/.local/share/codr/space-profiles/sp-a/opencode/data/opencode/opencode.db",
+            "/home/me/.local/share/opencode/auth.json",
+            "/home/me/.config/opencode/service.json",
+        ] {
+            let protected = serde_json::json!({
+                "version": 1,
+                "bufferId": "buf-secret-path",
+                "spaceId": "sp-a",
+                "path": protected_path,
+                "fileIdentity": "1-1",
+                "bufferRevision": 1,
+                "diskRevision": null,
+                "text": "{}",
+                "bytes": 2,
+                "updatedAt": 1,
+            })
+            .to_string();
+            assert!(
+                matches!(store.put(&protected), Err(StoreError::Failed { .. })),
+                "expected protected path {protected_path} to be refused"
+            );
+        }
 
         for secret_text in [
             r#"{"claudeAiOauth":{"accessToken":"tok-abc"}}"#,
             "ANTHROPIC_API_KEY=sk-ant-secretvalue12345678",
+            "OPENCODE_API_KEY=sk-opencode-secretvalue12345678",
         ] {
             let err = store
                 .put(&record("buf-secret-payload", 1, secret_text))
