@@ -1,4 +1,5 @@
-import type { UpdaterContract } from "./contract";
+import { invoke, isTauri } from "@tauri-apps/api/core";
+import { isLoopbackEndpoint, type UpdaterContract } from "./contract";
 import {
   compareVersions,
   parseReleaseManifest,
@@ -13,15 +14,16 @@ import type { ReleaseVerifier } from "./releaseSignature";
  * - it only ever GETs the manifest endpoint: no artifact URL is opened, so a check can
  *   never download a package, and nothing here invokes privilege;
  * - it is bounded by a timeout, a fixed attempt count and capped backoff;
- * - a failure is classified (offline / timeout / rate-limited / server / bad payload /
- *   channel / target / signature) instead of collapsing into one error string;
+ * - a failure is classified (offline / blocked / timeout / rate-limited / server /
+ *   bad payload / channel / target / signature) instead of collapsing into one error string;
  * - it refuses to report an available update without an explicit verifier passing, so
  *   "no trust inputs yet" cannot turn into an installable update.
  */
-type CheckFailureReason =
+export type CheckFailureReason =
   | "no-endpoint"
   | "misconfigured"
   | "offline"
+  | "blocked"
   | "timeout"
   | "rate-limited"
   | "server-error"
@@ -29,6 +31,29 @@ type CheckFailureReason =
   | "unsupported-channel"
   | "unsupported-target"
   | "signature";
+
+export interface ManifestFetchResult {
+  status: number;
+  retryAfter?: string | null;
+  body: string;
+}
+
+export type ManifestTransportReason = "offline" | "blocked" | "timeout";
+
+export class ManifestTransportError extends Error {
+  readonly reason: ManifestTransportReason;
+
+  constructor(reason: ManifestTransportReason, detail: string) {
+    super(detail);
+    this.name = "ManifestTransportError";
+    this.reason = reason;
+  }
+}
+
+export type ManifestTransport = (request: {
+  endpoint: string;
+  timeoutMs: number;
+}) => Promise<ManifestFetchResult>;
 
 export interface CheckFailure {
   reason: CheckFailureReason;
@@ -68,7 +93,9 @@ export interface CheckForUpdateOptions {
   contract: UpdaterContract;
   /** Target platform key, e.g. `linux-x86_64`. */
   target?: string;
-  /** Injected in tests; defaults to the platform fetch. */
+  /** Injected transport double for unit tests or native IPC wiring. */
+  transport?: ManifestTransport;
+  /** Injected in tests; defaults to the platform fetch or Tauri IPC transport. */
   fetchImpl?: typeof globalThis.fetch;
   /** Injected in tests so backoff never really sleeps. */
   sleep?: (ms: number) => Promise<void>;
@@ -79,6 +106,9 @@ export interface CheckForUpdateOptions {
 }
 
 const DEFAULT_TARGET = "linux-x86_64";
+
+const BLOCKED_ERROR_PATTERN =
+  /\b(?:cors|csp|mixed content|certificate|tls|ssl|blocked|policy|permission|denied|not allowed|capability|redirect|size limit)\b/i;
 
 const defaultSleep = (ms: number) =>
   new Promise<void>((resolve) => {
@@ -96,10 +126,9 @@ type AttemptResult =
     };
 
 function retryAfterMs(
-  response: Response,
+  header: string | null | undefined,
   maxRetryAfterMs: number,
 ): number | null {
-  const header = response.headers.get("retry-after");
   if (!header) return null;
   const seconds = Number.parseInt(header, 10);
   if (!Number.isFinite(seconds) || seconds < 0) return null;
@@ -111,22 +140,101 @@ function backoffMs(attempt: number, contract: UpdaterContract): number {
   return Math.min(baseDelayMs * 2 ** (attempt - 1), maxDelayMs);
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isBlockedFetchError(error: unknown): boolean {
+  if (typeof DOMException !== "undefined" && error instanceof DOMException) {
+    if (error.name === "SecurityError") return true;
+  }
+  if (error instanceof Error && error.name === "SecurityError") {
+    return true;
+  }
+  return BLOCKED_ERROR_PATTERN.test(errorMessage(error));
+}
+
+export function createFetchManifestTransport(
+  fetchImpl: typeof globalThis.fetch,
+): ManifestTransport {
+  return async ({ endpoint, timeoutMs }) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetchImpl(endpoint, {
+        method: "GET",
+        headers: { accept: "application/json" },
+        signal: controller.signal,
+      });
+      return {
+        status: response.status,
+        retryAfter: response.headers.get("retry-after"),
+        body: await response.text(),
+      };
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new ManifestTransportError(
+          "timeout",
+          `release feed did not answer within ${timeoutMs}ms`,
+        );
+      }
+      const detail = errorMessage(error);
+      if (isBlockedFetchError(error)) {
+        throw new ManifestTransportError("blocked", detail);
+      }
+      throw new ManifestTransportError("offline", detail);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+}
+
+function isTransportReason(value: unknown): value is ManifestTransportReason {
+  return value === "offline" || value === "blocked" || value === "timeout";
+}
+
+function parseTauriTransportError(error: unknown): ManifestTransportError {
+  if (error instanceof ManifestTransportError) return error;
+  if (typeof error === "object" && error !== null) {
+    const record = error as { reason?: unknown; detail?: unknown };
+    if (isTransportReason(record.reason)) {
+      const detail =
+        typeof record.detail === "string" ? record.detail : errorMessage(error);
+      return new ManifestTransportError(record.reason, detail);
+    }
+  }
+  const detail = errorMessage(error);
+  if (BLOCKED_ERROR_PATTERN.test(detail)) {
+    return new ManifestTransportError("blocked", detail);
+  }
+  return new ManifestTransportError("offline", detail);
+}
+
+export const tauriManifestTransport: ManifestTransport = async ({
+  endpoint,
+}) => {
+  try {
+    return await invoke<ManifestFetchResult>("updater_fetch_manifest", {
+      endpointOverride: isLoopbackEndpoint(endpoint) ? endpoint : null,
+    });
+  } catch (error) {
+    throw parseTauriTransportError(error);
+  }
+};
+
 async function attemptCheck(
   endpoint: string,
   contract: UpdaterContract,
-  fetchImpl: typeof globalThis.fetch,
+  transport: ManifestTransport,
   attempt: number,
 ): Promise<AttemptResult> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), contract.check.timeoutMs);
   try {
-    const response = await fetchImpl(endpoint, {
-      method: "GET",
-      headers: { accept: "application/json" },
-      signal: controller.signal,
+    const response = await transport({
+      endpoint,
+      timeoutMs: contract.check.timeoutMs,
     });
 
-    if (!response.ok) {
+    if (response.status < 200 || response.status >= 300) {
       if (response.status === 429) {
         return {
           kind: "failure",
@@ -138,7 +246,7 @@ async function attemptCheck(
           },
           retryable: true,
           delayMs:
-            retryAfterMs(response, contract.check.maxRetryAfterMs) ??
+            retryAfterMs(response.retryAfter, contract.check.maxRetryAfterMs) ??
             backoffMs(attempt, contract),
         };
       }
@@ -171,27 +279,28 @@ async function attemptCheck(
 
     return {
       kind: "response",
-      body: await response.text(),
+      body: response.body,
       status: response.status,
     };
   } catch (error) {
-    const aborted = controller.signal.aborted;
+    const classified =
+      error instanceof ManifestTransportError
+        ? error
+        : new ManifestTransportError(
+            isBlockedFetchError(error) ? "blocked" : "offline",
+            errorMessage(error),
+          );
+    const retryable = classified.reason !== "blocked";
     return {
       kind: "failure",
       failure: {
-        reason: aborted ? "timeout" : "offline",
-        detail: aborted
-          ? `release feed did not answer within ${contract.check.timeoutMs}ms`
-          : error instanceof Error
-            ? error.message
-            : String(error),
-        retryable: true,
+        reason: classified.reason,
+        detail: classified.message,
+        retryable,
       },
-      retryable: true,
-      delayMs: backoffMs(attempt, contract),
+      retryable,
+      delayMs: retryable ? backoffMs(attempt, contract) : 0,
     };
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -199,7 +308,8 @@ export async function checkForUpdate({
   currentVersion,
   contract,
   target = DEFAULT_TARGET,
-  fetchImpl = globalThis.fetch,
+  transport,
+  fetchImpl,
   sleep = defaultSleep,
   verify,
   now = Date.now,
@@ -231,13 +341,26 @@ export async function checkForUpdate({
     failure: { ...failure, attempts },
   });
 
+  const resolvedTransport =
+    transport ??
+    (fetchImpl
+      ? createFetchManifestTransport(fetchImpl)
+      : isTauri()
+        ? tauriManifestTransport
+        : createFetchManifestTransport(globalThis.fetch));
+
   let last: {
     failure: Omit<CheckFailure, "attempts">;
     attempts: number;
   } | null = null;
 
   for (let attempt = 1; attempt <= contract.check.attempts; attempt++) {
-    const result = await attemptCheck(endpoint, contract, fetchImpl, attempt);
+    const result = await attemptCheck(
+      endpoint,
+      contract,
+      resolvedTransport,
+      attempt,
+    );
 
     if (result.kind === "failure") {
       last = { failure: result.failure, attempts: attempt };

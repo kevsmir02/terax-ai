@@ -26,7 +26,9 @@ export function trustNote(release: AvailableRelease): string {
 export function failureSummary(failure: CheckFailure): string {
   switch (failure.reason) {
     case "offline":
-      return "The release feed is unreachable (offline or blocked). Nothing was changed.";
+      return "The release feed is unreachable because the network appears offline. Nothing was changed.";
+    case "blocked":
+      return "The release feed request was blocked by a transport or security policy (TLS, redirect, or size limit). Nothing was changed.";
     case "timeout":
       return "The release feed timed out. Nothing was changed; you can retry later.";
     case "rate-limited":
@@ -59,6 +61,8 @@ function failureTitle(failure: CheckFailure): string {
       return "Update check failed - verification";
     case "offline":
       return "Update check failed - offline";
+    case "blocked":
+      return "Update check failed - blocked";
     case "rate-limited":
       return "Update check failed - rate limited";
     default:
