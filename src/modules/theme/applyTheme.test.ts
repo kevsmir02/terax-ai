@@ -245,11 +245,17 @@ describe("theme application", () => {
 
     applyTheme(onlyLight, "light");
     expect(written.get("--terminal-background")).toBe("#eff1f5");
-    expect(written.get("--terminal-header")).toMatch(/^#[0-9a-f]{6}$/i);
+    const lightHeader = written.get("--terminal-header") ?? "";
+    expect(lightHeader).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(hexLuminance(lightHeader)).toBeGreaterThan(hexLuminance("#eff1f5"));
 
     applyTheme(onlyLight, "dark");
     expect(written.get("--terminal-background")).toBe("#eff1f5");
-    expect(written.get("--terminal-header")).toMatch(/^#[0-9a-f]{6}$/i);
+    const fallbackHeader = written.get("--terminal-header") ?? "";
+    expect(fallbackHeader).toMatch(/^#[0-9a-f]{6}$/i);
+    expect(hexLuminance(fallbackHeader)).toBeGreaterThan(
+      hexLuminance("#eff1f5"),
+    );
   });
 
   it("clears --terminal-header and derived --terminal-background on switch and clearTheme", async () => {
