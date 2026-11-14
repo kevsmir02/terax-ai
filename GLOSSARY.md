@@ -71,3 +71,23 @@ _Avoid_: Unfocused preview
 **Layout restoration**:
 Reopening the saved organization of Spaces, tabs, panes, folders and file locations. It does not imply that previous processes are still running or that their commands will run again.
 _Avoid_: Session persistence
+
+**Shell frame**:
+The outer window chrome (header bar, tab strip, sidebar panel, and status bar) arranged as flush hairline-divided panels surrounding the main content area.
+_Avoid_: Outer pane, Floating pane
+
+**Content stage**:
+The primary panel beside the sidebar hosting the active tab's view cleanly behind a terminal card or edge-to-edge across non-terminal editors, diffs, and previews.
+_Avoid_: Workspace, Main pane
+
+**Terminal card**:
+The rounded, outlined container inside the content stage that frames a terminal tab's pane layout, integrated pane headers, and any docked command input footer.
+_Avoid_: Terminal wrapper, Floating pane
+
+**Pane**:
+One leaf terminal session inside a terminal card, filling the card on its own or separated from sibling panes by internal hairline dividers.
+_Avoid_: Split cell, Top-level panel
+
+**Pane header**:
+The slim opaque strip across the top of a pane displaying its session label, external agent activity status, and concise working directory above the terminal output.
+_Avoid_: Pane toolbar, Title bar
