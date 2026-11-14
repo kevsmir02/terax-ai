@@ -140,7 +140,6 @@ import {
 } from "react";
 import { CloseDialogs } from "./components/CloseDialogs";
 import { QuitDialog } from "./components/QuitDialog";
-import { WorkspaceInputBar } from "./components/WorkspaceInputBar";
 import { WorkspaceSurface } from "./components/WorkspaceSurface";
 import { useQuitGuard } from "./hooks/useQuitGuard";
 import {
@@ -375,7 +374,6 @@ export default function App() {
 
   const activeTab = tabs.find((t) => t.id === activeId);
   const isTerminalTab = activeTab?.kind === "terminal";
-  const isBlockTab = activeTerminalTab?.blocks === true;
   const isEditorTab = activeTab?.kind === "editor";
   const isGitHistoryTab = activeTab?.kind === "git-history";
 
@@ -1785,34 +1783,27 @@ export default function App() {
               </ResizablePanel>
               <ResizableHandle />
               <ResizablePanel id="workspace" defaultSize="78%" minSize="30%">
-                <div className="flex h-full min-h-0 flex-col bg-background">
-                  <div className="relative min-h-0 flex-1">
-                    <WorkspaceSurface
-                      tabs={tabs}
-                      activeId={activeId}
-                      activeTab={activeTab}
-                      activeSpaceId={activeSpaceId ?? DEFAULT_SPACE_ID}
-                      spaceRoots={spaceRoots}
-                      subscribeWindowPresentation={subscribeWindowPresentation}
-                      registerTerminalHandle={registerTerminalHandle}
-                      onSearchReady={handleSearchReady}
-                      onCwd={handleTerminalCwd}
-                      onExit={handleLeafExit}
-                      onFocusLeaf={handleFocusLeaf}
-                      registerEditorHandle={registerEditorHandle}
-                      onEditorDirtyChange={handleEditorDirty}
-                      onEditorCloseTab={handleEditorClose}
-                      registerPreviewHandle={registerPreviewHandle}
-                      onPreviewUrlChange={handlePreviewUrl}
-                      onOpenCommitFile={openCommitFileDiffTab}
-                      onGitHistorySearchHandle={setGitHistoryHandle}
-                      onSetMarkdownView={setMarkdownView}
-                    />
-                  </div>
-
-                  <WorkspaceInputBar
-                    isBlockTab={isBlockTab}
-                    activeLeafId={activeLeafId}
+                <div className="relative h-full min-h-0 bg-background">
+                  <WorkspaceSurface
+                    tabs={tabs}
+                    activeId={activeId}
+                    activeTab={activeTab}
+                    activeSpaceId={activeSpaceId ?? DEFAULT_SPACE_ID}
+                    spaceRoots={spaceRoots}
+                    subscribeWindowPresentation={subscribeWindowPresentation}
+                    registerTerminalHandle={registerTerminalHandle}
+                    onSearchReady={handleSearchReady}
+                    onCwd={handleTerminalCwd}
+                    onExit={handleLeafExit}
+                    onFocusLeaf={handleFocusLeaf}
+                    registerEditorHandle={registerEditorHandle}
+                    onEditorDirtyChange={handleEditorDirty}
+                    onEditorCloseTab={handleEditorClose}
+                    registerPreviewHandle={registerPreviewHandle}
+                    onPreviewUrlChange={handlePreviewUrl}
+                    onOpenCommitFile={openCommitFileDiffTab}
+                    onGitHistorySearchHandle={setGitHistoryHandle}
+                    onSetMarkdownView={setMarkdownView}
                   />
                 </div>
               </ResizablePanel>

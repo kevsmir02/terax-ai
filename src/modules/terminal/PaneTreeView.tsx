@@ -118,7 +118,7 @@ function TerminalResizableHandle() {
 
   return (
     <ResizableHandle
-      className="bg-border/50 transition-colors duration-[var(--dur-fast)] after:w-3 hover:bg-border"
+      className="bg-border transition-colors duration-[var(--dur-fast)] hover:bg-ring/70 active:bg-ring data-[separator=hover]:bg-ring/70 data-[separator=active]:bg-ring"
       onPointerDownCapture={(event) => {
         if (event.button === 0) startPointerInteraction();
       }}

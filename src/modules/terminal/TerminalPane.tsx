@@ -108,7 +108,7 @@ const GhosttyTerminalPane = memo(
 
     return (
       <div
-        className="zoom-exempt relative h-full w-full overflow-hidden"
+        className="zoom-exempt relative flex h-full w-full flex-col overflow-hidden"
         style={{
           visibility: visible ? "visible" : "hidden",
           pointerEvents: visible ? "auto" : "none",
@@ -160,50 +160,58 @@ const GhosttyTerminalPane = memo(
         }
         data-terminal-backend={backend}
       >
-        <div ref={containerRef} className="absolute inset-0" />
-        {screenReader && session.model && (
-          <Suspense fallback={null}>
-            <TerminalAccessibleOutput
-              model={session.model}
-              visible={visible}
-              focused={focused}
-              onExit={session.focus}
-            />
-          </Suspense>
-        )}
-        {blocks && (
-          <Suspense fallback={null}>
-            <GhosttyBlockOverlay leafId={leafId} />
-          </Suspense>
-        )}
-        {session.error && (
-          <div
-            role="alert"
-            className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-background p-6 text-center text-sm"
-          >
-            <strong>
-              {session.error.kind === "renderer"
-                ? "Unable to display terminal"
-                : "Unable to start terminal"}
-            </strong>
-            <p className="max-w-md break-words text-muted-foreground">
-              {session.error.message}
-            </p>
-            {session.error.kind === "renderer" && (
-              <p className="text-muted-foreground">
-                Your terminal session is preserved. Retry to restore its
-                display.
-              </p>
+        {/* Solid border inset keeps the center transparent over the shared WebGPU canvas. */}
+        <div
+          data-terminal-pane-body=""
+          className="relative flex min-h-0 flex-1 flex-col border-8 border-solid border-terminal-background"
+        >
+          <div className="relative h-full w-full min-h-0 flex-1">
+            <div ref={containerRef} className="absolute inset-0" />
+            {screenReader && session.model && (
+              <Suspense fallback={null}>
+                <TerminalAccessibleOutput
+                  model={session.model}
+                  visible={visible}
+                  focused={focused}
+                  onExit={session.focus}
+                />
+              </Suspense>
             )}
-            <button
-              type="button"
-              className="rounded-md border px-3 py-1.5 hover:bg-accent focus-visible:outline-2"
-              onClick={session.retry}
-            >
-              {session.error.kind === "renderer" ? "Retry display" : "Retry"}
-            </button>
+            {blocks && (
+              <Suspense fallback={null}>
+                <GhosttyBlockOverlay leafId={leafId} />
+              </Suspense>
+            )}
           </div>
-        )}
+          {session.error && (
+            <div
+              role="alert"
+              className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-background p-6 text-center text-sm"
+            >
+              <strong>
+                {session.error.kind === "renderer"
+                  ? "Unable to display terminal"
+                  : "Unable to start terminal"}
+              </strong>
+              <p className="max-w-md break-words text-muted-foreground">
+                {session.error.message}
+              </p>
+              {session.error.kind === "renderer" && (
+                <p className="text-muted-foreground">
+                  Your terminal session is preserved. Retry to restore its
+                  display.
+                </p>
+              )}
+              <button
+                type="button"
+                className="rounded-md border px-3 py-1.5 hover:bg-accent focus-visible:outline-2"
+                onClick={session.retry}
+              >
+                {session.error.kind === "renderer" ? "Retry display" : "Retry"}
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     );
   }),

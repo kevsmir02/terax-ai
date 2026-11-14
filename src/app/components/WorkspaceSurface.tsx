@@ -1,4 +1,4 @@
-import type { ComponentProps } from "react";
+import { WorkspaceInputBar } from "@/app/components/WorkspaceInputBar";
 import { cn } from "@/lib/utils";
 import { EditorStack, GitDiffStack } from "@/modules/editor";
 import { GitHistoryStack } from "@/modules/git-history";
@@ -7,6 +7,7 @@ import { PreviewStack } from "@/modules/preview";
 import type { PresentationSubscription } from "@/modules/preview/lib/windowVisibility";
 import type { Tab } from "@/modules/tabs";
 import { TerminalStack } from "@/modules/terminal";
+import type { ComponentProps } from "react";
 
 type TerminalStackProps = ComponentProps<typeof TerminalStack>;
 type EditorStackProps = ComponentProps<typeof EditorStack>;
@@ -53,8 +54,8 @@ const LAYER = "absolute inset-0";
  * must not keep working off screen, so {@link PreviewStack} unloads a frame
  * whenever its tab, its Space or the window is not on screen.
  *
- * Layers sit flush inside the Content stage; only the terminal layer is inset,
- * because the terminal draws glyphs right up to its container edge.
+ * Layers sit flush inside the Content stage; only the terminal layer is inset
+ * inside a unified outlined Terminal card.
  */
 export function WorkspaceSurface({
   tabs,
@@ -78,6 +79,9 @@ export function WorkspaceSurface({
   onSetMarkdownView,
 }: Props) {
   const kind = activeTab?.kind;
+  const activeTerminalTab = kind === "terminal" ? activeTab : null;
+  const isBlockTab = activeTerminalTab?.blocks === true;
+  const activeLeafId = activeTerminalTab?.activeLeafId ?? null;
   const isTerminalTab = kind === "terminal";
   const isEditorTab = kind === "editor";
   const isPreviewTab = kind === "preview";
@@ -90,20 +94,31 @@ export function WorkspaceSurface({
       <div
         className={cn(
           LAYER,
-          "px-3 pt-2 pb-2",
+          "p-3",
           !isTerminalTab && "invisible pointer-events-none",
         )}
         aria-hidden={!isTerminalTab}
       >
-        <TerminalStack
-          tabs={tabs}
-          activeId={activeId}
-          registerHandle={registerTerminalHandle}
-          onSearchReady={onSearchReady}
-          onCwd={onCwd}
-          onExit={onExit}
-          onFocusLeaf={onFocusLeaf}
-        />
+        <div
+          data-terminal-card=""
+          className="flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-terminal-background"
+        >
+          <div className="relative min-h-0 flex-1">
+            <TerminalStack
+              tabs={tabs}
+              activeId={activeId}
+              registerHandle={registerTerminalHandle}
+              onSearchReady={onSearchReady}
+              onCwd={onCwd}
+              onExit={onExit}
+              onFocusLeaf={onFocusLeaf}
+            />
+          </div>
+          <WorkspaceInputBar
+            isBlockTab={isBlockTab}
+            activeLeafId={activeLeafId}
+          />
+        </div>
       </div>
       <div
         className={cn(LAYER, !isEditorTab && "invisible pointer-events-none")}
