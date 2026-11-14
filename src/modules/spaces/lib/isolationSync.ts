@@ -30,7 +30,9 @@ export function reconcileSpacesWithIsolation(
   spaces: SpaceMeta[];
   changed: boolean;
   runtimeById: Record<string, SpaceRuntimeStatus>;
+  orphanedCleanups: Record<string, SpaceRuntimeStatus>;
 } {
+  const knownIds = new Set(spaces.map((s) => s.id));
   const byId = new Map(records.map((r) => [r.id, r]));
   let changed = false;
   const runtimeById: Record<string, SpaceRuntimeStatus> = {};
@@ -44,7 +46,16 @@ export function reconcileSpacesWithIsolation(
     }
     return space;
   });
-  return { spaces: reconciled, changed, runtimeById };
+  const orphanedCleanups: Record<string, SpaceRuntimeStatus> = {};
+  for (const rec of records) {
+    if (
+      !knownIds.has(rec.id) &&
+      (rec.cleanupError !== undefined || rec.hasRetainedProfiles)
+    ) {
+      orphanedCleanups[rec.id] = toRuntimeStatus(rec);
+    }
+  }
+  return { spaces: reconciled, changed, runtimeById, orphanedCleanups };
 }
 
 function enqueueSpaceMutation<T>(
@@ -116,9 +127,37 @@ export function setSpaceIsolationMode(
   );
 }
 
-export function removeSpaceIsolation(spaceId: string): Promise<void> {
+export function removeSpaceIsolation(
+  spaceId: string,
+  paneIds?: number[],
+): Promise<SpaceIsolationSyncResult | undefined> {
   return enqueueSpaceMutation(spaceId, () =>
-    invoke<void>("space_isolation_remove", { spaceId }),
+    invoke<SpaceIsolationSyncResult | undefined>("space_isolation_remove", {
+      spaceId,
+      ...(paneIds && paneIds.length > 0 ? { paneIds } : {}),
+    }),
+  );
+}
+
+export function clearSpacePrivateProfiles(
+  spaceId: string,
+  paneIds: number[] = [],
+): Promise<SpaceIsolationSyncResult> {
+  return enqueueSpaceMutation(spaceId, () =>
+    invoke<SpaceIsolationSyncResult>("space_isolation_clear_profiles", {
+      spaceId,
+      paneIds,
+    }),
+  );
+}
+
+export function retrySpaceIsolationCleanup(
+  spaceId: string,
+): Promise<SpaceIsolationSyncResult> {
+  return enqueueSpaceMutation(spaceId, () =>
+    invoke<SpaceIsolationSyncResult>("space_isolation_retry_cleanup", {
+      spaceId,
+    }),
   );
 }
 

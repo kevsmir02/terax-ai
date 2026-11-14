@@ -220,7 +220,9 @@ pub fn run() {
         .register_asynchronous_uri_scheme_protocol("asset", fs::assets::serve)
         .on_page_load(|webview, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
-                if let Some(grants) = webview.try_state::<fs::assets::AssetGrants>() { grants.revoke_owner(webview.label()); }
+                if let Some(grants) = webview.try_state::<fs::assets::AssetGrants>() {
+                    grants.revoke_owner(webview.label());
+                }
                 if let Some(state) = webview.try_state::<pty::PtyState>() {
                     state.reset_webview(webview.label());
                 }
@@ -424,6 +426,8 @@ pub fn run() {
             space_isolation::space_isolation_register,
             space_isolation::space_isolation_set_mode,
             space_isolation::space_isolation_remove,
+            space_isolation::space_isolation_clear_profiles,
+            space_isolation::space_isolation_retry_cleanup,
             space_isolation::space_isolation_preflight_agent,
             updater::updater_fetch_manifest,
             #[cfg(feature = "bench")]
@@ -446,7 +450,9 @@ pub fn run() {
                     event: tauri::WindowEvent::Destroyed,
                     ..
                 } => {
-                    if let Some(grants) = app.try_state::<fs::assets::AssetGrants>() { grants.revoke_owner(&label); }
+                    if let Some(grants) = app.try_state::<fs::assets::AssetGrants>() {
+                        grants.revoke_owner(&label);
+                    }
                     if let Some(state) = app.try_state::<pty::PtyState>() {
                         state.destroy_webview(&label);
                     }

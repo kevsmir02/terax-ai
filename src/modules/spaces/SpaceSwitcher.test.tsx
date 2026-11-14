@@ -254,6 +254,126 @@ describe("SpaceSwitcher", () => {
     expect(onNewIsolatedSpace).toHaveBeenCalledTimes(1);
   });
 
+  it("shows retained-profiles badge, Clear private accounts button, redacted cleanupError, and Retry actions", () => {
+    const onClearPrivateAccounts = vi.fn();
+    const onRetrySpaceCleanup = vi.fn();
+
+    useSpaces.getState().hydrate(
+      [
+        {
+          id: "space-1",
+          name: "Alpha",
+          root: "/work/alpha",
+          env: LOCAL_WORKSPACE,
+          accountIsolation: "default",
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        {
+          id: "space-2",
+          name: "Beta",
+          root: "/work/beta",
+          env: LOCAL_WORKSPACE,
+          accountIsolation: "isolated",
+          createdAt: 2,
+          updatedAt: 2,
+        },
+      ],
+      "space-1",
+      undefined,
+      {
+        "space-1": {
+          hasRetainedProfiles: true,
+          cleanupError: "PermissionDenied: [path]",
+        },
+        "space-2": {
+          hasRetainedProfiles: true,
+        },
+      },
+      {
+        "space-deleted": {
+          hasRetainedProfiles: true,
+          cleanupError: "ResourceBusy: [path]",
+        },
+      },
+    );
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    act(() => {
+      root?.render(
+        <SpaceSwitcher
+          open
+          onOpenChange={vi.fn()}
+          tabs={[]}
+          onNewSpace={vi.fn()}
+          onDeleteSpace={vi.fn()}
+          onNewTabInSpace={vi.fn()}
+          onJumpTab={vi.fn()}
+          onCloseTab={vi.fn()}
+          onMoveTabToSpace={vi.fn()}
+          onReorderTab={vi.fn()}
+          onReorderSpaces={vi.fn()}
+          onClearPrivateAccounts={onClearPrivateAccounts}
+          onRetrySpaceCleanup={onRetrySpaceCleanup}
+        />,
+      );
+    });
+
+    const trigger = container.querySelector<HTMLButtonElement>(
+      'button[title^="Spaces"]',
+    );
+    expect(
+      trigger?.querySelector('[data-retained-profiles="space-1"]'),
+    ).not.toBeNull();
+
+    const popover = document.body.querySelector<HTMLElement>(
+      '[data-slot="popover-content"]',
+    );
+    expect(popover).not.toBeNull();
+
+    const alphaRow = popover?.querySelector<HTMLElement>(
+      '[data-space-id="space-1"]',
+    );
+    expect(
+      alphaRow?.querySelector('[data-retained-profiles="space-1"]'),
+    ).not.toBeNull();
+
+    const clearBtn = popover?.querySelector<HTMLButtonElement>(
+      '[data-clear-private-accounts="space-1"]',
+    );
+    expect(clearBtn).not.toBeNull();
+    act(() => {
+      clearBtn?.click();
+    });
+    expect(onClearPrivateAccounts).toHaveBeenCalledWith("space-1");
+
+    const errorEl = popover?.querySelector('[data-cleanup-error="space-1"]');
+    expect(errorEl?.textContent).toContain("PermissionDenied: [path]");
+    const retryBtn = popover?.querySelector<HTMLButtonElement>(
+      '[data-cleanup-retry="space-1"]',
+    );
+    expect(retryBtn).not.toBeNull();
+    act(() => {
+      retryBtn?.click();
+    });
+    expect(onRetrySpaceCleanup).toHaveBeenCalledWith("space-1");
+
+    const orphanRetry = popover?.querySelector<HTMLButtonElement>(
+      '[data-cleanup-retry="space-deleted"]',
+    );
+    expect(
+      popover?.querySelector('[data-cleanup-error="space-deleted"]')
+        ?.textContent,
+    ).toContain("ResourceBusy: [path]");
+    act(() => {
+      orphanRetry?.click();
+    });
+    expect(onRetrySpaceCleanup).toHaveBeenCalledWith("space-deleted");
+  });
+
   it("allows guarded isolation toggle with active terminals, shows pre-login OAuth guidance, and details shared-root boundaries", async () => {
     useSpaces.getState().hydrate(
       [

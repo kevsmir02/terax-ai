@@ -11,11 +11,13 @@ use std::fs::{self, DirBuilder, File};
 use std::io::{ErrorKind, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::NamedTempFile;
 
+use crate::modules::pty::PtyState;
 use crate::modules::space_profile::{
     provision_and_verify_claude_profile, verify_claude_cli_compatible, IsolatedProfileEnv,
     ProfileEnvironment,
@@ -24,6 +26,10 @@ use crate::modules::space_profile::{
 const MANIFEST_VERSION: u32 = 1;
 const MAX_SPACE_ID_LEN: usize = 128;
 const MAX_SANITIZED_ERROR_LEN: usize = 160;
+const TOMBSTONES_DIR_NAME: &str = ".tombstones";
+const PTY_CLEANUP_GRACE_MS: u64 = 1000;
+
+static TOMBSTONE_SEQ: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -64,6 +70,12 @@ pub struct PendingTombstone {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
     pub created_at_ms: u64,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub remove_space_after_cleanup: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,7 +157,7 @@ impl SpaceIsolationRegistry {
         host_home_override: Option<Option<PathBuf>>,
         path_env_override: Option<Option<OsString>>,
     ) -> Result<(), String> {
-        let next = match fs::read_to_string(&manifest_path) {
+        let mut next = match fs::read_to_string(&manifest_path) {
             Ok(raw) => match parse_manifest(&raw) {
                 Ok(manifest) => RegistryState::Ready {
                     manifest_path,
@@ -177,6 +189,20 @@ impl SpaceIsolationRegistry {
                 RegistryState::Error { reason: msg }
             }
         };
+
+        if let RegistryState::Ready {
+            manifest_path,
+            profiles_dir,
+            manifest,
+            ..
+        } = &mut next
+        {
+            if let Err(error) =
+                sweep_pending_tombstones(manifest_path, profiles_dir.as_deref(), manifest)
+            {
+                log::warn!("space isolation startup tombstone sweep failed: {error}");
+            }
+        }
 
         let result = match &next {
             RegistryState::Error { reason } => Err(reason.clone()),
@@ -213,8 +239,9 @@ impl SpaceIsolationRegistry {
             .map_err(|_| "Space isolation registry lock poisoned".to_string())?;
         let (manifest_path, profiles_dir, _, _, manifest) = ready_parts_mut(&mut guard)?;
         let profiles_ref = profiles_dir.as_deref();
+        let tombstones_snapshot = manifest.tombstones.clone();
         let (statuses, dirty) = plan_sync_manifest(manifest, &inputs, &|id| {
-            has_retained_profile_dir(profiles_ref, id)
+            has_space_artifacts(profiles_ref, id, tombstones_snapshot.get(id))
         })?;
         if dirty {
             write_manifest_atomic(manifest_path, manifest)?;
@@ -318,39 +345,156 @@ impl SpaceIsolationRegistry {
         ))
     }
 
-    pub fn remove_space(&self, space_id: &str) -> Result<(), String> {
+    pub fn remove_space(&self, space_id: &str) -> Result<SpaceRuntimeStatus, String> {
+        self.cleanup_space_profile(None, space_id, &[], CleanupIntent::RemoveSpace)
+    }
+
+    pub(crate) fn remove_space_with_pty(
+        &self,
+        pty: &PtyState,
+        space_id: &str,
+        pane_ids: &[u32],
+    ) -> Result<SpaceRuntimeStatus, String> {
+        self.cleanup_space_profile(Some(pty), space_id, pane_ids, CleanupIntent::RemoveSpace)
+    }
+
+    pub fn clear_private_profiles(&self, space_id: &str) -> Result<SpaceRuntimeStatus, String> {
+        self.cleanup_space_profile(None, space_id, &[], CleanupIntent::ClearProfiles)
+    }
+
+    pub(crate) fn clear_private_profiles_with_pty(
+        &self,
+        pty: &PtyState,
+        space_id: &str,
+        pane_ids: &[u32],
+    ) -> Result<SpaceRuntimeStatus, String> {
+        self.cleanup_space_profile(Some(pty), space_id, pane_ids, CleanupIntent::ClearProfiles)
+    }
+
+    pub(crate) fn retry_cleanup(
+        &self,
+        pty: Option<&PtyState>,
+        space_id: &str,
+    ) -> Result<SpaceRuntimeStatus, String> {
+        self.cleanup_space_profile(pty, space_id, &[], CleanupIntent::RetryExisting)
+    }
+
+    fn cleanup_space_profile(
+        &self,
+        pty: Option<&PtyState>,
+        space_id: &str,
+        pane_ids: &[u32],
+        intent: CleanupIntent,
+    ) -> Result<SpaceRuntimeStatus, String> {
         validate_space_id(space_id)?;
+
+        let needs_pty_stop = {
+            let mut guard = self
+                .inner
+                .lock()
+                .map_err(|_| "Space isolation registry lock poisoned".to_string())?;
+            let (manifest_path, profiles_dir, _, _, manifest) = ready_parts_mut(&mut guard)?;
+            let profiles_ref = profiles_dir.as_deref();
+            let existing_tomb = manifest.tombstones.get(space_id).cloned();
+            let has_artifacts = has_space_artifacts(profiles_ref, space_id, existing_tomb.as_ref());
+
+            if intent == CleanupIntent::RetryExisting && existing_tomb.is_none() && !has_artifacts {
+                let mode = manifest
+                    .spaces
+                    .get(space_id)
+                    .map(|e| e.mode)
+                    .unwrap_or(AccountIsolationMode::Default);
+                return Ok(SpaceRuntimeStatus {
+                    id: space_id.to_string(),
+                    account_isolation: mode,
+                    has_retained_profiles: false,
+                    cleanup_error: None,
+                });
+            }
+
+            let remove_space_after = match intent {
+                CleanupIntent::RemoveSpace => true,
+                CleanupIntent::ClearProfiles => existing_tomb
+                    .as_ref()
+                    .is_some_and(|t| t.remove_space_after_cleanup),
+                CleanupIntent::RetryExisting => existing_tomb
+                    .as_ref()
+                    .is_some_and(|t| t.remove_space_after_cleanup),
+            };
+
+            let staging_dir = existing_tomb.as_ref().and_then(|t| t.staging_dir.clone());
+            let created_at_ms = existing_tomb
+                .as_ref()
+                .map(|t| t.created_at_ms)
+                .unwrap_or_else(current_time_ms);
+
+            // Persist tombstone before releasing the lock to stop PTYs so
+            // concurrent pty_open fails closed and crashes recover cleanly.
+            if has_artifacts || existing_tomb.is_some() || pty.is_some() {
+                manifest.tombstones.insert(
+                    space_id.to_string(),
+                    PendingTombstone {
+                        space_id: space_id.to_string(),
+                        staging_dir,
+                        last_error: Some("Cleanup in progress".to_string()),
+                        created_at_ms,
+                        remove_space_after_cleanup: remove_space_after,
+                    },
+                );
+                write_manifest_atomic(manifest_path, manifest)?;
+            }
+            pty.is_some()
+        };
+
+        let pty_stop_err = if needs_pty_stop {
+            match pty {
+                Some(pty_state) => pty_state
+                    .stop_space_sessions(space_id, pane_ids, PTY_CLEANUP_GRACE_MS)
+                    .err()
+                    .map(|e| sanitize_error_message(&e)),
+                None => None,
+            }
+        } else {
+            None
+        };
+
         let mut guard = self
             .inner
             .lock()
             .map_err(|_| "Space isolation registry lock poisoned".to_string())?;
         let (manifest_path, profiles_dir, _, _, manifest) = ready_parts_mut(&mut guard)?;
+        let mode = manifest
+            .spaces
+            .get(space_id)
+            .map(|e| e.mode)
+            .unwrap_or(AccountIsolationMode::Default);
 
-        let retained = has_retained_profile_dir(profiles_dir.as_deref(), space_id);
-        let has_tombstone = manifest.tombstones.contains_key(space_id);
-
-        let mut dirty = false;
-        if retained && !has_tombstone {
-            manifest.tombstones.insert(
-                space_id.to_string(),
-                PendingTombstone {
-                    space_id: space_id.to_string(),
-                    staging_dir: None,
-                    last_error: Some(
-                        "Pending cleanup for retained Space profile directory".to_string(),
-                    ),
-                    created_at_ms: current_time_ms(),
-                },
-            );
-            dirty = true;
-        } else if !retained && !has_tombstone && manifest.spaces.remove(space_id).is_some() {
-            dirty = true;
+        if let Some(err) = pty_stop_err {
+            if let Some(tomb) = manifest.tombstones.get_mut(space_id) {
+                tomb.last_error = Some(err);
+                write_manifest_atomic(manifest_path, manifest)?;
+            }
+            return Ok(build_runtime_status(
+                space_id,
+                mode,
+                profiles_dir.as_deref(),
+                manifest.tombstones.get(space_id),
+            ));
         }
 
-        if dirty {
+        if manifest.tombstones.contains_key(space_id) {
+            execute_tombstone_cleanup(manifest_path, profiles_dir.as_deref(), manifest, space_id)?;
+        } else if intent == CleanupIntent::RemoveSpace && manifest.spaces.remove(space_id).is_some()
+        {
             write_manifest_atomic(manifest_path, manifest)?;
         }
-        Ok(())
+
+        Ok(build_runtime_status(
+            space_id,
+            mode,
+            profiles_dir.as_deref(),
+            manifest.tombstones.get(space_id),
+        ))
     }
 
     pub fn record_tombstone(
@@ -372,6 +516,7 @@ impl SpaceIsolationRegistry {
                 staging_dir,
                 last_error: last_error.map(|e| sanitize_error_message(&e)),
                 created_at_ms: current_time_ms(),
+                remove_space_after_cleanup: true,
             },
         );
         write_manifest_atomic(manifest_path, manifest)
@@ -467,8 +612,13 @@ impl SpaceIsolationRegistry {
     ) -> Result<(), String> {
         let require_claude =
             expected_isolation == AccountIsolationMode::Isolated && agent_id == "claude";
-        self.prepare_pty_isolation(Some(space_id), Some(expected_isolation), false, require_claude)
-            .map(|_| ())
+        self.prepare_pty_isolation(
+            Some(space_id),
+            Some(expected_isolation),
+            false,
+            require_claude,
+        )
+        .map(|_| ())
     }
 }
 
@@ -577,7 +727,10 @@ pub fn validate_space_id(id: &str) -> Result<(), String> {
 
 fn looks_like_secret_token(token: &str) -> bool {
     let trimmed = token.trim_matches(|c: char| {
-        matches!(c, '"' | '\'' | ',' | ';' | ')' | '(' | '{' | '}' | '[' | ']')
+        matches!(
+            c,
+            '"' | '\'' | ',' | ';' | ')' | '(' | '{' | '}' | '[' | ']'
+        )
     });
     if [
         "sk-",
@@ -668,14 +821,75 @@ pub fn contains_secret_payload(payload: &str) -> bool {
     false
 }
 
+fn looks_like_path_fragment(raw: &str) -> bool {
+    let s = raw.trim();
+    if s.starts_with('/') && s.len() > 1 {
+        return true;
+    }
+    if s.starts_with("~/")
+        || s.starts_with("~\\")
+        || s.starts_with("\\\\")
+        || s.starts_with("file://")
+    {
+        return true;
+    }
+    let bytes = s.as_bytes();
+    if bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+    {
+        return true;
+    }
+    s.contains("space-profiles") || s.contains(".tombstones") || s.contains(".credentials")
+}
+
+fn redact_quoted_paths(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let chars: Vec<char> = input.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch == '\'' || ch == '"' {
+            if let Some(end_offset) = chars[i + 1..].iter().position(|&c| c == ch) {
+                let inner: String = chars[i + 1..i + 1 + end_offset].iter().collect();
+                if looks_like_path_fragment(&inner) {
+                    result.push_str("[path]");
+                    i += 1 + end_offset + 1;
+                    continue;
+                }
+            }
+        }
+        result.push(ch);
+        i += 1;
+    }
+    result
+}
+
+fn strip_token_wrappers(token: &str) -> (&str, &str) {
+    let trimmed_start = token.trim_start_matches(['(', '[', '{', '\'', '"']);
+    let mut end_idx = trimmed_start.len();
+    for (idx, ch) in trimmed_start.char_indices().rev() {
+        if matches!(ch, ')' | ']' | '}' | '\'' | '"' | ',' | ';' | ':') {
+            end_idx = idx;
+        } else {
+            break;
+        }
+    }
+    let core = &trimmed_start[..end_idx];
+    let suffix = &trimmed_start[end_idx..];
+    (core, suffix)
+}
+
 pub fn sanitize_error_message(message: &str) -> String {
     let cleaned: String = message
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
+    let unquoted_paths = redact_quoted_paths(&cleaned);
     let mut out = Vec::new();
     let mut redact_next = false;
-    for token in cleaned.split_whitespace() {
+    for token in unquoted_paths.split_whitespace() {
         if redact_next {
             out.push("[redacted]".to_string());
             redact_next = false;
@@ -692,8 +906,15 @@ pub fn sanitize_error_message(message: &str) -> String {
                 redact_next = true;
             }
             out.push("[redacted]".to_string());
-        } else if let Some((k, _)) = token.split_once('=') {
+            continue;
+        }
+        let (core, suffix) = strip_token_wrappers(token);
+        if looks_like_path_fragment(core) {
+            let colon = if suffix.starts_with(':') { ":" } else { "" };
+            out.push(format!("[path]{colon}"));
+        } else if let Some((k, v)) = token.split_once('=') {
             let kl = k.to_ascii_lowercase();
+            let (v_core, _) = strip_token_wrappers(v);
             if kl.contains("key")
                 || kl.contains("token")
                 || kl.contains("secret")
@@ -702,6 +923,8 @@ pub fn sanitize_error_message(message: &str) -> String {
                 || kl.contains("cookie")
             {
                 out.push(format!("{k}=[redacted]"));
+            } else if looks_like_path_fragment(v_core) {
+                out.push(format!("{k}=[path]"));
             } else {
                 out.push(token.to_string());
             }
@@ -716,7 +939,7 @@ pub fn sanitize_error_message(message: &str) -> String {
 }
 
 fn sanitize_io_error(err: &std::io::Error) -> String {
-    sanitize_error_message(&format!("{:?}", err.kind()))
+    sanitize_error_message(&format!("{:?}: {err}", err.kind()))
 }
 
 pub fn parse_manifest(raw: &str) -> Result<Manifest, String> {
@@ -738,6 +961,255 @@ pub fn parse_manifest(raw: &str) -> Result<Manifest, String> {
         }
     }
     Ok(manifest)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CleanupIntent {
+    RemoveSpace,
+    ClearProfiles,
+    RetryExisting,
+}
+
+fn next_staging_rel(space_id: &str) -> String {
+    let seq = TOMBSTONE_SEQ.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "{TOMBSTONES_DIR_NAME}/{space_id}-{}-{seq}",
+        current_time_ms()
+    )
+}
+
+fn resolve_staged_path(profiles_dir: &Path, staging_rel: &str) -> Result<PathBuf, String> {
+    let mut components = Path::new(staging_rel).components();
+    let Some(Component::Normal(first)) = components.next() else {
+        return Err("Invalid tombstone staging path".to_string());
+    };
+    let Some(Component::Normal(child)) = components.next() else {
+        return Err("Invalid tombstone staging child path".to_string());
+    };
+    if components.next().is_some() || first != TOMBSTONES_DIR_NAME {
+        return Err("Tombstone staging path must live directly inside .tombstones".to_string());
+    }
+    let child_str = child.to_string_lossy();
+    if child_str.is_empty() || child_str == "." || child_str == ".." || child_str.starts_with('.') {
+        return Err("Invalid tombstone staging entry name".to_string());
+    }
+    Ok(profiles_dir.join(TOMBSTONES_DIR_NAME).join(child))
+}
+
+fn remove_path_strictly_scoped(expected_parent: &Path, target: &Path) -> Result<(), String> {
+    let meta = match fs::symlink_metadata(target) {
+        Ok(m) => m,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(sanitize_io_error(&e)),
+    };
+    if target.parent() != Some(expected_parent) {
+        return Err("Refusing deletion outside expected isolation boundary".to_string());
+    }
+    if expected_parent.exists() {
+        let canon_expected =
+            fs::canonicalize(expected_parent).map_err(|e| sanitize_io_error(&e))?;
+        let canon_actual = target
+            .parent()
+            .ok_or_else(|| "Missing parent directory".to_string())
+            .and_then(|p| fs::canonicalize(p).map_err(|e| sanitize_io_error(&e)))?;
+        if canon_actual != canon_expected {
+            return Err("Refusing deletion across symlinked parent boundary".to_string());
+        }
+    }
+    let res = if meta.file_type().is_symlink() || meta.is_file() {
+        fs::remove_file(target)
+    } else {
+        fs::remove_dir_all(target)
+    };
+    res.map_err(|e| sanitize_io_error(&e))
+}
+
+fn matching_staged_entries(tombstones_root: &Path, space_id: &str) -> Vec<PathBuf> {
+    let prefix = format!("{space_id}-");
+    let Ok(entries) = fs::read_dir(tombstones_root) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let s = name.to_string_lossy();
+            if s.starts_with(&prefix) {
+                Some(entry.path())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn has_space_artifacts(
+    profiles_dir: Option<&Path>,
+    space_id: &str,
+    tombstone: Option<&PendingTombstone>,
+) -> bool {
+    if has_retained_profile_dir(profiles_dir, space_id) {
+        return true;
+    }
+    let Some(base) = profiles_dir else {
+        return false;
+    };
+    if let Some(rel) = tombstone.and_then(|t| t.staging_dir.as_deref()) {
+        if let Ok(staged) = resolve_staged_path(base, rel) {
+            if fs::symlink_metadata(staged).is_ok() {
+                return true;
+            }
+        }
+    }
+    !matching_staged_entries(&base.join(TOMBSTONES_DIR_NAME), space_id).is_empty()
+}
+
+fn execute_tombstone_cleanup(
+    manifest_path: &Path,
+    profiles_dir: Option<&Path>,
+    manifest: &mut Manifest,
+    space_id: &str,
+) -> Result<(), String> {
+    let Some(mut tomb) = manifest.tombstones.get(space_id).cloned() else {
+        return Ok(());
+    };
+    let Some(base) = profiles_dir else {
+        if tomb.staging_dir.is_some() {
+            tomb.last_error = Some("Space profiles directory is unavailable".to_string());
+            manifest.tombstones.insert(space_id.to_string(), tomb);
+            write_manifest_atomic(manifest_path, manifest)?;
+            return Ok(());
+        }
+        manifest.tombstones.remove(space_id);
+        if tomb.remove_space_after_cleanup {
+            manifest.spaces.remove(space_id);
+        }
+        write_manifest_atomic(manifest_path, manifest)?;
+        return Ok(());
+    };
+
+    let tombstones_root = base.join(TOMBSTONES_DIR_NAME);
+
+    if let Some(rel) = tomb.staging_dir.clone() {
+        match resolve_staged_path(base, &rel)
+            .and_then(|staged| remove_path_strictly_scoped(&tombstones_root, &staged))
+        {
+            Ok(()) => {
+                tomb.staging_dir = None;
+            }
+            Err(err) => {
+                tomb.last_error = Some(err);
+                manifest.tombstones.insert(space_id.to_string(), tomb);
+                write_manifest_atomic(manifest_path, manifest)?;
+                return Ok(());
+            }
+        }
+    }
+
+    let active_path = base.join(space_id);
+    match fs::symlink_metadata(&active_path) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() || meta.is_file() {
+                if let Err(err) = remove_path_strictly_scoped(base, &active_path) {
+                    tomb.last_error = Some(err);
+                    manifest.tombstones.insert(space_id.to_string(), tomb);
+                    write_manifest_atomic(manifest_path, manifest)?;
+                    return Ok(());
+                }
+            } else {
+                if let Err(err) = ensure_private_dir(&tombstones_root) {
+                    tomb.last_error = Some(err);
+                    manifest.tombstones.insert(space_id.to_string(), tomb);
+                    write_manifest_atomic(manifest_path, manifest)?;
+                    return Ok(());
+                }
+                let staging_rel = next_staging_rel(space_id);
+                let staging_path = resolve_staged_path(base, &staging_rel)?;
+                if let Err(err) = fs::rename(&active_path, &staging_path) {
+                    tomb.last_error = Some(sanitize_io_error(&err));
+                    manifest.tombstones.insert(space_id.to_string(), tomb);
+                    write_manifest_atomic(manifest_path, manifest)?;
+                    return Ok(());
+                }
+                tomb.staging_dir = Some(staging_rel);
+                manifest
+                    .tombstones
+                    .insert(space_id.to_string(), tomb.clone());
+                // Persist staging path atomically before recursive removal so crash recovery finds it.
+                write_manifest_atomic(manifest_path, manifest)?;
+
+                if let Err(err) = remove_path_strictly_scoped(&tombstones_root, &staging_path) {
+                    tomb.last_error = Some(err);
+                    manifest.tombstones.insert(space_id.to_string(), tomb);
+                    write_manifest_atomic(manifest_path, manifest)?;
+                    return Ok(());
+                }
+                tomb.staging_dir = None;
+            }
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => {
+            tomb.last_error = Some(sanitize_io_error(&err));
+            manifest.tombstones.insert(space_id.to_string(), tomb);
+            write_manifest_atomic(manifest_path, manifest)?;
+            return Ok(());
+        }
+    }
+
+    for leftover in matching_staged_entries(&tombstones_root, space_id) {
+        if let Err(err) = remove_path_strictly_scoped(&tombstones_root, &leftover) {
+            let rel = leftover
+                .file_name()
+                .map(|n| format!("{TOMBSTONES_DIR_NAME}/{}", n.to_string_lossy()));
+            tomb.staging_dir = rel;
+            tomb.last_error = Some(err);
+            manifest.tombstones.insert(space_id.to_string(), tomb);
+            write_manifest_atomic(manifest_path, manifest)?;
+            return Ok(());
+        }
+    }
+
+    manifest.tombstones.remove(space_id);
+    if tomb.remove_space_after_cleanup {
+        manifest.spaces.remove(space_id);
+    }
+    write_manifest_atomic(manifest_path, manifest)
+}
+
+fn sweep_pending_tombstones(
+    manifest_path: &Path,
+    profiles_dir: Option<&Path>,
+    manifest: &mut Manifest,
+) -> Result<(), String> {
+    let ids: Vec<String> = manifest.tombstones.keys().cloned().collect();
+    for space_id in ids {
+        execute_tombstone_cleanup(manifest_path, profiles_dir, manifest, &space_id)?;
+    }
+
+    let Some(base) = profiles_dir else {
+        return Ok(());
+    };
+    let tombstones_root = base.join(TOMBSTONES_DIR_NAME);
+    let Ok(entries) = fs::read_dir(&tombstones_root) else {
+        return Ok(());
+    };
+
+    let active_staging: BTreeSet<PathBuf> = manifest
+        .tombstones
+        .values()
+        .filter_map(|t| t.staging_dir.as_deref())
+        .filter_map(|rel| resolve_staged_path(base, rel).ok())
+        .collect();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !active_staging.contains(&path) {
+            if let Err(err) = remove_path_strictly_scoped(&tombstones_root, &path) {
+                log::warn!("failed removing orphaned tombstone dir: {err}");
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn plan_sync_manifest<F>(
@@ -800,6 +1272,27 @@ where
             has_retained_profiles: retained,
             cleanup_error: None,
         });
+    }
+
+    for (id, tombstone) in &manifest.tombstones {
+        if !seen.contains(id.as_str()) {
+            let mode = manifest
+                .spaces
+                .get(id)
+                .map(|entry| entry.mode)
+                .unwrap_or(AccountIsolationMode::Default);
+            statuses.push(SpaceRuntimeStatus {
+                id: id.clone(),
+                account_isolation: mode,
+                has_retained_profiles: has_retained(id),
+                cleanup_error: Some(
+                    tombstone
+                        .last_error
+                        .clone()
+                        .unwrap_or_else(|| "Pending deletion cleanup for Space".to_string()),
+                ),
+            });
+        }
     }
 
     let prev_len = manifest.spaces.len();
@@ -867,7 +1360,7 @@ fn build_runtime_status(
     SpaceRuntimeStatus {
         id: space_id.to_string(),
         account_isolation: mode,
-        has_retained_profiles: has_retained_profile_dir(profiles_dir, space_id),
+        has_retained_profiles: has_space_artifacts(profiles_dir, space_id, tombstone),
         cleanup_error: tombstone.map(|t| {
             t.last_error
                 .clone()
@@ -993,11 +1486,52 @@ pub fn space_isolation_set_mode(
 }
 
 #[tauri::command]
-pub fn space_isolation_remove(
+pub async fn space_isolation_remove(
     state: tauri::State<'_, SpaceIsolationRegistry>,
+    pty: tauri::State<'_, PtyState>,
     space_id: String,
-) -> Result<(), String> {
-    state.remove_space(&space_id)
+    pane_ids: Option<Vec<u32>>,
+) -> Result<SpaceRuntimeStatus, String> {
+    let registry = state.inner().clone();
+    let pty_state = pty.inner().clone();
+    let panes = pane_ids.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || {
+        registry.remove_space_with_pty(&pty_state, &space_id, &panes)
+    })
+    .await
+    .map_err(|e| sanitize_error_message(&e.to_string()))?
+}
+
+#[tauri::command]
+pub async fn space_isolation_clear_profiles(
+    state: tauri::State<'_, SpaceIsolationRegistry>,
+    pty: tauri::State<'_, PtyState>,
+    space_id: String,
+    pane_ids: Option<Vec<u32>>,
+) -> Result<SpaceRuntimeStatus, String> {
+    let registry = state.inner().clone();
+    let pty_state = pty.inner().clone();
+    let panes = pane_ids.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || {
+        registry.clear_private_profiles_with_pty(&pty_state, &space_id, &panes)
+    })
+    .await
+    .map_err(|e| sanitize_error_message(&e.to_string()))?
+}
+
+#[tauri::command]
+pub async fn space_isolation_retry_cleanup(
+    state: tauri::State<'_, SpaceIsolationRegistry>,
+    pty: tauri::State<'_, PtyState>,
+    space_id: String,
+) -> Result<SpaceRuntimeStatus, String> {
+    let registry = state.inner().clone();
+    let pty_state = pty.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        registry.retry_cleanup(Some(&pty_state), &space_id)
+    })
+    .await
+    .map_err(|e| sanitize_error_message(&e.to_string()))?
 }
 
 #[tauri::command]
@@ -1225,12 +1759,47 @@ mod tests {
     }
 
     #[test]
-    fn remove_space_prunes_clean_default_entry_and_tracks_retained_profile_tombstone() {
+    fn redacts_filesystem_paths_from_sanitized_errors() {
+        let unix = sanitize_error_message(
+            "failed removing /home/alice/.local/share/codr/space-profiles/sp-1/.credentials.json: PermissionDenied",
+        );
+        assert!(!unix.contains("/home"));
+        assert!(!unix.contains("alice"));
+        assert!(!unix.contains("space-profiles"));
+        assert!(!unix.contains(".credentials.json"));
+        assert!(unix.contains("[path]"));
+        assert!(unix.contains("PermissionDenied"));
+
+        let quoted = sanitize_error_message(
+            "busy directory '/Users/Alice Smith/Library/Application Support/terax/space-profiles/sp 1'",
+        );
+        assert!(!quoted.contains("Alice"));
+        assert!(!quoted.contains("space-profiles"));
+        assert!(quoted.contains("[path]"));
+
+        let win = sanitize_error_message(
+            r"AccessDenied at C:\Users\alice\AppData\Roaming\codr\space-profiles\sp-1",
+        );
+        assert!(!win.contains("alice"));
+        assert!(!win.contains("AppData"));
+        assert!(win.contains("[path]"));
+        assert!(win.contains("AccessDenied"));
+
+        let env_path = sanitize_error_message("failed with CLAUDE_CONFIG_DIR=/tmp/secret-dir/sp-1");
+        assert!(!env_path.contains("/tmp"));
+        assert!(!env_path.contains("secret-dir"));
+        assert!(env_path.contains("[path]"));
+    }
+
+    #[test]
+    fn remove_space_deletes_writable_retained_profile_dir_and_prunes_manifest() {
         let (_dir, registry, manifest_path, profiles_dir) = temp_registry();
         registry
             .register_space("sp-clean", AccountIsolationMode::Default)
             .unwrap();
-        registry.remove_space("sp-clean").unwrap();
+        let clean = registry.remove_space("sp-clean").unwrap();
+        assert!(!clean.has_retained_profiles);
+        assert!(clean.cleanup_error.is_none());
         assert!(registry
             .validate_pty_open(Some("sp-clean"), Some(AccountIsolationMode::Default))
             .is_err());
@@ -1239,16 +1808,14 @@ mod tests {
             .register_space("sp-retained", AccountIsolationMode::Default)
             .unwrap();
         fs::create_dir_all(profiles_dir.join("sp-retained")).unwrap();
-        registry.remove_space("sp-retained").unwrap();
+        let removed = registry.remove_space("sp-retained").unwrap();
+        assert!(!removed.has_retained_profiles);
+        assert!(removed.cleanup_error.is_none());
+        assert!(!profiles_dir.join("sp-retained").exists());
 
         let reloaded = SpaceIsolationRegistry::for_paths(manifest_path, Some(profiles_dir));
-        let synced = reloaded
-            .sync_spaces(vec![SpaceSyncInput {
-                id: "sp-retained".to_string(),
-                account_isolation: AccountIsolationMode::Default,
-            }])
-            .unwrap();
-        assert!(synced[0].cleanup_error.is_some());
+        let synced = reloaded.sync_spaces(vec![]).unwrap();
+        assert!(synced.is_empty());
         assert!(reloaded
             .validate_pty_open(Some("sp-retained"), Some(AccountIsolationMode::Default))
             .is_err());
@@ -1304,5 +1871,192 @@ mod tests {
         assert!(good_registry
             .prepare_agent_launch("sp-iso", AccountIsolationMode::Isolated, "claude")
             .is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clear_private_profiles_deletes_profile_dir_and_disabling_retains_for_reuse() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("app-data/space-isolation/manifest.json");
+        let profiles_dir = dir.path().join("xdg-data/codr/space-profiles");
+        let host_home = dir.path().join("host-home");
+        let bin_dir = dir.path().join("bin");
+        fs::create_dir_all(&host_home).unwrap();
+        fs::create_dir_all(&bin_dir).unwrap();
+        let claude_path = bin_dir.join("claude");
+        fs::write(
+            &claude_path,
+            "#!/bin/sh\nprintf '{\"loggedIn\":false,\"configDirectory\":\"%s\"}\\n' \"$CLAUDE_CONFIG_DIR\"\nexit 1\n",
+        )
+        .unwrap();
+        fs::set_permissions(&claude_path, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let registry = SpaceIsolationRegistry::for_paths_with_env(
+            manifest_path.clone(),
+            Some(profiles_dir.clone()),
+            Some(host_home),
+            Some(bin_dir.as_os_str().to_os_string()),
+        );
+        registry
+            .register_space("sp-iso", AccountIsolationMode::Isolated)
+            .unwrap();
+        let creds_path = profiles_dir.join("sp-iso/claude/.credentials.json");
+        fs::write(&creds_path, "secret-token").unwrap();
+
+        let disabled = registry
+            .set_space_mode("sp-iso", AccountIsolationMode::Default)
+            .unwrap();
+        assert_eq!(disabled.account_isolation, AccountIsolationMode::Default);
+        assert!(disabled.has_retained_profiles);
+        assert!(creds_path.exists());
+
+        let reenabled = registry
+            .set_space_mode("sp-iso", AccountIsolationMode::Isolated)
+            .unwrap();
+        assert_eq!(reenabled.account_isolation, AccountIsolationMode::Isolated);
+        assert!(reenabled.has_retained_profiles);
+        assert_eq!(fs::read_to_string(&creds_path).unwrap(), "secret-token");
+
+        registry
+            .set_space_mode("sp-iso", AccountIsolationMode::Default)
+            .unwrap();
+        let cleared = registry.clear_private_profiles("sp-iso").unwrap();
+        assert_eq!(cleared.account_isolation, AccountIsolationMode::Default);
+        assert!(!cleared.has_retained_profiles);
+        assert!(cleared.cleanup_error.is_none());
+        assert!(!profiles_dir.join("sp-iso").exists());
+        assert!(registry
+            .validate_pty_open(Some("sp-iso"), Some(AccountIsolationMode::Default))
+            .is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unwritable_directory_preserves_tombstone_surfaces_redacted_error_and_recovers_on_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("app-data/space-isolation/manifest.json");
+        let profiles_dir = dir.path().join("xdg-data/codr/space-profiles");
+        let registry =
+            SpaceIsolationRegistry::for_paths(manifest_path.clone(), Some(profiles_dir.clone()));
+
+        registry
+            .register_space("sp-locked", AccountIsolationMode::Default)
+            .unwrap();
+        let locked_sub = profiles_dir.join("sp-locked/locked-sub");
+        let inner = locked_sub.join("inner");
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(inner.join("token.json"), "secret").unwrap();
+        fs::set_permissions(&locked_sub, fs::Permissions::from_mode(0o500)).unwrap();
+
+        let status = registry.remove_space("sp-locked").unwrap();
+        let err = status
+            .cleanup_error
+            .clone()
+            .expect("unwritable nested dir should yield cleanupError");
+        assert!(status.has_retained_profiles);
+        assert!(
+            !err.contains(&dir.path().to_string_lossy().to_string()),
+            "cleanup_error must redact temp path: {err}"
+        );
+        assert!(!err.contains("space-profiles"));
+        assert!(
+            !profiles_dir.join("sp-locked").exists(),
+            "atomic rename must move active dir into tombstone staging"
+        );
+        assert!(registry
+            .validate_pty_open(Some("sp-locked"), Some(AccountIsolationMode::Default))
+            .is_err());
+
+        // Restore write bit on staged dir and retry cleanup.
+        let staged_locked_sub = fs::read_dir(profiles_dir.join(".tombstones"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.path().join("locked-sub"))
+            .find(|p| p.exists())
+            .expect("staged dir should exist under .tombstones");
+        fs::set_permissions(&staged_locked_sub, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let retried = registry.retry_cleanup(None, "sp-locked").unwrap();
+        assert!(!retried.has_retained_profiles);
+        assert!(retried.cleanup_error.is_none());
+        assert!(!staged_locked_sub.parent().unwrap().exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn startup_sweep_cleans_leftover_tombstones_and_reconciles_stale_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest_path = dir.path().join("app-data/space-isolation/manifest.json");
+        let profiles_dir = dir.path().join("xdg-data/codr/space-profiles");
+        let tombstones_dir = profiles_dir.join(".tombstones");
+        fs::create_dir_all(manifest_path.parent().unwrap()).unwrap();
+        fs::create_dir_all(tombstones_dir.join("sp-crash-staged-100")).unwrap();
+        fs::write(tombstones_dir.join("sp-crash-staged-100/creds.json"), "old").unwrap();
+        fs::create_dir_all(profiles_dir.join("sp-crash-active/sub")).unwrap();
+        fs::create_dir_all(tombstones_dir.join("sp-orphan-999")).unwrap();
+
+        let still_locked_dir = profiles_dir.join("sp-still-locked/locked");
+        fs::create_dir_all(still_locked_dir.join("leaf")).unwrap();
+        fs::set_permissions(&still_locked_dir, fs::Permissions::from_mode(0o500)).unwrap();
+
+        let manifest_json = serde_json::json!({
+            "version": 1,
+            "spaces": {
+                "sp-crash-staged": { "mode": "isolated" },
+                "sp-crash-active": { "mode": "default" },
+                "sp-stale-tombstone": { "mode": "default" },
+                "sp-still-locked": { "mode": "default" }
+            },
+            "tombstones": {
+                "sp-crash-staged": {
+                    "spaceId": "sp-crash-staged",
+                    "stagingDir": ".tombstones/sp-crash-staged-100",
+                    "lastError": "crashed mid-delete",
+                    "createdAtMs": 100,
+                    "removeSpaceAfterCleanup": true
+                },
+                "sp-crash-active": {
+                    "spaceId": "sp-crash-active",
+                    "createdAtMs": 101,
+                    "removeSpaceAfterCleanup": true
+                },
+                "sp-stale-tombstone": {
+                    "spaceId": "sp-stale-tombstone",
+                    "createdAtMs": 102,
+                    "removeSpaceAfterCleanup": true
+                },
+                "sp-still-locked": {
+                    "spaceId": "sp-still-locked",
+                    "createdAtMs": 103,
+                    "removeSpaceAfterCleanup": true
+                }
+            }
+        });
+        fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest_json).unwrap(),
+        )
+        .unwrap();
+
+        let reloaded =
+            SpaceIsolationRegistry::for_paths(manifest_path.clone(), Some(profiles_dir.clone()));
+
+        assert!(!tombstones_dir.join("sp-crash-staged-100").exists());
+        assert!(!profiles_dir.join("sp-crash-active").exists());
+        assert!(!tombstones_dir.join("sp-orphan-999").exists());
+
+        let synced = reloaded.sync_spaces(vec![]).unwrap();
+        assert_eq!(synced.len(), 1);
+        assert_eq!(synced[0].id, "sp-still-locked");
+        assert!(synced[0].has_retained_profiles);
+        assert!(synced[0].cleanup_error.is_some());
+
+        // Cleanup test permission for TempDir drop.
+        for entry in fs::read_dir(&tombstones_dir).unwrap().flatten() {
+            let p = entry.path().join("locked");
+            if p.exists() {
+                let _ = fs::set_permissions(p, fs::Permissions::from_mode(0o700));
+            }
+        }
     }
 }
