@@ -1,8 +1,10 @@
 import namespace from "@/modules/identity/namespace.json";
 import { getVersion } from "@tauri-apps/api/app";
+import { isTauri } from "@tauri-apps/api/core";
 import { arch, platform } from "@tauri-apps/plugin-os";
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import { checkForUpdate, type CheckOutcome } from "./checkForUpdate";
+import { tauriManifestTransport } from "./tauriManifestTransport";
 import {
   releaseContract,
   resolveContract,
@@ -92,6 +94,7 @@ async function performCheck(): Promise<CheckOutcome> {
     currentVersion,
     contract,
     target: currentTarget(),
+    transport: isTauri() ? tauriManifestTransport : undefined,
     // Discovery never depends on the optional native installer: trust policy is decided
     // by the contract (fail closed until #39 provisions keys), not by an installer choice.
     verify: createReleaseVerifier({ devMode: import.meta.env.DEV, contract }),

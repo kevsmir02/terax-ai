@@ -10,7 +10,7 @@ Discovery only, enforced in two independent places:
 
 | Layer | Today |
 | --- | --- |
-| Code | `checkForUpdate` GETs the manifest endpoint with `fetch`; `requestDownload` requires approval and returns `not-implemented` (ticket #39). |
+| Code | In the Tauri runtime, `checkForUpdate` routes the manifest GET through the narrow `updater_fetch_manifest` Rust command (`src-tauri/src/modules/updater.rs`, backed by `ureq` on `tokio::task::spawn_blocking`) rather than webview `fetch`; `fetchImpl` injection remains supported for unit and fixture tests. `requestDownload` requires approval and returns `not-implemented` (ticket #39). |
 | Tauri capability | `src-tauri/capabilities/desktop.json` grants **no** `updater:` permission, so no window can call the plugin's `check`, `download`, `install` or `download_and_install` command. |
 
 The updater plugin is still initialized in `src-tauri/src/lib.rs`, and its blanket set
@@ -72,12 +72,23 @@ an unprovisioned trust root or a missing signing input.
 
 ## Check behavior
 
-`checkForUpdate` GETs only the manifest endpoint, with:
+`checkForUpdate` GETs only the manifest endpoint. In the Tauri runtime, the GET executes in
+`updater_fetch_manifest` (`src-tauri/src/modules/updater.rs`) instead of WebKitGTK `fetch` so
+cross-origin GitHub release asset redirects do not fail CORS checks. The Rust manifest fetch
+enforces:
 
-- an 8 s timeout per attempt (contract `check.timeoutMs`);
+- release-mode endpoint pinning to `releaseContract.json` (caller overrides are ignored in release
+  builds, and debug builds permit overrides only for `127.0.0.1`, `localhost`, or `[::1]`);
+- HTTPS-only schemes across all hops in release builds (redirect downgrades are refused);
+- at most 5 redirects and a 1 MiB response body cap;
+- an 8 s timeout per attempt (contract `check.timeoutMs`).
+
+TypeScript retains retry/backoff, manifest parsing, version comparison, minisign signature
+envelope verification, and package-tool handoff:
+
 - at most 3 attempts (contract `check.attempts`);
 - exponential backoff capped at 8 s, and `Retry-After` capped at 30 s;
-- no retry for payload, channel, target, signature or non-429 4xx failures.
+- no retry for `blocked`, payload, channel, target, signature or non-429 4xx failures.
 
 It settles into one of three outcomes:
 
@@ -85,7 +96,7 @@ It settles into one of three outcomes:
 | --- | --- |
 | `no-update` | The stable manifest is not newer than the running version. |
 | `available` | A newer stable release exists, its envelope passed inspection and an explicit verifier accepted it. |
-| `failed` | Check failed: `offline`, `timeout`, `rate-limited`, `server-error`, `bad-payload`, `unsupported-channel`, `unsupported-target`, `signature`, `no-endpoint`, `misconfigured`. |
+| `failed` | Check failed: `offline`, `blocked`, `timeout`, `rate-limited`, `server-error`, `bad-payload`, `unsupported-channel`, `unsupported-target`, `signature`, `no-endpoint`, `misconfigured`. |
 
 Artifact trust at discovery time checks structure, key identity, and the Ed25519 global
 signature: a valid minisign envelope, a trusted comment that names the announced version, a

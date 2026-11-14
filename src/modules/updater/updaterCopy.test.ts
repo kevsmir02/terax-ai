@@ -56,6 +56,7 @@ describe("updater copy", () => {
   it("distinguishes every check failure without claiming success", () => {
     const cases: { reason: CheckFailure["reason"]; match: RegExp }[] = [
       { reason: "offline", match: /offline|not reachable/i },
+      { reason: "blocked", match: /blocked/i },
       { reason: "timeout", match: /timed out/i },
       { reason: "rate-limited", match: /rate limit|slow down/i },
       { reason: "server-error", match: /release feed/i },
@@ -71,6 +72,22 @@ describe("updater copy", () => {
       expect(text).toMatch(match);
       expect(text).not.toMatch(/installed|restart to finish/i);
     }
+
+    const offlineSummary = checkSummary({
+      kind: "check-failed",
+      checkedAt: 1,
+      failure: failure("offline"),
+    });
+    const blockedSummary = checkSummary({
+      kind: "check-failed",
+      checkedAt: 1,
+      failure: failure("blocked"),
+    });
+    expect(offlineSummary.title).toContain("offline");
+    expect(blockedSummary.title).toContain("blocked");
+    expect(blockedSummary.title).not.toBe(offlineSummary.title);
+    expect(blockedSummary.detail).not.toBe(offlineSummary.detail);
+    expect(blockedSummary.detail).not.toMatch(/downloaded|installed/i);
   });
 
   it("reports the three discovery outcomes separately", () => {

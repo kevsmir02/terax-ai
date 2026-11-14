@@ -2,7 +2,11 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveContract } from "./contract";
-import { checkForUpdate } from "./checkForUpdate";
+import {
+  checkForUpdate,
+  ManifestTransportError,
+  type ManifestTransport,
+} from "./checkForUpdate";
 import { createReleaseVerifier } from "./releaseSignature";
 
 // Discovery is tested against isolated files served by an injected fetch. No test reaches
@@ -505,5 +509,102 @@ describe("checkForUpdate", () => {
     for (const { url } of calls) {
       expect(url).not.toMatch(/\.(deb|rpm|AppImage|pkg\.tar\.(gz|zst))($|\?)/i);
     }
+  });
+
+  it("supports an injected manifest transport and respects rate-limit retryAfter", async () => {
+    const transportCalls: { endpoint: string; timeoutMs: number }[] = [];
+    const sleep = vi.fn(async (_ms: number) => {});
+    let attempt = 0;
+    const transport: ManifestTransport = async (request) => {
+      transportCalls.push(request);
+      attempt += 1;
+      if (attempt === 1) {
+        return { status: 429, retryAfter: "2", body: "" };
+      }
+      return {
+        status: 200,
+        retryAfter: null,
+        body: fixture("stable.json"),
+      };
+    };
+
+    const outcome = await checkForUpdate({
+      ...baseOptions,
+      transport,
+      sleep,
+      verify: fixtureTrust,
+    });
+
+    expect(outcome.kind).toBe("available");
+    expect(transportCalls).toEqual([
+      { endpoint: ENDPOINT, timeoutMs: contract.check.timeoutMs },
+      { endpoint: ENDPOINT, timeoutMs: contract.check.timeoutMs },
+    ]);
+    expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([2000]);
+  });
+
+  it("classifies blocked transport failures without retrying as offline", async () => {
+    const sleep = vi.fn(async (_ms: number) => {});
+    const transport = vi.fn<ManifestTransport>(async () => {
+      throw new ManifestTransportError(
+        "blocked",
+        "TLS certificate verification failed",
+      );
+    });
+
+    const outcome = await checkForUpdate({
+      ...baseOptions,
+      transport,
+      sleep,
+      verify: fixtureTrust,
+    });
+
+    expect(outcome.kind).toBe("failed");
+    if (outcome.kind !== "failed") return;
+    expect(outcome.failure.reason).toBe("blocked");
+    expect(outcome.failure.retryable).toBe(false);
+    expect(outcome.failure.attempts).toBe(1);
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("classifies webview CORS/policy fetch failures as blocked", async () => {
+    const { calls, fetchImpl } = recordingFetch(() => {
+      throw new DOMException("blocked by CORS policy", "SecurityError");
+    });
+
+    const outcome = await checkForUpdate({
+      ...baseOptions,
+      fetchImpl,
+      sleep: noSleep,
+      verify: fixtureTrust,
+    });
+
+    expect(outcome.kind).toBe("failed");
+    if (outcome.kind !== "failed") return;
+    expect(outcome.failure.reason).toBe("blocked");
+    expect(outcome.failure.retryable).toBe(false);
+    expect(outcome.failure.attempts).toBe(1);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("uses globalThis.fetch by default even when Tauri globals exist unless a transport is injected", async () => {
+    const invoke = vi.fn();
+    vi.stubGlobal("isTauri", true);
+    vi.stubGlobal("__TAURI_INTERNALS__", { invoke });
+    const { calls, fetchImpl } = recordingFetch(() =>
+      jsonResponse(fixture("stable.json")),
+    );
+    vi.stubGlobal("fetch", fetchImpl);
+
+    const outcome = await checkForUpdate({
+      ...baseOptions,
+      sleep: noSleep,
+      verify: fixtureTrust,
+    });
+
+    expect(outcome.kind).toBe("available");
+    expect(invoke).not.toHaveBeenCalled();
+    expect(calls).toEqual([{ url: ENDPOINT, method: "GET" }]);
   });
 });

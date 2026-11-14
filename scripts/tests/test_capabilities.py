@@ -3,7 +3,8 @@
 Run with: `python3 -m unittest discover -s scripts/tests`
 
 Update discovery is the only update behaviour this build has: `src/modules/updater/checkForUpdate.ts`
-reads the release manifest with `fetch`, and `src/modules/updater/requestDownload.ts` returns
+reads only the release manifest via the narrow `updater_fetch_manifest` command (with `fetchImpl`
+injection in tests), and `src/modules/updater/requestDownload.ts` returns
 `not-implemented` because the gated download/privilege/install handoff is ticket #39. The Tauri
 updater plugin's blanket permission set (`updater:default`) expands to `allow-check`,
 `allow-download`, `allow-install` and `allow-download-and-install`, so granting it would let the
@@ -33,8 +34,8 @@ CAPABILITIES = REPO / "src-tauri/capabilities"
 CARGO_LOCK = REPO / "src-tauri/Cargo.lock"
 UPDATE_DOC = REPO / "docs/architecture/update-discovery.md"
 
-# Every updater command the plugin exposes to a webview. Discovery is a plain `fetch` in the
-# frontend, so this build needs none of them.
+# Every updater command the plugin exposes to a webview. Discovery uses the dedicated
+# `updater_fetch_manifest` command instead of `plugin-updater`, so this build needs none of them.
 UPDATER_COMMANDS = ("check", "download", "install", "download_and_install")
 UPDATER_PERMISSION = re.compile(r"^updater:")
 # The process plugin is `allow-exit` + `allow-restart`; nothing here calls it.
@@ -115,8 +116,9 @@ class UpdateCapabilityTest(unittest.TestCase):
         self.assertEqual(
             granted,
             [],
-            "this build discovers updates with `fetch` and has no gated download/install path "
-            "(ticket #39), so no window may call an updater command: " + ", ".join(granted),
+            "this build discovers updates via the bounded `updater_fetch_manifest` command "
+            "and has no gated download/install path (ticket #39), so no window may call an "
+            "updater command: " + ", ".join(granted),
         )
 
     def test_the_blanket_updater_set_is_the_install_grant_this_build_refuses(self) -> None:

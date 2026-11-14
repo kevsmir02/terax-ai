@@ -23,6 +23,7 @@ import {
   type SearchInlineHandle,
   type SearchTarget,
 } from "./SearchInline";
+import { ViewLauncherMenu } from "./ViewLauncherMenu";
 
 type Props = {
   tabs: Tab[];
@@ -164,11 +165,6 @@ export function Header({
           activeId={activeId}
           onSelect={onSelect}
           onNew={onNew}
-          onNewBlock={onNewBlock}
-          onNewPreview={onNewPreview}
-          onNewEditor={onNewEditor}
-          onNewGitGraph={onNewGitGraph}
-          onLaunchAgents={onLaunchAgents}
           onClose={onClose}
           onCloseTabsToRight={onCloseTabsToRight}
           onCloseOtherTabs={onCloseOtherTabs}
@@ -180,6 +176,14 @@ export function Header({
         />
         <div data-tauri-drag-region className="h-full min-w-2 flex-1" />
       </div>
+
+      <ViewLauncherMenu
+        onNewBlock={onNewBlock}
+        onNewPreview={onNewPreview}
+        onNewEditor={onNewEditor}
+        onNewGitGraph={onNewGitGraph}
+        onLaunchAgents={onLaunchAgents}
+      />
 
       <SearchInline ref={searchRef} target={searchTarget} compact={compact} />
 

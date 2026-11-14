@@ -2,7 +2,9 @@ pub mod modules;
 
 #[cfg(target_os = "macos")]
 use modules::app_menu;
-use modules::{agent, control, fs, git, history, pty, recovery, shell, vibrancy, workspace};
+use modules::{
+    agent, control, fs, git, history, pty, recovery, shell, updater, vibrancy, workspace,
+};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
@@ -399,6 +401,7 @@ pub fn run() {
             recovery::recovery_remove,
             recovery::recovery_usage,
             recovery::recovery_location,
+            updater::updater_fetch_manifest,
             #[cfg(feature = "bench")]
             modules::bench::bench_config,
             #[cfg(feature = "bench")]
