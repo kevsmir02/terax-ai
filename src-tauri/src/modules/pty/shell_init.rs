@@ -19,7 +19,7 @@ const ZSHRC_SCRIPT: &str = include_str!("scripts/zshrc.zsh");
 #[cfg(windows)]
 const FISH_INIT_SCRIPT: &str = include_str!("scripts/init.fish");
 const FISH_REINSTALL_PROMPT: &str =
-    "functions -q __terax_install_prompt; and __terax_install_prompt";
+    "functions -q __terax_install_prompt; and __terax_install_prompt; functions -q __terax_enforce_space_isolation; and __terax_enforce_space_isolation";
 
 #[cfg(windows)]
 fn bashrc_script() -> &'static str {
@@ -186,6 +186,29 @@ fn ensure_utf8_locale(cmd: &mut CommandBuilder) {
     cmd.env("LANG", fallback);
 }
 
+fn is_valid_space_override_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return false;
+    }
+    if !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+        return false;
+    }
+    if matches!(
+        key,
+        "HOME" | "PATH" | "ZDOTDIR" | "TERM" | "COLORTERM" | "CLAUDE_CONFIG_DIR"
+    ) || key.starts_with("XDG_")
+    {
+        return false;
+    }
+    let own_prefix = format!("{}_", identity::env_prefix());
+    let upstream_prefix = format!("{}_", identity::upstream().env_prefix);
+    !key.starts_with(&own_prefix) && !key.starts_with(&upstream_prefix)
+}
+
 pub(super) fn apply_common(
     cmd: &mut CommandBuilder,
     cwd: Option<String>,
@@ -218,9 +241,28 @@ pub(super) fn apply_common(
     if let Some(profile) = isolated {
         cmd.env("CLAUDE_CONFIG_DIR", &profile.claude_config_dir);
         cmd.env(identity::env("SPACE_SHIM_DIR"), &profile.shim_dir);
+        for key in crate::modules::space_profile::SCRUBBED_PROVIDER_ENV_KEYS {
+            cmd.env_remove(key);
+        }
+        for (key, value) in &profile.env_overrides {
+            if is_valid_space_override_key(key) {
+                cmd.env(key, value);
+            }
+        }
+        let preserved: Vec<&str> = crate::modules::space_profile::SCRUBBED_PROVIDER_ENV_KEYS
+            .iter()
+            .copied()
+            .filter(|key| profile.env_overrides.contains_key(*key))
+            .collect();
+        if preserved.is_empty() {
+            cmd.env_remove(identity::env("SPACE_ENV_OVERRIDE_KEYS"));
+        } else {
+            cmd.env(identity::env("SPACE_ENV_OVERRIDE_KEYS"), preserved.join(","));
+        }
         prepend_dirs.push(profile.shim_dir.clone());
     } else {
         cmd.env_remove(identity::env("SPACE_SHIM_DIR"));
+        cmd.env_remove(identity::env("SPACE_ENV_OVERRIDE_KEYS"));
     }
     if let Some(control) = control {
         cmd.env(identity::env("CONTROL_ADDR"), &control.address);
@@ -230,15 +272,21 @@ pub(super) fn apply_common(
             cmd.env(identity::env("CLI"), path);
         }
         if let Some(bin_dir) = &control.cli_bin_dir {
+            cmd.env(identity::env("CONTROL_BIN_DIR"), bin_dir);
             prepend_dirs.push(bin_dir.clone());
+        } else {
+            cmd.env_remove(identity::env("CONTROL_BIN_DIR"));
         }
+    } else {
+        cmd.env_remove(identity::env("CONTROL_BIN_DIR"));
     }
     if !prepend_dirs.is_empty() {
-        let paths = prepend_dirs.into_iter().chain(
+        let paths = prepend_dirs.iter().cloned().chain(
             clean_path
                 .as_deref()
                 .into_iter()
-                .flat_map(std::env::split_paths),
+                .flat_map(std::env::split_paths)
+                .filter(|path| !prepend_dirs.contains(path)),
         );
         if let Ok(path) = std::env::join_paths(paths) {
             cmd.env("PATH", path);
@@ -504,14 +552,20 @@ mod unix {
     }
 
     fn prepare_fish_conf_d() -> Result<(), String> {
+        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
+            return prepare_fish_conf_d_at(&PathBuf::from(xdg).join("fish").join("conf.d"));
+        }
         let home = dirs::home_dir().ok_or_else(|| "could not resolve home dir".to_string())?;
         prepare_fish_conf_d_in(&home)
     }
 
     /// Our file inside fish's shared `conf.d`; upstream's `terax.fish` sits next to it.
     fn prepare_fish_conf_d_in(home: &Path) -> Result<(), String> {
-        let dir = home.join(".config").join("fish").join("conf.d");
-        fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        prepare_fish_conf_d_at(&home.join(".config").join("fish").join("conf.d"))
+    }
+
+    fn prepare_fish_conf_d_at(dir: &Path) -> Result<(), String> {
+        fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
         write_if_changed(
             &dir.join(format!("{}.fish", identity::namespace())),
             FISH_INIT,
@@ -691,6 +745,153 @@ mod unix {
                     "-C".to_string(),
                     super::super::FISH_REINSTALL_PROMPT.to_string(),
                 ]
+            );
+        }
+
+        #[test]
+        fn non_integrated_fallback_shell_retains_spawn_path_and_scrubs_ambient_provider_keys() {
+            let mut cmd = CommandBuilder::new("/bin/tcsh");
+            cmd.env("ANTHROPIC_API_KEY", "sk-ant-ambient-fallback");
+            cmd.env("OPENAI_API_KEY", "sk-openai-ambient-fallback");
+            cmd.env("OPENCODE_API_KEY", "sk-opencode-ambient-fallback");
+            cmd.env("GEMINI_API_KEY", "AIzaAmbientFallback");
+            let isolated = crate::modules::space_profile::IsolatedProfileEnv {
+                space_dir: PathBuf::from("/tmp/spaces/sp-fallback"),
+                shim_dir: PathBuf::from("/tmp/spaces/sp-fallback/bin"),
+                claude_config_dir: PathBuf::from("/tmp/spaces/sp-fallback/claude"),
+                env_overrides: Default::default(),
+            };
+            let control = crate::modules::control::ShellControlEnv {
+                address: "127.0.0.1:4321".into(),
+                token: "tok".into(),
+                pane_id: 9,
+                cli_path: Some("/app/codr-cli".into()),
+                cli_bin_dir: Some(PathBuf::from("/app/control-bin")),
+            };
+
+            super::super::apply_common(&mut cmd, None, false, Some(&control), Some(&isolated));
+            apply_shell_init(&mut cmd, &Shell::Other, "/bin/tcsh");
+
+            let argv: Vec<_> = cmd
+                .get_argv()
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(argv, vec!["/bin/tcsh".to_string()]);
+            let path_head: Vec<_> = cmd
+                .get_env("PATH")
+                .map(|p| std::env::split_paths(p).take(2).collect())
+                .unwrap_or_default();
+            assert_eq!(
+                path_head,
+                vec![
+                    PathBuf::from("/tmp/spaces/sp-fallback/bin"),
+                    PathBuf::from("/app/control-bin"),
+                ]
+            );
+            for key in [
+                "ANTHROPIC_API_KEY",
+                "OPENAI_API_KEY",
+                "OPENCODE_API_KEY",
+                "GEMINI_API_KEY",
+            ] {
+                assert_eq!(cmd.get_env(key), None, "{key} must be scrubbed");
+            }
+        }
+
+        #[test]
+        fn real_non_integrated_sh_pty_enforces_spawn_path_and_scrubs_ambient_keys() {
+            use portable_pty::{native_pty_system, PtySize};
+            use std::io::Read;
+            use std::os::unix::fs::PermissionsExt;
+
+            let tmp = tempfile::tempdir().unwrap();
+            let shim_dir = tmp.path().join("space").join("bin");
+            let ctrl_dir = tmp.path().join("ctrl").join("bin");
+            let claude_dir = tmp.path().join("space").join("claude");
+            std::fs::create_dir_all(&shim_dir).unwrap();
+            std::fs::create_dir_all(&ctrl_dir).unwrap();
+            std::fs::create_dir_all(&claude_dir).unwrap();
+
+            for (path, body) in [
+                (shim_dir.join("opencode"), "#!/bin/sh\necho SHIM\n"),
+                (ctrl_dir.join("terax"), "#!/bin/sh\necho CTRL\n"),
+            ] {
+                std::fs::write(&path, body).unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+
+            let run_probe = |overrides: std::collections::BTreeMap<String, String>| -> String {
+                let mut cmd = CommandBuilder::new("/bin/sh");
+                cmd.env("ANTHROPIC_API_KEY", "sk-ant-parent-leak");
+                cmd.env("OPENAI_API_KEY", "sk-openai-parent-leak");
+                cmd.env("OPENCODE_API_KEY", "sk-opencode-parent-leak");
+                cmd.env("GEMINI_API_KEY", "AIzaParentLeak");
+
+                let isolated = crate::modules::space_profile::IsolatedProfileEnv {
+                    space_dir: tmp.path().join("space"),
+                    shim_dir: shim_dir.clone(),
+                    claude_config_dir: claude_dir.clone(),
+                    env_overrides: overrides,
+                };
+                let control = crate::modules::control::ShellControlEnv {
+                    address: "127.0.0.1:4321".into(),
+                    token: "tok".into(),
+                    pane_id: 11,
+                    cli_path: Some("/app/codr-cli".into()),
+                    cli_bin_dir: Some(ctrl_dir.clone()),
+                };
+
+                super::super::apply_common(&mut cmd, None, false, Some(&control), Some(&isolated));
+                apply_shell_init(&mut cmd, &Shell::Other, "/bin/sh");
+                cmd.arg("-c");
+                cmd.arg(
+                    "printf 'PROBE:%s|%s|%s|%s|%s|%s|%s|%s\\n' \
+                     \"$(command -v opencode)\" \"$(command -v terax)\" \
+                     \"${ANTHROPIC_API_KEY-UNSET}\" \"${OPENAI_API_KEY-UNSET}\" \
+                     \"${OPENCODE_API_KEY-UNSET}\" \"${GEMINI_API_KEY-UNSET}\" \
+                     \"${CLAUDE_CONFIG_DIR-UNSET}\" \"${HOME-UNSET}\"",
+                );
+
+                let pair = native_pty_system().openpty(PtySize::default()).unwrap();
+                let mut child = pair.slave.spawn_command(cmd).unwrap();
+                drop(pair.slave);
+                let mut reader = pair.master.try_clone_reader().unwrap();
+                drop(pair.master);
+                let mut output = String::new();
+                let _ = reader.read_to_string(&mut output);
+                let status = child.wait().unwrap();
+                assert!(status.success(), "sh exited with {status:?}: {output}");
+                output
+            };
+
+            let scrubbed_out = run_probe(std::collections::BTreeMap::new());
+            let expected_home = std::env::var("HOME").unwrap_or_else(|_| "UNSET".to_string());
+            let expected_prefix = format!(
+                "PROBE:{}|{}|UNSET|UNSET|UNSET|UNSET|{}|{}",
+                shim_dir.join("opencode").display(),
+                ctrl_dir.join("terax").display(),
+                claude_dir.display(),
+                expected_home
+            );
+            assert!(
+                scrubbed_out.contains(&expected_prefix),
+                "unexpected fallback sh output: {scrubbed_out:?}"
+            );
+
+            let mut overrides = std::collections::BTreeMap::new();
+            overrides.insert("OPENAI_API_KEY".to_string(), "sk-space-openai".to_string());
+            let override_out = run_probe(overrides);
+            let expected_ovr = format!(
+                "PROBE:{}|{}|UNSET|sk-space-openai|UNSET|UNSET|{}|{}",
+                shim_dir.join("opencode").display(),
+                ctrl_dir.join("terax").display(),
+                claude_dir.display(),
+                expected_home
+            );
+            assert!(
+                override_out.contains(&expected_ovr),
+                "unexpected fallback override sh output: {override_out:?}"
             );
         }
     }
@@ -1488,6 +1689,7 @@ mod tests {
             space_dir: std::path::PathBuf::from("/tmp/spaces/sp-iso"),
             shim_dir: std::path::PathBuf::from("/tmp/spaces/sp-iso/bin"),
             claude_config_dir: std::path::PathBuf::from("/tmp/spaces/sp-iso/claude"),
+            env_overrides: Default::default(),
         };
         let control = ShellControlEnv {
             address: "127.0.0.1:1234".into(),
@@ -1529,8 +1731,168 @@ mod tests {
     fn default_profile_clears_inherited_space_shim_dir() {
         let mut command = CommandBuilder::new("shell");
         command.env(identity::env("SPACE_SHIM_DIR"), "/stale/shim");
+        command.env(identity::env("SPACE_ENV_OVERRIDE_KEYS"), "ANTHROPIC_API_KEY");
+        command.env(identity::env("CONTROL_BIN_DIR"), "/stale/ctrl");
+        command.env("ANTHROPIC_API_KEY", "sk-ant-host-default");
         apply_common(&mut command, None, false, None, None);
         assert_eq!(command.get_env(identity::env("SPACE_SHIM_DIR")), None);
+        assert_eq!(
+            command.get_env(identity::env("SPACE_ENV_OVERRIDE_KEYS")),
+            None
+        );
+        assert_eq!(command.get_env(identity::env("CONTROL_BIN_DIR")), None);
         assert_eq!(command.get_env("CLAUDE_CONFIG_DIR"), None);
+        assert_eq!(
+            command.get_env("ANTHROPIC_API_KEY"),
+            Some(OsStr::new("sk-ant-host-default"))
+        );
+    }
+
+    #[test]
+    fn isolated_profile_scrubs_ambient_provider_keys_and_sets_control_bin_dir() {
+        let mut command = CommandBuilder::new("shell");
+        for (key, value) in [
+            ("ANTHROPIC_API_KEY", "sk-ant-ambient"),
+            ("OPENAI_API_KEY", "sk-openai-ambient"),
+            ("OPENCODE_API_KEY", "sk-opencode-ambient"),
+            ("GEMINI_API_KEY", "AIzaAmbient"),
+        ] {
+            command.env(key, value);
+        }
+        command.env(identity::env("SPACE_ENV_OVERRIDE_KEYS"), "OPENAI_API_KEY");
+        let isolated = crate::modules::space_profile::IsolatedProfileEnv {
+            space_dir: std::path::PathBuf::from("/tmp/spaces/sp-iso"),
+            shim_dir: std::path::PathBuf::from("/tmp/spaces/sp-iso/bin"),
+            claude_config_dir: std::path::PathBuf::from("/tmp/spaces/sp-iso/claude"),
+            env_overrides: Default::default(),
+        };
+        let control = ShellControlEnv {
+            address: "127.0.0.1:1234".into(),
+            token: "secret".into(),
+            pane_id: 7,
+            cli_path: Some("/app/terax-cli".into()),
+            cli_bin_dir: Some(std::path::PathBuf::from("/app/bin")),
+        };
+
+        apply_common(&mut command, None, false, Some(&control), Some(&isolated));
+
+        for key in [
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "OPENCODE_API_KEY",
+            "GEMINI_API_KEY",
+        ] {
+            assert_eq!(command.get_env(key), None, "{key} should be scrubbed");
+        }
+        assert_eq!(
+            command.get_env(identity::env("SPACE_ENV_OVERRIDE_KEYS")),
+            None
+        );
+        assert_eq!(
+            command.get_env(identity::env("CONTROL_BIN_DIR")),
+            Some(OsStr::new("/app/bin"))
+        );
+    }
+
+    #[test]
+    fn isolated_profile_preserves_explicit_space_override_keys_and_never_logs_secret_values() {
+        let mut command = CommandBuilder::new("shell");
+        for (key, value) in [
+            ("ANTHROPIC_API_KEY", "sk-ant-ambient"),
+            ("OPENAI_API_KEY", "sk-openai-ambient"),
+            ("OPENCODE_API_KEY", "sk-opencode-ambient"),
+            ("GEMINI_API_KEY", "AIzaAmbient"),
+        ] {
+            command.env(key, value);
+        }
+        let mut env_overrides = std::collections::BTreeMap::new();
+        env_overrides.insert(
+            "ANTHROPIC_API_KEY".to_string(),
+            "override-anthropic-token-999".to_string(),
+        );
+        env_overrides.insert(
+            "GEMINI_API_KEY".to_string(),
+            "override-gemini-token-999".to_string(),
+        );
+        env_overrides.insert("MY_SPACE_FLAG".to_string(), "enabled".to_string());
+        env_overrides.insert("PATH".to_string(), "/evil/bin".to_string());
+        env_overrides.insert("HOME".to_string(), "/evil/home".to_string());
+        env_overrides.insert("XDG_CONFIG_HOME".to_string(), "/evil/xdg".to_string());
+        env_overrides.insert(
+            identity::env("SPACE_SHIM_DIR"),
+            "/evil/shim".to_string(),
+        );
+        env_overrides.insert("INVALID=NAME".to_string(), "bad".to_string());
+
+        let isolated = crate::modules::space_profile::IsolatedProfileEnv {
+            space_dir: std::path::PathBuf::from("/tmp/spaces/sp-iso"),
+            shim_dir: std::path::PathBuf::from("/tmp/spaces/sp-iso/bin"),
+            claude_config_dir: std::path::PathBuf::from("/tmp/spaces/sp-iso/claude"),
+            env_overrides,
+        };
+        let debug_repr = format!("{isolated:?}");
+        assert!(debug_repr.contains("ANTHROPIC_API_KEY"));
+        assert!(!debug_repr.contains("override-anthropic-token-999"));
+        assert!(!debug_repr.contains("override-gemini-token-999"));
+
+        let control = ShellControlEnv {
+            address: "127.0.0.1:1234".into(),
+            token: "secret".into(),
+            pane_id: 7,
+            cli_path: Some("/app/terax-cli".into()),
+            cli_bin_dir: Some(std::path::PathBuf::from("/app/bin")),
+        };
+
+        apply_common(&mut command, None, false, Some(&control), Some(&isolated));
+
+        assert_eq!(
+            command.get_env("ANTHROPIC_API_KEY"),
+            Some(OsStr::new("override-anthropic-token-999"))
+        );
+        assert_eq!(
+            command.get_env("GEMINI_API_KEY"),
+            Some(OsStr::new("override-gemini-token-999"))
+        );
+        assert_eq!(command.get_env("OPENAI_API_KEY"), None);
+        assert_eq!(command.get_env("OPENCODE_API_KEY"), None);
+        assert_eq!(
+            command.get_env("MY_SPACE_FLAG"),
+            Some(OsStr::new("enabled"))
+        );
+        assert_eq!(
+            command.get_env(identity::env("SPACE_ENV_OVERRIDE_KEYS")),
+            Some(OsStr::new("ANTHROPIC_API_KEY,GEMINI_API_KEY"))
+        );
+        let expected_home = std::env::var_os("HOME");
+        let expected_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        assert_eq!(command.get_env("HOME"), expected_home.as_deref());
+        assert_eq!(command.get_env("XDG_CONFIG_HOME"), expected_xdg.as_deref());
+        assert_ne!(command.get_env("HOME"), Some(OsStr::new("/evil/home")));
+        assert_ne!(command.get_env("XDG_CONFIG_HOME"), Some(OsStr::new("/evil/xdg")));
+        assert_eq!(command.get_env("INVALID=NAME"), None);
+        assert_eq!(
+            command.get_env(identity::env("SPACE_SHIM_DIR")),
+            Some(OsStr::new("/tmp/spaces/sp-iso/bin"))
+        );
+        let first_path = command
+            .get_env("PATH")
+            .and_then(|p| std::env::split_paths(p).next())
+            .unwrap();
+        assert_eq!(first_path, std::path::PathBuf::from("/tmp/spaces/sp-iso/bin"));
+    }
+
+    #[test]
+    fn secret_payload_detector_catches_all_four_scrubbed_provider_key_assignments() {
+        for sample in [
+            "ANTHROPIC_API_KEY=customvalue1234",
+            "OPENAI_API_KEY=customvalue1234",
+            "OPENCODE_API_KEY=customvalue1234",
+            "GEMINI_API_KEY=customvalue1234",
+        ] {
+            assert!(
+                crate::modules::space_isolation::contains_secret_payload(sample),
+                "{sample} must be flagged as secret payload"
+            );
+        }
     }
 }

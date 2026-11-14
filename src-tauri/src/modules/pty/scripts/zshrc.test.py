@@ -489,4 +489,128 @@ s.run(probe)
 check("the user's .zlogin runs", s.result("LOADED") == "from-zlogin", s.result("LOADED"))
 s.close()
 
+# Space isolation: post-rc shim PATH precedence, ambient provider key scrubbing,
+# .zlogin enforcement, nested subshells, override preservation, and intact HOME/XDG.
+def write_exec(path, body):
+    with open(path, "w") as handle:
+        handle.write(body)
+    os.chmod(path, 0o755)
+
+with tempfile.TemporaryDirectory() as space_tmp:
+    shim_dir = os.path.join(space_tmp, "spaces", "sp-1", "bin")
+    ctrl_dir = os.path.join(space_tmp, "ctrl", "bin")
+    claude_dir = os.path.join(space_tmp, "spaces", "sp-1", "claude")
+    xdg_cfg = os.path.join(space_tmp, "xdg", "config")
+    for directory in (shim_dir, ctrl_dir, claude_dir, xdg_cfg):
+        os.makedirs(directory, exist_ok=True)
+    write_exec(os.path.join(shim_dir, "opencode"), "#!/bin/sh\necho SHIM_OPENCODE\n")
+    write_exec(os.path.join(ctrl_dir, "terax"), "#!/bin/sh\necho CTRL_TERAX\n")
+
+    rc_setup = (
+        'mkdir -p "$HOME/.local/bin" "$HOME/.opencode/bin"\n'
+        'printf "#!/bin/sh\\necho HOST_OPENCODE\\n" > "$HOME/.opencode/bin/opencode"\n'
+        'printf "#!/bin/sh\\necho HOST_TERAX\\n" > "$HOME/.local/bin/terax"\n'
+        'chmod 755 "$HOME/.opencode/bin/opencode" "$HOME/.local/bin/terax"\n'
+    )
+    isolated_files = {
+        ".zshenv": rc_setup + 'export OPENAI_API_KEY="sk-openai-zshenv-leak"\n',
+        ".zprofile": 'export PATH="$HOME/.local/bin:$PATH"\n',
+        ".zshrc": (
+            "PS1='PROMPT> '\n"
+            "setopt ksh_arrays no_unset\n"
+            'export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$PATH"\n'
+            'export ANTHROPIC_API_KEY="sk-ant-zshrc-leak"\n'
+            'export OPENAI_API_KEY="sk-openai-zshrc-leak"\n'
+            'export OPENCODE_API_KEY="sk-opencode-zshrc-leak"\n'
+            'export GEMINI_API_KEY="AIzaZshrcLeak123"\n'
+        ),
+        ".zlogin": (
+            'export PATH="$HOME/.opencode/bin:$PATH"\n'
+            'export GEMINI_API_KEY="AIzaZloginLeak999"\n'
+            'export ANTHROPIC_API_KEY="sk-ant-zlogin-leak"\n'
+        ),
+    }
+    base_env = {
+        "PATH": f"{shim_dir}:{ctrl_dir}:{os.environ.get('PATH', '/usr/bin:/bin')}",
+        "CODR_SPACE_SHIM_DIR": shim_dir,
+        "CODR_CONTROL_BIN_DIR": ctrl_dir,
+        "CLAUDE_CONFIG_DIR": claude_dir,
+        "XDG_CONFIG_HOME": xdg_cfg,
+    }
+
+    s = Session(isolated_files, env=base_env)
+    s.run(
+        'print -r -- "RESULT:ISO_OC=$(whence -p opencode):" '
+        '"RESULT:ISO_TX=$(whence -p terax):" '
+        '"RESULT:ISO_ANT=${ANTHROPIC_API_KEY-UNSET}:" '
+        '"RESULT:ISO_OAI=${OPENAI_API_KEY-UNSET}:" '
+        '"RESULT:ISO_OPC=${OPENCODE_API_KEY-UNSET}:" '
+        '"RESULT:ISO_GEM=${GEMINI_API_KEY-UNSET}:" '
+        '"RESULT:ISO_HOME=$HOME:" '
+        '"RESULT:ISO_XCFG=$XDG_CONFIG_HOME:" '
+        '"RESULT:ISO_CLAUDE=${CLAUDE_CONFIG_DIR-UNSET}:"'
+    )
+    check("zsh isolated: opencode resolves to Space shim ahead of dotfiles/.zlogin", s.result("ISO_OC") == os.path.join(shim_dir, "opencode"), s.result("ISO_OC"))
+    check("zsh isolated: control terax stays ahead of ~/.local/bin", s.result("ISO_TX") == os.path.join(ctrl_dir, "terax"), s.result("ISO_TX"))
+    check("zsh isolated: ANTHROPIC_API_KEY is scrubbed after .zshrc/.zlogin", s.result("ISO_ANT") == "UNSET", s.result("ISO_ANT"))
+    check("zsh isolated: OPENAI_API_KEY is scrubbed", s.result("ISO_OAI") == "UNSET", s.result("ISO_OAI"))
+    check("zsh isolated: OPENCODE_API_KEY is scrubbed", s.result("ISO_OPC") == "UNSET", s.result("ISO_OPC"))
+    check("zsh isolated: GEMINI_API_KEY is scrubbed after .zlogin", s.result("ISO_GEM") == "UNSET", s.result("ISO_GEM"))
+    check("zsh isolated: host HOME remains unchanged", s.result("ISO_HOME") == s.home, s.result("ISO_HOME"))
+    check("zsh isolated: host XDG_CONFIG_HOME remains unchanged", s.result("ISO_XCFG") == xdg_cfg, s.result("ISO_XCFG"))
+    check("zsh isolated: CLAUDE_CONFIG_DIR stays scoped to Space", s.result("ISO_CLAUDE") == claude_dir, s.result("ISO_CLAUDE"))
+
+    s.run('sh -c \'printf "RESULT:SH_OC=%s:\\nRESULT:SH_OAI=%s:\\nRESULT:SH_CLAUDE=%s:\\n" "$(command -v opencode)" "${OPENAI_API_KEY-UNSET}" "${CLAUDE_CONFIG_DIR-UNSET}"\'')
+    check("zsh isolated: child sh inherits Space shim opencode", s.result("SH_OC") == os.path.join(shim_dir, "opencode"), s.result("SH_OC"))
+    check("zsh isolated: child sh inherits scrubbed OPENAI_API_KEY", s.result("SH_OAI") == "UNSET", s.result("SH_OAI"))
+    check("zsh isolated: child sh inherits CLAUDE_CONFIG_DIR", s.result("SH_CLAUDE") == claude_dir, s.result("SH_CLAUDE"))
+
+    s.run("zsh -l")
+    s.run(
+        'print -r -- "RESULT:NEST_OC=$(whence -p opencode):" '
+        '"RESULT:NEST_ANT=${ANTHROPIC_API_KEY-UNSET}:" '
+        '"RESULT:NEST_GEM=${GEMINI_API_KEY-UNSET}:"'
+    )
+    s.run("exit")
+    check("zsh isolated: nested zsh -l enforces shim opencode after its rc/.zlogin", s.result("NEST_OC") == os.path.join(shim_dir, "opencode"), s.result("NEST_OC"))
+    check("zsh isolated: nested zsh -l scrubs ANTHROPIC_API_KEY", s.result("NEST_ANT") == "UNSET", s.result("NEST_ANT"))
+    check("zsh isolated: nested zsh -l scrubs GEMINI_API_KEY", s.result("NEST_GEM") == "UNSET", s.result("NEST_GEM"))
+
+    stream = s.out.decode("utf-8", "replace")
+    for leaked in ("sk-openai-zshenv-leak", "sk-ant-zshrc-leak", "sk-openai-zshrc-leak", "sk-opencode-zshrc-leak", "AIzaZshrcLeak123", "AIzaZloginLeak999", "sk-ant-zlogin-leak"):
+        check(f"zsh isolated: no leaked secret {leaked}", leaked not in stream)
+    s.close()
+
+    override_files = dict(isolated_files)
+    override_files[".zshrc"] = (
+        "PS1='PROMPT> '\n"
+        'export PATH="$HOME/.opencode/bin:$PATH"\n'
+        'export OPENAI_API_KEY="sk-openai-zshrc-leak"\n'
+        'export OPENCODE_API_KEY="sk-opencode-zshrc-leak"\n'
+        'export GEMINI_API_KEY="AIzaZshrcLeak123"\n'
+    )
+    override_files[".zlogin"] = 'export PATH="$HOME/.opencode/bin:$PATH"\n'
+    override_env = dict(base_env)
+    override_env["ANTHROPIC_API_KEY"] = "sk-ant-space-override"
+    override_env["CODR_SPACE_ENV_OVERRIDE_KEYS"] = "ANTHROPIC_API_KEY"
+    s = Session(override_files, env=override_env)
+    s.run(
+        'print -r -- "RESULT:OVR_OC=$(whence -p opencode):" '
+        '"RESULT:OVR_ANT=${ANTHROPIC_API_KEY-UNSET}:" '
+        '"RESULT:OVR_OAI=${OPENAI_API_KEY-UNSET}:" '
+        '"RESULT:OVR_OPC=${OPENCODE_API_KEY-UNSET}:" '
+        '"RESULT:OVR_GEM=${GEMINI_API_KEY-UNSET}:"'
+    )
+    check("zsh override: opencode resolves to Space shim", s.result("OVR_OC") == os.path.join(shim_dir, "opencode"), s.result("OVR_OC"))
+    check("zsh override: explicit ANTHROPIC_API_KEY override survives", s.result("OVR_ANT") == "sk-ant-space-override", s.result("OVR_ANT"))
+    check("zsh override: non-overridden keys scrub cleanly", (s.result("OVR_OAI"), s.result("OVR_OPC"), s.result("OVR_GEM")) == ("UNSET", "UNSET", "UNSET"))
+    s.close()
+
+    default_env = {"PATH": f"{ctrl_dir}:{os.environ.get('PATH', '/usr/bin:/bin')}", "CODR_CONTROL_BIN_DIR": ctrl_dir}
+    s = Session(isolated_files, env=default_env)
+    s.run('print -r -- "RESULT:DEF_OC=$(whence -p opencode):" "RESULT:DEF_ANT=${ANTHROPIC_API_KEY-UNSET}:"')
+    check("zsh default: dotfile opencode PATH stays active", s.result("DEF_OC") == os.path.join(s.home, ".opencode", "bin", "opencode"), s.result("DEF_OC"))
+    check("zsh default: dotfile ANTHROPIC_API_KEY is left alone", s.result("DEF_ANT") == "sk-ant-zlogin-leak", s.result("DEF_ANT"))
+    s.close()
+
 sys.exit(1 if failures else 0)

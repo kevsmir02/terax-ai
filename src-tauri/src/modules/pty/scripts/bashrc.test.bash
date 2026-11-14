@@ -274,4 +274,146 @@ a="${result#A=}"; a="${a%% *}"
 after="${result##*AFTER=}"
 check "every prompt of a PS1-rebuilding framework ends with the prompt end after its text" 1 "$([ "$a" -ge 3 ] && [ "$after" -ge 3 ] && echo 1 || echo "$result")"
 
+space_isolation_pty() {
+  local mode="$1"
+  local tmp
+  tmp="$(mktemp -d)"
+  local home="$tmp/home"
+  local shim_dir="$tmp/spaces/sp-1/bin"
+  local ctrl_dir="$tmp/ctrl/bin"
+  local claude_dir="$tmp/spaces/sp-1/claude"
+  local xdg_cfg="$tmp/xdg/config"
+  local xdg_data="$tmp/xdg/data"
+  local xdg_state="$tmp/xdg/state"
+  local xdg_cache="$tmp/xdg/cache"
+  mkdir -p "$home/.local/bin" "$home/.opencode/bin" "$shim_dir" "$ctrl_dir" "$claude_dir" \
+           "$xdg_cfg" "$xdg_data" "$xdg_state" "$xdg_cache"
+
+  cat > "$shim_dir/opencode" <<'SH'
+#!/bin/sh
+echo "SHIM_OPENCODE"
+SH
+  cat > "$home/.opencode/bin/opencode" <<'SH'
+#!/bin/sh
+echo "HOST_OPENCODE"
+SH
+  cat > "$ctrl_dir/terax" <<'SH'
+#!/bin/sh
+echo "CTRL_TERAX"
+SH
+  cat > "$home/.local/bin/terax" <<'SH'
+#!/bin/sh
+echo "HOST_TERAX"
+SH
+  chmod 755 "$shim_dir/opencode" "$home/.opencode/bin/opencode" "$ctrl_dir/terax" "$home/.local/bin/terax"
+
+  cat > "$home/.bash_profile" <<'RC'
+export PATH="$HOME/.local/bin:$PATH"
+export OPENAI_API_KEY="sk-openai-profile-leak"
+RC
+
+  cat > "$home/.bashrc" <<'RC'
+PS1='iso> '
+export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$PATH"
+export OPENAI_API_KEY="sk-openai-rc-leak"
+export OPENCODE_API_KEY="sk-opencode-rc-leak"
+export GEMINI_API_KEY="AIzaRcLeak123456"
+RC
+  if [ "$mode" = "isolated" ] || [ "$mode" = "default" ]; then
+    printf 'export ANTHROPIC_API_KEY="sk-ant-rc-leak"\n' >> "$home/.bashrc"
+  fi
+
+  python3 - "$rcfile" "$mode" "$tmp" "$home" "$shim_dir" "$ctrl_dir" "$claude_dir" \
+    "$xdg_cfg" "$xdg_data" "$xdg_state" "$xdg_cache" <<'PY'
+import os, pty, select, sys, time
+
+rcfile, mode, tmp, home, shim_dir, ctrl_dir, claude_dir, xdg_cfg, xdg_data, xdg_state, xdg_cache = sys.argv[1:12]
+
+env = os.environ.copy()
+for k in [
+    "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENCODE_API_KEY", "GEMINI_API_KEY",
+    "CODR_SPACE_SHIM_DIR", "CODR_SPACE_ENV_OVERRIDE_KEYS", "CODR_CONTROL_BIN_DIR",
+    "CLAUDE_CONFIG_DIR", "__CODR_HOOKS_LOADED",
+]:
+    env.pop(k, None)
+
+env["HOME"] = home
+env["XDG_CONFIG_HOME"] = xdg_cfg
+env["XDG_DATA_HOME"] = xdg_data
+env["XDG_STATE_HOME"] = xdg_state
+env["XDG_CACHE_HOME"] = xdg_cache
+env["CODR_TERMINAL"] = "1"
+env["CODR_CONTROL_BIN_DIR"] = ctrl_dir
+
+if mode in ("isolated", "override"):
+    env["CODR_SPACE_SHIM_DIR"] = shim_dir
+    env["CLAUDE_CONFIG_DIR"] = claude_dir
+    env["PATH"] = f"{shim_dir}:{ctrl_dir}:/usr/bin:/bin"
+    if mode == "override":
+        env["ANTHROPIC_API_KEY"] = "sk-ant-space-override"
+        env["CODR_SPACE_ENV_OVERRIDE_KEYS"] = "ANTHROPIC_API_KEY"
+else:
+    env["PATH"] = f"{ctrl_dir}:/usr/bin:/bin"
+
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvpe("bash", ["bash", "--rcfile", rcfile, "-i"], env)
+
+out = b""
+def drain(seconds):
+    global out
+    end = time.time() + seconds
+    while time.time() < end:
+        if select.select([fd], [], [], 0.1)[0]:
+            try:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    return
+                out += chunk
+            except OSError:
+                return
+
+drain(1.0)
+probe = "\n".join([
+    'printf "PROBE:OC=%s|TX=%s|ANT=%s|OAI=%s|OPC=%s|GEM=%s|HOME=%s|XCFG=%s|CLAUDE=%s|SHIM=%s\\n" '
+    '"$(command -v opencode)" "$(command -v terax)" '
+    '"${ANTHROPIC_API_KEY-UNSET}" "${OPENAI_API_KEY-UNSET}" "${OPENCODE_API_KEY-UNSET}" "${GEMINI_API_KEY-UNSET}" '
+    '"$HOME" "$XDG_CONFIG_HOME" "${CLAUDE_CONFIG_DIR-UNSET}" "${CODR_SPACE_SHIM_DIR-UNSET}"',
+    """sh -c 'printf "CHILD_SH:OC=%s|OAI=%s|CLAUDE=%s\\n" "$(command -v opencode)" "${OPENAI_API_KEY-UNSET}" "${CLAUDE_CONFIG_DIR-UNSET}"'""",
+    """bash -c 'printf "CHILD_BASH:OC=%s|ANT=%s|SHIM=%s\\n" "$(command -v opencode)" "${ANTHROPIC_API_KEY-UNSET}" "${CODR_SPACE_SHIM_DIR-UNSET}"'""",
+    """( printf 'SUBSHELL:OC=%s|GEM=%s\\n' "$(command -v opencode)" "${GEMINI_API_KEY-UNSET}" )""",
+    "exit",
+    "",
+])
+os.write(fd, probe.encode())
+drain(1.5)
+os.close(fd)
+os.waitpid(pid, 0)
+print(out.decode("utf-8", "replace"))
+PY
+  rm -rf "$tmp"
+}
+
+bash_iso_out="$(space_isolation_pty isolated)"
+expect_contains "bash isolated: opencode path uses /spaces/sp-1/bin/opencode" "/spaces/sp-1/bin/opencode|" "$bash_iso_out"
+expect_contains "bash isolated: control terax stays ahead of ~/.local/bin" "/ctrl/bin/terax|" "$bash_iso_out"
+expect_contains "bash isolated: all 4 ambient keys are scrubbed" "|ANT=UNSET|OAI=UNSET|OPC=UNSET|GEM=UNSET|" "$bash_iso_out"
+expect_contains "bash isolated: host HOME stays intact" "/home|XCFG=" "$bash_iso_out"
+expect_contains "bash isolated: host XDG_CONFIG_HOME stays intact" "/xdg/config|CLAUDE=" "$bash_iso_out"
+expect_contains "bash isolated: nested sh inherits shim, scrubbed keys, and claude dir" "/spaces/sp-1/bin/opencode|OAI=UNSET|CLAUDE=" "$bash_iso_out"
+expect_contains "bash isolated: nested bash -c inherits shim and scrubbed ANTHROPIC_API_KEY" "/spaces/sp-1/bin/opencode|ANT=UNSET|SHIM=" "$bash_iso_out"
+for leaked in sk-ant-rc-leak sk-openai-profile-leak sk-openai-rc-leak sk-opencode-rc-leak AIzaRcLeak123456; do
+  if printf '%s' "$bash_iso_out" | grep -Fq "$leaked"; then
+    failures=$((failures + 1))
+    printf 'FAIL bash isolated: leaked ambient secret pattern %s\n' "$leaked"
+  fi
+done
+
+bash_ovr_out="$(space_isolation_pty override)"
+expect_contains "bash override: explicit ANTHROPIC_API_KEY override survives while others scrub" "|ANT=sk-ant-space-override|OAI=UNSET|OPC=UNSET|GEM=UNSET|" "$bash_ovr_out"
+
+bash_def_out="$(space_isolation_pty default)"
+expect_contains "bash default: user dotfile PATH and ambient key are left alone" "/.opencode/bin/opencode|" "$bash_def_out"
+expect_contains "bash default: dotfile ANTHROPIC_API_KEY stays set in default mode" "|ANT=sk-ant-rc-leak|" "$bash_def_out"
+
 exit $((failures > 0))
