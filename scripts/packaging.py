@@ -18,6 +18,7 @@ are the packaged-app seam of the spec and stay explicit, unclaimed `notValidated
 
 from __future__ import annotations
 
+import bz2
 import gzip
 import hashlib
 import io
@@ -26,6 +27,7 @@ import lzma
 import platform
 import re
 import shutil
+import struct
 import subprocess
 import tarfile
 from dataclasses import dataclass
@@ -705,10 +707,53 @@ def extract_deb(path: Path, destination: Path) -> list[dict]:
     return describe_tree(destination)
 
 
+def _skip_rpm_header(data: bytes, offset: int, label: str) -> int:
+    if data[offset : offset + 4] != b"\x8e\xad\xe8\x01" or len(data) < offset + 16:
+        raise ValueError(f"missing RPM {label} header magic")
+    nindex, hsize = struct.unpack(">II", data[offset + 8 : offset + 16])
+    end = offset + 16 + nindex * 16 + hsize
+    if end > len(data):
+        raise ValueError(f"truncated RPM {label} header")
+    return end
+
+
+def rpm_cpio_payload(path: Path) -> bytes:
+    """Verify RPM digests and extract the uncompressed cpio payload without relying on rpm2cpio."""
+    _run(["rpm", "-K", "--nosignature", str(path)])
+    data = Path(path).read_bytes()
+    if len(data) < 96 or data[:4] != b"\xed\xab\xee\xdb":
+        raise ValueError(f"{path} is not an RPM archive")
+    sig_end = _skip_rpm_header(data, 96, "signature")
+    hdr_start = (sig_end + 7) & ~7
+    payload_start = _skip_rpm_header(data, hdr_start, "main")
+    compressed = data[payload_start:]
+    compressor = rpm_query(path, "-qp", "--queryformat", "%{PAYLOADCOMPRESSOR}").strip().lower()
+    if compressor in ("", "(none)", "none"):
+        return compressed
+    if compressor == "gzip":
+        return gzip.decompress(compressed)
+    if compressor in ("xz", "lzma"):
+        return lzma.decompress(compressed)
+    if compressor == "bzip2":
+        return bz2.decompress(compressed)
+    if compressor == "zstd":
+        return _run(["zstd", "-dc"], stdin=compressed)
+    raise ValueError(f"unsupported RPM payload compressor {compressor!r}")
+
+
 def extract_rpm(path: Path, destination: Path) -> list[dict]:
-    """Unpack an rpm payload with rpm2cpio+cpio (both available without root)."""
+    """Unpack an rpm payload without root, falling back when rpm 4.17 rpm2cpio exits 1."""
     destination.mkdir(parents=True, exist_ok=True)
-    payload = _run(["rpm2cpio", str(path)])
+    result = subprocess.run(
+        ["rpm2cpio", str(path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode == 0 and result.stdout:
+        payload = result.stdout
+    else:
+        payload = rpm_cpio_payload(path)
     subprocess.run(
         ["cpio", "-idm", "--quiet", "--no-absolute-filenames"],
         cwd=destination,

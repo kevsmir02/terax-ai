@@ -9,14 +9,18 @@ reader used to inspect the artifact works without `dpkg`. Artifact production it
 by `scripts/package-candidate/run.py` and must never be simulated here.
 """
 
+import gzip
 import io
 import json
+import struct
+import subprocess
 import sys
 import tarfile
 import tempfile
 import tomllib
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -420,6 +424,61 @@ class RpmDumpTest(unittest.TestCase):
         self.assertEqual(files[0]["mode"], "0755")
         self.assertEqual(files[0]["kind"], "binary")
         self.assertEqual(files[1]["kind"], "license")
+
+
+class RpmPayloadExtractionTest(unittest.TestCase):
+    """Verify the fallback RPM payload reader and cpio handoff when rpm2cpio returns non-zero."""
+
+    @staticmethod
+    def _synthetic_rpm(payload: bytes) -> bytes:
+        lead = bytearray(96)
+        lead[:4] = b"\xed\xab\xee\xdb"
+        sig_header = b"\x8e\xad\xe8\x01" + b"\x00\x00\x00\x00" + struct.pack(">II", 0, 1) + b"\xaa"
+        # Pad signature header to an 8-byte boundary (17 bytes -> 24 bytes).
+        sig_padded = sig_header + b"\x00" * ((8 - len(sig_header) % 8) % 8)
+        main_header = b"\x8e\xad\xe8\x01" + b"\x00\x00\x00\x00" + struct.pack(">II", 0, 2) + b"\xbb\xcc"
+        return bytes(lead) + sig_padded + main_header + gzip.compress(payload)
+
+    def test_rpm_cpio_payload_reads_gzip_payload_after_digest_check(self) -> None:
+        raw_cpio = b"070701" + b"synthetic-cpio-stream"
+        with tempfile.TemporaryDirectory() as tmp:
+            rpm_path = Path(tmp) / "codr.rpm"
+            rpm_path.write_bytes(self._synthetic_rpm(raw_cpio))
+            with (
+                mock.patch("packaging._run", return_value=b"") as run_mock,
+                mock.patch("packaging.rpm_query", return_value="gzip\n") as query_mock,
+            ):
+                extracted = packaging.rpm_cpio_payload(rpm_path)
+        self.assertEqual(extracted, raw_cpio)
+        run_mock.assert_called_once_with(["rpm", "-K", "--nosignature", str(rpm_path)])
+        query_mock.assert_called_once_with(rpm_path, "-qp", "--queryformat", "%{PAYLOADCOMPRESSOR}")
+
+    def test_extract_rpm_falls_back_when_rpm2cpio_fails(self) -> None:
+        raw_cpio = b"fallback-cpio"
+        with tempfile.TemporaryDirectory() as tmp:
+            rpm_path = Path(tmp) / "codr.rpm"
+            rpm_path.write_bytes(b"placeholder")
+            dest = Path(tmp) / "out"
+            failed = subprocess.CompletedProcess(["rpm2cpio", str(rpm_path)], 1, b"", b"")
+            ok_cpio = subprocess.CompletedProcess(["cpio"], 0, b"", b"")
+            with (
+                mock.patch("packaging.subprocess.run", side_effect=[failed, ok_cpio]) as sub_mock,
+                mock.patch("packaging.rpm_cpio_payload", return_value=raw_cpio) as payload_mock,
+                mock.patch("packaging.describe_tree", return_value=[{"path": "/usr/bin/codr"}]),
+            ):
+                entries = packaging.extract_rpm(rpm_path, dest)
+        self.assertEqual(entries, [{"path": "/usr/bin/codr"}])
+        payload_mock.assert_called_once_with(rpm_path)
+        self.assertEqual(sub_mock.call_count, 2)
+        self.assertEqual(sub_mock.call_args_list[1].kwargs["input"], raw_cpio)
+
+    def test_rpm_cpio_payload_rejects_bad_magic(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "bad.rpm"
+            bad.write_bytes(b"not-an-rpm" * 12)
+            with mock.patch("packaging._run", return_value=b""):
+                with self.assertRaises(ValueError):
+                    packaging.rpm_cpio_payload(bad)
 
 
 class ArchRecipeTest(unittest.TestCase):
