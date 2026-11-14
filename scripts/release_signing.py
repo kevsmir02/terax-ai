@@ -754,8 +754,8 @@ def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--candidate", default=None,
                         help="staged directory holding the rpm, deb, PKGBUILD and their signatures")
-    parser.add_argument("--version", default=None, help="application version, e.g. 1.0.0")
-    parser.add_argument("--tag", default=None, help="release tag, e.g. v1.0.0")
+    parser.add_argument("--version", default=None, help="application version, e.g. 0.1.0")
+    parser.add_argument("--tag", default=None, help="release tag, e.g. v0.1.0")
     parser.add_argument("--commit", default=None, help="commit the artifacts were built from")
     parser.add_argument("--notes", default=None, help="release notes text")
     parser.add_argument("--notes-file", default=None, help="read release notes from this file")

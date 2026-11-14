@@ -50,7 +50,7 @@ unexercised. No stable release is published yet:
 | Remaining gate | Owned by |
 | --- | --- |
 | RPM version upgrade/remove lifecycle and any unconfirmed physical IME/clipboard or live vendor CLI turn/hook checks | issue #44 (manual/maintainer) |
-| Hosted `v1.0.0` tag workflow execution and live release discovery verification | issue #45 |
+| Hosted `v0.1.0` tag workflow execution and live release discovery verification | issue #45 |
 
 In `.github/workflows/release.yml`, `build-candidate` keeps `contents: read` and `checks: read` and
 uploads `linux-x86_64-packages` plus `release-gate-reports`. Only on a pushed `v*` tag (never on
@@ -95,7 +95,7 @@ another version), plus the signer and the provisioning script. The verifier
 against RFC 8032's test vector, and the workflow order is pinned by `scripts/tests/test_ci_workflows.py`
 and `scripts/tests/test_release_verify.py`. Live hosted execution of `.github/workflows/release.yml`
 and live verification of `https://github.com/kevsmir02/terax-ai/releases/latest/download/latest.json`
-occur when tag `v1.0.0` is pushed (#45).
+occur when tag `v0.1.0` is pushed (#45).
 
 Updates are never installed by the application. A user installs or upgrades the RPM/DEB with
 their package manager (`dnf`, `apt`); the application never downloads, installs or restarts

@@ -256,7 +256,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Verify gated or live Codr release artifacts.")
     parser.add_argument("--candidate", type=Path, help="Staged linux-packages directory")
     parser.add_argument("--gate-report", type=Path, help="gate-artifacts.json path")
-    parser.add_argument("--tag", help="Expected git tag (e.g. v1.0.0)")
+    parser.add_argument("--tag", help="Expected git tag (e.g. v0.1.0)")
     parser.add_argument("--commit", help="Expected git commit SHA")
     parser.add_argument("--notes-out", type=Path, help="Write GitHub Release markdown notes")
     parser.add_argument("--live-url", help="Live latest.json URL to fetch and verify")

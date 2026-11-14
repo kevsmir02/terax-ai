@@ -22,8 +22,8 @@ Include:
 
 ## Supported versions
 
-The first stable release line is `v1.0.0` (Linux x86-64 only). Security fixes target the latest
-published `1.0.x` release and `main`. No broad distribution compatibility or production-readiness
+The first stable release line is `v0.1.0` (Linux x86-64 only). Security fixes target the latest
+published `0.1.x` release and `main`. No broad distribution compatibility or production-readiness
 certification is claimed.
 
 ## What is in scope

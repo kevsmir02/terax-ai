@@ -12,7 +12,7 @@
 
   <p>
     <img src="https://img.shields.io/badge/platform-Linux%20x86_64-lightgrey" alt="platform" />
-    <a href="https://github.com/kevsmir02/terax-ai/releases/tag/v1.0.0"><img src="https://img.shields.io/badge/release-v1.0.0-blue" alt="release v1.0.0" /></a>
+    <a href="https://github.com/kevsmir02/terax-ai/releases/tag/v0.1.0"><img src="https://img.shields.io/badge/release-v0.1.0-blue" alt="release v0.1.0" /></a>
   </p>
 </div>
 
@@ -114,14 +114,14 @@ Codr (an unofficial Linux fork of Terax) is a lightweight open-source terminal-f
 
 This fork builds and distributes **Linux x86-64 only**: one RPM and one DEB per release, plus an
 authored (not built) Arch recipe (`packaging/arch/PKGBUILD`), published on this repository's
-[Releases](https://github.com/kevsmir02/terax-ai/releases) page (`v1.0.0` stable channel).
+[Releases](https://github.com/kevsmir02/terax-ai/releases) page (`v0.1.0` stable channel).
 Update discovery fetches `latest.json` from the fork's stable feed, verifies the minisign Ed25519
 global signature and key ID (`94097B75DB498B21`), and never downloads, installs or restarts
 itself: upgrades are handed to your package tool (`dnf`, `apt`, or `pacman`) after safe closure.
 
 ### Linux routes and validation status
 
-- **Fedora 45 KDE Wayland (primary validated target, #44):** `sudo dnf install ./codr-1.0.0-1.x86_64.rpm`.
+- **Fedora 45 KDE Wayland (primary validated target, #44):** `sudo dnf install ./codr-0.1.0-1.x86_64.rpm`.
   The RPM candidate passed dependency resolution, isolated Wayland smoke, container `rpm` lifecycle
   checks, and maintainer host install (`codr-1.0.0-1.x86_64`). Host-root `dnf upgrade` across
   versions and package-lock/cancellation paths remain unverified.
@@ -140,7 +140,7 @@ before running `dnf` or `apt` (native DNF/APT repository GPG signing is deferred
 
 ```sh
 sha256sum -c SHA256SUMS
-minisign -Vm ./codr_1.0.0_amd64.deb -x ./codr_1.0.0_amd64.deb.minisig \
+minisign -Vm ./codr_0.1.0_amd64.deb -x ./codr_0.1.0_amd64.deb.minisig \
   -P RWQhi0nbdXsJlFu9b48smjYdtZKzZ3An6rjhKRz+kdL0tG8f7DBJj8lL
 ```
 

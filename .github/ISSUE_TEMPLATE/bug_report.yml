@@ -14,7 +14,7 @@ body:
     attributes:
       label: Version or commit
       description: From Settings → About, or the commit you built from.
-      placeholder: "1.0.0, or 16ef644"
+      placeholder: "0.1.0, or 16ef644"
     validations:
       required: true
 

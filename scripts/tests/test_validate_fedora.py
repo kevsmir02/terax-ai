@@ -81,14 +81,14 @@ class PackagePathDisjointnessTest(unittest.TestCase):
 class RpmSignatureCheckTest(unittest.TestCase):
     def test_parses_unsigned_rpm_with_valid_digests(self) -> None:
         parsed = MOD.parse_rpm_signature_check(
-            "/tmp/codr-1.0.0-1.x86_64.rpm: digests SIGNATURES NOT OK"
+            "/tmp/codr-0.1.0-1.x86_64.rpm: digests SIGNATURES NOT OK"
         )
         self.assertTrue(parsed["digestsOk"])
         self.assertFalse(parsed["signed"])
 
     def test_parses_signed_rpm_with_valid_digests(self) -> None:
         parsed = MOD.parse_rpm_signature_check(
-            "/tmp/codr-1.0.0-1.x86_64.rpm: digests signatures OK"
+            "/tmp/codr-0.1.0-1.x86_64.rpm: digests signatures OK"
         )
         self.assertTrue(parsed["digestsOk"])
         self.assertTrue(parsed["signed"])
@@ -96,10 +96,10 @@ class RpmSignatureCheckTest(unittest.TestCase):
 
 class CliProbeEvaluationTest(unittest.TestCase):
     def test_all_probes_pass_when_exit_zero_and_json_ok(self) -> None:
-        # `codr-cli --version` emits the Cargo package string (`terax 1.0.0`) by design.
+        # `codr-cli --version` emits the Cargo package string (`terax 0.1.0`) by design.
         result = MOD.evaluate_cli_probes(
             [
-                {"args": ["--version"], "exitCode": 0, "stdout": "terax 1.0.0\n", "stderr": ""},
+                {"args": ["--version"], "exitCode": 0, "stdout": "terax 0.1.0\n", "stderr": ""},
                 {
                     "args": ["ping", "--json"],
                     "exitCode": 0,

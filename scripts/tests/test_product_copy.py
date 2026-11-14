@@ -317,7 +317,7 @@ class SecurityPolicyCopyTest(unittest.TestCase):
             "sha256:a02fd6ac492d1f070919bde106c20c0a376fbcdb6db8bc4c17ca0efd68197487",
             body,
         )
-        self.assertIn("v1.0.0", body)
+        self.assertIn("v0.1.0", body)
         self.assertIn("Fedora 45", body)
         self.assertNotIn("no stable release is published yet", body.lower())
 
@@ -376,14 +376,14 @@ class ReadmeBadgeCopyTest(unittest.TestCase):
     def test_the_readme_keeps_the_platform_badge_and_announces_v1_release(self) -> None:
         body = (REPO / "README.md").read_text(encoding="utf-8")
         self.assertIn("platform-Linux%20x86_64", body)
-        self.assertIn("release-v1.0.0", body)
+        self.assertIn("release-v0.1.0", body)
         self.assertNotIn("none%20published%20yet", body)
 
     def test_the_install_section_names_this_repository_and_v1_release_scope(self) -> None:
         body = (REPO / "README.md").read_text(encoding="utf-8")
         normalized = " ".join(body.lower().split())
         self.assertIn(f"github.com/{FORK_REPO}/releases", body)
-        self.assertIn("v1.0.0", body)
+        self.assertIn("v0.1.0", body)
         self.assertIn("Fedora 45", body)
         self.assertIn("minisign -Vm", body)
         self.assertIn("never downloads, installs or restarts itself", normalized)
