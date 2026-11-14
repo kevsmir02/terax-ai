@@ -4,6 +4,7 @@ import { LOCAL_WORKSPACE } from "@/modules/workspace";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { evaluateIsolationToggleGuard } from "./lib/isolation";
 import { useSpaces } from "./lib/useSpaces";
 import { SpaceSwitcher } from "./SpaceSwitcher";
 
@@ -251,5 +252,129 @@ describe("SpaceSwitcher", () => {
       newIsolatedBtn?.click();
     });
     expect(onNewIsolatedSpace).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows guarded isolation toggle with active terminals, shows pre-login OAuth guidance, and details shared-root boundaries", async () => {
+    useSpaces.getState().hydrate(
+      [
+        {
+          id: "space-1",
+          name: "Alpha",
+          root: "/work/terax",
+          env: LOCAL_WORKSPACE,
+          accountIsolation: "default",
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        {
+          id: "space-2",
+          name: "Client",
+          root: "/work/terax",
+          env: LOCAL_WORKSPACE,
+          accountIsolation: "isolated",
+          createdAt: 2,
+          updatedAt: 2,
+        },
+      ],
+      "space-1",
+    );
+
+    const tabs = [makeTab(1, "space-1", "/work/terax")];
+    const onToggleSpaceIsolation = vi.fn(async () => {});
+    const canToggleSpaceIsolation = vi.fn((spaceId: string) =>
+      evaluateIsolationToggleGuard(
+        spaceId,
+        tabs.map((t) => ({
+          id: t.id,
+          spaceId: t.spaceId,
+          kind: t.kind,
+          cold: t.cold,
+          leafIds: t.kind === "terminal" ? [t.activeLeafId] : [],
+        })),
+        (leafId) => leafId === 10,
+      ),
+    );
+
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    act(() => {
+      root?.render(
+        <SpaceSwitcher
+          open
+          onOpenChange={vi.fn()}
+          tabs={tabs}
+          onNewSpace={vi.fn()}
+          onNewIsolatedSpace={vi.fn()}
+          onToggleSpaceIsolation={onToggleSpaceIsolation}
+          canToggleSpaceIsolation={canToggleSpaceIsolation}
+          onDeleteSpace={vi.fn()}
+          onNewTabInSpace={vi.fn()}
+          onJumpTab={vi.fn()}
+          onCloseTab={vi.fn()}
+          onMoveTabToSpace={vi.fn()}
+          onReorderTab={vi.fn()}
+          onReorderSpaces={vi.fn()}
+        />,
+      );
+    });
+
+    const popover = document.body.querySelector<HTMLElement>(
+      '[data-slot="popover-content"]',
+    );
+    expect(popover).not.toBeNull();
+
+    // Active Space with open terminals keeps toggle enabled and displays restart hint.
+    const activeToggle = popover?.querySelector<HTMLButtonElement>(
+      '[data-isolation-toggle="space-1"]',
+    );
+    expect(activeToggle?.disabled).toBe(false);
+    expect(
+      popover?.querySelector('[data-isolation-confirm-hint="space-1"]')
+        ?.textContent,
+    ).toContain("restarts active terminal Panes");
+
+    await act(async () => {
+      activeToggle?.click();
+    });
+    expect(onToggleSpaceIsolation).toHaveBeenCalledWith("space-1", "isolated");
+
+    // Expand isolated Space to inspect pre-login OAuth guidance.
+    const isolatedRow = popover?.querySelector<HTMLElement>(
+      '[data-space-id="space-2"]',
+    );
+    const expandBtn = isolatedRow?.querySelector<HTMLButtonElement>(
+      'button[aria-label="Expand"]',
+    );
+    act(() => {
+      expandBtn?.click();
+    });
+
+    const oauthGuidance = popover?.querySelector<HTMLElement>(
+      '[data-oauth-guidance="space-2"]',
+    );
+    expect(oauthGuidance).not.toBeNull();
+    expect(oauthGuidance?.textContent).toContain("$BROWSER");
+    expect(oauthGuidance?.textContent).toContain("xdg-open");
+    expect(oauthGuidance?.textContent).toContain("auto-consent");
+    expect(oauthGuidance?.textContent).toContain("1455");
+    expect(oauthGuidance?.textContent).toContain("manual URL paste");
+
+    // Shared-root note and badge explicitly state repo configs, tools, and MCP/memory stay shared.
+    const sharedNote =
+      popover?.querySelector<HTMLElement>("[data-shared-note]");
+    expect(sharedNote?.textContent).toContain(".mcp.json");
+    expect(sharedNote?.textContent).toContain(".claude/");
+    expect(sharedNote?.textContent).toContain("Git");
+    expect(sharedNote?.textContent).toContain("SSH");
+    expect(sharedNote?.textContent).toContain("cloud CLIs");
+    expect(sharedNote?.textContent).toContain("Engram");
+    expect(sharedNote?.textContent).toContain("CodeGraph");
+    expect(sharedNote?.textContent).toContain("pi-lens");
+
+    const badge = isolatedRow?.querySelector<HTMLElement>("[data-shared-root]");
+    expect(badge?.getAttribute("title")).toContain("Engram");
+    expect(badge?.getAttribute("title")).toContain("pi-lens");
   });
 });

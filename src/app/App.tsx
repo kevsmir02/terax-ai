@@ -92,6 +92,7 @@ import {
   findLeafCwd,
   hasLeaf,
   isTerminalSurfaceTarget,
+  leafCwd,
   leafHasForegroundProcess,
   leafIds,
   navigateFocusedBlocks,
@@ -143,6 +144,7 @@ import {
 import { toast } from "sonner";
 import { CloseDialogs } from "./components/CloseDialogs";
 import { QuitDialog } from "./components/QuitDialog";
+import { SpaceIsolationDialogs } from "./components/SpaceIsolationDialogs";
 import { WorkspaceSurface } from "./components/WorkspaceSurface";
 import {
   hasOpenPathTab,
@@ -151,6 +153,7 @@ import {
 } from "./hooks/tabCloseGuards";
 import { useQuitGuard } from "./hooks/useQuitGuard";
 import { useSpaceDeleteGuard } from "./hooks/useSpaceDeleteGuard";
+import { useSpaceIsolationGuards } from "./hooks/useSpaceIsolationGuards";
 import { useTabCloseGuards } from "./hooks/useTabCloseGuards";
 import { useWorkspaceSwitcher } from "./hooks/useWorkspaceSwitcher";
 
@@ -171,6 +174,8 @@ export default function App() {
     moveTabToSpace,
     reorderTab,
     reorderTabByGap,
+    restartSpaceTerminals,
+    recreateTerminalInSpace,
     newTabInSpace,
     removeTabsForSpace,
     markBooted,
@@ -1351,23 +1356,77 @@ export default function App() {
     prepareDiscard,
   });
 
-  const handleMoveTab = useCallback(
-    (tabId: number, targetSpaceId: string) => {
-      if (moveTabToSpace(tabId, targetSpaceId)) {
-        useSpaces.getState().setActive(targetSpaceId);
+  const {
+    pendingIsolationToggle,
+    isolationToggleBusy,
+    isolationToggleError,
+    isolationSaveIncomplete,
+    requestSpaceIsolationToggle,
+    confirmSpaceIsolationToggle,
+    saveAndToggleSpaceIsolation,
+    cancelSpaceIsolationToggle,
+    pendingCrossSpaceMove,
+    crossSpaceMoveBusy,
+    requestMoveTabToSpace,
+    requestReorderTabAcrossSpaces,
+    confirmCrossSpaceMove,
+    cancelCrossSpaceMove,
+  } = useSpaceIsolationGuards({
+    tabs,
+    spaces: spaceList,
+    isTabDirty,
+    saveTab,
+    applyIsolationMode: (spaceId, nextMode) =>
+      useSpaces.getState().setAccountIsolation(spaceId, nextMode),
+    restartSpaceTerminals: (spaceId) =>
+      restartSpaceTerminals(
+        spaceId,
+        (leafId, fallback) => leafCwd(leafId) ?? fallback,
+        (leafId) => ptyIdForLeaf(leafId) !== null,
+      ),
+    moveLive: (action) => {
+      if (action.kind === "move") {
+        if (moveTabToSpace(action.tabId, action.targetSpaceId)) {
+          useSpaces.getState().setActive(action.targetSpaceId);
+        }
+        return;
+      }
+      if (reorderTab(action.tabId, action.targetTabId, action.edge)) {
+        const target = tabsRef.current.find((x) => x.id === action.targetTabId);
+        if (target) useSpaces.getState().setActive(target.spaceId);
       }
     },
-    [moveTabToSpace],
+    recreateInTarget: (action, targetSpaceId) => {
+      const targetRoot =
+        useSpaces.getState().spaces.find((s) => s.id === targetSpaceId)?.root ??
+        undefined;
+      const outcome = recreateTerminalInSpace(
+        action.tabId,
+        targetSpaceId,
+        targetRoot,
+        action.kind === "reorder"
+          ? { targetTabId: action.targetTabId, edge: action.edge }
+          : undefined,
+      );
+      if (outcome.shouldSwitchSpace) {
+        useSpaces.getState().setActive(targetSpaceId);
+      }
+      return outcome.disposeLeafIds;
+    },
+  });
+
+  const handleMoveTab = useCallback(
+    (tabId: number, targetSpaceId: string) => {
+      void requestMoveTabToSpace(tabId, targetSpaceId);
+    },
+    [requestMoveTabToSpace],
   );
 
   const handleReorderTab = useCallback(
     (tabId: number, targetTabId: number, edge: "top" | "bottom") => {
-      if (reorderTab(tabId, targetTabId, edge)) {
-        const target = tabsRef.current.find((x) => x.id === targetTabId);
-        if (target) useSpaces.getState().setActive(target.spaceId);
-      }
+      void requestReorderTabAcrossSpaces(tabId, targetTabId, edge);
     },
-    [reorderTab],
+    [requestReorderTabAcrossSpaces],
   );
 
   const handleNewTabInSpace = useCallback(
@@ -1391,28 +1450,29 @@ export default function App() {
     [setActiveId],
   );
 
-  const canToggleSpaceIsolation = useCallback((spaceId: string) => {
-    return evaluateIsolationToggleGuard(
-      spaceId,
-      tabsRef.current.map((tab) => ({
-        spaceId: tab.spaceId,
-        kind: tab.kind,
-        cold: tab.cold,
-        leafIds: tab.kind === "terminal" ? leafIds(tab.paneTree) : [],
-      })),
-      (leafId) => ptyIdForLeaf(leafId) !== null,
-    );
-  }, []);
+  const canToggleSpaceIsolation = useCallback(
+    (spaceId: string) => {
+      return evaluateIsolationToggleGuard(
+        spaceId,
+        tabsRef.current.map((tab) => ({
+          id: tab.id,
+          spaceId: tab.spaceId,
+          kind: tab.kind,
+          cold: tab.cold,
+          dirty: tab.kind === "editor" && isTabDirty(tab.id),
+          leafIds: tab.kind === "terminal" ? leafIds(tab.paneTree) : [],
+        })),
+        (leafId) => ptyIdForLeaf(leafId) !== null,
+        isTabDirty,
+      );
+    },
+    [isTabDirty],
+  );
 
   const handleToggleSpaceIsolation = useCallback(
-    async (spaceId: string, nextMode: AccountIsolationMode) => {
-      const guard = canToggleSpaceIsolation(spaceId);
-      if (!guard.allowed) {
-        throw new Error(guard.reason);
-      }
-      await useSpaces.getState().setAccountIsolation(spaceId, nextMode);
-    },
-    [canToggleSpaceIsolation],
+    (spaceId: string, nextMode: AccountIsolationMode) =>
+      requestSpaceIsolationToggle(spaceId, nextMode),
+    [requestSpaceIsolationToggle],
   );
 
   const spaceSwitcher = (
@@ -1952,6 +2012,22 @@ export default function App() {
             onCancelSpaceDelete={cancelSpaceDelete}
             onConfirmSpaceDelete={() => void confirmSpaceDelete()}
             onSaveAndDeleteSpace={() => void saveAndDeleteSpace()}
+          />
+
+          <SpaceIsolationDialogs
+            tabs={tabs}
+            spaces={spaceList}
+            pendingIsolationToggle={pendingIsolationToggle}
+            isolationToggleBusy={isolationToggleBusy}
+            isolationToggleError={isolationToggleError}
+            isolationSaveIncomplete={isolationSaveIncomplete}
+            onConfirmIsolationToggle={() => void confirmSpaceIsolationToggle()}
+            onSaveAndToggleIsolation={() => void saveAndToggleSpaceIsolation()}
+            onCancelIsolationToggle={cancelSpaceIsolationToggle}
+            pendingCrossSpaceMove={pendingCrossSpaceMove}
+            crossSpaceMoveBusy={crossSpaceMoveBusy}
+            onConfirmCrossSpaceMove={() => void confirmCrossSpaceMove()}
+            onCancelCrossSpaceMove={cancelCrossSpaceMove}
           />
 
           <QuitDialog

@@ -10,9 +10,9 @@ const group: SharedRoot = {
   names: ["Terax", "Terax review"],
 };
 
-function render(className?: string) {
+function render(className?: string, isolated?: boolean) {
   return renderToStaticMarkup(
-    createElement(SharedFolderBadge, { group, className }),
+    createElement(SharedFolderBadge, { group, className, isolated }),
   );
 }
 
@@ -23,6 +23,20 @@ describe("SharedFolderBadge", () => {
     expect(html).toContain("Shared folder");
     expect(html).toContain("Terax review");
     expect(html).toContain("Files and processes are shared");
+  });
+
+  it("clarifies shared repo configs, tools, and MCP/memory backends when an isolated Space shares the root", () => {
+    const html = render(undefined, true);
+
+    expect(html).toContain("Shared folder");
+    expect(html).toContain(".mcp.json");
+    expect(html).toContain(".claude/");
+    expect(html).toContain("Git");
+    expect(html).toContain("SSH");
+    expect(html).toContain("cloud CLIs");
+    expect(html).toContain("Engram");
+    expect(html).toContain("CodeGraph");
+    expect(html).toContain("pi-lens");
   });
 
   it("carries the normalized shared root for the app lab to read", () => {
