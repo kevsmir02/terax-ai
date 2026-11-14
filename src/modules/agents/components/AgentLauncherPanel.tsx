@@ -10,10 +10,13 @@ import {
   type AgentLaunchRequest,
   DEFAULT_AGENT_LAUNCH_COMMANDS,
   findAgentLauncher,
+  getAgentIsolationDisabledReason,
+  isAgentSupportedInSpace,
   resolveAgentLaunchCommand,
 } from "@/modules/agents/lib/launcher";
 import { usePreferencesStore } from "@/modules/settings/preferences";
 import { setAgentLaunchCommands } from "@/modules/settings/store";
+import { type AccountIsolationMode, useSpaces } from "@/modules/spaces";
 import {
   ArrowLeft01Icon,
   PlayIcon,
@@ -27,13 +30,24 @@ type Props = {
   onLaunch: (
     request: AgentLaunchRequest,
   ) => void | Promise<void> | Promise<boolean>;
+  accountIsolation?: AccountIsolationMode;
 };
 
 const INSTANCE_COUNTS: AgentInstanceCount[] = [1, 2, 3, 4];
 
-export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
+export function AgentLauncherPanel({
+  onBack,
+  onLaunch,
+  accountIsolation,
+}: Props) {
   const storedCommands = usePreferencesStore((s) => s.agentLaunchCommands);
   const hydrated = usePreferencesStore((s) => s.hydrated);
+  const activeSpaceIsolation = useSpaces(
+    (s) =>
+      s.spaces.find((space) => space.id === s.activeId)?.accountIsolation ??
+      "default",
+  );
+  const effectiveIsolation = accountIsolation ?? activeSpaceIsolation;
   const [agentId, setAgentId] = useState<AgentLauncherId>("claude");
   const [instances, setInstances] = useState<AgentInstanceCount>(2);
   const [drafts, setDrafts] = useState<AgentLaunchCommands>(storedCommands);
@@ -42,7 +56,15 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
   const hydratedRef = useRef(hydrated);
   const persistedRef = useRef(storedCommands);
   const command = drafts[agentId];
-  const validation = resolveAgentLaunchCommand(agentId, command);
+  const validation = resolveAgentLaunchCommand(
+    agentId,
+    command,
+    effectiveIsolation,
+  );
+  const selectedSupported = isAgentSupportedInSpace(
+    agentId,
+    effectiveIsolation,
+  );
   const launcher = findAgentLauncher(agentId);
 
   useEffect(() => {
@@ -69,7 +91,7 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
     id: AgentLauncherId,
     value: string,
   ): AgentLaunchCommands | null => {
-    const result = resolveAgentLaunchCommand(id, value);
+    const result = resolveAgentLaunchCommand(id, value, effectiveIsolation);
     if (!result.ok) return null;
     const next = { ...drafts, [id]: result.command };
     setDrafts(next);
@@ -78,12 +100,14 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
   };
 
   const selectAgent = (id: AgentLauncherId) => {
+    if (!isAgentSupportedInSpace(id, effectiveIsolation)) return;
     persist(agentId, command);
     setLaunchError(null);
     setAgentId(id);
   };
 
   const resetCommand = () => {
+    if (!selectedSupported) return;
     const next = {
       ...drafts,
       [agentId]: DEFAULT_AGENT_LAUNCH_COMMANDS[agentId],
@@ -95,6 +119,12 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
 
   const submit = async () => {
     if (launching) return;
+    if (!selectedSupported) {
+      setLaunchError(
+        getAgentIsolationDisabledReason(agentId, effectiveIsolation),
+      );
+      return;
+    }
     const next = persist(agentId, command);
     if (!next) return;
     setLaunchError(null);
@@ -148,12 +178,19 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
 
       <div className="mt-1 grid grid-cols-2 gap-1 border-t border-border/60 pt-1.5">
         {AGENT_LAUNCHERS.map((agent) => {
+          const disabledReason = getAgentIsolationDisabledReason(
+            agent.id,
+            effectiveIsolation,
+          );
+          const supported = disabledReason === null;
           const selected = agent.id === agentId;
           return (
             <button
               key={agent.id}
               type="button"
-              disabled={!hydrated}
+              data-agent-slot={agent.id}
+              disabled={!hydrated || !supported}
+              title={disabledReason ?? undefined}
               aria-pressed={selected}
               onClick={() => selectAgent(agent.id)}
               className={cn(
@@ -171,13 +208,30 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
                   selected ? "text-primary" : "text-muted-foreground",
                 )}
               />
-              <span className="truncate text-xs font-medium">
-                {agent.label}
-              </span>
+              <div className="min-w-0">
+                <div className="truncate text-xs font-medium">
+                  {agent.label}
+                </div>
+                {disabledReason && (
+                  <div className="truncate text-[10px] font-normal text-muted-foreground">
+                    Isolation unsupported
+                  </div>
+                )}
+              </div>
             </button>
           );
         })}
       </div>
+
+      {effectiveIsolation === "isolated" && (
+        <div
+          data-agent-isolation-notice
+          className="mt-1.5 rounded-lg border border-border/60 bg-foreground/[0.03] px-2.5 py-1.5 text-[10px] leading-snug text-muted-foreground"
+        >
+          Account isolation is not supported yet for Codex, Gemini, Grok, and
+          Antigravity CLI (agy).
+        </div>
+      )}
 
       <fieldset className="mt-3">
         <legend className="mb-1.5 text-[11px] font-medium text-muted-foreground">
@@ -218,7 +272,9 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
             type="button"
             onClick={resetCommand}
             disabled={
-              !hydrated || command === DEFAULT_AGENT_LAUNCH_COMMANDS[agentId]
+              !hydrated ||
+              !selectedSupported ||
+              command === DEFAULT_AGENT_LAUNCH_COMMANDS[agentId]
             }
             className="ml-auto flex items-center gap-1 rounded-md px-1 text-[10px] text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
             title={`Reset to ${launcher.defaultCommand}`}
@@ -229,7 +285,7 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
         </div>
         <Input
           id="agent-start-command"
-          disabled={!hydrated}
+          disabled={!hydrated || !selectedSupported}
           value={command}
           spellCheck={false}
           autoCapitalize="off"
@@ -274,7 +330,7 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
         type="submit"
         size="sm"
         className="mt-1 w-full rounded-xl"
-        disabled={!hydrated || !validation.ok || launching}
+        disabled={!hydrated || !selectedSupported || !validation.ok || launching}
       >
         <HugeiconsIcon icon={PlayIcon} size={13} strokeWidth={2} />
         {launching

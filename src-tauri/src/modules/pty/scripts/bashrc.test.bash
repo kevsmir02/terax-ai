@@ -332,6 +332,21 @@ SH
   chmod 700 "$shim_dir/opencode"
   chmod 755 "$home/.opencode/bin/opencode" "$ctrl_dir/terax" "$home/.local/bin/terax"
 
+  for agent in agy codex gemini grok antigravity; do
+    cat > "$shim_dir/$agent" <<SH
+#!/bin/sh
+printf 'terax: %s is blocked in this isolated Space: Account isolation is unsupported for %s.\\n' "$agent" "$agent" >&2
+exit 126
+SH
+    upper="$(printf '%s' "$agent" | tr '[:lower:]' '[:upper:]')"
+    cat > "$home/.local/bin/$agent" <<SH
+#!/bin/sh
+echo "HOST_${upper}"
+SH
+    chmod 700 "$shim_dir/$agent"
+    chmod 755 "$home/.local/bin/$agent"
+  done
+
   cat > "$home/.bash_profile" <<'RC'
 export PATH="$HOME/.local/bin:$PATH"
 export OPENAI_API_KEY="sk-openai-profile-leak"
@@ -410,11 +425,16 @@ probe = "\n".join([
     """sh -c 'printf "CHILD_SH:OC=%s|OAI=%s|CLAUDE=%s\\n" "$(command -v opencode)" "${OPENAI_API_KEY-UNSET}" "${CLAUDE_CONFIG_DIR-UNSET}"; opencode run sub-turn'""",
     """bash -c 'printf "CHILD_BASH:OC=%s|ANT=%s|SHIM=%s\\n" "$(command -v opencode)" "${ANTHROPIC_API_KEY-UNSET}" "${CODR_SPACE_SHIM_DIR-UNSET}"'""",
     """( printf 'SUBSHELL:OC=%s|GEM=%s\\n' "$(command -v opencode)" "${GEMINI_API_KEY-UNSET}" )""",
+    'for a in agy codex gemini grok antigravity; do p="$(command -v "$a")"; err="$("$a" 2>&1)"; rc=$?; printf "DIR_BLK_%s=%s:%s:%s\\n" "$a" "$p" "$rc" "${err#*: }"; done',
+    """sh -c 'for a in agy codex gemini grok antigravity; do p="$(command -v "$a")"; err="$("$a" 2>&1)"; rc=$?; printf "SH_BLK_%s=%s:%s:%s\\n" "$a" "$p" "$rc" "${err#*: }"; done'""",
+    """bash -c 'for a in agy codex gemini grok antigravity; do p="$(command -v "$a")"; err="$("$a" 2>&1)"; rc=$?; printf "BASH_BLK_%s=%s:%s:%s\\n" "$a" "$p" "$rc" "${err#*: }"; done'""",
+    """( for a in agy codex gemini grok antigravity; do p="$(command -v "$a")"; err="$("$a" 2>&1)"; rc=$?; printf "SUB_BLK_%s=%s:%s:%s\\n" "$a" "$p" "$rc" "${err#*: }"; done )""",
+    """python3 -c 'import shutil, subprocess; [print(f"PY_BLK_{a}={shutil.which(a)}:{r.returncode}:{(r.stderr or r.stdout).strip()}") for a in ("agy","codex","gemini","grok","antigravity") for r in [subprocess.run([a], capture_output=True, text=True)]]'""",
     "exit",
     "",
 ])
 os.write(fd, probe.encode())
-drain(1.5)
+drain(2.5)
 os.close(fd)
 os.waitpid(pid, 0)
 print(out.decode("utf-8", "replace"))
@@ -442,11 +462,37 @@ for leaked in sk-ant-rc-leak sk-openai-profile-leak sk-openai-rc-leak sk-opencod
   fi
 done
 
+for agent in agy codex gemini grok antigravity; do
+  expect_contains "bash isolated: direct $agent uses blocking Space shim and exits 126" "/spaces/sp-1/bin/$agent:126:" "$bash_iso_out"
+  expect_contains "bash isolated: sh -c $agent uses blocking Space shim" "SH_BLK_${agent}=" "$bash_iso_out"
+  expect_contains "bash isolated: bash -c $agent uses blocking Space shim" "BASH_BLK_${agent}=" "$bash_iso_out"
+  expect_contains "bash isolated: subshell $agent uses blocking Space shim" "SUB_BLK_${agent}=" "$bash_iso_out"
+  expect_contains "bash isolated: tool subprocess $agent uses blocking Space shim" "PY_BLK_${agent}=" "$bash_iso_out"
+  upper="$(printf '%s' "$agent" | tr '[:lower:]' '[:upper:]')"
+  if printf '%s' "$bash_iso_out" | grep -Fq "HOST_${upper}"; then
+    failures=$((failures + 1))
+    printf 'FAIL bash isolated: delegated to host HOST_%s\n' "$upper"
+  fi
+done
+expect_contains "bash isolated: blocked shims print unsupported error" "Account isolation is unsupported for antigravity." "$bash_iso_out"
+for ctx in SH_BLK BASH_BLK SUB_BLK PY_BLK; do
+  for agent in agy codex gemini grok antigravity; do
+    if ! printf '%s' "$bash_iso_out" | grep -Eq "${ctx}_${agent}=.*/spaces/sp-1/bin/${agent}:126:.*Account isolation is unsupported for ${agent}"; then
+      failures=$((failures + 1))
+      printf 'FAIL bash isolated: %s %s did not resolve to Space shim and exit non-zero\n' "$ctx" "$agent"
+    fi
+  done
+done
+
 bash_ovr_out="$(space_isolation_pty override)"
 expect_contains "bash override: explicit ANTHROPIC_API_KEY override survives while others scrub" "|ANT=sk-ant-space-override|OAI=UNSET|OPC=UNSET|GEM=UNSET|" "$bash_ovr_out"
 
 bash_def_out="$(space_isolation_pty default)"
 expect_contains "bash default: user dotfile PATH and ambient key are left alone" "/.opencode/bin/opencode|" "$bash_def_out"
 expect_contains "bash default: dotfile ANTHROPIC_API_KEY stays set in default mode" "|ANT=sk-ant-rc-leak|" "$bash_def_out"
+for agent in agy codex gemini grok antigravity; do
+  upper="$(printf '%s' "$agent" | tr '[:lower:]' '[:upper:]')"
+  expect_contains "bash default: $agent resolves to ~/.local/bin in default mode" "/home/.local/bin/$agent:0:HOST_${upper}" "$bash_def_out"
+done
 
 exit $((failures > 0))

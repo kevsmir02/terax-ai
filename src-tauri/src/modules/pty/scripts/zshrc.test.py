@@ -536,15 +536,25 @@ with tempfile.TemporaryDirectory() as space_tmp:
     )
     os.chmod(os.path.join(shim_dir, "opencode"), 0o700)
     write_exec(os.path.join(ctrl_dir, "terax"), "#!/bin/sh\necho CTRL_TERAX\n")
+    blocked_agents = ("agy", "codex", "gemini", "grok", "antigravity")
+    for agent in blocked_agents:
+        write_exec(
+            os.path.join(shim_dir, agent),
+            f"#!/bin/sh\nprintf '%s\\n' 'codr: Account isolation is unsupported for {agent} in isolated Spaces; refusing host fallback.' >&2\nexit 1\n",
+        )
 
     rc_setup = (
         'mkdir -p "$HOME/.local/bin" "$HOME/.opencode/bin"\n'
         'printf "#!/bin/sh\\nprintf \\"RESULT:OC_ARGS=%%s:\\\\nRESULT:OC_DATA=%%s:\\\\nRESULT:OC_STATE=%%s:\\\\nRESULT:OC_CACHE=%%s:\\\\nRESULT:OC_CFG=%%s:\\\\n\\" \\"\\$*\\" \\"\\${XDG_DATA_HOME-UNSET}\\" \\"\\${XDG_STATE_HOME-UNSET}\\" \\"\\${XDG_CACHE_HOME-UNSET}\\" \\"\\${OPENCODE_CONFIG_DIR-UNSET}\\"\\n" > "$HOME/.opencode/bin/opencode"\n'
         'printf "#!/bin/sh\\necho HOST_TERAX\\n" > "$HOME/.local/bin/terax"\n'
         'chmod 755 "$HOME/.opencode/bin/opencode" "$HOME/.local/bin/terax"\n'
+        'for b in agy codex gemini grok antigravity; do\n'
+        '  printf "#!/bin/sh\\necho HOST_$(printf %s "$b" | tr a-z A-Z)\\n" > "$HOME/.local/bin/$b"\n'
+        '  chmod 755 "$HOME/.local/bin/$b"\n'
+        'done\n'
     )
     isolated_files = {
-        ".zshenv": rc_setup + 'export OPENAI_API_KEY="sk-openai-zshenv-leak"\n',
+        ".zshenv": rc_setup + 'export PATH="$HOME/.local/bin:$PATH"\nexport OPENAI_API_KEY="sk-openai-zshenv-leak"\n',
         ".zprofile": 'export PATH="$HOME/.local/bin:$PATH"\n',
         ".zshrc": (
             "PS1='PROMPT> '\n"
@@ -618,12 +628,63 @@ with tempfile.TemporaryDirectory() as space_tmp:
         '"RESULT:NEST_ANT=${ANTHROPIC_API_KEY-UNSET}:" '
         '"RESULT:NEST_GEM=${GEMINI_API_KEY-UNSET}:"'
     )
+    for agent in blocked_agents:
+        s.run(
+            f'p=$(whence -p {agent}); err=$({agent} 2>&1 >/dev/null); rc=$?; '
+            f'print -r -- "RESULT:NEST_BLK_{agent}=$p|$rc|${{err#*: }}:"'
+        )
     s.run("exit")
     check("zsh isolated: nested zsh -l enforces shim opencode after its rc/.zlogin", s.result("NEST_OC") == os.path.join(shim_dir, "opencode"), s.result("NEST_OC"))
     check("zsh isolated: nested zsh -l scrubs ANTHROPIC_API_KEY", s.result("NEST_ANT") == "UNSET", s.result("NEST_ANT"))
     check("zsh isolated: nested zsh -l scrubs GEMINI_API_KEY", s.result("NEST_GEM") == "UNSET", s.result("NEST_GEM"))
 
+    for agent in blocked_agents:
+        s.run(
+            f'p=$(whence -p {agent}); err=$({agent} 2>&1 >/dev/null); rc=$?; '
+            f'print -r -- "RESULT:DIR_BLK_{agent}=$p|$rc|${{err#*: }}:"'
+        )
+        got = s.result(f"DIR_BLK_{agent}") or ""
+        check(
+            f"zsh isolated: direct {agent} resolves to Space shim and exits non-zero",
+            got.startswith(os.path.join(shim_dir, agent) + "|1|") and "Account isolation is unsupported" in got,
+            got,
+        )
+        nest_got = s.result(f"NEST_BLK_{agent}") or ""
+        check(
+            f"zsh isolated: nested zsh -l {agent} resolves to Space shim and exits non-zero",
+            nest_got.startswith(os.path.join(shim_dir, agent) + "|1|") and "Account isolation is unsupported" in nest_got,
+            nest_got,
+        )
+
+    s.run(
+        'sh -c \'for b in agy codex gemini grok antigravity; do '
+        'p=$(command -v "$b"); err=$("$b" 2>&1 >/dev/null); rc=$?; '
+        'printf "RESULT:SH_BLK_%s=%s|%s|%s:\\n" "$b" "$p" "$rc" "${err#*: }"; done\''
+    )
+    s.run(
+        'zsh -c \'for b in agy codex gemini grok antigravity; do '
+        'p=$(whence -p "$b"); err=$("$b" 2>&1 >/dev/null); rc=$?; '
+        'printf "RESULT:ZC_BLK_%s=%s|%s|%s:\\n" "$b" "$p" "$rc" "${err#*: }"; done\''
+    )
+    s.run(
+        'python3 -c \'import shutil, subprocess\n'
+        'for b in ("agy", "codex", "gemini", "grok", "antigravity"):\n'
+        '    r = subprocess.run([b], capture_output=True, text=True)\n'
+        '    err = r.stderr.strip().split(": ", 1)[-1]\n'
+        '    print(f"RESULT:PY_BLK_{b}={shutil.which(b)}|{r.returncode}|{err}:")\''
+    )
+    for agent in blocked_agents:
+        sh_got = s.result(f"SH_BLK_{agent}") or ""
+        zc_got = s.result(f"ZC_BLK_{agent}") or ""
+        py_got = s.result(f"PY_BLK_{agent}") or ""
+        expected_prefix = os.path.join(shim_dir, agent) + "|1|"
+        check(f"zsh isolated: child sh {agent} resolves to Space shim and blocks", sh_got.startswith(expected_prefix) and "Account isolation is unsupported" in sh_got, sh_got)
+        check(f"zsh isolated: child zsh -c {agent} resolves to Space shim and blocks", zc_got.startswith(expected_prefix) and "Account isolation is unsupported" in zc_got, zc_got)
+        check(f"zsh isolated: tool subprocess {agent} resolves to Space shim and blocks", py_got.startswith(expected_prefix) and "Account isolation is unsupported" in py_got, py_got)
+
     stream = s.out.decode("utf-8", "replace")
+    for leaked_host in ("HOST_AGY", "HOST_CODEX", "HOST_GEMINI", "HOST_GROK", "HOST_ANTIGRAVITY"):
+        check(f"zsh isolated: never delegates to {leaked_host}", leaked_host not in stream)
     for leaked in ("sk-openai-zshenv-leak", "sk-ant-zshrc-leak", "sk-openai-zshrc-leak", "sk-opencode-zshrc-leak", "AIzaZshrcLeak123", "AIzaZloginLeak999", "sk-ant-zlogin-leak"):
         check(f"zsh isolated: no leaked secret {leaked}", leaked not in stream)
     s.close()

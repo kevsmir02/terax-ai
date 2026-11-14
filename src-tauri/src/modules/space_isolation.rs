@@ -639,8 +639,14 @@ impl SpaceIsolationRegistry {
         expected_isolation: AccountIsolationMode,
         agent_id: &str,
     ) -> Result<(), String> {
+        if expected_isolation == AccountIsolationMode::Isolated {
+            if let Some(reason) = unsupported_isolated_agent_reason(agent_id) {
+                return Err(reason);
+            }
+        }
+        let trimmed_agent = agent_id.trim();
         let required_agent =
-            (expected_isolation == AccountIsolationMode::Isolated).then_some(agent_id);
+            (expected_isolation == AccountIsolationMode::Isolated).then_some(trimmed_agent);
         self.prepare_pty_isolation_for_agent(
             Some(space_id),
             Some(expected_isolation),
@@ -648,6 +654,33 @@ impl SpaceIsolationRegistry {
             required_agent,
         )
         .map(|_| ())
+    }
+}
+
+pub fn unsupported_isolated_agent_reason(agent_id: &str) -> Option<String> {
+    let normalized = agent_id.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "claude" | "pi" | "opencode" => None,
+        "agy" | "antigravity" => Some(
+            "Account isolation is unsupported for Antigravity CLI (agy) in isolated Spaces; refusing host fallback"
+                .to_string(),
+        ),
+        "codex" => Some(
+            "Account isolation is unsupported for Codex in isolated Spaces; refusing host fallback"
+                .to_string(),
+        ),
+        "gemini" => Some(
+            "Account isolation is unsupported for Gemini in isolated Spaces; refusing host fallback"
+                .to_string(),
+        ),
+        "grok" => Some(
+            "Account isolation is unsupported for Grok in isolated Spaces; refusing host fallback"
+                .to_string(),
+        ),
+        _ => Some(format!(
+            "Account isolation is unsupported for '{}' in isolated Spaces; refusing host fallback",
+            sanitize_error_message(&normalized)
+        )),
     }
 }
 
@@ -1900,6 +1933,47 @@ mod tests {
         assert!(good_registry
             .prepare_agent_launch("sp-iso", AccountIsolationMode::Isolated, "claude")
             .is_ok());
+    }
+
+    #[test]
+    fn agent_launch_preflight_blocks_unsupported_agents_in_isolated_spaces_and_allows_default() {
+        let (_dir, registry, _manifest_path, profiles_dir) = temp_registry();
+        registry
+            .register_space("sp-default", AccountIsolationMode::Default)
+            .unwrap();
+        registry
+            .register_space("sp-iso", AccountIsolationMode::Isolated)
+            .unwrap();
+
+        for agent in ["agy", "antigravity", "codex", "gemini", "grok"] {
+            assert!(
+                registry
+                    .prepare_agent_launch("sp-default", AccountIsolationMode::Default, agent)
+                    .is_ok(),
+                "default Space should allow {agent}"
+            );
+            let err = registry
+                .prepare_agent_launch("sp-iso", AccountIsolationMode::Isolated, agent)
+                .expect_err(&format!("isolated Space must block {agent}"));
+            assert!(
+                err.contains("Account isolation is unsupported"),
+                "unexpected error for {agent}: {err}"
+            );
+        }
+
+        assert!(registry
+            .prepare_agent_launch("sp-iso", AccountIsolationMode::Isolated, "unknown-agent")
+            .is_err());
+
+        assert!(registry
+            .prepare_agent_launch("sp-iso", AccountIsolationMode::Isolated, "pi")
+            .is_ok());
+        assert!(unsupported_isolated_agent_reason("opencode").is_none());
+
+        let shim_dir = profiles_dir.join("sp-iso").join("bin");
+        for bin in ["agy", "antigravity", "codex", "gemini", "grok"] {
+            assert!(shim_dir.join(bin).is_file(), "missing shim {bin}");
+        }
     }
 
     #[cfg(unix)]

@@ -691,12 +691,16 @@ export default function App() {
 
   const launchAgentGroup = useCallback(
     async (request: AgentLaunchRequest): Promise<boolean> => {
-      const command = resolveAgentLaunchCommand(request.agent, request.command);
-      if (!command.ok) return false;
       const spaceId = useSpaces.getState().activeId ?? DEFAULT_SPACE_ID;
       const expectedIsolation =
         useSpaces.getState().spaces.find((s) => s.id === spaceId)
           ?.accountIsolation ?? "default";
+      const command = resolveAgentLaunchCommand(
+        request.agent,
+        request.command,
+        expectedIsolation,
+      );
+      if (!command.ok) return false;
       if (expectedIsolation === "isolated") {
         try {
           await preflightAgentLaunch(spaceId, expectedIsolation, request.agent);

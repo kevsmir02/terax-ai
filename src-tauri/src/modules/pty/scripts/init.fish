@@ -67,6 +67,17 @@ function __terax_prepend_path_dedup --argument-names dir
     set -gx PATH $next
 end
 
+function __terax_enforce_space_path
+    set -q __terax_enforcing_space_path; and return 0
+    set -q CODR_SPACE_SHIM_DIR; and test -n "$CODR_SPACE_SHIM_DIR"; or return 0
+    set -g __terax_enforcing_space_path 1
+    if set -q CODR_CONTROL_BIN_DIR; and test -n "$CODR_CONTROL_BIN_DIR"
+        __terax_prepend_path_dedup "$CODR_CONTROL_BIN_DIR"
+    end
+    __terax_prepend_path_dedup "$CODR_SPACE_SHIM_DIR"
+    set -e __terax_enforcing_space_path
+end
+
 function __terax_enforce_space_isolation
     set -g __terax_isolation_enforced 1
     if functions -q __terax_on_first_prompt
@@ -89,10 +100,14 @@ function __terax_enforce_space_isolation
     if set -Uq OPENCODE_CONFIG_DIR
         set -gx OPENCODE_CONFIG_DIR ""
     end
-    if set -q CODR_CONTROL_BIN_DIR; and test -n "$CODR_CONTROL_BIN_DIR"
-        __terax_prepend_path_dedup "$CODR_CONTROL_BIN_DIR"
+    __terax_enforce_space_path
+end
+
+if not status is-interactive; and set -q CODR_SPACE_SHIM_DIR; and test -n "$CODR_SPACE_SHIM_DIR"
+    __terax_enforce_space_path
+    function __terax_on_space_path_change --on-variable PATH
+        __terax_enforce_space_path
     end
-    __terax_prepend_path_dedup "$CODR_SPACE_SHIM_DIR"
 end
 
 if not set -q __terax_isolation_enforced

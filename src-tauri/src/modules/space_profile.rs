@@ -64,6 +64,20 @@ pub const SCRUBBED_PROVIDER_ENV_KEYS: [&str; 4] = [
     "GEMINI_API_KEY",
 ];
 
+pub const ISOLATED_BLOCKED_AGENTS: &[(&str, &str)] = &[
+    ("agy", "Antigravity CLI (agy)"),
+    ("antigravity", "Antigravity (antigravity)"),
+    ("codex", "Codex (codex)"),
+    ("gemini", "Gemini (gemini)"),
+    ("grok", "Grok (grok)"),
+];
+
+pub fn blocked_agent_shim_script(label: &str) -> String {
+    format!(
+        "#!/bin/sh\nprintf '%s\\n' 'codr: Account isolation is unsupported for {label} in isolated Spaces; refusing host fallback.' >&2\nexit 1\n"
+    )
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct IsolatedProfileEnv {
     pub space_dir: PathBuf,
@@ -587,6 +601,7 @@ pub fn provision_and_verify_claude_profile(
     ensure_profiles_root(&env.profiles_root)?;
     ensure_strict_private_dir(&paths.space_dir, "Space profile root")?;
     ensure_strict_private_dir(&paths.shim_dir, "Space shim directory")?;
+    provision_and_verify_blocked_shims(&paths.shim_dir)?;
     ensure_strict_private_dir(&paths.claude_dir, "Space Claude config directory")?;
 
     let host_claude_dir = env.host_home.as_ref().map(|h| h.join(".claude"));
@@ -775,37 +790,11 @@ fn verify_opencode_config_dir(paths: &OpenCodeProfilePaths) -> Result<(), String
     Ok(())
 }
 
-fn verify_no_opencode_private_symlinks(paths: &OpenCodeProfilePaths) -> Result<(), String> {
-    const PRIVATE_RELS: &[&str] = &[
-        "opencode",
-        "opencode/opencode.db",
-        "opencode/opencode.db-wal",
-        "opencode/opencode.db-shm",
-        "opencode/auth.json",
-        "opencode.db",
-        "auth.json",
-        "service.json",
-        "cli.json",
-    ];
-    for base in [&paths.data_home, &paths.state_home, &paths.cache_home] {
-        for rel in PRIVATE_RELS {
-            let candidate = base.join(rel);
-            match fs::symlink_metadata(&candidate) {
-                Ok(meta) if meta.file_type().is_symlink() => {
-                    return Err(format!(
-                        "Private Space OpenCode entry '{rel}' cannot be a symlink; refusing host fallback"
-                    ));
-                }
-                Ok(_) => {}
-                Err(err) if err.kind() == ErrorKind::NotFound => {}
-                Err(err) => {
-                    return Err(format!(
-                        "Failed to inspect private Space OpenCode entry '{rel}': {}",
-                        sanitize_io_err(&err)
-                    ));
-                }
-            }
-        }
+pub fn provision_and_verify_blocked_shims(shim_dir: &Path) -> Result<(), String> {
+    for &(bin_name, label) in ISOLATED_BLOCKED_AGENTS {
+        let shim_path = shim_dir.join(bin_name);
+        let expected = blocked_agent_shim_script(label);
+        ensure_executable_shim_0700(&shim_path, expected.as_bytes(), bin_name)?;
     }
     Ok(())
 }
@@ -874,6 +863,108 @@ fn ensure_and_verify_executable_shim(
             sanitize_io_err(&err)
         )),
     }
+}
+
+fn ensure_executable_shim_0700(
+    path: &Path,
+    bytes: &[u8],
+    bin_name: &str,
+) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() || !meta.is_file() {
+                return Err(format!(
+                    "Space blocking shim '{bin_name}' must be a regular executable file, not a symlink; refusing isolated launch"
+                ));
+            }
+            if fs::read(path).ok().as_deref() == Some(bytes) {
+                #[cfg(unix)]
+                if (meta.permissions().mode() & 0o777) != 0o700 {
+                    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|e| {
+                        format!(
+                            "Failed to enforce 0700 permissions on Space blocking shim '{bin_name}': {}",
+                            sanitize_io_err(&e)
+                        )
+                    })?;
+                }
+                return Ok(());
+            }
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(format!(
+                "Failed to inspect Space blocking shim '{bin_name}': {}",
+                sanitize_io_err(&err)
+            ));
+        }
+    }
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("Invalid path for Space blocking shim '{bin_name}'"))?;
+    let mut tmp = NamedTempFile::new_in(parent).map_err(|e| {
+        format!(
+            "Failed to stage Space blocking shim '{bin_name}': {}",
+            sanitize_io_err(&e)
+        )
+    })?;
+    #[cfg(unix)]
+    fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).map_err(|e| {
+        format!(
+            "Failed to set 0700 permissions on Space blocking shim '{bin_name}': {}",
+            sanitize_io_err(&e)
+        )
+    })?;
+    tmp.write_all(bytes)
+        .and_then(|()| tmp.as_file().sync_all())
+        .map_err(|e| {
+            format!(
+                "Failed to write Space blocking shim '{bin_name}': {}",
+                sanitize_io_err(&e)
+            )
+        })?;
+    tmp.persist(path).map_err(|e| {
+        format!(
+            "Failed to persist Space blocking shim '{bin_name}': {}",
+            sanitize_io_err(&e.error)
+        )
+    })?;
+    Ok(())
+}
+
+fn verify_no_opencode_private_symlinks(paths: &OpenCodeProfilePaths) -> Result<(), String> {
+    const PRIVATE_RELS: &[&str] = &[
+        "opencode",
+        "opencode/opencode.db",
+        "opencode/opencode.db-wal",
+        "opencode/opencode.db-shm",
+        "opencode/auth.json",
+        "opencode.db",
+        "auth.json",
+        "service.json",
+        "cli.json",
+    ];
+    for base in [&paths.data_home, &paths.state_home, &paths.cache_home] {
+        for rel in PRIVATE_RELS {
+            let candidate = base.join(rel);
+            match fs::symlink_metadata(&candidate) {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    return Err(format!(
+                        "Private Space OpenCode entry '{rel}' cannot be a symlink; refusing host fallback"
+                    ));
+                }
+                Ok(_) => {}
+                Err(err) if err.kind() == ErrorKind::NotFound => {}
+                Err(err) => {
+                    return Err(format!(
+                        "Failed to inspect private Space OpenCode entry '{rel}': {}",
+                        sanitize_io_err(&err)
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn ensure_profiles_root(root: &Path) -> Result<(), String> {
@@ -1768,5 +1859,82 @@ mod tests {
         )
         .unwrap();
         assert_eq!(home_resolved.as_deref(), Some(home_opencode.as_path()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provision_creates_0700_blocking_shims_for_unsupported_agents_that_refuse_host_delegation() {
+        let temp = TempDir::new().unwrap();
+        let env = test_env(&temp);
+        let host_bin = temp.path().join("host_bin");
+        fs::create_dir_all(&host_bin).unwrap();
+        let sentinel = temp.path().join("host-invoked");
+
+        for name in ["agy", "antigravity", "codex", "gemini", "grok"] {
+            write_exec_script(
+                &host_bin,
+                name,
+                &format!(
+                    "#!/bin/sh\ntouch '{}'\necho HOST_{}\nexit 0\n",
+                    sentinel.display(),
+                    name.to_ascii_uppercase()
+                ),
+            );
+        }
+
+        let paths = provision_and_verify_claude_profile(&env, "sp-alpha").unwrap();
+        let path_env =
+            std::env::join_paths([paths.shim_dir.as_path(), host_bin.as_path(), Path::new("/usr/bin"), Path::new("/bin")])
+                .unwrap();
+
+        for name in ["agy", "antigravity", "codex", "gemini", "grok"] {
+            let shim_path = paths.shim_dir.join(name);
+            let meta = fs::symlink_metadata(&shim_path)
+                .unwrap_or_else(|e| panic!("missing shim {name}: {e}"));
+            assert!(meta.is_file(), "{name} shim must be a regular file");
+            assert!(!meta.file_type().is_symlink(), "{name} shim must not be symlink");
+            assert_eq!(
+                meta.permissions().mode() & 0o777,
+                0o700,
+                "{name} shim must be 0700 executable"
+            );
+
+            let out = Command::new(name)
+                .env_clear()
+                .env("PATH", &path_env)
+                .env("HOME", env.host_home.as_ref().unwrap())
+                .output()
+                .unwrap_or_else(|e| panic!("failed to run shim {name}: {e}"));
+            assert!(!out.status.success(), "{name} shim must exit non-zero");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(stdout.is_empty(), "{name} shim emitted unexpected stdout: {stdout}");
+            assert!(
+                stderr.contains("Account isolation is unsupported") && stderr.contains(name),
+                "{name} shim stderr missing clear unsupported message: {stderr}"
+            );
+        }
+        assert!(
+            !sentinel.exists(),
+            "blocking shims must never delegate to host binaries"
+        );
+
+        // Replacing a blocking shim with a symlink fails closed; overwriting with
+        // tampered regular content or lax permissions is repaired atomically to 0700.
+        let codex_shim = paths.shim_dir.join("codex");
+        fs::write(&codex_shim, "#!/bin/sh\necho HIJACKED\n").unwrap();
+        fs::set_permissions(&codex_shim, fs::Permissions::from_mode(0o755)).unwrap();
+        provision_and_verify_claude_profile(&env, "sp-alpha").unwrap();
+        assert_eq!(
+            fs::symlink_metadata(&codex_shim).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let repaired_out = Command::new(&codex_shim).output().unwrap();
+        assert!(!repaired_out.status.success());
+        assert!(repaired_out.stdout.is_empty());
+
+        fs::remove_file(&codex_shim).unwrap();
+        symlink(host_bin.join("codex"), &codex_shim).unwrap();
+        assert!(provision_and_verify_claude_profile(&env, "sp-alpha").is_err());
     }
 }
