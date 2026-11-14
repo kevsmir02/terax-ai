@@ -89,7 +89,7 @@ export function ViewLauncherMenu({
             </DropdownMenuTrigger>
             <DropdownMenuContent
               align="end"
-              className="min-w-48"
+              className="min-w-56"
               onCloseAutoFocus={(event) => {
                 event.preventDefault();
                 if (!openLauncherAfterMenuClose.current) return;
@@ -104,7 +104,7 @@ export function ViewLauncherMenu({
                   size={14}
                   strokeWidth={1.75}
                 />
-                <span className="flex-1">Agents</span>
+                <span className="flex-1 whitespace-nowrap">Agents</span>
                 <HugeiconsIcon
                   icon={ArrowRight01Icon}
                   size={14}
@@ -118,8 +118,8 @@ export function ViewLauncherMenu({
                   size={14}
                   strokeWidth={1.75}
                 />
-                <span className="flex-1">Web Preview</span>
-                <span className="text-xs text-muted-foreground">
+                <span className="flex-1 whitespace-nowrap">Web Preview</span>
+                <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">
                   {previewHint}
                 </span>
               </DropdownMenuItem>
@@ -129,7 +129,7 @@ export function ViewLauncherMenu({
                   size={14}
                   strokeWidth={1.75}
                 />
-                <span className="flex-1">Git Graph</span>
+                <span className="flex-1 whitespace-nowrap">Git Graph</span>
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem onSelect={onNewBlock}>
@@ -138,8 +138,8 @@ export function ViewLauncherMenu({
                   size={14}
                   strokeWidth={1.75}
                 />
-                <span className="flex-1">Blocks</span>
-                <span className="text-xs text-muted-foreground">
+                <span className="flex-1 whitespace-nowrap">Blocks</span>
+                <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">
                   {blockHint}
                 </span>
               </DropdownMenuItem>
@@ -149,8 +149,8 @@ export function ViewLauncherMenu({
                   size={14}
                   strokeWidth={1.75}
                 />
-                <span className="flex-1">Editor</span>
-                <span className="text-xs text-muted-foreground">
+                <span className="flex-1 whitespace-nowrap">Editor</span>
+                <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">
                   {editorHint}
                 </span>
               </DropdownMenuItem>
