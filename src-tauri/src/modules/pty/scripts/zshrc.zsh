@@ -20,8 +20,43 @@
   [ -f "$_terax_user_zdotdir/.zshrc" ] && source "$_terax_user_zdotdir/.zshrc"
 }
 
+_terax_enforce_space_isolation() {
+  emulate -L zsh
+  [[ -n "${CODR_SPACE_SHIM_DIR-}" ]] || return 0
+  local keep=",${CODR_SPACE_ENV_OVERRIDE_KEYS-},"
+  local key
+  for key in ANTHROPIC_API_KEY OPENAI_API_KEY OPENCODE_API_KEY GEMINI_API_KEY; do
+    if [[ "$keep" != *,"$key",* ]]; then
+      unset "$key" 2>/dev/null || true
+    fi
+  done
+  local shim="$CODR_SPACE_SHIM_DIR"
+  local ctrl="${CODR_CONTROL_BIN_DIR-}"
+  local -a next=("$shim")
+  [[ -n "$ctrl" && "$ctrl" != "$shim" ]] && next+=("$ctrl")
+  local entry
+  for entry in $path; do
+    [[ -z "$entry" || "$entry" = "$shim" ]] && continue
+    [[ -n "$ctrl" && "$entry" = "$ctrl" ]] && continue
+    next+=("$entry")
+  done
+  path=("${next[@]}")
+  export PATH
+}
+
+_terax_post_zlogin_isolation() {
+  emulate -L zsh
+  _terax_enforce_space_isolation
+  precmd_functions=(${precmd_functions:#_terax_post_zlogin_isolation})
+  unset -f _terax_post_zlogin_isolation 2>/dev/null || true
+}
+
 _terax_zshrc_setup() {
   emulate -L zsh
+  _terax_enforce_space_isolation
+  if [[ -n "${CODR_SPACE_SHIM_DIR-}" ]]; then
+    precmd_functions=(_terax_post_zlogin_isolation ${precmd_functions:#_terax_post_zlogin_isolation})
+  fi
 
   if [[ -n "${CODR_CLI-}" && -x "${CODR_CLI-}" ]]; then
     terax() {

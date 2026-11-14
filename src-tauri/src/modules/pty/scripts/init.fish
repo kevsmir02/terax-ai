@@ -56,6 +56,47 @@ function __terax_capture_user_prompt
     functions -c fish_prompt __terax_user_prompt
 end
 
+function __terax_prepend_path_dedup --argument-names dir
+    test -n "$dir"; or return 0
+    set -l next "$dir"
+    for entry in $PATH
+        if test -n "$entry"; and test "$entry" != "$dir"
+            set -a next "$entry"
+        end
+    end
+    set -gx PATH $next
+end
+
+function __terax_enforce_space_isolation
+    set -g __terax_isolation_enforced 1
+    if functions -q __terax_on_first_prompt
+        functions -e __terax_on_first_prompt
+    end
+    set -q CODR_SPACE_SHIM_DIR; and test -n "$CODR_SPACE_SHIM_DIR"; or return 0
+    set -l keep
+    if set -q CODR_SPACE_ENV_OVERRIDE_KEYS; and test -n "$CODR_SPACE_ENV_OVERRIDE_KEYS"
+        set keep (string split ',' -- "$CODR_SPACE_ENV_OVERRIDE_KEYS")
+    end
+    for key in ANTHROPIC_API_KEY OPENAI_API_KEY OPENCODE_API_KEY GEMINI_API_KEY
+        if not contains -- $key $keep
+            set -ge $key
+            if set -Uq $key
+                set -gx $key ""
+            end
+        end
+    end
+    if set -q CODR_CONTROL_BIN_DIR; and test -n "$CODR_CONTROL_BIN_DIR"
+        __terax_prepend_path_dedup "$CODR_CONTROL_BIN_DIR"
+    end
+    __terax_prepend_path_dedup "$CODR_SPACE_SHIM_DIR"
+end
+
+if not set -q __terax_isolation_enforced
+    function __terax_on_first_prompt --on-event fish_prompt
+        __terax_enforce_space_isolation
+    end
+end
+
 # Wrapped so `fish -C __terax_install_prompt` can re-run it AFTER config.fish,
 # where a framework prompt (starship etc.) would otherwise override fish_prompt
 # and drop our markers.
