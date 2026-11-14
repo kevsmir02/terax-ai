@@ -6,10 +6,13 @@ import {
   createAgentPanePlan,
   DEFAULT_AGENT_LAUNCH_COMMANDS,
   findAgentLauncher,
+  getAgentIsolationDisabledReason,
+  isAgentSupportedInSpace,
   normalizeAgentLaunchCommands,
   resolveAgentLaunchCommand,
   validateAgentLaunchCommand,
   type AgentInstanceCount,
+  type AgentLauncherId,
 } from "./launcher";
 
 function allocator(start = 1) {
@@ -159,6 +162,65 @@ describe("Antigravity CLI versus its desktop app", () => {
     expect(resolveAgentLaunchCommand("antigravity", "a\nb")).toMatchObject({
       ok: false,
     });
+  });
+});
+
+describe("Account isolation support in v1 Spaces", () => {
+  const supportedInIsolated: AgentLauncherId[] = ["claude", "pi", "opencode"];
+  const unsupportedInIsolated: AgentLauncherId[] = [
+    "codex",
+    "gemini",
+    "grok",
+    "antigravity",
+  ];
+
+  it("marks only claude, pi, and opencode as supporting Account isolation in v1", () => {
+    for (const id of supportedInIsolated) {
+      expect(findAgentLauncher(id).supportsAccountIsolation).toBe(true);
+      expect(isAgentSupportedInSpace(id, "default")).toBe(true);
+      expect(isAgentSupportedInSpace(id, "isolated")).toBe(true);
+      expect(getAgentIsolationDisabledReason(id, "isolated")).toBeNull();
+    }
+
+    for (const id of unsupportedInIsolated) {
+      expect(findAgentLauncher(id).supportsAccountIsolation).toBe(false);
+      expect(isAgentSupportedInSpace(id, "default")).toBe(true);
+      expect(isAgentSupportedInSpace(id, "isolated")).toBe(false);
+      expect(getAgentIsolationDisabledReason(id, "default")).toBeNull();
+      expect(getAgentIsolationDisabledReason(id, "isolated")).toMatch(
+        /Account isolation is not supported yet/,
+      );
+    }
+  });
+
+  it("refuses resolving launch commands for unsupported agents inside isolated Spaces", () => {
+    for (const id of supportedInIsolated) {
+      const cmd = DEFAULT_AGENT_LAUNCH_COMMANDS[id];
+      expect(resolveAgentLaunchCommand(id, cmd, "isolated")).toEqual({
+        ok: true,
+        command: cmd,
+      });
+    }
+
+    for (const id of unsupportedInIsolated) {
+      const cmd = DEFAULT_AGENT_LAUNCH_COMMANDS[id];
+      const res = resolveAgentLaunchCommand(id, cmd, "isolated");
+      expect(res, id).toMatchObject({ ok: false });
+      if (!res.ok) {
+        expect(res.error).toMatch(/Account isolation is not supported yet/);
+      }
+    }
+  });
+
+  it("fails closed if an unrecognized or alias id like agy is passed programmatically in isolated mode", () => {
+    const unknownId = "agy" as AgentLauncherId;
+    expect(isAgentSupportedInSpace(unknownId, "isolated")).toBe(false);
+    expect(getAgentIsolationDisabledReason(unknownId, "isolated")).toMatch(
+      /Account isolation is not supported yet/,
+    );
+    expect(resolveAgentLaunchCommand(unknownId, "agy", "isolated")).toMatchObject(
+      { ok: false },
+    );
   });
 });
 

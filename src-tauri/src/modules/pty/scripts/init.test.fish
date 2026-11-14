@@ -81,6 +81,17 @@ def run_fish_session(mode):
         write_exec(os.path.join(home, ".opencode", "bin", "opencode"), "#!/bin/sh\necho HOST_OPENCODE\n")
         write_exec(os.path.join(ctrl_dir, "terax"), "#!/bin/sh\necho CTRL_TERAX\n")
         write_exec(os.path.join(home, ".local", "bin", "terax"), "#!/bin/sh\necho HOST_TERAX\n")
+        for agent in ("agy", "codex", "gemini", "grok", "antigravity"):
+            shim_path = os.path.join(shim_dir, agent)
+            write_exec(
+                shim_path,
+                f"#!/bin/sh\nprintf \x27terax: {agent} is blocked in this isolated Space: Account isolation is unsupported for {agent}.\\n\x27 >&2\nexit 126\n",
+            )
+            os.chmod(shim_path, 0o700)
+            write_exec(
+                os.path.join(home, ".local", "bin", agent),
+                f"#!/bin/sh\necho HOST_{agent.upper()}\n",
+            )
 
         cfg_lines = [
             "function fish_prompt; printf \"fish> \"; end",
@@ -165,13 +176,44 @@ def run_fish_session(mode):
             "(set -q CODR_SPACE_SHIM_DIR; and echo $CODR_SPACE_SHIM_DIR; or echo UNSET)"
         )
         send("sh -c \x27printf \"SH:OC=%s|OAI=%s|CLAUDE=%s\\n\" \"$(command -v opencode)\" \"${OPENAI_API_KEY-UNSET}\" \"${CLAUDE_CONFIG_DIR-UNSET}\"\x27")
+        if mode in ("isolated", "default"):
+            send(
+                "for a in agy codex gemini grok antigravity; "
+                "set -l p (command -v $a); "
+                "set -l out ($a 2>&1); set -l rc $status; "
+                "printf \"DIR_BLK_%s=%s|%d|%s\\n\" $a \"$p\" $rc \"$out\"; end"
+            )
         if mode == "isolated":
+            send(
+                "sh -c \x27for a in agy codex gemini grok antigravity; "
+                "p=\"$(command -v \"$a\")\"; out=\"$(\"$a\" 2>&1)\"; rc=$?; "
+                "printf \"SH_BLK_%s=%s|%d|%s\\n\" \"$a\" \"$p\" \"$rc\" \"$out\"; done\x27"
+            )
+            send(
+                "fish -c \x27for a in agy codex gemini grok antigravity; "
+                "set -l p (command -v $a); set -l out ($a 2>&1); set -l rc $status; "
+                "printf \"FISHC_BLK_%s=%s|%d|%s\\n\" $a \"$p\" $rc \"$out\"; end\x27"
+            )
+            send(
+                "python3 -c \x27import shutil, subprocess; "
+                "[print(f\"PY_BLK_{a}={shutil.which(a)}|{r.returncode}|{(r.stderr or r.stdout).strip()}\") "
+                "for a in (\"agy\",\"codex\",\"gemini\",\"grok\",\"antigravity\") "
+                "for r in [subprocess.run([a], capture_output=True, text=True)]]\x27",
+                wait=1.5,
+            )
             send("fish -i")
             send(
                 "printf \"NESTED_FISH:OC=%s|ANT=%s|GEM=%s\\n\" "
                 "(command -v opencode) "
                 "(set -q ANTHROPIC_API_KEY; and echo $ANTHROPIC_API_KEY; or echo UNSET) "
                 "(set -q GEMINI_API_KEY; and echo $GEMINI_API_KEY; or echo UNSET)"
+            )
+            send(
+                "for a in agy codex gemini grok antigravity; "
+                "set -l p (command -v $a); "
+                "set -l out ($a 2>&1); set -l rc $status; "
+                "printf \"NFISH_BLK_%s=%s|%d|%s\\n\" $a \"$p\" $rc \"$out\"; end",
+                wait=1.5,
             )
             send("exit", wait=0.5)
         send("exit", wait=0.5)
@@ -195,6 +237,17 @@ check("fish isolated: child sh inherits Space shim, scrubbed key, and CLAUDE_CON
 check("fish isolated: nested interactive fish enforces shim and scrubs keys", f"NESTED_FISH:OC={iso_shim}/opencode|ANT=UNSET|GEM=UNSET" in iso_out, iso_out)
 for leaked in ("sk-ant-fish-leak", "sk-openai-fish-leak", "sk-opencode-fish-leak", "AIzaFishLeak123"):
     check(f"fish isolated: no leaked secret {leaked}", leaked not in iso_out)
+for agent in ("agy", "codex", "gemini", "grok", "antigravity"):
+    for prefix, label in (
+        ("DIR_BLK", "direct"),
+        ("SH_BLK", "child sh"),
+        ("FISHC_BLK", "child fish -c"),
+        ("PY_BLK", "tool subprocess"),
+        ("NFISH_BLK", "nested fish -i"),
+    ):
+        expected_prefix = f"{prefix}_{agent}={iso_shim}/{agent}|126|terax: {agent} is blocked in this isolated Space: Account isolation is unsupported for {agent}."
+        check(f"fish isolated: {label} {agent} uses Space shim and blocks", expected_prefix in iso_out, iso_out)
+    check(f"fish isolated: never delegates {agent} to host binary", f"HOST_{agent.upper()}" not in iso_out, iso_out)
 
 ovr_out, _, _, ovr_shim, _, _, _ = run_fish_session("override")
 check("fish override: opencode resolves to Space shim", f"MAIN:OC={ovr_shim}/opencode|" in ovr_out, ovr_out)
@@ -203,6 +256,9 @@ check("fish override: explicit ANTHROPIC_API_KEY survives while others scrub", "
 def_out, def_home, _, _, _, _, _ = run_fish_session("default")
 check("fish default: config.fish opencode PATH stays active", f"MAIN:OC={def_home}/.opencode/bin/opencode|" in def_out, def_out)
 check("fish default: config.fish ANTHROPIC_API_KEY is left alone", "|ANT=sk-ant-fish-leak|" in def_out, def_out)
+for agent in ("agy", "codex", "gemini", "grok", "antigravity"):
+    expected_def = f"DIR_BLK_{agent}={def_home}/.local/bin/{agent}|0|HOST_{agent.upper()}"
+    check(f"fish default: {agent} resolves to ~/.local/bin in default mode", expected_def in def_out, def_out)
 
 uni_out, _, _, _, _, _, persisted = run_fish_session("universal")
 check("fish universal: does not leak universal secret into child sh", "sk-universal-fish-secret" not in uni_out, uni_out)
