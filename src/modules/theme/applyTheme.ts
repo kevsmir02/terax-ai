@@ -1,4 +1,5 @@
-import type { Theme, ThemeColors, ThemeMode, TerminalPalette } from "./types";
+import { resolveTerminalSurface, resolveThemeVariant } from "./terminalSurface";
+import type { TerminalPalette, Theme, ThemeColors, ThemeMode } from "./types";
 
 const COLOR_VAR: Record<keyof ThemeColors, string> = {
   background: "--background",
@@ -52,6 +53,7 @@ const ANSI_VARS: readonly string[] = [
 const ALL_VARS: readonly string[] = [
   ...Object.values(COLOR_VAR),
   "--terminal-background",
+  "--terminal-header",
   "--terminal-foreground",
   "--terminal-cursor",
   "--terminal-cursor-accent",
@@ -63,17 +65,24 @@ let lastApplied: string | null = null;
 
 export function applyTheme(theme: Theme, mode: ThemeMode): void {
   const root = document.documentElement;
-  const variant =
-    theme.variants[mode] ?? theme.variants.dark ?? theme.variants.light;
-  if (!variant) {
+  const resolved = resolveThemeVariant(theme, mode);
+  if (!resolved) {
     clearTheme();
     return;
   }
+  const { variant, mode: variantMode } = resolved;
   const colors = variant.colors;
   const terminal = variant.terminal;
   for (const v of ALL_VARS) root.style.removeProperty(v);
   if (colors) writeColors(root, colors);
   if (terminal) writeTerminal(root, terminal);
+  const surface = resolveTerminalSurface(variant, variantMode);
+  if (surface.terminalBackground) {
+    root.style.setProperty("--terminal-background", surface.terminalBackground);
+  }
+  if (surface.terminalHeader) {
+    root.style.setProperty("--terminal-header", surface.terminalHeader);
+  }
   lastApplied = theme.id;
 }
 
@@ -92,8 +101,6 @@ function writeColors(root: HTMLElement, c: ThemeColors): void {
 }
 
 function writeTerminal(root: HTMLElement, t: TerminalPalette): void {
-  if (t.background)
-    root.style.setProperty("--terminal-background", t.background);
   if (t.foreground)
     root.style.setProperty("--terminal-foreground", t.foreground);
   if (t.cursor) root.style.setProperty("--terminal-cursor", t.cursor);
