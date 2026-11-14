@@ -47,7 +47,7 @@ export const AGENT_LAUNCHERS = [
     // GUI (see `launchTarget.ts`).
     id: "antigravity",
     label: "Antigravity CLI",
-    defaultCommand: "antigravity",
+    defaultCommand: "agy",
     supportsHooks: false,
   },
 ] as const;
@@ -103,7 +103,7 @@ export function normalizeAgentLaunchCommands(
       : {};
   return Object.fromEntries(
     AGENT_LAUNCHERS.map((agent) => {
-      const result = validateAgentLaunchCommand(stored[agent.id]);
+      const result = resolveAgentLaunchCommand(agent.id, stored[agent.id]);
       return [
         agent.id,
         result.ok ? result.command : agent.defaultCommand,
