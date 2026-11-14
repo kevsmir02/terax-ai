@@ -600,6 +600,7 @@ impl SpaceIsolationRegistry {
             space_dir: paths.space_dir,
             shim_dir: paths.shim_dir,
             claude_config_dir: paths.claude_dir,
+            env_overrides: std::collections::BTreeMap::new(),
         }))
     }
 
@@ -803,6 +804,8 @@ pub fn contains_secret_payload(payload: &str) -> bool {
         "anthropic_api_key=",
         "claude_code_oauth_token=",
         "openai_api_key=",
+        "opencode_api_key=",
+        "gemini_api_key=",
     ] {
         if let Some(pos) = lower.find(prefix) {
             let rest = &payload[pos + prefix.len()..];

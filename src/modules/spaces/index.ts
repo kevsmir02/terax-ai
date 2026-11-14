@@ -1,8 +1,11 @@
 export {
+  classifyCrossSpaceTabMove,
   duplicateSpaceMeta,
   duplicateSpaceOrganization,
   duplicateSpaceState,
   evaluateIsolationToggleGuard,
+  type CrossSpaceTabMoveDecision,
+  type IsolationToggleEvaluation,
   type IsolationToggleGuard,
 } from "./lib/isolation";
 export {

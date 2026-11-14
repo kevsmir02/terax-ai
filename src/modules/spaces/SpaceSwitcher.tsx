@@ -24,7 +24,13 @@ import type {
   IsolationToggleGuard,
   SpaceRuntimeStatus,
 } from "./lib/isolation";
-import { type SharedRoot, sharedRoots } from "./lib/sharedRoots";
+import {
+  hasIsolatedSharedRoot,
+  isSharedRootIsolated,
+  sharedFolderFooterNote,
+  type SharedRoot,
+  sharedRoots,
+} from "./lib/sharedRoots";
 import { accentFor } from "./lib/spaceColor";
 import type { SpaceMeta } from "./lib/store";
 import { useSpaces } from "./lib/useSpaces";
@@ -160,8 +166,16 @@ export function SpaceSwitcher({
 
   const current = spaces.find((s) => s.id === activeId);
   const shared = useMemo(() => sharedRoots(spaces), [spaces]);
+  const hasIsolatedShared = useMemo(
+    () => hasIsolatedSharedRoot(shared, spaces),
+    [shared, spaces],
+  );
   const sharedFor = (id: string): SharedRoot | null =>
     shared.find((group) => group.spaceIds.includes(id)) ?? null;
+  const isSharedIsolatedFor = (id: string): boolean => {
+    const group = sharedFor(id);
+    return group ? isSharedRootIsolated(group, spaces) : false;
+  };
 
   const tabsBySpace = useMemo(() => {
     const m = new Map<string, Tab[]>();
@@ -326,7 +340,12 @@ export function SpaceSwitcher({
                 Retained
               </span>
             )}
-          {currentShared && <SharedFolderBadge group={currentShared} />}
+          {currentShared && (
+            <SharedFolderBadge
+              group={currentShared}
+              isolated={isSharedRootIsolated(currentShared, spaces)}
+            />
+          )}
           <HugeiconsIcon
             icon={ArrowRight01Icon}
             size={14}
@@ -353,6 +372,7 @@ export function SpaceSwitcher({
               isActive={sp.id === activeId}
               canDelete={spaces.length > 1}
               sharedGroup={sharedFor(sp.id)}
+              sharedRootIsolated={isSharedIsolatedFor(sp.id)}
               expanded={expanded.has(sp.id)}
               editing={editingId === sp.id}
               dragging={dragging}
@@ -452,7 +472,7 @@ export function SpaceSwitcher({
               data-shared-note
               className="px-2 pb-1.5 text-[10px] leading-snug text-muted-foreground"
             >
-              Spaces organize tabs only; files and processes are shared.
+              {sharedFolderFooterNote(hasIsolatedShared)}
             </p>
           )}
           <button
@@ -508,6 +528,7 @@ type SpaceRowProps = {
   isActive: boolean;
   canDelete: boolean;
   sharedGroup: SharedRoot | null;
+  sharedRootIsolated: boolean;
   expanded: boolean;
   editing: boolean;
   dragging: { kind: "space" | "tab"; id: string | number } | null;
@@ -545,6 +566,7 @@ function SpaceRow({
   isActive,
   canDelete,
   sharedGroup,
+  sharedRootIsolated,
   expanded,
   editing,
   dragging,
@@ -656,7 +678,12 @@ function SpaceRow({
                   Retained profiles
                 </span>
               )}
-            {sharedGroup && <SharedFolderBadge group={sharedGroup} />}
+            {sharedGroup && (
+              <SharedFolderBadge
+                group={sharedGroup}
+                isolated={sharedRootIsolated}
+              />
+            )}
             <span className="shrink-0 px-1 text-[10px] tabular-nums text-muted-foreground group-hover:hidden">
               {tabs.length}
             </span>
@@ -772,6 +799,28 @@ function SpaceRow({
                       className="mt-1 text-[10px] leading-snug text-muted-foreground"
                     >
                       {isolationGuard.reason}
+                    </p>
+                  )}
+                  {isolationGuard.allowed &&
+                    isolationGuard.requiresConfirmation && (
+                      <p
+                        data-isolation-confirm-hint={space.id}
+                        className="mt-1 text-[10px] leading-snug text-muted-foreground"
+                      >
+                        Switching restarts active terminal Panes in the new
+                        Account context (non-terminal tabs stay open).
+                      </p>
+                    )}
+                  {space.accountIsolation === "isolated" && (
+                    <p
+                      data-oauth-guidance={space.id}
+                      className="mt-1 text-[10px] leading-snug text-muted-foreground"
+                    >
+                      OAuth keeps your system browser ($BROWSER / xdg-open)
+                      untouched: verify the active browser profile to avoid
+                      auto-consent, and avoid concurrent logins on fixed
+                      callback port 1455 (use manual URL paste fallback if it
+                      conflicts).
                     </p>
                   )}
                   {isolationError && (

@@ -55,3 +55,40 @@ export function sharedRootWarning(
   const others = names.length > 1 ? names.join(", ") : (names[0] ?? root);
   return `Spaces organize tabs only. Files and processes are shared: ${others} all use ${root}. Open a worktree for a separate file tree.`;
 }
+
+export function isSharedRootIsolated(
+  group: SharedRoot,
+  spaces: readonly SpaceMeta[],
+): boolean {
+  const ids = new Set(group.spaceIds);
+  return spaces.some(
+    (space) => ids.has(space.id) && space.accountIsolation === "isolated",
+  );
+}
+
+export function hasIsolatedSharedRoot(
+  groups: readonly SharedRoot[],
+  spaces: readonly SpaceMeta[],
+): boolean {
+  return groups.some((group) => isSharedRootIsolated(group, spaces));
+}
+
+export function sharedIsolationToolBoundaryNotice(): string {
+  return "Account isolation applies to agent credentials only. When isolated Spaces share a Project root, repository files, repo-local configs (.mcp.json, .claude/), Git, SSH, cloud CLIs, and third-party MCP/memory backends (Engram, CodeGraph, host-scoped pi-lens) remain shared.";
+}
+
+export function sharedRootWarningWithIsolation(
+  root: string,
+  names: readonly string[],
+  isolated: boolean,
+): string {
+  const base = sharedRootWarning(root, names);
+  return isolated ? `${base} ${sharedIsolationToolBoundaryNotice()}` : base;
+}
+
+export function sharedFolderFooterNote(hasIsolatedShared: boolean): string {
+  const base = "Spaces organize tabs only; files and processes are shared.";
+  return hasIsolatedShared
+    ? `${base} ${sharedIsolationToolBoundaryNotice()}`
+    : base;
+}

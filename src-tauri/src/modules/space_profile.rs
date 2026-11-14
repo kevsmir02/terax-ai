@@ -49,11 +49,31 @@ impl ProfileEnvironment {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+pub const SCRUBBED_PROVIDER_ENV_KEYS: [&str; 4] = [
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "OPENCODE_API_KEY",
+    "GEMINI_API_KEY",
+];
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct IsolatedProfileEnv {
     pub space_dir: PathBuf,
     pub shim_dir: PathBuf,
     pub claude_config_dir: PathBuf,
+    pub env_overrides: std::collections::BTreeMap<String, String>,
+}
+
+impl std::fmt::Debug for IsolatedProfileEnv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let override_keys: Vec<&str> = self.env_overrides.keys().map(String::as_str).collect();
+        f.debug_struct("IsolatedProfileEnv")
+            .field("space_dir", &self.space_dir)
+            .field("shim_dir", &self.shim_dir)
+            .field("claude_config_dir", &self.claude_config_dir)
+            .field("env_override_keys", &override_keys)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

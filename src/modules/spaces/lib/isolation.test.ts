@@ -1,6 +1,7 @@
 import type { WorkspaceEnv } from "@/modules/workspace";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  classifyCrossSpaceTabMove,
   duplicateSpaceMeta,
   duplicateSpaceOrganization,
   evaluateIsolationToggleGuard,
@@ -230,33 +231,143 @@ describe("Space Account isolation metadata & duplication", () => {
     });
   });
 
-  it("permits toggling isolation only when no active or live terminals exist in that Space", () => {
-    const blockedWarm = evaluateIsolationToggleGuard(
+  it("reports whether toggling isolation requires confirmation for active terminals or dirty files", () => {
+    const warm = evaluateIsolationToggleGuard(
       "sp-a",
       [
-        { spaceId: "sp-a", kind: "terminal", cold: false, leafIds: [1] },
-        { spaceId: "sp-b", kind: "terminal", cold: false, leafIds: [2] },
+        {
+          id: 10,
+          spaceId: "sp-a",
+          kind: "terminal",
+          cold: false,
+          leafIds: [1, 2],
+        },
+        {
+          id: 11,
+          spaceId: "sp-b",
+          kind: "terminal",
+          cold: false,
+          leafIds: [3],
+        },
       ],
       () => false,
     );
-    expect(blockedWarm.allowed).toBe(false);
+    expect(warm).toEqual({
+      allowed: true,
+      requiresConfirmation: true,
+      activeTerminalTabIds: [10],
+      activeLeafIds: [1, 2],
+      dirtyTabIds: [],
+    });
 
-    const blockedLiveCold = evaluateIsolationToggleGuard(
+    const liveCold = evaluateIsolationToggleGuard(
       "sp-a",
-      [{ spaceId: "sp-a", kind: "terminal", cold: true, leafIds: [3] }],
-      (leafId) => leafId === 3,
+      [{ id: 12, spaceId: "sp-a", kind: "terminal", cold: true, leafIds: [4] }],
+      (leafId) => leafId === 4,
     );
-    expect(blockedLiveCold.allowed).toBe(false);
+    expect(liveCold).toEqual({
+      allowed: true,
+      requiresConfirmation: true,
+      activeTerminalTabIds: [12],
+      activeLeafIds: [4],
+      dirtyTabIds: [],
+    });
 
-    const allowed = evaluateIsolationToggleGuard(
+    const dirtyOnly = evaluateIsolationToggleGuard(
       "sp-a",
       [
-        { spaceId: "sp-a", kind: "editor", leafIds: [] },
-        { spaceId: "sp-a", kind: "terminal", cold: true, leafIds: [4] },
-        { spaceId: "sp-b", kind: "terminal", cold: false, leafIds: [5] },
+        { id: 13, spaceId: "sp-a", kind: "editor", leafIds: [] },
+        { id: 14, spaceId: "sp-a", kind: "git-diff", leafIds: [] },
       ],
-      (leafId) => leafId === 5,
+      () => false,
+      (tabId) => tabId === 13,
     );
-    expect(allowed).toEqual({ allowed: true });
+    expect(dirtyOnly).toEqual({
+      allowed: true,
+      requiresConfirmation: true,
+      activeTerminalTabIds: [],
+      activeLeafIds: [],
+      dirtyTabIds: [13],
+    });
+
+    const noConfirm = evaluateIsolationToggleGuard(
+      "sp-a",
+      [
+        { id: 15, spaceId: "sp-a", kind: "editor", leafIds: [] },
+        { id: 16, spaceId: "sp-a", kind: "terminal", cold: true, leafIds: [5] },
+        {
+          id: 17,
+          spaceId: "sp-b",
+          kind: "terminal",
+          cold: false,
+          leafIds: [6],
+        },
+      ],
+      (leafId) => leafId === 6,
+    );
+    expect(noConfirm).toEqual({
+      allowed: true,
+      requiresConfirmation: false,
+      activeTerminalTabIds: [],
+      activeLeafIds: [],
+      dirtyTabIds: [],
+    });
+  });
+
+  it("classifies cross-Space tab moves between live transfers and close-and-recreate prompts", () => {
+    for (const kind of [
+      "editor",
+      "markdown",
+      "preview",
+      "git-diff",
+      "git-history",
+      "git-commit-file",
+    ]) {
+      expect(classifyCrossSpaceTabMove(kind, "default", "isolated")).toEqual({
+        kind: "live",
+      });
+      expect(classifyCrossSpaceTabMove(kind, "isolated", "default")).toEqual({
+        kind: "live",
+      });
+      expect(classifyCrossSpaceTabMove(kind, "isolated", "isolated")).toEqual({
+        kind: "live",
+      });
+      expect(classifyCrossSpaceTabMove(kind, "default", "default")).toEqual({
+        kind: "live",
+      });
+    }
+
+    expect(classifyCrossSpaceTabMove("terminal", "default", "default")).toEqual(
+      {
+        kind: "live",
+      },
+    );
+    expect(classifyCrossSpaceTabMove("terminal", undefined, "default")).toEqual(
+      {
+        kind: "live",
+      },
+    );
+
+    expect(
+      classifyCrossSpaceTabMove("terminal", "default", "isolated"),
+    ).toEqual({
+      kind: "confirm-recreate",
+      sourceIsolation: "default",
+      targetIsolation: "isolated",
+    });
+    expect(
+      classifyCrossSpaceTabMove("terminal", "isolated", "default"),
+    ).toEqual({
+      kind: "confirm-recreate",
+      sourceIsolation: "isolated",
+      targetIsolation: "default",
+    });
+    expect(
+      classifyCrossSpaceTabMove("terminal", "isolated", "isolated"),
+    ).toEqual({
+      kind: "confirm-recreate",
+      sourceIsolation: "isolated",
+      targetIsolation: "isolated",
+    });
   });
 });

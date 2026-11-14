@@ -120,14 +120,30 @@ export function duplicateSpaceOrganization(
   };
 }
 
+export type IsolationToggleEvaluation = {
+  allowed: true;
+  requiresConfirmation: boolean;
+  activeTerminalTabIds: number[];
+  activeLeafIds: number[];
+  dirtyTabIds: number[];
+};
+
 export type IsolationToggleGuard =
-  | { allowed: true }
+  | {
+      allowed: true;
+      requiresConfirmation?: boolean;
+      activeTerminalTabIds?: number[];
+      activeLeafIds?: number[];
+      dirtyTabIds?: number[];
+    }
   | { allowed: false; reason: string };
 
 export type ToggleTerminalCandidate = {
+  id?: number;
   spaceId: string;
   kind: string;
   cold?: boolean;
+  dirty?: boolean;
   leafIds: number[];
 };
 
@@ -135,19 +151,64 @@ export function evaluateIsolationToggleGuard(
   spaceId: string,
   tabs: readonly ToggleTerminalCandidate[],
   hasLivePty: (leafId: number) => boolean,
-): IsolationToggleGuard {
-  const hasActiveTerminal = tabs.some(
-    (tab) =>
-      tab.spaceId === spaceId &&
-      tab.kind === "terminal" &&
-      (!tab.cold || tab.leafIds.some((id) => hasLivePty(id))),
-  );
-  if (hasActiveTerminal) {
-    return {
-      allowed: false,
-      reason:
-        "Close active terminals in this Space before switching Account isolation.",
-    };
+  isDirty: (tabId: number) => boolean = () => false,
+): IsolationToggleEvaluation {
+  const activeTerminalTabIds: number[] = [];
+  const activeLeafIds: number[] = [];
+  const dirtyTabIds: number[] = [];
+
+  for (const tab of tabs) {
+    if (tab.spaceId !== spaceId) continue;
+    const dirty =
+      tab.kind === "editor" &&
+      (tab.dirty === true || (tab.id !== undefined && isDirty(tab.id)));
+    if (dirty && tab.id !== undefined) {
+      dirtyTabIds.push(tab.id);
+    }
+    if (tab.kind !== "terminal") continue;
+    const isWarm = !tab.cold || tab.leafIds.some((id) => hasLivePty(id));
+    if (!isWarm) continue;
+    if (tab.id !== undefined) {
+      activeTerminalTabIds.push(tab.id);
+    }
+    for (const leafId of tab.leafIds) {
+      activeLeafIds.push(leafId);
+    }
   }
-  return { allowed: true };
+
+  return {
+    allowed: true,
+    requiresConfirmation:
+      activeTerminalTabIds.length > 0 ||
+      activeLeafIds.length > 0 ||
+      dirtyTabIds.length > 0,
+    activeTerminalTabIds,
+    activeLeafIds,
+    dirtyTabIds,
+  };
+}
+
+export type CrossSpaceTabMoveDecision =
+  | { kind: "live" }
+  | {
+      kind: "confirm-recreate";
+      sourceIsolation: AccountIsolationMode;
+      targetIsolation: AccountIsolationMode;
+    };
+
+export function classifyCrossSpaceTabMove(
+  tabKind: string,
+  sourceIsolation: AccountIsolationMode | undefined,
+  targetIsolation: AccountIsolationMode | undefined,
+): CrossSpaceTabMoveDecision {
+  const from = normalizeAccountIsolation(sourceIsolation);
+  const to = normalizeAccountIsolation(targetIsolation);
+  if (tabKind !== "terminal" || (from === "default" && to === "default")) {
+    return { kind: "live" };
+  }
+  return {
+    kind: "confirm-recreate",
+    sourceIsolation: from,
+    targetIsolation: to,
+  };
 }

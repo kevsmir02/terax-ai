@@ -599,6 +599,185 @@ export function planTerminalCleanupForSpace(
   return { tabs: next, disposeLeafIds, closedTabIds, activeId };
 }
 
+export type SpaceTerminalRestartPlan = {
+  tabs: Tab[];
+  disposeLeafIds: number[];
+  restartedTabIds: number[];
+};
+
+function clonePaneTreeWithFreshIds(
+  node: PaneNode,
+  fallbackCwd: string | undefined,
+  resolveLeafCwd: (
+    leafId: number,
+    fallback: string | undefined,
+  ) => string | undefined,
+  allocId: () => number,
+  leafMap: Map<number, number>,
+  disposeLeafIds: number[],
+): PaneNode {
+  if (node.kind === "leaf") {
+    const id = allocId();
+    leafMap.set(node.id, id);
+    disposeLeafIds.push(node.id);
+    const cwd = resolveLeafCwd(node.id, node.cwd ?? fallbackCwd);
+    return cwd !== undefined ? { kind: "leaf", id, cwd } : { kind: "leaf", id };
+  }
+  return {
+    kind: "split",
+    id: allocId(),
+    dir: node.dir,
+    children: node.children.map((child) =>
+      clonePaneTreeWithFreshIds(
+        child,
+        fallbackCwd,
+        resolveLeafCwd,
+        allocId,
+        leafMap,
+        disposeLeafIds,
+      ),
+    ),
+  };
+}
+
+/**
+ * Re-allocates fresh leaf IDs for active/live terminal Panes in `spaceId` so
+ * they remount under a new Account context while keeping non-terminal tabs intact.
+ */
+export function planSpaceTerminalRestart(
+  tabs: readonly Tab[],
+  spaceId: string,
+  resolveLeafCwd: (
+    leafId: number,
+    fallback: string | undefined,
+  ) => string | undefined,
+  hasLivePty: (leafId: number) => boolean,
+  allocId: () => number,
+): SpaceTerminalRestartPlan {
+  const disposeLeafIds: number[] = [];
+  const restartedTabIds: number[] = [];
+  let changed = false;
+
+  const nextTabs = tabs.map((tab) => {
+    if (tab.spaceId !== spaceId || tab.kind !== "terminal") return tab;
+    const leaves = leafIds(tab.paneTree);
+    const isWarm = !tab.cold || leaves.some((id) => hasLivePty(id));
+    if (!isWarm) return tab;
+
+    changed = true;
+    restartedTabIds.push(tab.id);
+    const leafMap = new Map<number, number>();
+    const nextPaneTree = clonePaneTreeWithFreshIds(
+      tab.paneTree,
+      tab.cwd,
+      resolveLeafCwd,
+      allocId,
+      leafMap,
+      disposeLeafIds,
+    );
+    const nextLeaves = leafIds(nextPaneTree);
+    const nextActiveLeafId =
+      leafMap.get(tab.activeLeafId) ?? nextLeaves[0] ?? tab.activeLeafId;
+    const nextCwd = findLeafCwd(nextPaneTree, nextActiveLeafId) ?? tab.cwd;
+
+    return {
+      ...tab,
+      cold: false,
+      cwd: nextCwd,
+      paneTree: nextPaneTree,
+      activeLeafId: nextActiveLeafId,
+    };
+  });
+
+  return {
+    tabs: changed ? nextTabs : [...tabs],
+    disposeLeafIds,
+    restartedTabIds,
+  };
+}
+
+export type TerminalRecreatePlan = {
+  tabs: Tab[];
+  disposeLeafIds: number[];
+  closedTabId: number;
+  createdTabId: number;
+  activeId: number;
+  shouldSwitchSpace: boolean;
+};
+
+/**
+ * Replaces a terminal tab crossing Account contexts with a fresh single-leaf
+ * terminal tab in `targetSpaceId` at either the end of tabs or next to `insertTarget`.
+ */
+export function planTerminalRecreateInSpace(
+  tabs: readonly Tab[],
+  currentActiveId: number,
+  sourceTabId: number,
+  targetSpaceId: string,
+  targetCwd: string | undefined,
+  allocId: () => number,
+  insertTarget?: { targetTabId: number; edge: "top" | "bottom" },
+): TerminalRecreatePlan | null {
+  if (insertTarget && insertTarget.targetTabId === sourceTabId) return null;
+  const moved = tabs.find((tab) => tab.id === sourceTabId);
+  if (!moved || moved.kind !== "terminal" || moved.spaceId === targetSpaceId) {
+    return null;
+  }
+
+  const disposeLeafIds = leafIds(moved.paneTree);
+  const createdTabId = allocId();
+  const createdLeafId = allocId();
+  const sourceLeafCwd =
+    findLeafCwd(moved.paneTree, moved.activeLeafId) ?? moved.cwd;
+  const resolvedCwd = targetCwd ?? sourceLeafCwd;
+
+  let nextActiveId = currentActiveId;
+  let shouldSwitchSpace = false;
+  if (currentActiveId === sourceTabId) {
+    const fallback = nextActiveInSpace([...tabs], sourceTabId);
+    if (fallback !== null) {
+      nextActiveId = fallback;
+    } else {
+      nextActiveId = createdTabId;
+      shouldSwitchSpace = true;
+    }
+  }
+
+  const createdTab: TerminalTab = {
+    id: createdTabId,
+    kind: "terminal",
+    spaceId: targetSpaceId,
+    cold: Boolean(moved.cold) && !shouldSwitchSpace,
+    title: resolvedCwd ? basename(resolvedCwd) : "shell",
+    cwd: resolvedCwd,
+    paneTree: { kind: "leaf", id: createdLeafId, cwd: resolvedCwd },
+    activeLeafId: createdLeafId,
+    ...(moved.blocks !== undefined ? { blocks: moved.blocks } : {}),
+  };
+
+  const without = tabs.filter((tab) => tab.id !== sourceTabId);
+  if (insertTarget) {
+    let idx = without.findIndex((tab) => tab.id === insertTarget.targetTabId);
+    if (idx >= 0) {
+      if (insertTarget.edge === "bottom") idx += 1;
+      without.splice(idx, 0, createdTab);
+    } else {
+      without.push(createdTab);
+    }
+  } else {
+    without.push(createdTab);
+  }
+
+  return {
+    tabs: without,
+    disposeLeafIds,
+    closedTabId: sourceTabId,
+    createdTabId,
+    activeId: nextActiveId,
+    shouldSwitchSpace,
+  };
+}
+
 export function useTabs(initial?: Partial<TerminalTab>) {
   const [tabs, renderTabs] = useState<Tab[]>(() => {
     const tabId = 1;
@@ -1426,6 +1605,69 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     [setTabs],
   );
 
+  const restartSpaceTerminals = useCallback(
+    (
+      spaceId: string,
+      resolveLeafCwd: (
+        leafId: number,
+        fallback: string | undefined,
+      ) => string | undefined,
+      hasLivePty: (leafId: number) => boolean,
+    ): number[] => {
+      let toDispose: number[] = [];
+      setTabs((curr) => {
+        const plan = planSpaceTerminalRestart(
+          curr,
+          spaceId,
+          resolveLeafCwd,
+          hasLivePty,
+          () => nextIdRef.current++,
+        );
+        toDispose = plan.disposeLeafIds;
+        return plan.restartedTabIds.length > 0 ? plan.tabs : curr;
+      });
+      for (const lid of toDispose) disposeSession(lid);
+      return toDispose;
+    },
+    [setTabs],
+  );
+
+  const recreateTerminalInSpace = useCallback(
+    (
+      sourceTabId: number,
+      targetSpaceId: string,
+      targetCwd: string | undefined,
+      insertTarget?: { targetTabId: number; edge: "top" | "bottom" },
+    ): { shouldSwitchSpace: boolean; disposeLeafIds: number[] } => {
+      let toDispose: number[] = [];
+      let closedId: number | null = null;
+      let shouldSwitchSpace = false;
+      setTabs((curr) => {
+        const plan = planTerminalRecreateInSpace(
+          curr,
+          activeIdRef.current,
+          sourceTabId,
+          targetSpaceId,
+          targetCwd,
+          () => nextIdRef.current++,
+          insertTarget,
+        );
+        if (!plan) return curr;
+        toDispose = plan.disposeLeafIds;
+        closedId = plan.closedTabId;
+        shouldSwitchSpace = plan.shouldSwitchSpace;
+        if (plan.activeId !== activeIdRef.current) {
+          setActiveId(plan.activeId);
+        }
+        return plan.tabs;
+      });
+      for (const lid of toDispose) disposeSession(lid);
+      if (closedId !== null) assetScopes.closeTab(closedId);
+      return { shouldSwitchSpace, disposeLeafIds: toDispose };
+    },
+    [setActiveId, setTabs],
+  );
+
   return {
     tabs,
     activeId,
@@ -1436,6 +1678,8 @@ export function useTabs(initial?: Partial<TerminalTab>) {
     moveTabToSpace,
     reorderTab,
     reorderTabByGap,
+    restartSpaceTerminals,
+    recreateTerminalInSpace,
     newTabInSpace,
     removeTabsForSpace,
     removeTerminalTabsForSpace,
