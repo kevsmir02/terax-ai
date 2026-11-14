@@ -2,12 +2,72 @@
 
 import { WorkspaceSurface } from "@/app/components/WorkspaceSurface";
 import type { Tab } from "@/modules/tabs";
-import { act, type ComponentProps } from "react";
+import { teraxDefault } from "@/modules/theme/themes/terax-default";
+import { act, type ComponentProps, type RefObject } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/modules/terminal", () => ({
-  TerminalStack: () => <div data-testid="stack-terminal" />,
+const sessionContainers = new Map<number, RefObject<HTMLDivElement | null>>();
+
+vi.mock("@/modules/terminal/ghostty/useGhosttyTerminalSession", () => ({
+  useGhosttyTerminalSession: (opts: {
+    leafId: number;
+    container: RefObject<HTMLDivElement | null>;
+  }) => {
+    sessionContainers.set(opts.leafId, opts.container);
+    return {
+      model: null,
+      error: null,
+      retry: vi.fn(),
+      applyTheme: vi.fn(),
+      write: vi.fn(),
+      writeAtPrompt: vi.fn(async () => false),
+      focus: vi.fn(),
+      getBuffer: vi.fn(() => null),
+      getSelection: vi.fn(() => null),
+    };
+  },
+  ghosttyBlockGeometry: () => null,
+  clearGhosttySession: vi.fn(() => false),
+  disposeGhosttySession: vi.fn(),
+  focusGhosttySession: vi.fn(),
+  ghosttyFocusedLeaf: vi.fn(() => null),
+  ghosttyLeafHasForegroundProcess: vi.fn(async () => false),
+  ghosttyLeafIdForPty: vi.fn(() => null),
+  ghosttyCwdForLeaf: vi.fn(() => null),
+  ghosttyPtyIdForLeaf: vi.fn(() => null),
+  ghosttySelectionForLeaf: vi.fn(() => null),
+  hasGhosttySession: vi.fn(() => false),
+  interruptGhosttySession: vi.fn(),
+  pasteIntoGhosttySession: vi.fn(() => false),
+  submitToGhosttySession: vi.fn(),
+  whenGhosttySessionReady: vi.fn(async () => {}),
+  writeToGhosttySession: vi.fn(() => false),
+}));
+
+vi.mock("@/modules/terminal/ghostty/GhosttyBlockOverlay", () => ({
+  default: ({ leafId }: { leafId: number }) => (
+    <div data-testid={`block-overlay-${leafId}`} />
+  ),
+}));
+
+vi.mock("@/modules/terminal/block/ShellInput", () => ({
+  default: ({ leafId, mode }: { leafId: number; mode: string }) => (
+    <div data-testid="shell-input" data-leaf-id={leafId} data-mode={mode} />
+  ),
+}));
+
+vi.mock("@/modules/theme", () => ({
+  useTheme: () => ({
+    mode: "dark" as const,
+    resolvedMode: "dark" as const,
+    themeId: teraxDefault.id,
+    activeTheme: teraxDefault,
+    customThemes: [],
+    setMode: vi.fn(),
+    setThemeId: vi.fn(),
+    previewThemeId: vi.fn(),
+  }),
 }));
 
 vi.mock("@/modules/editor", () => ({
@@ -34,6 +94,15 @@ vi.mock("@/modules/git-history", () => ({
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
 
+beforeEach(() => {
+  sessionContainers.clear();
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+});
+
 afterEach(() => {
   if (root) {
     act(() => {
@@ -48,6 +117,7 @@ afterEach(() => {
 function baseProps(
   activeTab: Tab,
   tabs: Tab[] = [activeTab],
+  over: Partial<ComponentProps<typeof WorkspaceSurface>> = {},
 ): ComponentProps<typeof WorkspaceSurface> {
   return {
     tabs,
@@ -68,19 +138,43 @@ function baseProps(
     onOpenCommitFile: vi.fn(),
     onGitHistorySearchHandle: vi.fn(),
     onSetMarkdownView: vi.fn(),
+    ...over,
   };
 }
 
-function mountSurface(activeTab: Tab, tabs?: Tab[]) {
+function ensureMountHost() {
   if (!host) {
     host = document.createElement("div");
     document.body.appendChild(host);
     root = createRoot(host);
   }
-  act(() => {
-    root?.render(<WorkspaceSurface {...baseProps(activeTab, tabs)} />);
-  });
   return host;
+}
+
+function mountSurface(
+  activeTab: Tab,
+  tabs?: Tab[],
+  over?: Partial<ComponentProps<typeof WorkspaceSurface>>,
+) {
+  const container = ensureMountHost();
+  act(() => {
+    root?.render(<WorkspaceSurface {...baseProps(activeTab, tabs, over)} />);
+  });
+  return container;
+}
+
+async function mountSurfaceAsync(
+  activeTab: Tab,
+  tabs?: Tab[],
+  over?: Partial<ComponentProps<typeof WorkspaceSurface>>,
+) {
+  const container = ensureMountHost();
+  await act(async () => {
+    root?.render(<WorkspaceSurface {...baseProps(activeTab, tabs, over)} />);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  return container;
 }
 
 const TERMINAL_TAB: Tab = {
@@ -166,15 +260,34 @@ describe("WorkspaceSurface", () => {
     expect(stageClasses.some((c) => c.startsWith("rounded"))).toBe(false);
   });
 
-  it("renders non-terminal layers full-bleed across Content stage while preserving terminal inset", () => {
-    const container = mountSurface(EDITOR_TAB, SAMPLE_TABS);
+  it("frames single terminal tabs inside one unified outlined Terminal card within balanced Content stage margins while leaving non-terminal layers full-bleed", () => {
+    const container = mountSurface(TERMINAL_TAB, SAMPLE_TABS);
 
-    const terminalLayer = container.querySelector(
-      '[data-testid="stack-terminal"]',
-    )?.parentElement as HTMLElement | null;
-    expect(terminalLayer?.className.split(/\s+/)).toEqual(
-      expect.arrayContaining(["absolute", "inset-0", "px-3", "pt-2", "pb-2"]),
+    const terminalCards = container.querySelectorAll("[data-terminal-card]");
+    expect(terminalCards).toHaveLength(1);
+    const card = terminalCards[0] as HTMLElement;
+    expect(card.className.split(/\s+/)).toEqual(
+      expect.arrayContaining([
+        "flex",
+        "h-full",
+        "min-h-0",
+        "flex-col",
+        "overflow-hidden",
+        "rounded-xl",
+        "border",
+        "border-border",
+        "bg-terminal-background",
+      ]),
     );
+
+    const terminalLayer = card.parentElement as HTMLElement | null;
+    expect(terminalLayer?.className.split(/\s+/)).toEqual(
+      expect.arrayContaining(["absolute", "inset-0", "p-3"]),
+    );
+    expect(terminalLayer?.getAttribute("aria-hidden")).toBe("false");
+    expect(card.querySelector("[data-terminal-stack]")).not.toBeNull();
+    expect(card.querySelector("[data-terminal-area]")).not.toBeNull();
+    expect(card.querySelector('[data-pane-leaf="1"]')).not.toBeNull();
 
     const nonTerminalTestIds = [
       "stack-editor",
@@ -201,28 +314,235 @@ describe("WorkspaceSurface", () => {
             c.startsWith("pt-") ||
             c.startsWith("pb-") ||
             c.startsWith("rounded") ||
+            c.startsWith("border") ||
             c === "terax-pane",
         ),
       ).toBe(false);
     }
 
-    const activeCases: Array<{ tab: Tab; activeTestId: string }> = [
-      { tab: EDITOR_TAB, activeTestId: "stack-editor" },
-      { tab: PREVIEW_TAB, activeTestId: "stack-preview" },
-      { tab: MARKDOWN_TAB, activeTestId: "stack-markdown" },
-      { tab: GIT_DIFF_TAB, activeTestId: "stack-git-diff" },
-      { tab: GIT_HISTORY_TAB, activeTestId: "stack-git-history" },
-      { tab: GIT_COMMIT_FILE_TAB, activeTestId: "stack-git-diff" },
+    const activeCases: Array<{ tab: Tab; activeAttrSelector: string }> = [
+      { tab: TERMINAL_TAB, activeAttrSelector: "[data-terminal-card]" },
+      { tab: EDITOR_TAB, activeAttrSelector: '[data-testid="stack-editor"]' },
+      { tab: PREVIEW_TAB, activeAttrSelector: '[data-testid="stack-preview"]' },
+      {
+        tab: MARKDOWN_TAB,
+        activeAttrSelector: '[data-testid="stack-markdown"]',
+      },
+      {
+        tab: GIT_DIFF_TAB,
+        activeAttrSelector: '[data-testid="stack-git-diff"]',
+      },
+      {
+        tab: GIT_HISTORY_TAB,
+        activeAttrSelector: '[data-testid="stack-git-history"]',
+      },
+      {
+        tab: GIT_COMMIT_FILE_TAB,
+        activeAttrSelector: '[data-testid="stack-git-diff"]',
+      },
     ];
-    for (const { tab, activeTestId } of activeCases) {
+    for (const { tab, activeAttrSelector } of activeCases) {
       mountSurface(tab, SAMPLE_TABS);
-      for (const testId of ["stack-terminal", ...nonTerminalTestIds]) {
-        const layer = container.querySelector(`[data-testid="${testId}"]`)
+      for (const selector of [
+        "[data-terminal-card]",
+        ...nonTerminalTestIds.map((id) => `[data-testid="${id}"]`),
+      ]) {
+        const layer = container.querySelector(selector)
           ?.parentElement as HTMLElement | null;
         expect(layer?.getAttribute("aria-hidden")).toBe(
-          testId === activeTestId ? "false" : "true",
+          selector === activeAttrSelector ? "false" : "true",
         );
       }
     }
+  });
+
+  it("docks the blocks-mode footer inside the Terminal card below [data-terminal-area] on opaque --terminal-header", async () => {
+    const plainTab: Tab = {
+      id: 10,
+      spaceId: "default",
+      kind: "terminal",
+      title: "zsh",
+      paneTree: { kind: "leaf", id: 100 },
+      activeLeafId: 100,
+    };
+    const blocksTab: Tab = {
+      id: 11,
+      spaceId: "default",
+      kind: "terminal",
+      title: "zsh",
+      paneTree: { kind: "leaf", id: 101 },
+      activeLeafId: 101,
+      blocks: true,
+    };
+    const tabs = [plainTab, blocksTab, EDITOR_TAB];
+
+    const container = await mountSurfaceAsync(plainTab, tabs);
+    expect(container.querySelector("[data-block-input-bar]")).toBeNull();
+
+    await mountSurfaceAsync(blocksTab, tabs);
+    const card = container.querySelector("[data-terminal-card]");
+    const area = container.querySelector("[data-terminal-area]");
+    const footer = container.querySelector<HTMLElement>(
+      "[data-block-input-bar]",
+    );
+    expect(card).not.toBeNull();
+    expect(area).not.toBeNull();
+    expect(footer).not.toBeNull();
+    expect(card?.contains(footer ?? null)).toBe(true);
+    expect(area?.contains(footer ?? null)).toBe(false);
+    expect(
+      Boolean(
+        area &&
+          footer &&
+          area.compareDocumentPosition(footer) &
+            Node.DOCUMENT_POSITION_FOLLOWING,
+      ),
+    ).toBe(true);
+
+    const terminalPaneRegion = container.querySelector(
+      "[data-terminal-stack]",
+    )?.parentElement;
+    expect(terminalPaneRegion?.parentElement).toBe(card);
+    expect(footer?.parentElement).toBe(card);
+    expect(terminalPaneRegion?.nextElementSibling).toBe(footer);
+    expect(terminalPaneRegion?.className.split(/\s+/)).toEqual(
+      expect.arrayContaining(["flex-1", "min-h-0"]),
+    );
+
+    const footerClasses = footer?.className.split(/\s+/) ?? [];
+    expect(footerClasses).toContain("shrink-0");
+    expect(footerClasses).toContain("border-t");
+    expect(footerClasses).toContain("border-border");
+    expect(footerClasses).toContain("bg-terminal-header");
+    expect(footer?.className).not.toContain("border-border/60");
+    expect(footer?.className).not.toContain("bg-foreground/[0.02]");
+
+    mountSurface(EDITOR_TAB, tabs);
+    expect(container.querySelector("[data-block-input-bar]")).toBeNull();
+  });
+
+  it("renders nested split panes inside the single unified Terminal card with opaque bg-border dividers", () => {
+    const splitTab: Tab = {
+      id: 20,
+      spaceId: "default",
+      kind: "terminal",
+      title: "split",
+      paneTree: {
+        kind: "split",
+        id: 1,
+        dir: "row",
+        children: [
+          { kind: "leaf", id: 10 },
+          {
+            kind: "split",
+            id: 2,
+            dir: "col",
+            children: [
+              { kind: "leaf", id: 11 },
+              { kind: "leaf", id: 12 },
+            ],
+          },
+        ],
+      },
+      activeLeafId: 10,
+    };
+    const onFocusLeaf = vi.fn();
+    const container = mountSurface(splitTab, [splitTab], { onFocusLeaf });
+
+    const cards = container.querySelectorAll("[data-terminal-card]");
+    expect(cards).toHaveLength(1);
+    const card = cards[0] as HTMLElement;
+
+    const leaves = Array.from(
+      card.querySelectorAll<HTMLElement>("[data-pane-leaf]"),
+    );
+    expect(leaves.map((el) => el.dataset.paneLeaf)).toEqual(["10", "11", "12"]);
+    for (const leaf of leaves) {
+      expect(leaf.className).not.toMatch(/\brounded/);
+      expect(leaf.parentElement?.className ?? "").not.toMatch(/\brounded/);
+    }
+
+    const dividers = Array.from(
+      card.querySelectorAll<HTMLElement>('[data-slot="resizable-handle"]'),
+    );
+    expect(dividers).toHaveLength(2);
+    for (const divider of dividers) {
+      const classes = divider.className.split(/\s+/);
+      expect(classes).toContain("bg-border");
+      expect(classes).not.toContain("bg-border/50");
+      expect(classes).toContain("hover:bg-ring/70");
+      expect(classes).toContain("active:bg-ring");
+      expect(classes).toContain("data-[separator=active]:bg-ring");
+    }
+
+    const secondLeaf = leaves[1];
+    act(() => {
+      secondLeaf.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    });
+    expect(onFocusLeaf).toHaveBeenCalledWith(20, 11);
+  });
+
+  it("frames each TerminalPane body with symmetric --terminal-background inset around the mount box and block overlay", async () => {
+    const blocksTab: Tab = {
+      id: 30,
+      spaceId: "default",
+      kind: "terminal",
+      title: "zsh",
+      paneTree: { kind: "leaf", id: 301 },
+      activeLeafId: 301,
+      blocks: true,
+    };
+    const container = await mountSurfaceAsync(blocksTab, [blocksTab]);
+
+    const paneRoot = container.querySelector<HTMLElement>(
+      "[data-terminal-backend]",
+    );
+    expect(paneRoot).not.toBeNull();
+    expect(paneRoot?.className.split(/\s+/)).toEqual(
+      expect.arrayContaining([
+        "flex",
+        "h-full",
+        "w-full",
+        "flex-col",
+        "overflow-hidden",
+      ]),
+    );
+
+    const paneBody = paneRoot?.querySelector<HTMLElement>(
+      "[data-terminal-pane-body]",
+    );
+    expect(paneBody).not.toBeNull();
+    expect(paneBody?.parentElement).toBe(paneRoot);
+    const bodyClasses = paneBody?.className.split(/\s+/) ?? [];
+    expect(bodyClasses).toEqual(
+      expect.arrayContaining([
+        "relative",
+        "flex",
+        "min-h-0",
+        "flex-1",
+        "flex-col",
+        "border-8",
+        "border-solid",
+        "border-terminal-background",
+      ]),
+    );
+    expect(bodyClasses).not.toContain("bg-terminal-background");
+
+    const mountNode = sessionContainers.get(301)?.current;
+    const overlay = paneBody?.querySelector(
+      '[data-testid="block-overlay-301"]',
+    );
+    expect(mountNode).not.toBeNull();
+    expect(overlay).not.toBeNull();
+    expect(mountNode?.className.split(/\s+/)).toEqual(
+      expect.arrayContaining(["absolute", "inset-0"]),
+    );
+
+    const innerStage = mountNode?.parentElement;
+    expect(innerStage?.parentElement).toBe(paneBody);
+    expect(overlay?.parentElement).toBe(innerStage);
+    expect(innerStage?.className.split(/\s+/)).toEqual(
+      expect.arrayContaining(["relative", "h-full", "w-full"]),
+    );
   });
 });

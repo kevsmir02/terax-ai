@@ -32,4 +32,8 @@ describe("App shell layout flattening", () => {
       /<ResizablePanel\s+id="workspace"[\s\S]{0,200}\bbg-background\b/,
     );
   });
+
+  it("docks WorkspaceInputBar inside WorkspaceSurface rather than as an outer workspace sibling in App.tsx", () => {
+    expect(appSource).not.toContain("WorkspaceInputBar");
+  });
 });
