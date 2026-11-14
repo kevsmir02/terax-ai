@@ -3,11 +3,8 @@ import { getVersion } from "@tauri-apps/api/app";
 import { isTauri } from "@tauri-apps/api/core";
 import { arch, platform } from "@tauri-apps/plugin-os";
 import { useCallback, useEffect, useReducer, useRef } from "react";
-import {
-  checkForUpdate,
-  tauriManifestTransport,
-  type CheckOutcome,
-} from "./checkForUpdate";
+import { checkForUpdate, type CheckOutcome } from "./checkForUpdate";
+import { tauriManifestTransport } from "./tauriManifestTransport";
 import {
   releaseContract,
   resolveContract,

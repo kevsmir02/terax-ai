@@ -154,10 +154,6 @@ pub fn fetch_manifest_blocking(
     fetch_with_agent(&agent, &target.url)
 }
 
-/// Fetches the fork release manifest via a bounded `ureq` request on Tokio's blocking pool.
-///
-/// In release builds, any caller-provided URL is ignored and only the pinned endpoint in
-/// `releaseContract.json` is queried. Debug builds permit loopback overrides for local fixtures.
 #[tauri::command]
 pub async fn updater_fetch_manifest(
     endpoint_override: Option<String>,
@@ -241,22 +237,40 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
 
+    fn spawn_multi_loopback_server<F>(
+        max_requests: usize,
+        mut handler: F,
+    ) -> (u16, thread::JoinHandle<()>)
+    where
+        F: FnMut(usize, &str) -> Vec<u8> + Send + 'static,
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().expect("local addr").port();
+        let handle = thread::spawn(move || {
+            for idx in 0..max_requests {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let resp = handler(idx, &req);
+                let _ = stream.write_all(&resp);
+                let _ = stream.flush();
+            }
+        });
+        (port, handle)
+    }
+
     fn spawn_loopback_server<F>(handler: F) -> (String, thread::JoinHandle<()>)
     where
         F: FnOnce(&str) -> Vec<u8> + Send + 'static,
     {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
-        let addr = listener.local_addr().expect("local addr");
-        let handle = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept");
-            let mut buf = [0u8; 4096];
-            let n = stream.read(&mut buf).unwrap_or(0);
-            let req = String::from_utf8_lossy(&buf[..n]);
-            let resp = handler(&req);
-            let _ = stream.write_all(&resp);
-            let _ = stream.flush();
+        let mut handler = Some(handler);
+        let (port, handle) = spawn_multi_loopback_server(1, move |_, req| {
+            handler.take().expect("single request")(req)
         });
-        (format!("http://127.0.0.1:{}", addr.port()), handle)
+        (format!("http://127.0.0.1:{port}"), handle)
     }
 
     #[test]
@@ -308,7 +322,6 @@ mod tests {
         let pinned = "https://github.com/kevsmir02/terax-ai/releases/latest/download/latest.json";
         assert_eq!(contract_timeout(), Duration::from_millis(8000));
 
-        // Release mode ignores any caller override, even loopback or malicious hosts.
         for candidate in [
             None,
             Some("http://127.0.0.1:8787/stable.json"),
@@ -319,12 +332,10 @@ mod tests {
             assert!(resolved.https_only);
         }
 
-        // Debug mode uses pinned endpoint when no override is supplied.
         let debug_default = resolve_target(None, true).expect("debug default");
         assert_eq!(debug_default.url, pinned);
         assert!(debug_default.https_only);
 
-        // Debug mode accepts loopback overrides.
         for loopback in [
             "http://127.0.0.1:8787/stable.json",
             "http://localhost:8787/stable.json",
@@ -336,7 +347,6 @@ mod tests {
             assert_eq!(resolved.https_only, loopback.starts_with("https://"));
         }
 
-        // Debug mode rejects non-loopback hosts, userinfo tricks, and non-HTTP schemes.
         for rejected in [
             "https://github.com/evil/latest.json",
             "http://192.168.1.10:8787/latest.json",
@@ -351,7 +361,6 @@ mod tests {
         }
     }
 
-    // Debug mode rejects non-loopback hosts, userinfo tricks, and non-HTTP schemes.
     #[derive(Debug)]
     struct PretendTlsTransport(Box<dyn ureq::unversioned::transport::Transport>);
 
@@ -413,34 +422,8 @@ mod tests {
         )
     }
 
-    fn spawn_multi_loopback_server<F>(
-        max_requests: usize,
-        handler: F,
-    ) -> (u16, thread::JoinHandle<()>)
-    where
-        F: Fn(usize, &str) -> Vec<u8> + Send + 'static,
-    {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
-        let port = listener.local_addr().expect("local addr").port();
-        let handle = thread::spawn(move || {
-            for idx in 0..max_requests {
-                let Ok((mut stream, _)) = listener.accept() else {
-                    break;
-                };
-                let mut buf = [0u8; 4096];
-                let n = stream.read(&mut buf).unwrap_or(0);
-                let req = String::from_utf8_lossy(&buf[..n]);
-                let resp = handler(idx, &req);
-                let _ = stream.write_all(&resp);
-                let _ = stream.flush();
-            }
-        });
-        (port, handle)
-    }
-
     #[test]
     fn enforces_https_only_bounded_redirects_and_downgrade_refusal() {
-        // 1. Direct HTTP request refused when https_only is true.
         let (port, handle) = spawn_loopback_server(|_| {
             panic!("HTTP request must be blocked before opening a TCP connection");
         });
@@ -455,7 +438,6 @@ mod tests {
         assert_eq!(http_err.reason, ManifestFailureReason::Blocked);
         drop(handle);
 
-        // 2. Five HTTPS redirects succeed.
         let (ok_port, ok_handle) = spawn_multi_loopback_server(6, move |idx, _req| {
             if idx < 5 {
                 let next = idx + 1;
@@ -474,7 +456,6 @@ mod tests {
         assert_eq!(ok_res.status, 200);
         assert_eq!(ok_res.body, "{}");
 
-        // 3. Sixth HTTPS redirect fails as blocked.
         let (too_many_port, too_many_handle) = spawn_multi_loopback_server(6, |idx, _req| {
             let next = idx + 1;
             format!(
@@ -488,7 +469,6 @@ mod tests {
         too_many_handle.join().expect("too many redirect server");
         assert_eq!(too_many_err.reason, ManifestFailureReason::Blocked);
 
-        // 4. Redirect downgrade from HTTPS to HTTP is refused as blocked without contacting HTTP target.
         let (downgrade_port, downgrade_handle) = spawn_multi_loopback_server(
             1,
             move |idx, _req| {
@@ -571,7 +551,6 @@ mod tests {
 
     #[test]
     fn maps_network_errors_to_offline_and_tls_errors_to_blocked() {
-        // 1. Connection refused -> offline.
         let closed_listener = TcpListener::bind("127.0.0.1:0").expect("bind closed");
         let closed_port = closed_listener.local_addr().expect("closed addr").port();
         drop(closed_listener);
@@ -585,7 +564,6 @@ mod tests {
         .expect_err("closed port must be offline");
         assert_eq!(refused_err.reason, ManifestFailureReason::Offline);
 
-        // 2. Premature socket close / reset before response -> offline.
         let reset_listener = TcpListener::bind("127.0.0.1:0").expect("bind reset");
         let reset_port = reset_listener.local_addr().expect("reset addr").port();
         let reset_handle = thread::spawn(move || {
@@ -603,7 +581,6 @@ mod tests {
         reset_handle.join().expect("reset server");
         assert_eq!(reset_err.reason, ManifestFailureReason::Offline);
 
-        // 3. TLS handshake / invalid protocol error on HTTPS endpoint -> blocked.
         let (plain_url, plain_handle) = spawn_loopback_server(|_| {
             b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".to_vec()
         });

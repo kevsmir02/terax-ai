@@ -139,4 +139,47 @@ describe("useUpdater Tauri transport wiring", () => {
       },
     });
   });
+
+  it("uses fetch instead of updater_fetch_manifest outside the Tauri runtime", async () => {
+    const fetchSpy = vi.fn(
+      async () =>
+        new Response(JSON.stringify(currentManifest), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+    const invoke = vi.fn();
+    vi.stubGlobal("isTauri", false);
+    Object.defineProperty(window, "isTauri", {
+      value: false,
+      configurable: true,
+    });
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: { invoke },
+      configurable: true,
+    });
+
+    const updaterRef: { current: ReturnType<typeof useUpdater> | null } = {
+      current: null,
+    };
+    function Harness() {
+      updaterRef.current = useUpdater({ autoCheck: false });
+      return null;
+    }
+
+    await act(async () => {
+      root.render(createElement(Harness));
+    });
+    await act(async () => {
+      await updaterRef.current?.check({ manual: true });
+    });
+
+    expect(invoke).not.toHaveBeenCalled();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(updaterRef.current?.state).toMatchObject({
+      kind: "up-to-date",
+      latestVersion: "1.0.0",
+    });
+  });
 });

@@ -1,5 +1,4 @@
-import { invoke, isTauri } from "@tauri-apps/api/core";
-import { isLoopbackEndpoint, type UpdaterContract } from "./contract";
+import type { UpdaterContract } from "./contract";
 import {
   compareVersions,
   parseReleaseManifest,
@@ -95,7 +94,7 @@ export interface CheckForUpdateOptions {
   target?: string;
   /** Injected transport double for unit tests or native IPC wiring. */
   transport?: ManifestTransport;
-  /** Injected in tests; defaults to the platform fetch or Tauri IPC transport. */
+  /** Injected in tests; defaults to `globalThis.fetch`. */
   fetchImpl?: typeof globalThis.fetch;
   /** Injected in tests so backoff never really sleeps. */
   sleep?: (ms: number) => Promise<void>;
@@ -154,6 +153,17 @@ function isBlockedFetchError(error: unknown): boolean {
   return BLOCKED_ERROR_PATTERN.test(errorMessage(error));
 }
 
+export function toManifestTransportError(
+  error: unknown,
+): ManifestTransportError {
+  if (error instanceof ManifestTransportError) return error;
+  const detail = errorMessage(error);
+  return new ManifestTransportError(
+    isBlockedFetchError(error) ? "blocked" : "offline",
+    detail,
+  );
+}
+
 export function createFetchManifestTransport(
   fetchImpl: typeof globalThis.fetch,
 ): ManifestTransport {
@@ -178,49 +188,12 @@ export function createFetchManifestTransport(
           `release feed did not answer within ${timeoutMs}ms`,
         );
       }
-      const detail = errorMessage(error);
-      if (isBlockedFetchError(error)) {
-        throw new ManifestTransportError("blocked", detail);
-      }
-      throw new ManifestTransportError("offline", detail);
+      throw toManifestTransportError(error);
     } finally {
       clearTimeout(timer);
     }
   };
 }
-
-function isTransportReason(value: unknown): value is ManifestTransportReason {
-  return value === "offline" || value === "blocked" || value === "timeout";
-}
-
-function parseTauriTransportError(error: unknown): ManifestTransportError {
-  if (error instanceof ManifestTransportError) return error;
-  if (typeof error === "object" && error !== null) {
-    const record = error as { reason?: unknown; detail?: unknown };
-    if (isTransportReason(record.reason)) {
-      const detail =
-        typeof record.detail === "string" ? record.detail : errorMessage(error);
-      return new ManifestTransportError(record.reason, detail);
-    }
-  }
-  const detail = errorMessage(error);
-  if (BLOCKED_ERROR_PATTERN.test(detail)) {
-    return new ManifestTransportError("blocked", detail);
-  }
-  return new ManifestTransportError("offline", detail);
-}
-
-export const tauriManifestTransport: ManifestTransport = async ({
-  endpoint,
-}) => {
-  try {
-    return await invoke<ManifestFetchResult>("updater_fetch_manifest", {
-      endpointOverride: isLoopbackEndpoint(endpoint) ? endpoint : null,
-    });
-  } catch (error) {
-    throw parseTauriTransportError(error);
-  }
-};
 
 async function attemptCheck(
   endpoint: string,
@@ -283,13 +256,7 @@ async function attemptCheck(
       status: response.status,
     };
   } catch (error) {
-    const classified =
-      error instanceof ManifestTransportError
-        ? error
-        : new ManifestTransportError(
-            isBlockedFetchError(error) ? "blocked" : "offline",
-            errorMessage(error),
-          );
+    const classified = toManifestTransportError(error);
     const retryable = classified.reason !== "blocked";
     return {
       kind: "failure",
@@ -342,12 +309,7 @@ export async function checkForUpdate({
   });
 
   const resolvedTransport =
-    transport ??
-    (fetchImpl
-      ? createFetchManifestTransport(fetchImpl)
-      : isTauri()
-        ? tauriManifestTransport
-        : createFetchManifestTransport(globalThis.fetch));
+    transport ?? createFetchManifestTransport(fetchImpl ?? globalThis.fetch);
 
   let last: {
     failure: Omit<CheckFailure, "attempts">;

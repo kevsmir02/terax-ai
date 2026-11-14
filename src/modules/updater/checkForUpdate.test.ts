@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { releaseContract, resolveContract } from "./contract";
+import { resolveContract } from "./contract";
 import {
   checkForUpdate,
   ManifestTransportError,
@@ -588,64 +588,23 @@ describe("checkForUpdate", () => {
     expect(calls).toHaveLength(1);
   });
 
-  it("routes through updater_fetch_manifest in Tauri runtime when no fetchImpl is injected", async () => {
-    const invoke = vi.fn(async () => ({
-      status: 200,
-      retryAfter: null,
-      body: fixture("stable.json"),
-    }));
+  it("uses globalThis.fetch by default even when Tauri globals exist unless a transport is injected", async () => {
+    const invoke = vi.fn();
     vi.stubGlobal("isTauri", true);
-    vi.stubGlobal("window", { __TAURI_INTERNALS__: { invoke }, isTauri: true });
     vi.stubGlobal("__TAURI_INTERNALS__", { invoke });
+    const { calls, fetchImpl } = recordingFetch(() =>
+      jsonResponse(fixture("stable.json")),
+    );
+    vi.stubGlobal("fetch", fetchImpl);
 
-    const loopbackOutcome = await checkForUpdate({
+    const outcome = await checkForUpdate({
       ...baseOptions,
       sleep: noSleep,
       verify: fixtureTrust,
     });
-    expect(loopbackOutcome.kind).toBe("available");
-    expect(invoke.mock.calls[0]?.slice(0, 2)).toEqual([
-      "updater_fetch_manifest",
-      { endpointOverride: ENDPOINT },
-    ]);
 
-    invoke.mockClear();
-    invoke.mockRejectedValueOnce({
-      reason: "blocked",
-      detail: "HTTPS redirect downgrade refused",
-    });
-
-    const blockedOutcome = await checkForUpdate({
-      ...baseOptions,
-      contract: releaseContract,
-      sleep: noSleep,
-      verify: productionTrust,
-    });
-    expect(invoke.mock.calls[0]?.slice(0, 2)).toEqual([
-      "updater_fetch_manifest",
-      { endpointOverride: null },
-    ]);
-    expect(blockedOutcome.kind).toBe("failed");
-    if (blockedOutcome.kind !== "failed") return;
-    expect(blockedOutcome.failure.reason).toBe("blocked");
-    expect(blockedOutcome.failure.detail).toContain("downgrade");
-
-    invoke.mockClear();
-    invoke.mockRejectedValue({
-      reason: "offline",
-      detail: "connection refused",
-    });
-    const offlineOutcome = await checkForUpdate({
-      ...baseOptions,
-      contract: releaseContract,
-      sleep: noSleep,
-      verify: productionTrust,
-    });
-    expect(offlineOutcome.kind).toBe("failed");
-    if (offlineOutcome.kind !== "failed") return;
-    expect(offlineOutcome.failure.reason).toBe("offline");
-    expect(offlineOutcome.failure.attempts).toBe(
-      releaseContract.check.attempts,
-    );
+    expect(outcome.kind).toBe("available");
+    expect(invoke).not.toHaveBeenCalled();
+    expect(calls).toEqual([{ url: ENDPOINT, method: "GET" }]);
   });
 });

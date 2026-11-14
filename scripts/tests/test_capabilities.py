@@ -116,8 +116,9 @@ class UpdateCapabilityTest(unittest.TestCase):
         self.assertEqual(
             granted,
             [],
-            "this build discovers updates with `fetch` and has no gated download/install path "
-            "(ticket #39), so no window may call an updater command: " + ", ".join(granted),
+            "this build discovers updates via the bounded `updater_fetch_manifest` command "
+            "and has no gated download/install path (ticket #39), so no window may call an "
+            "updater command: " + ", ".join(granted),
         )
 
     def test_the_blanket_updater_set_is_the_install_grant_this_build_refuses(self) -> None:

@@ -246,17 +246,14 @@ describe("Header", () => {
     const searchWrapper = searchInput?.closest(".relative.h-7");
     expect(searchWrapper).not.toBeNull();
 
-    // Positioned immediately before SearchInline in the header bar
     const launcherSlot = launcherButton?.closest("span.inline-flex");
     expect(launcherSlot?.nextElementSibling).toBe(searchWrapper);
 
-    // Trigger compact width (< 720px)
     const headerRoot = host.firstElementChild as Element;
     act(() => {
       triggerResize(headerRoot, 600);
     });
 
-    // Search collapses to its icon button, while launcher remains mounted & visible
     expect(host.querySelector("input")).toBeNull();
     const collapsedSearchButton = host.querySelector<HTMLButtonElement>(
       'button[title^="Search"]',
