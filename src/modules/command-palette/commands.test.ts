@@ -98,4 +98,12 @@ describe("createCommandItems", () => {
     );
     expect(reason).toBe("Current space");
   });
+
+  it("exposes shortcutId tab.newBlock on New block terminal", () => {
+    const item = createCommandItems(baseContext()).find(
+      (i) => i.id === "tab.newBlock",
+    );
+    expect(item?.title).toBe("New block terminal");
+    expect(item?.shortcutId).toBe("tab.newBlock");
+  });
 });

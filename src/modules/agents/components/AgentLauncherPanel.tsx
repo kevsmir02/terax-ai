@@ -112,7 +112,7 @@ export function AgentLauncherPanel({ onBack, onLaunch }: Props) {
           size="icon-xs"
           className="rounded-md text-muted-foreground"
           onClick={onBack}
-          aria-label="Back to new tab menu"
+          aria-label="Back to view menu"
         >
           <HugeiconsIcon icon={ArrowLeft01Icon} size={14} strokeWidth={1.75} />
         </Button>
